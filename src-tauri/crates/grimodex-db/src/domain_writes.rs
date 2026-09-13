@@ -6619,7 +6619,7 @@ mod tests {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-            assert_eq!(counts, (1, 1, 2, 1));
+            assert_eq!(counts, (1, 1, 3, 1));
             let created_authority: (i64, i64) = conn.query_row(
                 "SELECT
                     (SELECT COUNT(*) FROM narrative_field_authority
@@ -9052,7 +9052,7 @@ mod tests {
                     ))
                 },
             )?;
-            assert_eq!(state, ("second".to_string(), 2, 2, 2, 2, 2, 2));
+            assert_eq!(state, ("second".to_string(), 2, 2, 2, 2, 4, 2));
             Ok(())
         })
         .expect("verify duplicate UID rollback");

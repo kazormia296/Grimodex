@@ -3,9 +3,7 @@ export type Constraint =
   | { kind: "exact"; ref: string }
   | { kind: "unresolved"; reason: string };
 
-export type Principal =
-  | { kind: "reader" }
-  | { kind: "character"; ref: string };
+export type Principal = { kind: "reader" } | { kind: "character"; ref: string };
 
 export type Registry = {
   registryVersion: string;

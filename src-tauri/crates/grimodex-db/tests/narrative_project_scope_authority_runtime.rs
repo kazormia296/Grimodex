@@ -51,6 +51,47 @@ fn fixture_scope_registry() -> Value {
     })
 }
 
+fn fixture_scope_binding(scene_id: &str) -> Value {
+    let query_identity = json!({
+        "timeline": {"kind": "unresolved", "reason": "legacy-axis-unknown"},
+        "worldline": {"kind": "unresolved", "reason": "legacy-axis-unknown"},
+        "narrativeLayer": {"kind": "unresolved", "reason": "legacy-axis-unknown"},
+    });
+    let material_constraint = json!({
+        "timeline": {"kind": "any"},
+        "worldline": {"kind": "any"},
+        "narrativeLayer": {"kind": "any"},
+    });
+    let source_token = digest(json!({
+        "contractId": "narrative-scene-scope/1",
+        "registry": fixture_scope_registry(),
+        "projectId": PROJECT_ID,
+        "sceneId": scene_id,
+        "sceneIncarnationId": format!("legacy:{scene_id}"),
+        "compatibilityMarker": "legacy-absent",
+        "queryIdentity": query_identity.clone(),
+        "materialConstraint": material_constraint.clone(),
+        "knowledgeHolder": {"kind": "reader"},
+        "audience": {"kind": "reader"},
+        "version": 1,
+        "updatedAt": CREATED_AT,
+    }));
+    json!({
+        "schemaVersion": 1,
+        "projectId": PROJECT_ID,
+        "sceneId": scene_id,
+        "sceneIncarnationId": format!("legacy:{scene_id}"),
+        "compatibilityMarker": "legacy-absent",
+        "queryIdentity": query_identity,
+        "materialConstraint": material_constraint,
+        "knowledgeHolder": {"kind": "reader"},
+        "audience": {"kind": "reader"},
+        "version": 1,
+        "sourceToken": source_token,
+        "updatedAt": CREATED_AT,
+    })
+}
+
 fn tree_source_generation(nodes: Value) -> String {
     digest(json!({
         "contractId": "narrative-tree-source-generation/1",
@@ -108,7 +149,11 @@ fn empty_tree_source_generation() -> String {
     tree_source_generation(json!([]))
 }
 
-fn scope_extended_authority_token(base_revision_token: String, tree_generation: String) -> String {
+fn scope_extended_authority_token(
+    base_revision_token: String,
+    tree_generation: String,
+    bindings: Value,
+) -> String {
     let registry = fixture_scope_registry();
     let registry_source_token = digest(json!({
         "contractId": NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID,
@@ -121,7 +166,7 @@ fn scope_extended_authority_token(base_revision_token: String, tree_generation: 
         "registryRevision": 1,
         "registrySourceToken": registry_source_token,
         "treeSourceGeneration": tree_generation,
-        "bindings": [],
+        "bindings": bindings,
     }));
     digest(json!({
         "baseRevisionToken": base_revision_token,
@@ -208,7 +253,11 @@ fn baseline_token() -> String {
         "readingOrderRevision": reading_order_revision,
         "storyTimeOrderRevision": story_time_order_revision
     }));
-    scope_extended_authority_token(base_revision_token, initial_tree_source_generation())
+    scope_extended_authority_token(
+        base_revision_token,
+        initial_tree_source_generation(),
+        json!([fixture_scope_binding("scene-a"), fixture_scope_binding("scene-b")]),
+    )
 }
 
 fn empty_project_token() -> String {
@@ -244,7 +293,7 @@ fn empty_project_token() -> String {
         "readingOrderRevision": reading_order_revision,
         "storyTimeOrderRevision": story_time_order_revision
     }));
-    scope_extended_authority_token(base_revision_token, empty_tree_source_generation())
+    scope_extended_authority_token(base_revision_token, empty_tree_source_generation(), json!([]))
 }
 
 fn seed_scope_bindings(conn: &Connection) -> anyhow::Result<()> {

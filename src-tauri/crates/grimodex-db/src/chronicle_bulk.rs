@@ -1923,6 +1923,12 @@ mod tests {
                          10, 30, 'time', 11, 45, 'time', 'approx', ?3)",
                 rusqlite::params![scene_id, project_id, "2026-07-29T00:00:00.000Z"],
             )?;
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                &project_id,
+                &scene_id,
+                "2026-07-29T00:00:00.000Z",
+            )?;
             for (id, ordinal) in [(&event_delete_id, "a0"), (&event_clear_id, "a1")] {
                 conn.execute(
                     "INSERT INTO events
@@ -2094,7 +2100,7 @@ mod tests {
         .expect("inspect feed transaction");
 
         let events = narrative_feed_events(&db);
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 4);
         let mut expected_event_ids = [event_clear_id.clone(), event_delete_id.clone()];
         expected_event_ids.sort();
         assert_eq!(
@@ -2116,6 +2122,7 @@ mod tests {
                 ("chronicle-event".to_string(), expected_event_ids[0].clone()),
                 ("chronicle-event".to_string(), expected_event_ids[1].clone()),
                 ("scene".to_string(), scene_id.clone()),
+                ("scene-scope".to_string(), scene_id.clone()),
             ]
         );
 

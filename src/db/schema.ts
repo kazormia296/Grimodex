@@ -4218,8 +4218,10 @@ export type NarrativeExtractionStageReceipt =
   typeof narrativeExtractionStageReceipts.$inferSelect;
 export type NewNarrativeExtractionStageReceipt =
   typeof narrativeExtractionStageReceipts.$inferInsert;
-export type NarrativeScopeRegistry = typeof narrativeScopeRegistries.$inferSelect;
-export type NewNarrativeScopeRegistry = typeof narrativeScopeRegistries.$inferInsert;
+export type NarrativeScopeRegistry =
+  typeof narrativeScopeRegistries.$inferSelect;
+export type NewNarrativeScopeRegistry =
+  typeof narrativeScopeRegistries.$inferInsert;
 export type NarrativeSceneScopeBinding =
   typeof narrativeSceneScopeBindings.$inferSelect;
 export type NewNarrativeSceneScopeBinding =

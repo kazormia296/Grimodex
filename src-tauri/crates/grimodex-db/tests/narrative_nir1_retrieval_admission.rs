@@ -1049,7 +1049,7 @@ fn native_source_scope_archive_and_order_changes_deny_before_and_after_evaluatio
                 fixture.scene("s1"),
                 json!({"archivedAt":"2026-09-08T09:00:00.000Z"}),
             ),
-            "scope-story" => (fixture.scene("s2"), json!({"storyTimeOrder":"a1"})),
+            "scope-story" => (fixture.scene("s2"), json!({"storyTimeOrder":"z9"})),
             "reading-order" => (fixture.scene("s2"), json!({"sortOrder":"Zz"})),
             _ => unreachable!("enumerated Native mutation"),
         };
@@ -1065,11 +1065,42 @@ fn native_source_scope_archive_and_order_changes_deny_before_and_after_evaluatio
         .expect("saved fresh summary does not create an admission window after Native mutation");
         drain_native_feed(&db);
         db.with_conn(|conn| {
-            assert_ne!(saved_canonical_state(conn, fixture.child()).0, "fresh");
-            assert_unavailable(conn, &fixture, fixture.child(), fixture.scene("s2"));
+            match case {
+                "source-body" | "source-archived" => {
+                    assert_ne!(saved_canonical_state(conn, fixture.child()).0, "fresh");
+                    assert_unavailable(conn, &fixture, fixture.child(), fixture.scene("s2"));
+                }
+                "scope-story" => {
+                    assert_eq!(
+                        saved_canonical_state(conn, fixture.child()),
+                        ("fresh".to_owned(), "none".to_owned())
+                    );
+                    assert_eligible(conn, &fixture, fixture.child());
+                }
+                "reading-order" => {
+                    assert_eq!(
+                        saved_canonical_state(conn, fixture.child()),
+                        ("fresh".to_owned(), "none".to_owned())
+                    );
+                    let tx = conn.unchecked_transaction()?;
+                    let actual = read_revision_retrieval_eligibility(
+                        &tx,
+                        fixture.project(),
+                        fixture.child(),
+                        fixture.scene("s2"),
+                    )?;
+                    assert!(matches!(
+                        actual,
+                        RevisionEligibilityRead::Unavailable {
+                            reason: RevisionEligibilityReason::SourceNotBeforeQuery
+                        }
+                    ));
+                }
+                _ => unreachable!("enumerated Native mutation"),
+            }
             Ok(())
         })
-        .expect("stored canonical invalidation remains ineligible");
+        .expect("stored canonical state is re-evaluated for the Native mutation");
     }
 }
 

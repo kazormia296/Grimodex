@@ -1,5 +1,12 @@
 // @vitest-environment happy-dom
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { SceneScopeEditor } from "./SceneScopeEditor";
@@ -13,8 +20,9 @@ vi.mock("@/lib/tauri", () => ({
 }));
 
 vi.mock("@/features/workspace/store", () => ({
-  useWorkspaceStore: (selector: (state: { activeWorkspacePath: string }) => unknown) =>
-    selector({ activeWorkspacePath: "/workspace" }),
+  useWorkspaceStore: (
+    selector: (state: { activeWorkspacePath: string }) => unknown,
+  ) => selector({ activeWorkspacePath: "/workspace" }),
 }));
 
 vi.mock("@/features/codex/codexStore", () => ({
@@ -23,7 +31,9 @@ vi.mock("@/features/codex/codexStore", () => ({
 }));
 
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string, fallback?: string) => fallback ?? key }),
+  useTranslation: () => ({
+    t: (key: string, fallback?: string) => fallback ?? key,
+  }),
 }));
 
 vi.mock("./SceneScopeFields", () => ({ SceneScopeFields: () => null }));
@@ -126,23 +136,33 @@ describe("SceneScopeEditor request epochs", () => {
   it("ignores a deferred read from the scene selected before navigation", async () => {
     const first = deferred<ScopeRead>();
     const second = deferred<ScopeRead>();
-    invokeMock.mockReset().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    invokeMock
+      .mockReset()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
     const { rerender } = render(<SceneScopeEditor node={node("scene-a")} />);
 
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
     rerender(<SceneScopeEditor node={node("scene-b")} />);
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
     await act(async () => first.resolve(scope("scene-a", 11)));
-    expect(screen.getByTestId("scene-scope-editor").textContent).not.toContain("v11");
+    expect(screen.getByTestId("scene-scope-editor").textContent).not.toContain(
+      "v11",
+    );
     await act(async () => second.resolve(scope("scene-b", 12)));
     await waitFor(() =>
-      expect(screen.getByTestId("scene-scope-editor").textContent).toContain("v12"),
+      expect(screen.getByTestId("scene-scope-editor").textContent).toContain(
+        "v12",
+      ),
     );
   });
 
   it("ignores a deferred save response after navigation", async () => {
     const readA = deferred<ScopeRead>();
-    const saveA = deferred<{ registry: ScopeRead["registry"]; binding: ScopeRead["binding"] }>();
+    const saveA = deferred<{
+      registry: ScopeRead["registry"];
+      binding: ScopeRead["binding"];
+    }>();
     const readB = deferred<ScopeRead>();
     invokeMock
       .mockReset()
@@ -160,19 +180,29 @@ describe("SceneScopeEditor request epochs", () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(3));
     await act(async () => readB.resolve(scope("scene-b", 7)));
     await act(async () =>
-      saveA.resolve({ registry: scope("scene-a", 99).registry, binding: scope("scene-a", 99).binding }),
+      saveA.resolve({
+        registry: scope("scene-a", 99).registry,
+        binding: scope("scene-a", 99).binding,
+      }),
     );
     await waitFor(() =>
-      expect(screen.getByTestId("scene-scope-editor").textContent).toContain("v7"),
+      expect(screen.getByTestId("scene-scope-editor").textContent).toContain(
+        "v7",
+      ),
     );
-    expect(screen.getByTestId("scene-scope-editor").textContent).not.toContain("v99");
+    expect(screen.getByTestId("scene-scope-editor").textContent).not.toContain(
+      "v99",
+    );
   });
 
   it("rereads the binding after a registry save before the next update", async () => {
     const initialRead = deferred<ScopeRead>();
     const registrySave = deferred<ScopeRead>();
     const refreshedRead = deferred<ScopeRead>();
-    const scopeSave = deferred<{ registry: ScopeRead["registry"]; binding: ScopeRead["binding"] }>();
+    const scopeSave = deferred<{
+      registry: ScopeRead["registry"];
+      binding: ScopeRead["binding"];
+    }>();
     invokeMock
       .mockReset()
       .mockReturnValueOnce(initialRead.promise)
@@ -184,7 +214,9 @@ describe("SceneScopeEditor request epochs", () => {
     await act(async () => initialRead.resolve(scope("scene-a", 1)));
 
     const registryEditor = screen.getByTestId("scene-scope-registry-editor");
-    fireEvent.click(within(registryEditor).getByRole("button", { name: "Save" }));
+    fireEvent.click(
+      within(registryEditor).getByRole("button", { name: "Save" }),
+    );
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
     const registryResponse = scope("scene-a", 1);
     registryResponse.registryRevision = 2;
@@ -194,7 +226,11 @@ describe("SceneScopeEditor request epochs", () => {
     const refreshed = scope("scene-a", 9);
     refreshed.registryRevision = 2;
     await act(async () => refreshedRead.resolve(refreshed));
-    await waitFor(() => expect(screen.getByTestId("scene-scope-editor").textContent).toContain("v9"));
+    await waitFor(() =>
+      expect(screen.getByTestId("scene-scope-editor").textContent).toContain(
+        "v9",
+      ),
+    );
 
     fireEvent.click(screen.getByTestId("scene-scope-binding-save"));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(4));
@@ -215,14 +251,19 @@ describe("SceneScopeEditor request epochs", () => {
     await act(async () => initialRead.resolve(scope("scene-a", 1)));
 
     fireEvent.click(
-      within(screen.getByTestId("scene-scope-registry-editor")).getByRole("button", {
-        name: "Save",
-      }),
+      within(screen.getByTestId("scene-scope-registry-editor")).getByRole(
+        "button",
+        {
+          name: "Save",
+        },
+      ),
     );
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
     registrySave.resolve(scope("scene-a", 1));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(3));
-    await act(async () => refreshFailure.reject(new Error("scope refresh failed")));
+    await act(async () =>
+      refreshFailure.reject(new Error("scope refresh failed")),
+    );
 
     await waitFor(() =>
       expect(screen.queryByTestId("scene-scope-binding-save")).toBeNull(),

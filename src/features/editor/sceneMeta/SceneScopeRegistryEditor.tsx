@@ -126,12 +126,18 @@ export function SceneScopeRegistryEditor({
   };
 
   return (
-    <details data-testid="scene-scope-registry-editor" className="rounded border border-border px-2 py-1">
+    <details
+      data-testid="scene-scope-registry-editor"
+      className="rounded border border-border px-2 py-1"
+    >
       <summary className="cursor-pointer text-[10px] text-muted-foreground">
-        {t("editor.sceneDetail.scopeRegistry", "Scope registry")} · v{registryRevision}
+        {t("editor.sceneDetail.scopeRegistry", "Scope registry")} · v
+        {registryRevision}
       </summary>
       <div className="mt-1.5 flex flex-col gap-1.5">
-        <span className="text-[9px] text-muted-foreground">{draft.registryVersion}</span>
+        <span className="text-[9px] text-muted-foreground">
+          {draft.registryVersion}
+        </span>
         {AXES.map(([axis, label, placeholder]) => (
           <div key={axis} className="flex flex-col gap-1">
             <span className="text-[9px] text-muted-foreground">{label}</span>
@@ -141,7 +147,9 @@ export function SceneScopeRegistryEditor({
                   aria-label={`${label} ref ${index + 1}`}
                   value={ref}
                   placeholder={placeholder}
-                  onChange={(event) => updateRef(axis, index, event.target.value)}
+                  onChange={(event) =>
+                    updateRef(axis, index, event.target.value)
+                  }
                   className="min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-1 text-[10px] text-foreground"
                 />
                 <button

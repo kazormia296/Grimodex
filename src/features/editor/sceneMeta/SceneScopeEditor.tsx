@@ -22,7 +22,10 @@ type SceneScopeIdentity = {
   sceneId: string;
 };
 
-function sameIdentity(left: SceneScopeIdentity, right: SceneScopeIdentity): boolean {
+function sameIdentity(
+  left: SceneScopeIdentity,
+  right: SceneScopeIdentity,
+): boolean {
   return (
     left.workspacePath === right.workspacePath &&
     left.projectId === right.projectId &&
@@ -58,7 +61,8 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
   const characters = useMemo(
     () =>
       entries.filter(
-        (entry) => entry.type === "character" && entry.projectId === node.projectId,
+        (entry) =>
+          entry.type === "character" && entry.projectId === node.projectId,
       ),
     [entries, node.projectId],
   );
@@ -71,7 +75,8 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
       sceneId: node.id,
     };
     const isCurrent = () =>
-      requestEpoch.current === epoch && sameIdentity(identityRef.current, requestIdentity);
+      requestEpoch.current === epoch &&
+      sameIdentity(identityRef.current, requestIdentity);
     if (!isElectron()) return;
     if (!workspacePath) {
       if (isCurrent()) {
@@ -129,7 +134,8 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
     const epoch = requestEpoch.current;
     const requestIdentity = identity;
     const isCurrent = () =>
-      requestEpoch.current === epoch && sameIdentity(identityRef.current, requestIdentity);
+      requestEpoch.current === epoch &&
+      sameIdentity(identityRef.current, requestIdentity);
     setSaving(true);
     setError(null);
     const now = new Date().toISOString();
@@ -168,7 +174,10 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
   };
 
   return (
-    <div data-testid="scene-scope-editor" className="flex flex-col gap-1.5 border-b border-border px-3 py-2">
+    <div
+      data-testid="scene-scope-editor"
+      className="flex flex-col gap-1.5 border-b border-border px-3 py-2"
+    >
       <div className="flex items-center gap-1.5">
         <Shield size={11} aria-hidden className="text-muted-foreground" />
         <span className="text-[10px] font-semibold text-foreground">
@@ -180,7 +189,11 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
           </span>
         )}
       </div>
-      {loading && <span className="text-[10px] text-muted-foreground">{t("common.loading", "Loading…")}</span>}
+      {loading && (
+        <span className="text-[10px] text-muted-foreground">
+          {t("common.loading", "Loading…")}
+        </span>
+      )}
       {error && <span className="text-[10px] text-destructive">{error}</span>}
       {draft && read && workspacePath && (
         <>
@@ -205,11 +218,14 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
               setLoading(true);
               setError(null);
               try {
-                const fresh = await invoke<ScopeRead>("narrative_scene_scope_read", {
-                  expectedWorkspacePath: refreshIdentity.workspacePath,
-                  projectId: refreshIdentity.projectId,
-                  sceneId: refreshIdentity.sceneId,
-                });
+                const fresh = await invoke<ScopeRead>(
+                  "narrative_scene_scope_read",
+                  {
+                    expectedWorkspacePath: refreshIdentity.workspacePath,
+                    projectId: refreshIdentity.projectId,
+                    sceneId: refreshIdentity.sceneId,
+                  },
+                );
                 if (!isCurrentRefresh()) return;
                 // Replace the read and draft from one Native snapshot so the
                 // next binding update carries the current OCC version.
@@ -219,7 +235,9 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
                 if (isCurrentRefresh()) {
                   setRead(null);
                   setDraft(null);
-                  setError(cause instanceof Error ? cause.message : String(cause));
+                  setError(
+                    cause instanceof Error ? cause.message : String(cause),
+                  );
                 }
               } finally {
                 if (isCurrentRefresh()) setLoading(false);

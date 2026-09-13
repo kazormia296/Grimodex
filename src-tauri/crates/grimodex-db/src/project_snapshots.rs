@@ -3157,6 +3157,14 @@ mod tests {
                         ('t2', 'p2', 'scene', 'Two', 'a')",
                 [],
             )?;
+            for (project_id, scene_id) in [("p1", "t1"), ("p2", "t2")] {
+                crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                    conn,
+                    project_id,
+                    scene_id,
+                    "2026-07-30T00:00:00.000Z",
+                )?;
+            }
             conn.execute(
                 "INSERT INTO labels (id, project_id, name, color)
                  VALUES ('l1', 'p1', 'One', '#111111'),
@@ -4211,7 +4219,7 @@ mod tests {
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            assert_eq!(events.len(), 1);
+            assert_eq!(events.len(), 2);
             let object_key = serde_json::from_str::<Value>(&events[0].0).expect("object key");
             assert_eq!(
                 object_key,

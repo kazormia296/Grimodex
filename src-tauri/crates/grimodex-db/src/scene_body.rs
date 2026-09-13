@@ -983,6 +983,15 @@ mod tests {
             "run",
         )
         .expect("insert scene");
+        db.with_conn(|conn| {
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                "p1",
+                "s1",
+                "fixture",
+            )
+        })
+        .expect("seed scene scope binding");
         db.execute(
             "INSERT INTO codex_entries (id, project_id, type, name)
              VALUES ('c1', 'p1', 'character', 'Character'),
@@ -1237,7 +1246,7 @@ mod tests {
                     ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            assert_eq!(events.len(), 3);
+            assert_eq!(events.len(), 4);
             assert_eq!(
                 events[0].0,
                 serde_json::json!({ "kind": "scene", "sceneId": "s1" })
@@ -1254,13 +1263,28 @@ mod tests {
             assert_eq!(text_impact["mapping"]["kind"], "whole-document");
             assert_eq!(
                 events[1].0,
-                serde_json::json!({ "kind": "foreshadow", "foreshadowId": "f1" })
+                serde_json::json!({ "kind": "scene-scope", "sceneId": "s1" })
+            );
+            assert_eq!(events[1].1, "metadata");
+            assert_eq!(events[1].2, "update");
+            assert_eq!((events[1].3, events[1].4), (Some(1), Some(2)));
+            assert_eq!(
+                events[1].5,
+                serde_json::json!([
+                    "/binding/sourceToken",
+                    "/binding/updatedAt",
+                    "/binding/version"
+                ])
             );
             assert_eq!(
                 events[2].0,
+                serde_json::json!({ "kind": "foreshadow", "foreshadowId": "f1" })
+            );
+            assert_eq!(
+                events[3].0,
                 serde_json::json!({ "kind": "foreshadow", "foreshadowId": "f2" })
             );
-            assert!(events[1..].iter().all(|event| event.1 == "association"
+            assert!(events[2..].iter().all(|event| event.1 == "association"
                 && event.2 == "update"
                 && event.5 == serde_json::json!(["/payoffs", "/setups"])));
             Ok(())
@@ -1468,7 +1492,7 @@ mod tests {
                     ))
                 },
             )?;
-            assert_eq!(counts, (1, 1, 1, 3, 1));
+            assert_eq!(counts, (1, 1, 1, 4, 1));
             Ok(())
         })
         .expect("inspect retry ledgers");

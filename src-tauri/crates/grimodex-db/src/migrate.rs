@@ -11264,6 +11264,27 @@ mod tests {
         // otherwise never exercised. Restore relies on these being present.
         let db = Database::new(std::path::Path::new(":memory:")).unwrap();
         db.with_conn(|conn| {
+            // The legacy scene belongs to a real project.  Without this row,
+            // the current migration's scope backfill cannot establish the
+            // Native registry before it visits the scene.
+            conn.execute_batch(
+                "CREATE TABLE projects (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT 'Test',
+                    genre TEXT,
+                    pov TEXT,
+                    tense TEXT,
+                    language TEXT NOT NULL DEFAULT 'ja',
+                    style_guide TEXT,
+                    ai_instructions TEXT,
+                    outline TEXT,
+                    target_readers TEXT,
+                    phase_resolution_mode TEXT NOT NULL DEFAULT 'auto',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 INSERT INTO projects (id, title) VALUES ('p1', 'Project 1');",
+            )?;
             // Pre-chronicle tree_nodes / project_snapshot_tree_nodes (no chronicle_*).
             conn.execute_batch(
                 "CREATE TABLE tree_nodes (

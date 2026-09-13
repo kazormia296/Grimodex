@@ -10915,6 +10915,10 @@ mod tests {
             "run",
         )
         .expect("insert project");
+        db.with_conn(|conn| {
+            crate::narrative_extraction::ensure_scope_registry_in_tx(conn, &id, "fixture")
+        })
+        .expect("seed project scope registry");
         id
     }
 

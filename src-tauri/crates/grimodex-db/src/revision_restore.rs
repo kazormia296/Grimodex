@@ -424,12 +424,18 @@ mod tests {
                      placed_beat_preview, version)
                  VALUES ('scene-1', '{PROJECT}', 'scene', 'Scene', '{OLD}', 3,
                          '[\"old beat\"]', 4);
-                 INSERT INTO content_versions
+                INSERT INTO content_versions
                     (id, entity_type, entity_id, content, version_number,
                      snapshot_type)
                  VALUES ('revision-target', 'scene', 'scene-1', '{TARGET}', 1,
                          'auto');"
             ))?;
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                PROJECT,
+                "scene-1",
+                "fixture",
+            )?;
             Ok(())
         })
         .expect("seed revision fixture");
@@ -530,7 +536,7 @@ mod tests {
             for (table, expected) in [
                 ("change_events", 1_i64),
                 ("narrative_change_transactions", 1),
-                ("narrative_change_events", 1),
+                ("narrative_change_events", 2),
                 ("idempotency_requests", 1),
                 ("content_versions", 2),
                 ("state_snapshots", 1),

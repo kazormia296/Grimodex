@@ -352,14 +352,9 @@ fn nir1_read_snapshot_filters_ineligible_missing_scope_before_global_preload() {
         read_revision_material_membership, MaterialMembershipRead,
     };
 
-    let f = Fixture::new();
+    let f = MultiCandidateFixture::new();
     let project_id = f.project().to_owned();
-    let revisions = f.manifest["revisionIds"]
-        .as_array()
-        .expect("revision roster")
-        .iter()
-        .map(|revision| revision.as_str().expect("revision id").to_owned())
-        .collect::<Vec<_>>();
+    let revisions = f.approved_revisions();
     let missing_scene = f
         .db
         .with_read_transaction(|tx| {
@@ -438,8 +433,8 @@ fn nir1_read_snapshot_filters_ineligible_missing_scope_before_global_preload() {
     assert_eq!(
         crate::narrative_extraction::MATERIAL_MEMBERSHIP_READ_COUNT
             .with(|count| count.get()),
-        revisions.len(),
-        "each roster membership must be replayed once before finalization"
+        revisions.len() + 1,
+        "the source digest and each roster membership must be replayed once before finalization"
     );
 }
 
@@ -451,14 +446,9 @@ fn nir1_read_snapshot_keeps_unaffected_preflight_candidate_when_scope_is_missing
         read_revision_material_membership, MaterialMembershipRead,
     };
 
-    let f = Fixture::new();
+    let f = MultiCandidateFixture::new();
     let project_id = f.project().to_owned();
-    let revisions = f.manifest["revisionIds"]
-        .as_array()
-        .expect("revision roster")
-        .iter()
-        .map(|revision| revision.as_str().expect("revision id").to_owned())
-        .collect::<Vec<_>>();
+    let revisions = f.approved_revisions();
     let missing_scene = f
         .db
         .with_read_transaction(|tx| {
@@ -531,8 +521,8 @@ fn nir1_read_snapshot_keeps_unaffected_preflight_candidate_when_scope_is_missing
     assert_eq!(
         crate::narrative_extraction::MATERIAL_MEMBERSHIP_READ_COUNT
             .with(|count| count.get()),
-        revisions.len(),
-        "both preflight memberships must be replayed exactly once"
+        revisions.len() + 1,
+        "the source digest and both preflight memberships must be replayed exactly once"
     );
 }
 
@@ -544,14 +534,9 @@ fn nir1_read_snapshot_keeps_unaffected_candidate_when_existing_scope_row_is_corr
         read_revision_material_membership, MaterialMembershipRead,
     };
 
-    let f = Fixture::new();
+    let f = MultiCandidateFixture::new();
     let project_id = f.project().to_owned();
-    let revisions = f.manifest["revisionIds"]
-        .as_array()
-        .expect("revision roster")
-        .iter()
-        .map(|revision| revision.as_str().expect("revision id").to_owned())
-        .collect::<Vec<_>>();
+    let revisions = f.approved_revisions();
     let (corrupt_scene, query_scene) = f
         .db
         .with_read_transaction(|tx| {
@@ -573,11 +558,13 @@ fn nir1_read_snapshot_keeps_unaffected_candidate_when_existing_scope_row_is_corr
                 .filter_map(|material| material.source_key.strip_prefix("project:scene:"))
                 .map(str::to_owned)
                 .collect::<BTreeSet<_>>();
-            let query_scene = first_scenes
-                .iter()
-                .next()
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("fixture needs a valid query scene"))?;
+            let query_scene = tx.query_row(
+                "SELECT id FROM tree_nodes
+                  WHERE project_id=?1 AND node_type='scene'
+                  ORDER BY sort_order DESC, id DESC LIMIT 1",
+                [&project_id],
+                |row| row.get::<_, String>(0),
+            )?;
             let corrupt_scene = second
                 .materials
                 .iter()
@@ -639,8 +626,8 @@ fn nir1_read_snapshot_keeps_unaffected_candidate_when_existing_scope_row_is_corr
     assert_eq!(
         crate::narrative_extraction::MATERIAL_MEMBERSHIP_READ_COUNT
             .with(|count| count.get()),
-        revisions.len(),
-        "both preflight memberships must be replayed exactly once"
+        revisions.len() + 1,
+        "the source digest and both preflight memberships must be replayed exactly once"
     );
 
     let cold = f
@@ -670,14 +657,9 @@ fn nir1_read_snapshot_keeps_unaffected_candidate_when_existing_scope_version_is_
         read_revision_material_membership, MaterialMembershipRead,
     };
 
-    let f = Fixture::new();
+    let f = MultiCandidateFixture::new();
     let project_id = f.project().to_owned();
-    let revisions = f.manifest["revisionIds"]
-        .as_array()
-        .expect("revision roster")
-        .iter()
-        .map(|revision| revision.as_str().expect("revision id").to_owned())
-        .collect::<Vec<_>>();
+    let revisions = f.approved_revisions();
     let (corrupt_scene, query_scene) = f
         .db
         .with_read_transaction(|tx| {
@@ -699,11 +681,13 @@ fn nir1_read_snapshot_keeps_unaffected_candidate_when_existing_scope_version_is_
                 .filter_map(|material| material.source_key.strip_prefix("project:scene:"))
                 .map(str::to_owned)
                 .collect::<BTreeSet<_>>();
-            let query_scene = first_scenes
-                .iter()
-                .next()
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("fixture needs a valid query scene"))?;
+            let query_scene = tx.query_row(
+                "SELECT id FROM tree_nodes
+                  WHERE project_id=?1 AND node_type='scene'
+                  ORDER BY sort_order DESC, id DESC LIMIT 1",
+                [&project_id],
+                |row| row.get::<_, String>(0),
+            )?;
             let corrupt_scene = second
                 .materials
                 .iter()
@@ -765,8 +749,8 @@ fn nir1_read_snapshot_keeps_unaffected_candidate_when_existing_scope_version_is_
     assert_eq!(
         crate::narrative_extraction::MATERIAL_MEMBERSHIP_READ_COUNT
             .with(|count| count.get()),
-        revisions.len(),
-        "both preflight memberships must be replayed exactly once"
+        revisions.len() + 1,
+        "the source digest and both preflight memberships must be replayed exactly once"
     );
 
     let cold = f
@@ -799,22 +783,16 @@ fn nir1_scope_sql_failures_propagate_from_both_readers() {
         .expect("revision")
         .to_owned();
     let query_scene_id = f.manifest["s1"].as_str().expect("query scene").to_owned();
-    crate::narrative_extraction::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT
-        .with(|count| count.set(0));
     f.db
         .with_conn(|conn| {
             conn.authorizer(Some(|context: AuthContext<'_>| {
-                // Query-context reads the same table before material preload;
-                // arm this denial only once the preload counter is incremented.
                 if matches!(
                     context.action,
                     AuthAction::Read {
                         table_name: "narrative_scene_scope_bindings",
                         ..
                     }
-                ) && crate::narrative_extraction::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT
-                    .with(|count| count.get() > 0)
-                {
+                ) {
                     Authorization::Deny
                 } else {
                     Authorization::Allow
@@ -830,8 +808,6 @@ fn nir1_scope_sql_failures_propagate_from_both_readers() {
                 result
             };
             drop(snapshot_result);
-            crate::narrative_extraction::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT
-                .with(|count| count.set(0));
             let eligibility_result = {
                 let tx = conn.unchecked_transaction()?;
                 let result = crate::narrative_extraction::read_revision_retrieval_eligibility(
@@ -847,8 +823,6 @@ fn nir1_scope_sql_failures_propagate_from_both_readers() {
                 result
             };
             drop(eligibility_result);
-            crate::narrative_extraction::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT
-                .with(|count| count.set(0));
             conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
             Ok(())
         })

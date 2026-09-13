@@ -258,6 +258,7 @@ mod tests {
                  VALUES ('nir1-scene', 'default-project', 'scene', 'Scene', '{}', 'a0')",
                 [],
             )?;
+            crate::narrative_extraction::backfill_scene_scope_storage_in_tx(conn)?;
             conn.execute(
                 "INSERT INTO codex_entries (id, project_id, type, name, summary)
                  VALUES ('nir1-alice', 'default-project', 'character', 'Alice', 'Alice enters')",
