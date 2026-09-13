@@ -14,9 +14,19 @@ Status: **条件反映済み・L0–L5 実行承認済み**。計画版 `nir1-pl
 L6–L9は全体計画に保持する。L6正例に必要なL7入力adapterの先行は許容するが、Graph検索利用の開示gateは省略しない。
 
 2026-09-12追記: 基点 master@96654340ddd2a0407f2fe8aea41a940c3aa516ce で、L6〜L9の実装順序・公開条件・送信境界・互換profile・受入れ区分を
-[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)へ分離して文書化した。L0〜L5はマージ済みで、L6〜L9のruntime実装とactivationは未実施である。
+[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)へ分離して文書化した。L0〜L5はマージ済みで、#572のtyped基盤runtimeは実装済みだが、L6〜L9のproduction runtime integration、activation、受入れは未完了である。
 本追記以降、L6〜L9の実行契約は新文書を参照する。従前の「今回の継続実装範囲はL0〜L5」という記述は、2026-09-08時点の承認範囲を示す履歴であり、現在のL6〜L9実行契約を制限しない。
-公開条件は、restricted plaintextを返すすべてのentrypointに対する先行送信基盤 D2a、Graphは A3＋B＋D2a、Packingは C＋D1＋D2a＋D2b とする。
+公開条件は、restricted plaintextを返すすべてのentrypointに対する先行送信基盤 D2a、Graphは A3＋B＋C＋D2a、Packingは C＋D1＋D2a＋D2b-1＋D2b-2 とする。
+
+2026-09-13追記（PR-R0）: 最新 `origin/master` の #572（`master@68516b033f395f24f98c502c9fd2a715d7aec2af`、Tree
+`04c491c29627ecc840112ebe379a5363e16892ff`）を現在地の基点として、
+[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)にR0の部分実装、writer／caller／plaintext／egress台帳、profile状態遷移、契約別開始判定、評価manifestを固定した。
+R0は文書・既存quality contract test・manifest traceだけを変更し、runtime／policy／activationと新規fixtureは変更しない。24件の検索case（ja/en各12件）の正本は
+`evals/nir1-retrieval/manifest.json`であり、Graph G-01〜G-08、Packing P-01〜P-12（文体／台詞／描写／exact quote／長距離関係／構造の各2件）の詳細表と、
+事前指定改善G-01／P-12、Packing baselineの費用境界はL6〜L9実行計画へ集約する。
+R0 confirmation state: five proposal/3 contract rows are explicitly confirmed (proposal scope only) and ready only after R0 merge plus normal dependencies. The exact per-contract refs (`nir1-l6-l9-contract-proposal/3#<contractId>`) are recorded in the execution-plan ledger. `typed-revision-material` alone is proposal/4 Option B, unconfirmed/ref-unverified, and blocked; its separate confirmation must name both the exact `draftRef` and `contractId`. These confirmations do not complete the downstream threat model or activate runtime.
+Graphの製品公開条件は A3＋B＋C＋D2a、Packingの製品公開条件は C＋D1＋D2a＋D2b-1＋D2b-2 とし、
+性能Holdと `author-value: not-measured` を保持する。R0自体の開始判定はreadyだが、下流laneのproduction runtime integration開始・activation・受入れはblockedのままである。
 
 2026-09-08、`codex/nir1-material-replay` の clean HEAD
 `9bb942de7f58d869e9d5de52fb49d9adc49e965b`、tree
@@ -460,7 +470,7 @@ NIR-1のcanonical deliverableを満たすことと、すべての抽出recipe・
 その指摘により、初期contextのtyped state、後続の全材料reading-history制約、GraphのRevision/Decisionと独立Index bindingを具体化した。
 再照合で計画reviewの残指摘は解消。新規計画のPrettier check、相対リンク実在確認、git diff --checkを実施した。
 既存ロードマップ全体にはHEAD時点から整形差があるため、その全面整形は行わず計画リンクの追記に留めた。
-初回文書化時点では計画文書のみで、Quick / Full / runtime testsを実行したという主張はしなかった。PR #571更新では計画文書差分に対するQuick / verifyを実施し、Full / runtime testsは未実施である。
+初回文書化時点では計画文書のみで、Quick / Full / runtime testsを実行したという主張はしなかった。PR #571更新時点では計画文書差分に対するQuick / verifyを実施し、Full / runtime testsは未実施だった。これは現在候補の証跡ではない。
 製品policy、runtime、DB、fixture、評価期待値の実データはまだ変更していない。
 2026-09-08の追加指示を本書へ反映し、L0の評価manifest固定・Raw baselineとL1/L2のbinding調査を開始した。
 L0–L5は内部reader/writer/fixture/診断ごとの再開承認を求めず、承認した意味を変更する必要がある場合だけ差分確認する。
@@ -468,3 +478,9 @@ L0–L5は内部reader/writer/fixture/診断ごとの再開承認を求めず、
 2026-09-12のL6〜L9文書化では、D2aをA1/A2の開発開始条件にせずrestricted plaintext公開のactivation前提として追加した。
 同一profileの全作品・全会話を再起動後もlocal-onlyとし、AIタイトル・要約・tool・Agent・CLI等は意図的に停止する。
 L9では必須機能、意図的に停止した補助機能、停止経路の必須拒否試験を分離して判定する。これらはruntime変更ではなく、実装前契約の文書化である。
+
+2026-09-13のPR-R0では、上記の現在地を#572基点へ更新した。R0 confirmation state: five proposal/3 contract rows are explicitly confirmed (proposal scope only) and ready only after R0 merge plus normal dependencies; `typed-revision-material` alone is proposal/4 Option B, unconfirmed/ref-unverified, and blocked. The exact per-contract refs are recorded in the execution-plan ledger; these confirmations do not complete the downstream threat model or activate runtime.
+評価は既存24検索case、8 Graph case（G-01〜G-08）、12 Packing task（P-01〜P-12）の識別子と、
+`R / R+IR / R+IR+Graph`、seed-only診断、共通seed/context、同一token budget、事前指定改善caseの比較条件を実行計画へ対応付けた。
+Graph改善はR+IRを比較対象とし、D1 fixtureとD2b-2／P3最終requestは別証跡とする。全PRのmerge gate M（clean candidateのFull＋verify）は維持する。
+初回static draft時点の「runtime journey・activation・merge gate MのFull／verifyは未実施」という記録は過去の静的draftに限り、現在候補の免除ではない。現在のR0 merge candidateは全PR共通 merge gate Mの対象であり、merge前のclean HEADのFull＋直後verifyを必須とする。R0の機能受入れではruntime journey・activationは対象外である。

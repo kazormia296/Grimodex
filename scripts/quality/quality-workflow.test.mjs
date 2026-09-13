@@ -345,6 +345,539 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   );
 });
 
+test("NIR-1 R0 records bounded contract confirmations and keeps typed material gated", async () => {
+  const executionPlan = await read("docs/plans/nir1-l6-l9-execution-plan.md");
+  const roadmap = await read("docs/plans/narrative-semantic-core-roadmap.md");
+  const integrationPlan = await read(
+    "docs/plans/narrative-ir-nir1-implementation-plan.md",
+  );
+
+  assert.match(executionPlan, /PR-R0.*現在地と評価契約の固定/is);
+  assert.match(
+    executionPlan,
+    /master@68516b033f395f24f98c502c9fd2a715d7aec2af/,
+  );
+  assert.match(
+    executionPlan,
+    /Tree:\s*04c491c29627ecc840112ebe379a5363e16892ff/,
+  );
+  assert.match(executionPlan, /#572でtyped基盤runtime.*実装済み/is);
+  assert.match(
+    executionPlan,
+    /production runtime integration.*activation.*L6〜L9.*未完了/is,
+  );
+
+  const contractIds = [
+    "scope-storage-authority",
+    "caller-profile-egress",
+    "typed-revision-material",
+    "graph-limited-binding",
+    "native-generation-receipt",
+    "history-reauthorization",
+  ];
+  for (const contractId of contractIds) {
+    assert.match(executionPlan, new RegExp(contractId));
+  }
+  assert.equal(
+    (executionPlan.match(/blocked\(ref-unverified\)/g) ?? []).length,
+    1,
+    "only the unconfirmed typed contract must remain ref-unverified and blocked",
+  );
+  assert.doesNotMatch(
+    executionPlan,
+    /contract-delta-unresolved/,
+    "the selected typed family must be concrete; only its ratification remains",
+  );
+  assert.match(executionPlan, /accepted ADR009/);
+  assert.match(executionPlan, /accepted ADR010/);
+  assert.match(executionPlan, /accepted ADR011/);
+  assert.match(executionPlan, /nir1-plan\/1.*L0〜L5/);
+  assert.match(executionPlan, /nir1-product-tm\/1.*L0〜L5/);
+  assert.match(executionPlan, /none — ref-unverified/);
+  assert.doesNotMatch(executionPlan, /本書・既存計画のproducer/);
+  for (const field of [
+    "confirmedRef",
+    "confirmedScope",
+    "remainingDelta",
+    "affectedLanes",
+    "startStatus",
+    "blockedReason",
+    "unblockingEvidence",
+  ]) {
+    assert.match(executionPlan, new RegExp(field));
+  }
+
+  const proposal3Ref = "nir1-l6-l9-contract-proposal/3";
+  const typedDraftRef = "nir1-l6-l9-contract-proposal/4";
+  const confirmedContractIds = [
+    "scope-storage-authority",
+    "caller-profile-egress",
+    "graph-limited-binding",
+    "native-generation-receipt",
+    "history-reauthorization",
+  ];
+  const confirmedRefFor = (contractId) => `${proposal3Ref}#${contractId}`;
+  const ledgerSection = executionPlan
+    .split("### 契約別の確認台帳\n", 2)[1]
+    ?.split("\n### R0 security contract proposal (draft)", 1)[0];
+  assert.ok(ledgerSection, "R0 contract ledger must be present");
+  const ledgerRows = contractIds.map((contractId) => {
+    const row = ledgerSection
+      .split("\n")
+      .find((line) => line.startsWith(`| \`${contractId}\` |`));
+    assert.ok(row, `${contractId} must have a ledger row`);
+    const cells = row
+      .split("|")
+      .slice(1, -1)
+      .map((cell) => cell.trim());
+    assert.equal(cells.length, 9, `${contractId} ledger shape`);
+    const draftRef = cells[1].replaceAll("`", "");
+    const confirmedRef = cells[2].replaceAll("`", "");
+    if (confirmedContractIds.includes(contractId)) {
+      assert.equal(draftRef, proposal3Ref);
+      assert.equal(confirmedRef, confirmedRefFor(contractId));
+      assert.match(cells[3], /proposal\/3 scope only/);
+      assert.equal(cells[6], "ready-after-R0-merge");
+      assert.match(cells[7], /explicit user confirmation recorded/);
+      assert.match(cells[8], new RegExp(escapeRegExp(confirmedRefFor(contractId))));
+    } else {
+      assert.equal(contractId, "typed-revision-material");
+      assert.equal(draftRef, typedDraftRef);
+      assert.equal(confirmedRef, "none — ref-unverified");
+      assert.match(cells[3], /selected Option B/);
+      assert.equal(cells[6], "blocked(ref-unverified)");
+      assert.match(cells[7], /proposal\/4 requires separate exact user confirmation/);
+      assert.match(
+        cells[8],
+        /I confirm draftRef nir1-l6-l9-contract-proposal\/4 for contractId typed-revision-material\./,
+      );
+    }
+    return row;
+  });
+  assert.equal(ledgerRows.length, 6);
+  assert.equal(
+    ledgerRows.filter((row) => row.includes("ready-after-R0-merge")).length,
+    5,
+    "exactly five proposal/3 rows are confirmed and ready after merge",
+  );
+  assert.match(
+    executionPlan,
+    /confirmed rows retain `nir1-l6-l9-contract-proposal\/3`; pending typed row uses `nir1-l6-l9-contract-proposal\/4`/,
+  );
+  assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/1/);
+  assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/2/);
+
+  const proposalSection = executionPlan
+    .split("### R0 security contract proposal (draft)\n", 2)[1]
+    ?.split("\n### lane開始判定と評価manifest", 1)[0];
+  assert.ok(proposalSection, "R0 security contract proposal must be present");
+  assert.match(
+    proposalSection,
+    /draftRef[^\n]*nir1-l6-l9-contract-proposal\/3[^\n]*pending typed row uses[^\n]*nir1-l6-l9-contract-proposal\/4/,
+  );
+  for (const confirmationRule of [
+    /Confirmation protocol.*only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that one row/is,
+    /stable ledger form is `draftRef#contractId`/,
+    /five.*refs.*record separate confirmations.*exactly `scope-storage-authority`.*`caller-profile-egress`.*`graph-limited-binding`.*`native-generation-receipt`.*`history-reauthorization`/is,
+    /Plan agreement.*not a ratification/is,
+    /active goal.*not a ratification/is,
+    /merge instruction.*not a ratification/is,
+    /this proposal is fine.*not a ratification/is,
+    /Confirming one row does not confirm its dependencies/i,
+    /user-selected Option B family is concrete.*nir1-l6-l9-contract-proposal\/4.*typed-revision-material.*remains unconfirmed/is,
+  ]) {
+    assert.match(proposalSection, confirmationRule);
+  }
+  assert.match(
+    proposalSection,
+    /I confirm draftRef nir1-l6-l9-contract-proposal\/4 for contractId typed-revision-material\./,
+  );
+  assert.match(
+    proposalSection,
+    /runtime activation[^\n]*(?:追加しない|未完了)/i,
+  );
+  assert.doesNotMatch(
+    proposalSection,
+    /activation\s*[:：]\s*(?:enabled|active|on|有効)/i,
+  );
+  for (const contractId of contractIds) {
+    const heading = `#### ${contractId}\n`;
+    const headingOffset = proposalSection.indexOf(heading);
+    assert.notEqual(headingOffset, -1, `${contractId} proposal must be present`);
+    const bodyStart = headingOffset + heading.length;
+    const nextHeadingOffset = proposalSection.indexOf("\n#### ", bodyStart);
+    const proposal = proposalSection.slice(
+      bodyStart,
+      nextHeadingOffset === -1 ? proposalSection.length : nextHeadingOffset,
+    );
+    for (const category of [
+      "Trusted actors",
+      "Untrusted actors",
+      "In-scope attacks",
+      "Out-of-scope attacks",
+      "Mandatory defenses",
+    ]) {
+      assert.match(
+        proposal,
+        new RegExp(`^- ${escapeRegExp(category)}:`, "m"),
+        `${contractId} must define ${category}`,
+      );
+    }
+    for (const acceptanceField of [
+      "Acceptance implications",
+      "Positive",
+      "Negative",
+      "Recovery",
+      "Lane unlocked if confirmed",
+    ]) {
+      assert.match(
+        proposal,
+        new RegExp(`${escapeRegExp(acceptanceField)}:`, "i"),
+        `${contractId} must define ${acceptanceField}`,
+      );
+    }
+    if (contractId === "graph-limited-binding") {
+      const graphBounds = [
+        "admission `512`",
+        "batch `16x32`",
+        "SQL `100,000 VM steps`",
+        "cancellation every `1,000` steps",
+        "Graph `8ms`",
+        "reader／busy wait `0`",
+        "oversized row",
+        "allocation前",
+        "JSON／material processing中",
+      ];
+      for (const graphSection of [
+        "In-scope attacks",
+        "Mandatory defenses",
+        "Acceptance implications",
+      ]) {
+        assert.match(
+          proposal,
+          new RegExp(`^- ${escapeRegExp(graphSection)}:`, "m"),
+          `graph binding must state bounds in ${graphSection}`,
+        );
+        const sectionStart = proposal.indexOf(`- ${graphSection}:`);
+        const sectionBodyStart = sectionStart + graphSection.length + 3;
+        const nextSection = proposal.indexOf("\n- ", sectionBodyStart);
+        const sectionBody = proposal.slice(
+          sectionBodyStart,
+          nextSection === -1 ? proposal.length : nextSection,
+        );
+        for (const bound of graphBounds) {
+          assert.match(
+            sectionBody,
+            new RegExp(escapeRegExp(bound)),
+            `graph binding ${graphSection} must preserve ${bound}`,
+          );
+        }
+      }
+      assert.match(proposal, /Threshold changes require reconfirmation/);
+    }
+    if (contractId === "native-generation-receipt") {
+      for (const terminalCase of [
+        "succeeded + parsed + required",
+        "failed + invalid + required",
+        "failed + not-attempted + null",
+        "cancelled + not-attempted + null",
+        "skipped + not-attempted + null",
+      ]) {
+        assert.match(
+          proposal,
+          new RegExp(escapeRegExp(terminalCase)),
+          `receipt matrix must include ${terminalCase}`,
+        );
+      }
+      assert.match(proposal, /queued \| running.*non-terminal execution state/);
+      assert.doesNotMatch(proposal, /terminal matrix[^\n]*queued \| running/);
+      for (const receiptRule of [
+        /provider terminal/i,
+        /parseStatus/i,
+        /responseDigest/i,
+        /message version/i,
+        /raw text.*thinking.*分離/i,
+        /raw body／thinkingを重複保存せず/,
+        /既存body／artifactへの参照/,
+        /domain-separatedなtext／thinking digest/,
+        /versioned stable chunk-order digest.*chunk-boundary invariant.*order-sensitive/is,
+        /trim.*Unicode normalization.*行わない/is,
+        /provider terminalなしのEOF/i,
+        /length truncation/i,
+        /dispatch failure.*cancel path.*skip path/is,
+        /exactly one terminal receipt.*durably persist/is,
+        /successful generation qualification／publicationからのみreject/,
+      ]) {
+        assert.match(proposal, receiptRule);
+      }
+      assert.doesNotMatch(proposal, /terminal receiptを発行せずreject/);
+      const mandatoryStart = proposal.indexOf("- Mandatory defenses:");
+      const acceptanceStart = proposal.indexOf("- Acceptance implications:");
+      assert.ok(
+        mandatoryStart < acceptanceStart,
+        "receipt mandatory defenses must precede acceptance implications",
+      );
+      const mandatory = proposal.slice(mandatoryStart, acceptanceStart);
+      const acceptance = proposal.slice(acceptanceStart);
+      assert.match(
+        mandatory,
+        /exactly one terminal receipt for every ineligible／EOF／length truncation／parse／dispatch／cancel／skip path/,
+      );
+      assert.match(
+        mandatory,
+        /rejection only from successful generation qualification／publication/,
+      );
+      assert.match(
+        acceptance,
+        /only `succeeded \+ parsed \+ required`.*qualifies for generation publication/is,
+      );
+      assert.match(
+        acceptance,
+        /各経路がexactly one `failed`／`cancelled`／`skipped` terminal receiptをmatrix通りにpersist/,
+      );
+    }
+    if (contractId === "history-reauthorization") {
+      const negativeMatch = proposal.match(/Negative:(.*?)(?=Recovery:)/is);
+      assert.ok(negativeMatch, "history reauthorization needs a negative clause");
+      const negative = negativeMatch[1];
+      for (const historyField of [
+        "`Source`",
+        "`Revision`",
+        "`Decision`",
+        "`Freshness`",
+        "`Index`",
+        "purpose",
+        "input-use",
+        "send classification",
+        "`readingOrder`",
+        "`storyTime`",
+        "`viewpoint`",
+        "`knowledgeHolder`",
+        "`audience`",
+        "`timeline`",
+        "`worldline`",
+        "`narrativeLayer`",
+        "`scene`",
+      ]) {
+        assert.match(
+          negative,
+          new RegExp(escapeRegExp(historyField)),
+          `history negative must name ${historyField}`,
+        );
+      }
+      assert.match(proposal, /full transitive dependency set/);
+      assert.match(proposal, /full transitive dependency enumeration/);
+      assert.match(proposal, /descendant-wide exclusion/);
+      assert.match(proposal, /全descendant exclusion/);
+    }
+  }
+  assert.match(
+    executionPlan,
+    /transport-observed raw textとthinkingはdigest前に分離.*versioned stable chunk-order digest.*chunk-boundary invariant.*order-sensitive/is,
+  );
+  assert.match(executionPlan, /trim、Unicode normalization、renderer加工はせず/);
+  assert.doesNotMatch(
+    executionPlan,
+    /Native解析後のtextをtrim、Unicode正規化、renderer加工せずhashする/,
+  );
+  assert.match(
+    proposalSection,
+    /typed-revision-material[\s\S]*User-selected Option B defines.*independent Entity／Relation assertion family `nir1\.entity-relation@1`/,
+  );
+  assert.match(
+    proposalSection,
+    /typed-revision-material[\s\S]*same-project visible Codex entities／relations.*no scene／Chronicle／artifact／import／author-declared material/is,
+  );
+  assert.match(
+    proposalSection,
+    /typed-revision-material[\s\S]*do not copy full closure bodies or add an assertion table, Consumer, or authority/,
+  );
+  assert.match(
+    proposalSection,
+    /typed-revision-material[\s\S]*narrative_proposal_revisions\.id[\s\S]*narrative_proposal_decisions[\s\S]*narrative_consumer_freshness/is,
+  );
+  assert.match(executionPlan, /\| D2a \|[^|]*\| ready-after-R0-merge \|/);
+  assert.match(executionPlan, /\| A1 \|[^|]*\| ready-after-R0-merge \|/);
+  assert.match(
+    executionPlan,
+    /\| A2 \|[^|]*\| blocked\(typed-revision-material\/4\) \|/,
+  );
+  assert.match(
+    executionPlan,
+    /\| P \|[^|]*\| ready-independent（測定は未実施） \|/,
+  );
+  assert.match(
+    executionPlan,
+    /R0で確認済み・merge後開始.*五つのproposal\/3 contractId別confirmation.*R0 merge.*通常依存.*ready/,
+  );
+  assert.match(
+    executionPlan,
+    /実装前に別途確認するdraft.*typed-revision-material.*proposal\/4 Option B.*ref-unverified.*blocked/,
+  );
+  assert.doesNotMatch(
+    executionPlan,
+    /実装前に明示確認するdraft.*保存authority.*呼出主体.*Native生成元receipt.*履歴再認可.*profile egress/is,
+    "the stale five-scope draft row must stay removed",
+  );
+  assert.match(
+    executionPlan,
+    /R0がmergeされ.*D2aとA1を開始できる.*typed \/4が別途確認されるまで.*blocked.*Pだけは独立/is,
+  );
+
+  assert.match(
+    executionPlan,
+    /Graph.*公開条件.*A3\s*\+\s*B\s*\+\s*C\s*\+\s*D2a/is,
+  );
+  assert.match(
+    executionPlan,
+    /Packing.*公開条件.*C\s*\+\s*D1\s*\+\s*D2a\s*\+\s*D2b-1\s*\+\s*D2b-2/is,
+  );
+  for (const phrase of [
+    /24.*検索case/,
+    /8.*Graph.*case/is,
+    /12.*Packing.*task/is,
+    /R\s*\/\s*R\+IR\s*\/\s*R\+IR\+Graph/,
+    /seed-only/,
+    /共通.*(?:seed|context)/is,
+    /同一.*token budget/is,
+    /事前指定.*改善/,
+    /全PR.*merge gate M/is,
+    /性能Hold/,
+    /author-value:\s*not-measured/,
+  ]) {
+    assert.match(executionPlan, phrase);
+  }
+  assert.match(executionPlan, /evals\/nir1-retrieval\/manifest\.json/);
+  assert.match(executionPlan, /ja\/en各12件/);
+  assert.match(executionPlan, /G-07.*pre-S2.*at\/after-S2/is);
+  assert.match(executionPlan, /事前指定改善.*G-01.*P-12/is);
+  assert.match(
+    executionPlan,
+    /Scope設定の永続化.*既存L5移行ガード.*同一PR.*restricted plaintext.*D2a/is,
+  );
+  assert.match(
+    executionPlan,
+    /初回static draft.*focused contract testのみ.*Quick／verify／Full／verifyは実施しなかった.*現在候補の証跡または免除ではない.*現在のR0 merge candidate.*merge gate M.*Full＋直後のverify.*要求する/is,
+  );
+  assert.match(
+    executionPlan,
+    /初回static draft.*旧R0候補で実施済みだった.*verify:quality.*Quick.*無効化し.*再開候補で再実施する記録だった.*現在のR0 merge candidate.*merge gate M.*Full＋直後verify.*必須/is,
+  );
+  assert.doesNotMatch(
+    executionPlan,
+    /現在(?:の)?(?:R0 )?候補[^\n]*(?:Full|verify)[^\n]*(?:実施していない|未実施|実施しない|不要|免除)/is,
+    "historical no-run notes must not exempt the current candidate",
+  );
+  assert.match(
+    executionPlan,
+    /sceneIncarnationId.*Native-owned.*scene生存世代ID.*legacy-absent \| explicit \| unknown.*別フィールド.*Scope marker.*incarnation IDではない/is,
+  );
+  assert.match(
+    executionPlan,
+    /通常編集は同じ `sceneIncarnationId` を継続し、Source tokenを更新して旧Revision／Index／query／result／Evidence eligibilityをinvalidate/is,
+  );
+  assert.match(
+    executionPlan,
+    /本文・タイトル・順序等の通常更新.*同じ `sceneIncarnationId`.*Source tokenを更新.*Evidence eligibilityをinvalidate/is,
+  );
+  assert.match(
+    executionPlan,
+    /明示設定変更は同じ `sceneIncarnationId` を継続し、Scope markerを`explicit`に設定し、関連するSource tokenを更新して旧eligibilityをinvalidateする一方、新規、duplicate、import、削除後のID再利用だけが新しい `sceneIncarnationId` を発行し、`unknown` は未設定／unresolvedのScope markerに限り、新しいIDの代替にはしない/is,
+    "explicit scope changes must preserve identity and unknown must remain a marker",
+  );
+  assert.match(
+    executionPlan,
+    /Scopeの明示設定.*同じ `sceneIncarnationId`.*Scope markerを`explicit`へ移行.*関連するSource tokenを更新.*旧資格をinvalidate/is,
+  );
+  assert.doesNotMatch(
+    executionPlan,
+    /明示設定変更.*(?:新しい `?sceneIncarnationId|新しいincarnation).*unknown.*とし/,
+    "explicit scope changes must not allocate an alternate unknown incarnation",
+  );
+  assert.doesNotMatch(
+    executionPlan,
+    /`sceneIncarnationId` は `legacy-absent \| explicit \| unknown` のmarkerだけ/,
+    "scene incarnation identity must not be conflated with the legacy marker",
+  );
+  for (const caseId of [
+    "G-01",
+    "G-02",
+    "G-03",
+    "G-04",
+    "G-05",
+    "G-06",
+    "G-07",
+    "G-08",
+    "P-01",
+    "P-02",
+    "P-03",
+    "P-04",
+    "P-05",
+    "P-06",
+    "P-07",
+    "P-08",
+    "P-09",
+    "P-10",
+    "P-11",
+    "P-12",
+  ]) {
+    assert.match(executionPlan, new RegExp(`\\| ${caseId} \\|`));
+  }
+  for (const command of [
+    "pnpm verify:quality",
+    "pnpm ci:local:quick -- --base origin/master --head HEAD",
+    "pnpm ci:local:verify -- quick --base origin/master --head HEAD",
+    "pnpm ci:local:full -- --base origin/master --head HEAD",
+    "pnpm ci:local:verify -- full --base origin/master --head HEAD",
+  ]) {
+    assert.match(
+      executionPlan,
+      new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+  }
+
+  assert.match(roadmap, /PR-R0/);
+  assert.match(roadmap, /68516b033f395f24f98c502c9fd2a715d7aec2af/);
+  assert.match(roadmap, /downstream.*blocked|blocked.*downstream/is);
+  assert.match(integrationPlan, /PR-R0/);
+  assert.match(integrationPlan, /ref-unverified/);
+  for (const [name, narrative] of [
+    ["roadmap", roadmap],
+    ["integration plan", integrationPlan],
+  ]) {
+    assert.match(
+      narrative,
+      /five proposal\/3 contract rows are explicitly confirmed.*ready only after R0 merge plus normal dependencies[\s\S]*typed-revision-material.*proposal\/4 Option B.*unconfirmed\/ref-unverified.*blocked/is,
+      `${name} must mirror the current R0 confirmation state`,
+    );
+    assert.match(
+      narrative,
+      /exact per-contract refs.*execution-plan ledger/is,
+      `${name} must point to the canonical per-contract ledger`,
+    );
+    assert.doesNotMatch(
+      narrative,
+      /(?:six downstream contract|6つの下流契約).*blocked\(ref-unverified\)/is,
+      `${name} must not retain the stale all-six-blocked summary`,
+    );
+    assert.doesNotMatch(
+      narrative,
+      /contract-delta-unresolved/,
+      `${name} must not retain the resolved-family stale marker`,
+    );
+    assert.match(
+      narrative,
+      /(?:現在のR0 merge candidateは.*merge gate M.*merge前のclean HEADのFull＋直後verifyを必須|The current R0 merge candidate.*merge gate M.*clean candidate must pass Full and immediate verify before merge)/is,
+      `${name} must keep the current candidate subject to merge gate M`,
+    );
+    assert.doesNotMatch(
+      narrative,
+      /(?:現在のR0 merge candidate|The current R0 merge candidate)[^\n]*(?:Full|verify)[^\n]*(?:未実施|実施していない|not run)/is,
+      `${name} must not exempt the current candidate with a historical no-run note`,
+    );
+  }
+});
+
 test("new skills use current frontmatter and call the canonical commands", async () => {
   const author = await read(".agents/skills/grimodex-author/SKILL.md");
   const impact = await read(".agents/skills/grimodex-impact-gate/SKILL.md");
