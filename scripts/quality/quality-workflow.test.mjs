@@ -780,6 +780,20 @@ test("NIR-1 R0 records bounded contract confirmations and keeps typed material g
     executionPlan,
     /本文・タイトル・順序等の通常更新.*同じ `sceneIncarnationId`.*Source tokenを更新.*Evidence eligibilityをinvalidate/is,
   );
+  assert.match(
+    executionPlan,
+    /明示設定変更は同じ `sceneIncarnationId` を継続し、Scope markerを`explicit`に設定し、関連するSource tokenを更新して旧eligibilityをinvalidateする一方、新規、duplicate、import、削除後のID再利用だけが新しい `sceneIncarnationId` を発行し、`unknown` は未設定／unresolvedのScope markerに限り、新しいIDの代替にはしない/is,
+    "explicit scope changes must preserve identity and unknown must remain a marker",
+  );
+  assert.match(
+    executionPlan,
+    /Scopeの明示設定.*同じ `sceneIncarnationId`.*Scope markerを`explicit`へ移行.*関連するSource tokenを更新.*旧資格をinvalidate/is,
+  );
+  assert.doesNotMatch(
+    executionPlan,
+    /明示設定変更.*(?:新しい `?sceneIncarnationId|新しいincarnation).*unknown.*とし/,
+    "explicit scope changes must not allocate an alternate unknown incarnation",
+  );
   assert.doesNotMatch(
     executionPlan,
     /`sceneIncarnationId` は `legacy-absent \| explicit \| unknown` のmarkerだけ/,
