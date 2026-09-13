@@ -21,6 +21,9 @@ const artifactKinds = {
   terminal: "chronicle.stage-synthesis-outputs@1",
 };
 export async function showChronicleFixturePanel(page) {
+  await page
+    .locator('[data-layout-shell][data-layout-initialized="true"]')
+    .waitFor({ state: "attached" });
   const toggle = page.locator('[data-stripe-icon="chronicle"]');
   await toggle.waitFor({ state: "visible" });
   const state = await toggle.getAttribute("aria-pressed");
