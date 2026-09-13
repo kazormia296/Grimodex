@@ -51,18 +51,32 @@ vi.mock("./SceneScopeFields", () => ({
       value: Constraint,
     ) => void;
   }) => (
-    <button
-      type="button"
-      data-testid="scene-scope-test-edit"
-      onClick={() =>
-        onAxisChange("queryIdentity", "timeline", {
-          kind: "exact",
-          ref: "timeline:local",
-        })
-      }
-    >
-      Edit
-    </button>
+    <>
+      <button
+        type="button"
+        data-testid="scene-scope-test-edit"
+        onClick={() =>
+          onAxisChange("queryIdentity", "timeline", {
+            kind: "exact",
+            ref: "timeline:local",
+          })
+        }
+      >
+        Edit
+      </button>
+      <button
+        type="button"
+        data-testid="scene-scope-test-edit-pending"
+        onClick={() =>
+          onAxisChange("queryIdentity", "timeline", {
+            kind: "exact",
+            ref: "timeline:blocked",
+          })
+        }
+      >
+        Attempt pending edit
+      </button>
+    </>
   ),
 }));
 vi.mock("./SceneScopePrincipals", () => ({ SceneScopePrincipals: () => null }));
@@ -325,9 +339,12 @@ describe("SceneScopeEditor request epochs", () => {
       ),
     );
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(3));
+    expect(screen.getByTestId("scene-scope-controls")).toBeDisabled();
+    expect(screen.getByTestId("scene-scope-test-edit-pending")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("scene-scope-test-edit-pending"));
 
     const recovered = scope("scene-a", 2);
-    recovered.binding.queryIdentity.timeline = {
+    recovered.binding.materialConstraint.timeline = {
       kind: "exact",
       ref: "timeline:peer",
     };
@@ -337,11 +354,15 @@ describe("SceneScopeEditor request epochs", () => {
         "v2",
       ),
     );
+    expect(screen.getByTestId("scene-scope-controls")).not.toBeDisabled();
     expect(
       screen.getByText(
         "Scene scope changed while you were editing. Review your draft and save again.",
       ),
     ).toBeTruthy();
+    expect(
+      screen.getByTestId("scene-scope-conflict-fresh").textContent,
+    ).toContain("material.timeline=timeline:peer");
 
     fireEvent.click(screen.getByTestId("scene-scope-binding-save"));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(4));
@@ -349,6 +370,9 @@ describe("SceneScopeEditor request epochs", () => {
     expect(
       invokeMock.mock.calls[3][1].payload.scope.queryIdentity.timeline,
     ).toEqual({ kind: "exact", ref: "timeline:local" });
+    expect(
+      invokeMock.mock.calls[3][1].payload.scope.materialConstraint.timeline,
+    ).toEqual({ kind: "any" });
     await act(async () =>
       retrySave.resolve({
         registry: recovered.registry,

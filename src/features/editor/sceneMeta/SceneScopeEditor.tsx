@@ -33,6 +33,29 @@ function sameIdentity(
   );
 }
 
+function describeConstraint(value: Constraint): string {
+  if (value.kind === "exact") return value.ref;
+  if (value.kind === "unresolved") return `unresolved:${value.reason}`;
+  return value.kind;
+}
+
+function describePrincipal(value: Binding["knowledgeHolder"]): string {
+  return value.kind === "character" ? `character:${value.ref}` : value.kind;
+}
+
+function describeBindingScope(binding: Binding): string {
+  return [
+    `query.timeline=${describeConstraint(binding.queryIdentity.timeline)}`,
+    `query.worldline=${describeConstraint(binding.queryIdentity.worldline)}`,
+    `query.layer=${describeConstraint(binding.queryIdentity.narrativeLayer)}`,
+    `material.timeline=${describeConstraint(binding.materialConstraint.timeline)}`,
+    `material.worldline=${describeConstraint(binding.materialConstraint.worldline)}`,
+    `material.layer=${describeConstraint(binding.materialConstraint.narrativeLayer)}`,
+    `holder=${describePrincipal(binding.knowledgeHolder)}`,
+    `audience=${describePrincipal(binding.audience)}`,
+  ].join(" · ");
+}
+
 /** Native-only editor for the small A1 scene-scope binding. */
 export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
   const { t } = useTranslation();
@@ -43,6 +66,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [conflictBinding, setConflictBinding] = useState<Binding | null>(null);
   const requestEpoch = useRef(0);
   const draftRef = useRef<Binding | null>(null);
   const identityRef = useRef<SceneScopeIdentity>({
@@ -87,6 +111,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
         setRead(null);
         setDraft(null);
         setLoading(false);
+        setConflictBinding(null);
       }
       return;
     }
@@ -96,6 +121,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
     setDraft(null);
     setLoading(true);
     setError(null);
+    setConflictBinding(null);
     void invoke<ScopeRead>("narrative_scene_scope_read", {
       expectedWorkspacePath: workspacePath,
       projectId: node.projectId,
@@ -126,6 +152,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
     axis: "timeline" | "worldline" | "narrativeLayer",
     value: Constraint,
   ) => {
+    if (loading || saving) return;
     setDraft((current) =>
       current
         ? { ...current, [group]: { ...current[group], [axis]: value } }
@@ -133,8 +160,10 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
     );
   };
 
+  const scopeControlsDisabled = loading || saving;
+
   const save = () => {
-    if (!draft || !workspacePath || saving) return;
+    if (!draft || !workspacePath || scopeControlsDisabled) return;
     const epoch = requestEpoch.current;
     const requestIdentity = identity;
     const isCurrent = () =>
@@ -142,6 +171,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
       sameIdentity(identityRef.current, requestIdentity);
     setSaving(true);
     setError(null);
+    setConflictBinding(null);
     const now = new Date().toISOString();
     void invoke<ScopeUpdate>("narrative_scene_scope_update", {
       expectedWorkspacePath: workspacePath,
@@ -167,6 +197,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
         if (!isCurrent()) return;
         setRead((current) => (current ? { ...current, ...value } : current));
         setDraft(value.binding);
+        setConflictBinding(null);
       })
       .catch((cause: unknown) => {
         if (!isCurrent()) return;
@@ -181,6 +212,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
           return;
         }
         setLoading(true);
+        setConflictBinding(null);
         void invoke<ScopeRead>("narrative_scene_scope_read", {
           expectedWorkspacePath: requestIdentity.workspacePath,
           projectId: requestIdentity.projectId,
@@ -192,6 +224,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
             // scope field so a concurrent writer is never silently copied
             // over the user's unsaved draft.
             setRead(fresh);
+            setConflictBinding(fresh.binding);
             setDraft({
               ...fresh.binding,
               compatibilityMarker: preservedDraft.compatibilityMarker,
@@ -245,9 +278,36 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
           {t("common.loading", "Loading…")}
         </span>
       )}
-      {error && <span className="text-[10px] text-destructive">{error}</span>}
+      {error && (
+        <div
+          role="alert"
+          className={
+            conflictBinding
+              ? "rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-950 dark:text-amber-100"
+              : "text-[10px] text-destructive"
+          }
+        >
+          <div>{error}</div>
+          {conflictBinding && (
+            <div
+              data-testid="scene-scope-conflict-fresh"
+              className="mt-1 break-words"
+            >
+              {t(
+                "editor.sceneDetail.scopeConflictCurrent",
+                "Current Native scope",
+              )}
+              : {describeBindingScope(conflictBinding)}
+            </div>
+          )}
+        </div>
+      )}
       {draft && read && workspacePath && (
-        <>
+        <fieldset
+          data-testid="scene-scope-controls"
+          disabled={scopeControlsDisabled}
+          className="contents"
+        >
           <SceneScopeRegistryEditor
             projectId={node.projectId}
             sceneId={node.id}
@@ -304,7 +364,10 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
             knowledgeHolder={draft.knowledgeHolder}
             audience={draft.audience}
             characters={characters}
-            onChange={(field, value) => setDraft({ ...draft, [field]: value })}
+            onChange={(field, value) => {
+              if (scopeControlsDisabled) return;
+              setDraft({ ...draft, [field]: value });
+            }}
           />
           <button
             type="button"
@@ -316,7 +379,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
             <Save size={10} aria-hidden />
             {saving ? t("common.saving", "Saving…") : t("common.save", "Save")}
           </button>
-        </>
+        </fieldset>
       )}
     </div>
   );
