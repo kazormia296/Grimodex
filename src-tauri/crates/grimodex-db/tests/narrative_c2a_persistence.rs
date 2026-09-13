@@ -14,12 +14,14 @@
 mod test_support;
 
 use grimodex_core::{canonical_json_digest, canonical_json_string};
+use grimodex_db::domain_writes::{project_create, ProjectCreatePayload};
 use grimodex_db::narrative_extraction::{
     self, AppendRevisionPayload, ArtifactInput, ChronicleStageC1ExecutionBinding,
     ChronicleStageProvenanceClosure, CreateHumanDerivedRevisionRequest, CreateRunPayload,
     CreateTaskSeed, FinishTaskPayload, NarrativeAdapterIdentity, ProposalSeed,
     SaveProposalSetPayload,
 };
+use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::Database;
 use serde_json::{json, Value};
 use sha2::{Digest as Sha2Digest, Sha256};
@@ -182,11 +184,31 @@ mod material_roster_diagnostics {
 
 fn migrated_db() -> Database {
     let db = test_support::current_schema_memory().expect("current-schema fixture");
+    project_create(
+        &db,
+        ProjectCreatePayload {
+            project_id: PROJECT_A.to_owned(),
+            request_id: "fixture-project-a".to_owned(),
+            session_id: "fixture-session".to_owned(),
+            event_uid: "fixture-project-a-event".to_owned(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            title: "Project A".to_owned(),
+            genre: None,
+            pov: None,
+            tense: None,
+            language: None,
+            style_guide: None,
+            ai_instructions: None,
+            outline: None,
+            target_readers: None,
+            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
+        },
+    )
+    .expect("seed project A through production writer");
     db.with_conn(|conn| {
-        conn.execute(
-            "INSERT INTO projects (id, title) VALUES (?1, ?2)",
-            rusqlite::params![PROJECT_A, "Project A"],
-        )?;
         conn.execute(
             "INSERT INTO projects (id, title) VALUES (?1, ?2)",
             rusqlite::params![PROJECT_B, "Project B"],
