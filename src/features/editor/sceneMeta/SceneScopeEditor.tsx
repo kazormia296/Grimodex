@@ -118,6 +118,11 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
       requestEpoch.current === epoch &&
       sameIdentity(identityRef.current, requestIdentity);
     if (!isElectron()) return;
+    // A save belonging to the previous scene is no longer actionable after
+    // navigation. Its promise is intentionally ignored, so clear the local
+    // writer lock when the new scene starts loading instead of waiting for
+    // that stale promise to settle.
+    setSaving(false);
     if (!workspacePath) {
       if (isCurrent()) {
         setRead(null);

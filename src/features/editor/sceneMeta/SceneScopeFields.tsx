@@ -11,21 +11,37 @@ function unresolved(): Constraint {
   return { kind: "unresolved", reason: "scene-scope-axis-unresolved" };
 }
 
+const ANY_OPTION = "kind:any";
+const UNRESOLVED_OPTION = "kind:unresolved";
+const EXACT_OPTION_PREFIX = "exact:";
+
+function exactOption(ref: string): string {
+  return `${EXACT_OPTION_PREFIX}${encodeURIComponent(ref)}`;
+}
+
 function constraintValue(value: Constraint): string {
-  return value.kind === "exact" ? value.ref : value.kind;
+  if (value.kind === "exact") return exactOption(value.ref);
+  return value.kind === "any" ? ANY_OPTION : UNRESOLVED_OPTION;
 }
 
 function selectConstraint(value: string, refs: readonly string[]): Constraint {
-  if (value === "any") return { kind: "any" };
-  if (value === "unresolved") return unresolved();
-  return refs.includes(value) ? { kind: "exact", ref: value } : unresolved();
+  if (value === ANY_OPTION) return { kind: "any" };
+  if (value === UNRESOLVED_OPTION) return unresolved();
+  if (!value.startsWith(EXACT_OPTION_PREFIX)) return unresolved();
+  let ref: string;
+  try {
+    ref = decodeURIComponent(value.slice(EXACT_OPTION_PREFIX.length));
+  } catch {
+    return unresolved();
+  }
+  return refs.includes(ref) ? { kind: "exact", ref } : unresolved();
 }
 
 function constraintOptions(refs: readonly string[], allowAny: boolean) {
   return [
-    ...(allowAny ? [["any", "Any"]] : []),
-    ["unresolved", "Unresolved"],
-    ...refs.map((ref) => [ref, ref]),
+    ...(allowAny ? [[ANY_OPTION, "Any"]] : []),
+    [UNRESOLVED_OPTION, "Unresolved"],
+    ...refs.map((ref) => [exactOption(ref), ref]),
   ];
 }
 

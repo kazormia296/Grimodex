@@ -4006,11 +4006,18 @@ impl Database {
         // `user_version` remains unchanged until the checkpoint below.
         conn.execute_batch("SAVEPOINT narrative_c2_schema_32")?;
         let c2zb_result = (|| -> anyhow::Result<()> {
-            // A1 migration compatibility is Native-owned: every pre-A1 scene
-            // gets one persisted legacy marker and a fresh incarnation id.
-            // This runs in the schema savepoint so a failed migration cannot
-            // leave partially materialized scope state behind.
-            crate::narrative_extraction::backfill_scene_scope_storage_in_tx(&conn)?;
+            // A1 was added to the existing SCHEMA 35 physical checkpoint, so
+            // the pre-migration user_version is the only version marker that
+            // distinguishes an older workspace from a current one here.
+            // Current/post-A1 rows that go missing must remain unavailable;
+            // synthesizing a permissive legacy binding would widen scope.
+            if current < SCHEMA_VERSION {
+                // A1 migration compatibility is Native-owned: every pre-A1
+                // scene gets one persisted legacy marker and a fresh
+                // incarnation id. This runs in the schema savepoint so a
+                // failed migration cannot leave partial scope state behind.
+                crate::narrative_extraction::backfill_scene_scope_storage_in_tx(&conn)?;
+            }
             let c2zb_marker_due = crate::narrative_extraction::c2zb_application_rekey::migrate_narrative_application_rekey_v32(
                 &conn,
             )?;
@@ -9753,6 +9760,101 @@ mod tests {
             Ok(())
         })
         .expect("read custom-only project inventory");
+    }
+
+    #[test]
+    fn restore_preflight_keeps_current_missing_scene_scope_binding_fail_closed() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('scope-current', 'Current scope')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                 VALUES ('scope-scene', 'scope-current', 'scene', 'Scene', 'a0')",
+                [],
+            )?;
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                "scope-current",
+                "scope-scene",
+                "2026-09-14T00:00:00.000Z",
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'scope-current' AND scene_id = 'scope-scene'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed a current A1 workspace with a missing binding");
+
+        db.migrate_for_restore_preflight()
+            .expect("current restore preflight must retain the missing row");
+
+        db.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'scope-current' AND scene_id = 'scope-scene'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                count, 0,
+                "current A1 state must not be backfilled as legacy"
+            );
+            let error = crate::narrative_extraction::read_narrative_scene_scope(
+                conn,
+                "scope-current",
+                "scope-scene",
+            )
+            .expect_err("a missing current binding must remain unavailable");
+            assert!(error
+                .to_string()
+                .contains("NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE"));
+            Ok(())
+        })
+        .expect("inspect the fail-closed current scope");
+    }
+
+    #[test]
+    fn migration_backfills_scene_scope_rows_from_a_pre_a1_schema_marker() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('scope-legacy', 'Legacy scope')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                 VALUES ('scope-legacy-scene', 'scope-legacy', 'scene', 'Scene', 'a0')",
+                [],
+            )?;
+            conn.execute_batch(
+                "DROP TABLE narrative_scene_scope_bindings;
+                 DROP TABLE narrative_scope_registries;",
+            )?;
+            conn.pragma_update(None, "user_version", grimodex_core::SCHEMA_VERSION - 1)?;
+            Ok(())
+        })
+        .expect("seed a pre-A1 schema marker without A1 storage");
+
+        db.migrate().expect("migrate the pre-A1 schema");
+
+        db.with_conn(|conn| {
+            let marker: String = conn.query_row(
+                "SELECT compatibility_marker FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'scope-legacy' AND scene_id = 'scope-legacy-scene'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(marker, "legacy-absent");
+            Ok(())
+        })
+        .expect("pre-A1 scenes must receive the legacy compatibility marker");
     }
 
     #[test]

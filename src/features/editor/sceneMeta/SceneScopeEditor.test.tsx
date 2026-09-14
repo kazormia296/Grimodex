@@ -178,6 +178,10 @@ describe("SceneScopeEditor request epochs", () => {
     rerender(<SceneScopeEditor node={node("scene-b")} />);
     await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(3));
     await act(async () => readB.resolve(scope("scene-b", 7)));
+    await waitFor(() => {
+      expect(screen.getByTestId("scene-scope-controls")).not.toBeDisabled();
+      expect(screen.getByTestId("scene-scope-binding-save")).not.toBeDisabled();
+    });
     await act(async () =>
       saveA.resolve({
         registry: scope("scene-a", 99).registry,
