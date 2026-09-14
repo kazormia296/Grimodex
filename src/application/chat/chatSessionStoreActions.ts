@@ -24,10 +24,7 @@ import type {
   ChatSummary,
 } from "@/features/chat/chatTypes";
 import { scopeSessionKeysEqual } from "@/features/chat/chatScope";
-import {
-  isD2aEgressDenied,
-  isIpcLifecycleCancellation,
-} from "@/lib/tauri";
+import { isD2aEgressDenied, isIpcLifecycleCancellation } from "@/lib/tauri";
 import { isTreeNavigationLeaseActive } from "@/lib/chatNavigationGuard";
 
 interface ChatSessionRepository {

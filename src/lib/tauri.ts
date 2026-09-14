@@ -36,9 +36,9 @@ export function isD2aEgressDenied(error: unknown): boolean {
     seen.add(current);
     if (
       "message" in current &&
-      String((current as { readonly message?: unknown }).message ?? "").includes(
-        D2A_EGRESS_DENIED_MARKER,
-      )
+      String(
+        (current as { readonly message?: unknown }).message ?? "",
+      ).includes(D2A_EGRESS_DENIED_MARKER)
     ) {
       return true;
     }
