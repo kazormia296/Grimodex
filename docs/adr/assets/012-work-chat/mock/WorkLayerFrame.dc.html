@@ -1,0 +1,1172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- A truthy resource map prevents the runtime from re-fetching this document.
+     Browser fetch() cannot read file: URLs because each is an opaque origin. -->
+<script>window.__resources = window.__resources || {};</script>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=M+PLUS+1:wght@400;500;700&family=Noto+Serif+JP:wght@400;600&display=swap" rel="stylesheet">
+<style>
+[data-wl="light"]{
+--bg:oklch(1 0 0);--fg:oklch(0.145 0 0);--mut:oklch(0.54 0 0);--mut2:oklch(0.72 0 0);--line:oklch(0.922 0 0);--card:oklch(1 0 0);--sel:oklch(0.965 0 0);--canvas:oklch(0.97 0 0);
+--panelbg:linear-gradient(180deg,oklch(1 0 0) 0%,oklch(1 0 0) 55%,oklch(0.985 0 0) 100%);
+--rim:rgba(0,0,0,0.06);
+--pshadow:0 24px 48px rgba(20,18,14,0.10),0 8px 18px rgba(20,18,14,0.08),0 2px 5px rgba(20,18,14,0.06),inset 0 2px 0 rgba(255,255,255,0.7),inset 0 -2px 0 rgba(0,0,0,0.04);
+--wlline:oklch(0.145 0 0 / 0.30);--wlshadow:0 16px 40px rgba(0,0,0,0.16),0 2px 8px rgba(0,0,0,0.08);
+--codexhl:oklch(0.9 0.05 250 / 0.6);
+}
+[data-wl="dark"]{
+--bg:oklch(0.145 0 0);--fg:oklch(0.985 0 0);--mut:oklch(0.708 0 0);--mut2:oklch(0.5 0 0);--line:oklch(0.269 0 0);--card:oklch(0.155 0 0);--sel:oklch(0.269 0 0);--canvas:oklch(0.09 0 0);
+--panelbg:linear-gradient(180deg,oklch(0.19 0 0) 0%,oklch(0.155 0 0) 55%,oklch(0.125 0 0) 100%);
+--rim:rgba(255,255,255,0.05);
+--pshadow:0 32px 64px rgba(0,0,0,0.6),0 12px 24px rgba(0,0,0,0.42),0 2px 6px rgba(0,0,0,0.34),inset 0 2px 0 rgba(255,255,255,0.1),inset 0 -2px 0 rgba(0,0,0,0.5);
+--wlline:oklch(0.985 0 0 / 0.34);--wlshadow:0 20px 48px rgba(0,0,0,0.7),0 2px 8px rgba(0,0,0,0.4);
+--codexhl:oklch(0.45 0.08 250 / 0.55);
+}
+</style>
+</helmet>
+<div data-wl="{{ themeAttr }}" style="position:relative;width:1560px;height:975px;background:var(--bg);color:var(--fg);font-family:'M PLUS 1',ui-sans-serif,sans-serif;font-size:13px;overflow:hidden;display:flex;flex-direction:column">
+
+  <!-- ══ Header bar (3-rail, HeaderBarLayout) ══ -->
+  <div style="display:flex;align-items:center;gap:12px;flex-shrink:0;border-bottom:1px solid var(--line);padding:8px 16px">
+    <div style="display:flex;flex:1 1 0;min-width:0;align-items:center;gap:12px">
+      <div style="display:flex;align-items:center;gap:6px">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="6.2" height="14" rx="1"></rect><rect x="10.8" y="3" width="6.2" height="14" rx="1"></rect></svg>
+        <span style="font-weight:700;font-size:15px;letter-spacing:-0.01em">Grimodex</span>
+      </div>
+      <button style="display:flex;align-items:center;gap:5px;height:30px;padding:0 8px;border:none;background:none;color:var(--fg);font-size:13px;border-radius:6px;cursor:pointer" style-hover="background:var(--sel)">workspace <span style="color:var(--mut);font-size:10px">▾</span></button>
+      <button style="display:flex;align-items:center;gap:5px;height:30px;padding:0 8px;border:none;background:none;color:var(--fg);font-size:13px;border-radius:6px;cursor:pointer" style-hover="background:var(--sel)">青い剣 <span style="color:var(--mut);font-size:10px">▾</span></button>
+      <div style="display:flex;align-items:center;gap:2px;color:var(--mut2)">
+        <span style="padding:4px;font-size:14px">↶</span><span style="padding:4px;font-size:14px">↷</span>
+      </div>
+      <button style="display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;border:none;background:none;color:var(--fg);font-size:13px;border-radius:6px;cursor:pointer" style-hover="background:var(--sel)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3v5h5"></path><path d="M6 3h8l5 5v13H6z"></path><path d="M10 13h6"></path></svg>
+        エクスポート</button>
+    </div>
+
+    <!-- center rail: WORK PULSE -->
+    <div style="display:flex;flex:1 1 0;min-width:0;justify-content:center;padding:0 32px">
+      <div style="display:inline-flex;align-items:stretch;height:28px;border:1px solid var(--wlline);border-radius:3px;background:var(--bg);font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden">
+        <div onClick="{{ goTray2Focus }}" style="display:flex;align-items:center;gap:7px;padding:0 12px;cursor:pointer" style-hover="background:var(--sel)">
+          <span style="font-size:9px;letter-spacing:0.14em;color:var(--mut)">FOCUS</span>
+          <sc-if value="{{ notEmpty }}" hint-placeholder-val="{{ true }}">
+            <span style="font-size:11.5px;font-family:'M PLUS 1',sans-serif;font-weight:500">地下牢の改稿</span>
+          </sc-if>
+          <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+            <span style="font-size:11.5px;font-family:'M PLUS 1',sans-serif;color:var(--mut2)">—</span>
+          </sc-if>
+        </div>
+        <div style="width:1px;background:var(--wlline)"></div>
+        <sc-if value="{{ isOverlay }}" hint-placeholder-val="{{ false }}">
+          <div onClick="{{ goTray2 }}" style="display:flex;align-items:center;gap:7px;padding:0 12px;cursor:pointer;background:var(--fg);color:var(--bg)">
+            <span style="font-size:9px;letter-spacing:0.14em;opacity:0.65">ATTN</span>
+            <span style="font-size:12px;font-weight:700;font-variant-numeric:tabular-nums">2</span>
+          </div>
+        </sc-if>
+        <sc-if value="{{ isAmbient }}" hint-placeholder-val="{{ true }}">
+          <div onClick="{{ goTray2 }}" style="display:flex;align-items:center;gap:7px;padding:0 12px;cursor:pointer" style-hover="background:var(--sel)">
+            <span style="font-size:9px;letter-spacing:0.14em;color:var(--mut)">ATTN</span>
+            <span style="font-size:12px;font-weight:700;font-variant-numeric:tabular-nums">2</span>
+          </div>
+        </sc-if>
+        <sc-if value="{{ isArrive }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;align-items:center;gap:7px;padding:0 12px;cursor:pointer;background:var(--sel);box-shadow:inset 0 -2px 0 var(--fg)">
+            <span style="font-size:9px;letter-spacing:0.14em;color:var(--mut)">ATTN</span>
+            <span style="font-size:12px;font-weight:700;font-variant-numeric:tabular-nums">2</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.08em;border:1px solid var(--wlline);border-radius:2px;padding:0 4px;color:var(--mut)">+1</span>
+          </div>
+        </sc-if>
+        <sc-if value="{{ isResolve }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;align-items:center;gap:7px;padding:0 12px;cursor:pointer;background:var(--sel)">
+            <span style="font-size:9px;letter-spacing:0.14em;color:var(--mut)">ATTN</span>
+            <span style="font-size:12px;font-weight:700;font-variant-numeric:tabular-nums">1</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.08em;border:1px solid var(--wlline);border-radius:2px;padding:0 4px;color:var(--mut)">✓ −1</span>
+          </div>
+        </sc-if>
+        <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;align-items:center;gap:7px;padding:0 12px;cursor:pointer" style-hover="background:var(--sel)">
+            <span style="font-size:9px;letter-spacing:0.14em;color:var(--mut)">ATTN</span>
+            <span style="font-size:12px;color:var(--mut2);font-variant-numeric:tabular-nums">0</span>
+          </div>
+        </sc-if>
+        <sc-if value="{{ isDisposed }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;align-items:center;gap:7px;padding:0 12px;cursor:pointer;background:var(--fg);color:var(--bg)">
+            <span style="font-size:9px;letter-spacing:0.14em;opacity:0.65">ATTN</span>
+            <span style="font-size:12px;font-weight:700;font-variant-numeric:tabular-nums">1</span>
+          </div>
+        </sc-if>
+        <div style="width:1px;background:var(--wlline)"></div>
+        <sc-if value="{{ sysBusy }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;align-items:center;gap:7px;padding:0 11px;cursor:pointer;background:var(--sel)">
+            <span style="font-size:9px;letter-spacing:0.14em;color:var(--mut)">SYS</span>
+            <span style="font-size:9px;line-height:1">◐ RECHECK</span>
+          </div>
+        </sc-if>
+        <sc-if value="{{ sysQuiet }}" hint-placeholder-val="{{ true }}">
+          <div onClick="{{ goActivity }}" style="display:flex;align-items:center;gap:7px;padding:0 11px;cursor:pointer" style-hover="background:var(--sel)">
+            <span style="font-size:9px;letter-spacing:0.14em;color:var(--mut)">SYS</span>
+            <span style="font-size:9px;line-height:1">○</span>
+          </div>
+        </sc-if>
+        <sc-if value="{{ sysBlocked }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;align-items:center;gap:7px;padding:0 11px;cursor:pointer;background:var(--sel);box-shadow:inset 0 -2px 0 var(--fg)">
+            <span style="font-size:9px;letter-spacing:0.14em;font-weight:700">SYS</span>
+            <span style="font-size:9px;line-height:1">■ BLOCKED</span>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+
+    <div style="display:flex;flex:1 1 0;min-width:0;align-items:center;justify-content:flex-end;gap:12px">
+      <button style="display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;border:none;background:none;color:var(--fg);font-size:13px;border-radius:6px;cursor:pointer" style-hover="background:var(--sel)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5l4 4L7 21H3v-4z"></path></svg>
+        Write <span style="color:var(--mut);font-size:10px">▾</span></button>
+      <button style="display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;border:none;background:none;color:var(--fg);font-size:13px;border-radius:6px;cursor:pointer" style-hover="background:var(--sel)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>
+        パネル <span style="color:var(--mut);font-size:10px">▾</span></button>
+      <button style="display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;border:none;background:none;color:var(--fg);font-size:13px;border-radius:6px;cursor:pointer" style-hover="background:var(--sel)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="7" x2="20" y2="7"></line><circle cx="9" cy="7" r="2" fill="var(--bg)"></circle><line x1="4" y1="15" x2="20" y2="15"></line><circle cx="15" cy="15" r="2" fill="var(--bg)"></circle></svg>
+        設定</button>
+    </div>
+  </div>
+
+  <!-- ══ Workspace canvas (gx card layout) ══ -->
+  <div style="position:relative;flex:1;min-height:0;background:var(--canvas);padding:14px;display:flex;gap:0">
+    <sc-if value="{{ showWorkspace }}" hint-placeholder-val="{{ true }}">
+
+    <!-- left stripe rail -->
+    <div style="width:36px;flex-shrink:0;border-radius:17.5px;background:var(--panelbg);background-color:var(--card);box-shadow:var(--pshadow);display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:14px;color:var(--mut)">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h13"></path><path d="M8 12h11"></path><path d="M3 18h13"></path></svg>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="16.5" y1="16.5" x2="21" y2="21"></line></svg>
+      <div style="flex:1"></div>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 3"></path></svg>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"></circle><path d="M4 21c0-4 3.5-6 8-6s8 2 8 6"></path></svg>
+    </div>
+    <div style="width:12px;flex-shrink:0"></div>
+
+    <!-- left column: シーン + Scene Context -->
+    <div style="width:290px;flex-shrink:0;display:flex;flex-direction:column;gap:10px;min-height:0">
+      <div style="flex:3;min-height:0;border-radius:18px;background:var(--panelbg);background-color:var(--card);border:1px solid var(--rim);box-shadow:var(--pshadow);display:flex;flex-direction:column;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:7px;padding:9px 12px 4px;font-size:12.5px;font-weight:600">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h7v7H4z"></path><path d="M11 7h6"></path><path d="M17 5v14"></path><path d="M13 19h4"></path></svg>
+          シーン
+          <div style="flex:1"></div>
+          <span style="color:var(--mut)">＋</span><span style="color:var(--mut)">⇅</span><span style="color:var(--mut)">⋯</span>
+        </div>
+        <div style="margin:6px 10px"><div style="border:1px solid var(--line);border-radius:7px;padding:5px 10px;font-size:12px;color:var(--mut2)">フィルター...</div></div>
+        <div style="flex:1;min-height:0;overflow:hidden;padding:2px 6px">
+          <div style="display:flex;align-items:center;gap:6px;padding:5px 8px;font-size:12.5px;font-weight:500"><span style="color:var(--mut);font-size:9px">▾</span><span style="color:var(--mut)">▣</span>第三部：幽囚<div style="flex:1"></div><span style="color:var(--mut2);font-size:11px;font-variant-numeric:tabular-nums">380</span></div>
+          <div style="display:flex;align-items:center;gap:7px;padding:5px 8px 5px 26px;font-size:12.5px;border-radius:7px"><span style="width:8px;height:8px;border-radius:50%;background:var(--mut2)"></span>十一章：牢の底<div style="flex:1"></div><span style="color:var(--mut2);font-size:11px;font-variant-numeric:tabular-nums">188</span></div>
+          <div style="position:relative;display:flex;align-items:center;gap:7px;padding:5px 8px 5px 26px;font-size:12.5px;border-radius:7px;background:var(--sel);font-weight:500">
+            <span style="width:8px;height:8px;border-radius:50%;background:var(--fg)"></span>十二章：地下牢
+            <div style="flex:1"></div>
+            <sc-if value="{{ isLens }}" hint-placeholder-val="{{ false }}">
+              <span style="display:inline-flex;align-items:center;gap:4px;border:1px solid var(--wlline);border-radius:2px;padding:1px 5px;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.1em">ATTN 2</span>
+            </sc-if>
+            <sc-if value="{{ isResolve }}" hint-placeholder-val="{{ false }}">
+              <span style="display:inline-flex;align-items:center;gap:4px;border:1px solid var(--wlline);border-radius:2px;padding:1px 5px;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.1em;color:var(--mut)">ATTN 1</span>
+            </sc-if>
+            <span style="color:var(--mut2);font-size:11px;font-variant-numeric:tabular-nums">215</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:7px;padding:5px 8px 5px 26px;font-size:12.5px"><span style="width:8px;height:8px;border-radius:50%;background:var(--mut2)"></span>回想：青い剣<div style="flex:1"></div><span style="color:var(--mut2);font-size:11px;font-variant-numeric:tabular-nums">73</span></div>
+        </div>
+        <div style="padding:10px 12px;border-top:1px solid var(--line)">
+          <div style="display:flex;align-items:center;font-size:11.5px;color:var(--mut);font-weight:500">Synopsis<div style="flex:1"></div><span style="font-size:11px">✦ 生成</span></div>
+          <div style="margin-top:6px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:11.5px;line-height:1.7;color:var(--fg)">地下牢からの脱出。アリスは鍵を拾い、牢を出る。青い剣には最後まで触れない。</div>
+        </div>
+      </div>
+      <div style="flex:2;min-height:0;border-radius:18px;background:var(--panelbg);background-color:var(--card);border:1px solid var(--rim);box-shadow:var(--pshadow);display:flex;flex-direction:column;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:7px;padding:9px 12px;font-size:12.5px;font-weight:600">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"></circle><circle cx="12" cy="12" r="3"></circle></svg>
+          Scene Context</div>
+        <div style="padding:0 12px 10px;flex:1;overflow:hidden">
+          <div style="display:flex;align-items:center;font-size:10.5px;letter-spacing:0.06em;color:var(--mut);font-weight:600;padding:4px 0"><span style="font-size:9px;margin-right:5px">▾</span>CODEX<div style="flex:1"></div><span style="border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:10.5px;font-weight:400">カテゴリ別 ⌄</span></div>
+          <div style="display:flex;align-items:center;gap:7px;padding:5px 2px;font-size:12.5px"><span style="width:8px;height:8px;border-radius:50%;background:oklch(0.62 0.14 250)"></span>アリス<div style="flex:1"></div><span style="color:var(--mut2);font-size:10.5px">character</span></div>
+          <div style="display:flex;align-items:center;gap:7px;padding:5px 2px;font-size:12.5px"><span style="width:8px;height:8px;border-radius:50%;background:oklch(0.6 0.11 160)"></span>青い剣<div style="flex:1"></div><span style="color:var(--mut2);font-size:10.5px">item</span></div>
+          <div style="padding:7px 2px;font-size:12px;color:var(--mut)">＋ Codexをピン留め</div>
+          <div style="display:flex;align-items:center;font-size:10.5px;letter-spacing:0.06em;color:var(--mut);font-weight:600;padding:8px 0 4px"><span style="font-size:9px;margin-right:5px">▾</span>関連する過去シーン</div>
+          <div style="display:flex;align-items:center;gap:7px;padding:4px 2px;font-size:12px;color:var(--mut)">回想：青い剣<div style="flex:1"></div><span style="font-size:10.5px;color:var(--mut2)">73</span></div>
+        </div>
+      </div>
+    </div>
+    <div style="width:10px;flex-shrink:0"></div>
+
+    <!-- center: editor (flat card) -->
+    <div style="flex:1;min-width:0;border-radius:18px;background:var(--bg);border:1px solid var(--rim);box-shadow:var(--pshadow);display:flex;flex-direction:column;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;font-size:12px;color:var(--mut)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h9l4 4v14H6z"></path></svg>
+        第三部：幽囚 <span style="font-size:10px">›</span> <span style="color:var(--fg)">十二章：地下牢</span>
+        <div style="flex:1"></div><span>⧉</span><span>◫</span>
+      </div>
+      <div style="display:flex;align-items:stretch;gap:2px;padding:0 10px;border-bottom:1px solid var(--line)">
+        <div style="display:flex;align-items:center;gap:7px;padding:7px 14px;font-size:12.5px;font-weight:500;border-bottom:2px solid var(--fg)"><span style="width:7px;height:7px;border-radius:50%;background:var(--fg)"></span>十二章：地下牢</div>
+        <div style="display:flex;align-items:center;gap:7px;padding:7px 14px;font-size:12.5px;color:var(--mut)"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V5a2 2 0 0 1 2-2h13v18H6a2 2 0 0 1-2-2z"></path></svg>青い剣</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;padding:7px 14px;font-size:11px;flex-wrap:nowrap;overflow:hidden">
+        <span style="display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:6px;padding:2.5px 8px"><span style="width:6px;height:6px;border-radius:50%;background:oklch(0.62 0.14 250)"></span>アリス</span>
+        <span style="display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:6px;padding:2.5px 8px"><span style="width:6px;height:6px;border-radius:50%;background:oklch(0.65 0.12 40)"></span>地下牢</span>
+        <span style="display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:6px;padding:2.5px 8px;color:var(--mut)">▤ 3年霜月 <b style="background:var(--sel);border-radius:4px;padding:0 5px;font-size:10px;color:var(--fg)">確定</b></span>
+        <span style="display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:6px;padding:2.5px 8px;color:var(--mut);min-width:0;overflow:hidden;white-space:nowrap"><b style="color:var(--fg);font-weight:500">あらすじ</b> <i style="font-style:normal;opacity:0.8">アリスは十年ぶりに地下牢から…</i></span>
+        <span style="color:var(--mut);white-space:nowrap">ビート 0</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding:7px 16px;border-bottom:1px solid var(--line);font-size:12.5px;color:var(--mut)">
+        <span style="display:flex;gap:12px"><b style="color:var(--fg)">B</b><i>I</i><u>U</u><s>S</s></span>
+        <span style="color:var(--line)">│</span>
+        <span style="display:flex;gap:10px;font-size:11px;font-weight:600">H1 H2 H3</span>
+        <span style="color:var(--line)">│</span>
+        <span style="display:flex;gap:10px">≔ ≕ ⋯</span>
+        <div style="flex:1"></div>
+        <span style="display:flex;gap:12px;align-items:center">Aa <b style="color:var(--fg)">Zen</b> ⤢ ⌗ 縦 ⇅</span>
+      </div>
+      <div style="flex:1;min-height:0;overflow:hidden;padding:34px 64px 0;font-family:'Noto Serif JP',serif;font-size:16.5px;line-height:2.1;color:var(--fg)">
+        <div style="font-size:30px;font-weight:600;letter-spacing:0.02em;margin-bottom:26px">十二章：地下牢</div>
+        <p style="margin:0 0 0.6em">錠が落ちる音は、思っていたより軽かった。十年ぶりの音だった。</p>
+        <p style="position:relative;margin:0 0 0.6em">
+          <sc-if value="{{ isLens }}" hint-placeholder-val="{{ false }}">
+            <span style="position:absolute;left:-22px;top:6px;bottom:6px;width:3px;background:var(--fg)"></span>
+          </sc-if>
+          <sc-if value="{{ isArrive }}" hint-placeholder-val="{{ false }}">
+            <span style="position:absolute;left:-22px;top:10px;bottom:10px;width:3px;background:color-mix(in oklch, var(--fg) 30%, transparent)"></span>
+          </sc-if>
+          <sc-if value="{{ isLens }}" hint-placeholder-val="{{ false }}">
+            <span style="background:color-mix(in oklch, var(--fg) 9%, transparent);border-bottom:2px solid var(--fg);padding:0 1px">アリス</span>
+          </sc-if>
+          <sc-if value="{{ notLens }}" hint-placeholder-val="{{ true }}">
+            <span style="background:var(--codexhl);border-radius:2px;padding:0 1px">アリス</span>
+          </sc-if>
+          <sc-if value="{{ isLens }}" hint-placeholder-val="{{ false }}">
+            <span style="position:relative;top:-9px;margin:0 3px;border:1px solid var(--wlline);border-radius:2px;padding:1px 5px;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.1em;background:var(--bg);white-space:nowrap">参照曖昧</span>
+          </sc-if>
+          は鍵を拾い、地下牢を出た。振り返りはしなかった。</p>
+        <p style="margin:0 0 0.6em">通路の先で松明が揺れている。壁づたいに角を三つ数え、彼女は最後の扉に手を掛けた。</p>
+        <p style="position:relative;margin:0 0 0.6em">
+          <sc-if value="{{ isLens }}" hint-placeholder-val="{{ false }}">
+            <span style="position:absolute;left:-22px;top:6px;bottom:6px;width:3px;background:color-mix(in oklch, var(--fg) 40%, transparent)"></span>
+          </sc-if>
+          腰の<span style="border-bottom:1.5px dashed oklch(0.55 0.13 265);padding:0 1px">青い剣</span>には、最後まで触れなかった。</p>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;padding:7px 16px;border-top:1px solid var(--line);font-size:11px;color:var(--mut)">
+        <span style="color:var(--fg)">下書き</span>
+        <span>⇅ Alt: 段落 / Alt+Shift: 文・文節 / 文字 を並べ替え</span>
+        <div style="flex:1"></div>
+        <span>AI カスタム</span><span style="color:var(--fg)">✓</span><span style="font-variant-numeric:tabular-nums;color:var(--fg)">215 字</span><span>保存済み</span>
+      </div>
+    </div>
+    <div style="width:10px;flex-shrink:0"></div>
+
+    <!-- right column: チャット + Codex -->
+    <sc-if value="{{ isPortal }}" hint-placeholder-val="{{ false }}">
+      <div style="width:400px;flex-shrink:0;display:flex;flex-direction:column;min-height:0">
+        <div style="flex:1;min-height:0;border-radius:18px;background:var(--panelbg);background-color:var(--card);border:1px solid var(--rim);box-shadow:var(--pshadow);display:flex;flex-direction:column;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:12.5px;font-weight:600">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16v11H9l-5 4z"></path></svg>
+            チャット <span style="font-weight:400;color:var(--mut);font-size:11.5px">シーン：十二章：地下牢 ⌄</span>
+            <div style="flex:1"></div><span style="color:var(--mut);font-size:11px">Sessions ＋</span>
+          </div>
+          <div style="flex:1"></div>
+          <div style="margin:8px 12px 12px;border:1px solid var(--line);border-radius:12px;padding:10px 12px">
+            <div style="font-size:12.5px;color:var(--mut2)">Ask about this scene...</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:10.5px;color:var(--mut)">
+              <span>Agent</span><span style="border:1px solid var(--line);border-radius:5px;padding:2px 7px">Thinking</span><span>自動 ⌄</span>
+              <div style="flex:1"></div>
+              <span style="width:22px;height:22px;border-radius:50%;background:var(--fg);color:var(--bg);display:inline-flex;align-items:center;justify-content:center;font-size:11px">➤</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ hasCodexCol }}" hint-placeholder-val="{{ true }}">
+    <div style="width:400px;flex-shrink:0;display:flex;flex-direction:column;gap:10px;min-height:0">
+      <div style="flex:1;min-height:0;border-radius:18px;background:var(--panelbg);background-color:var(--card);border:1px solid var(--rim);box-shadow:var(--pshadow);display:flex;flex-direction:column;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:12.5px;font-weight:600">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16v11H9l-5 4z"></path></svg>
+          チャット <span style="font-weight:400;color:var(--mut);font-size:11.5px">シーン：十二章：地下牢 ⌄</span>
+          <div style="flex:1"></div><span style="color:var(--mut);font-size:11px">Sessions ＋</span>
+        </div>
+        <div style="padding:0 12px 8px;display:flex;flex-wrap:wrap;gap:5px;font-size:10.5px;color:var(--mut)">
+          <span style="border:1px solid var(--line);border-radius:5px;padding:2px 7px">プロジェクト</span>
+          <span style="border:1px solid var(--line);border-radius:5px;padding:2px 7px">シーン: 443</span>
+          <span style="border:1px solid var(--line);border-radius:5px;padding:2px 7px">Outline: 第三部…</span>
+          <span style="border:1px solid var(--line);border-radius:5px;padding:2px 7px;color:var(--fg)">キャラクター ▾ (1/1)</span>
+        </div>
+        <div style="flex:1;min-height:0;margin:0 12px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.9;overflow:hidden">
+          脱出の場面は、音の描写だけで緊張を保てています。「三つ数えてから」の行動で内面の動揺を示す方向が合います。青い剣に触れない選択は、回収を回想側へ残す構成として機能します。
+          <div style="margin-top:8px;font-size:10px;color:var(--mut2)">claude-sonnet-4.6 · 820 in · 118 tok · 1.3s</div>
+          <div style="display:flex;gap:6px;margin-top:8px;font-size:10.5px;color:var(--mut)">
+            <span style="border:1px solid var(--line);border-radius:5px;padding:2px 8px">挿入</span>
+            <span style="border:1px solid var(--line);border-radius:5px;padding:2px 8px">Codex</span>
+            <span style="border:1px solid var(--line);border-radius:5px;padding:2px 8px">Snippet</span>
+            <span style="border:1px solid var(--line);border-radius:5px;padding:2px 8px">コピー</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;padding:8px 12px 0;font-size:10.5px;color:var(--mut)">
+          <span style="border:1px solid var(--line);border-radius:99px;padding:3px 10px">この場面を磨いて</span>
+          <span style="border:1px solid var(--line);border-radius:99px;padding:3px 10px">描写を膨らませて</span>
+          <span style="border:1px solid var(--line);border-radius:99px;padding:3px 10px">セリフをチェック</span>
+        </div>
+        <div style="margin:8px 12px 12px;border:1px solid var(--line);border-radius:12px;padding:10px 12px">
+          <div style="font-size:12.5px;color:var(--mut2)">Ask about this scene...</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:10.5px;color:var(--mut)">
+            <span>Agent</span><span style="border:1px solid var(--line);border-radius:5px;padding:2px 7px">Thinking</span><span>自動 ⌄</span><span>claude-sonnet-4.6 ⌄</span>
+            <div style="flex:1"></div>
+            <span style="width:22px;height:22px;border-radius:50%;background:var(--fg);color:var(--bg);display:inline-flex;align-items:center;justify-content:center;font-size:11px">➤</span>
+          </div>
+        </div>
+      </div>
+      <div style="flex:1;min-height:0;border-radius:18px;background:var(--panelbg);background-color:var(--card);border:1px solid var(--rim);box-shadow:var(--pshadow);display:flex;flex-direction:column;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:12.5px;font-weight:600">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V5a2 2 0 0 1 2-2h13v18H6a2 2 0 0 1-2-2z"></path><path d="M19 17H6"></path></svg>
+          Codex <span style="font-weight:400;color:var(--mut)">4</span>
+          <div style="flex:1"></div>
+          <span style="border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:10.5px;font-weight:400;color:var(--mut)">カテゴリ別 ⌄</span><span style="color:var(--mut)">＋</span>
+        </div>
+        <div style="margin:0 12px 6px"><div style="border:1px solid var(--line);border-radius:7px;padding:4px 10px;font-size:11.5px;color:var(--mut2)">検索...</div></div>
+        <div style="display:flex;gap:5px;padding:0 12px 8px;font-size:10.5px">
+          <span style="background:var(--fg);color:var(--bg);border-radius:99px;padding:2px 9px">すべて</span>
+          <span style="border:1px solid var(--line);border-radius:99px;padding:2px 9px;color:var(--mut)">キャラクター</span>
+          <span style="border:1px solid var(--line);border-radius:99px;padding:2px 9px;color:var(--mut)">場所</span>
+          <span style="border:1px solid var(--line);border-radius:99px;padding:2px 9px;color:var(--mut)">アイテム</span>
+        </div>
+        <div style="flex:1;min-height:0;overflow:hidden;padding:0 8px">
+          <div style="display:flex;align-items:center;gap:6px;padding:5px 6px;font-size:10.5px;color:var(--mut);font-weight:600"><span style="font-size:9px">▾</span><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.62 0.14 250)"></span>キャラクター<div style="flex:1"></div>2</div>
+          <sc-if value="{{ isLens }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;gap:9px;padding:6px 8px;border:1px solid var(--wlline);border-radius:8px;margin:1px 0">
+              <span style="width:26px;height:26px;border-radius:50%;background:oklch(0.62 0.14 250);flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700">ア</span>
+              <div style="min-width:0;flex:1">
+                <div style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500">アリス・レイン <span style="background:var(--sel);border-radius:4px;padding:0 6px;font-size:9.5px;font-weight:400">主人公</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;border:1px solid var(--wlline);border-radius:2px;padding:1px 4px">CAND</span></div>
+                <div style="font-size:10.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">牢を訪れた剣士。青い剣の持ち主。</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:9px;padding:6px 8px;border:1px solid var(--wlline);border-radius:8px;margin:1px 0">
+              <span style="width:26px;height:26px;border-radius:50%;background:oklch(0.55 0.1 250);flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700">ア</span>
+              <div style="min-width:0;flex:1">
+                <div style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500">アリス・ハーグ <span style="background:var(--sel);border-radius:4px;padding:0 6px;font-size:9.5px;font-weight:400">協力者</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;border:1px solid var(--wlline);border-radius:2px;padding:1px 4px">CAND</span></div>
+                <div style="font-size:10.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">看守の記録係。同名の別人。</div>
+              </div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ notLens }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex;gap:9px;padding:6px 9px">
+              <span style="width:26px;height:26px;border-radius:50%;background:oklch(0.62 0.14 250);flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700">ア</span>
+              <div style="min-width:0;flex:1">
+                <div style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500">アリス・レイン <span style="background:var(--sel);border-radius:4px;padding:0 6px;font-size:9.5px;font-weight:400">主人公</span></div>
+                <div style="font-size:10.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">牢を訪れた剣士。青い剣の持ち主。</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:9px;padding:6px 9px">
+              <span style="width:26px;height:26px;border-radius:50%;background:oklch(0.55 0.1 250);flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700">ア</span>
+              <div style="min-width:0;flex:1">
+                <div style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500">アリス・ハーグ <span style="background:var(--sel);border-radius:4px;padding:0 6px;font-size:9.5px;font-weight:400">協力者</span></div>
+                <div style="font-size:10.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">看守の記録係。同名の別人。</div>
+              </div>
+            </div>
+          </sc-if>
+          <div style="display:flex;align-items:center;gap:6px;padding:6px 6px 4px;font-size:10.5px;color:var(--mut);font-weight:600"><span style="font-size:9px">▾</span><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.65 0.12 40)"></span>場所<div style="flex:1"></div>1</div>
+          <div style="display:flex;gap:9px;padding:4px 9px">
+            <span style="width:26px;height:26px;border-radius:50%;background:oklch(0.6 0.1 40);flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700">牢</span>
+            <div style="min-width:0;flex:1">
+              <div style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500">地下牢 <span style="background:var(--sel);border-radius:4px;padding:0 6px;font-size:9.5px;font-weight:400">舞台</span></div>
+              <div style="font-size:10.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">石造りの牢。第三部の主要舞台。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </sc-if>
+    <div style="width:12px;flex-shrink:0"></div>
+
+    <!-- right stripe rail -->
+    <div style="width:36px;flex-shrink:0;border-radius:17.5px;background:var(--panelbg);background-color:var(--card);box-shadow:var(--pshadow);display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:14px;color:var(--mut)">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16v11H9l-5 4z"></path></svg>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V5a2 2 0 0 1 2-2h13v18H6a2 2 0 0 1-2-2z"></path></svg>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"></rect><path d="M8 9h8"></path><path d="M8 13h5"></path></svg>
+    </div>
+
+    </sc-if>
+
+    <!-- ══ RESOLVE perimeter frame (lens) ══ -->
+    <sc-if value="{{ isLens }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:5px;border:1px solid color-mix(in oklch, var(--fg) 55%, transparent);border-radius:21px;pointer-events:none"></div>
+      <div style="position:absolute;top:-4px;left:34px;background:var(--fg);color:var(--bg);border-radius:2px;padding:3px 12px;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.14em">RESOLVE · SCENE 12 「アリス」の参照先が曖昧</div>
+      <!-- leader from editor anchor to lens -->
+      <div style="position:absolute;top:343px;left:488px;right:410px;border-top:1px dashed color-mix(in oklch, var(--fg) 45%, transparent);pointer-events:none"></div>
+      <div style="position:absolute;top:339px;left:482px;width:8px;height:8px;border:1.5px solid var(--fg);border-radius:50%;background:var(--bg)"></div>
+    </sc-if>
+
+    <!-- ══ TASK TRAY ══ -->
+    <sc-if value="{{ isTray }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);width:432px;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;box-shadow:var(--wlshadow);z-index:20">
+        <div style="padding:12px 16px 10px">
+          <div style="display:flex;align-items:baseline;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">NOW<div style="flex:1"></div><span>○ 進行中</span></div>
+          <div style="margin-top:6px;font-size:14px;font-weight:600">地下牢の改稿</div>
+          <div style="margin-top:2px;font-size:11px;color:var(--mut)">Scene 12 · Codex: アリス</div>
+        </div>
+        <div style="height:1px;background:var(--wlline)"></div>
+        <div style="padding:12px 16px 10px">
+          <div style="display:flex;align-items:baseline;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">ATTENTION<div style="flex:1"></div><span style="color:var(--fg);font-size:11px;font-weight:700">2</span></div>
+          <div style="margin-top:8px;display:flex;gap:10px">
+            <div style="width:1.5px;background:var(--fg);flex-shrink:0;margin:3px 0"></div>
+            <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+              <div style="font-size:10px;color:var(--mut)">Scene 12 の改稿に関連</div>
+              <div onClick="{{ goLens }}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;margin-left:-8px;border-radius:4px;cursor:pointer" style-hover="background:var(--sel)">
+                <span style="width:6px;height:6px;background:var(--fg);flex-shrink:0"></span>
+                <span style="font-size:12.5px;flex:1">「アリス」の参照先が曖昧</span>
+                <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;color:var(--mut)">BINDING</span>
+              </div>
+              <div onClick="{{ goReview }}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;margin-left:-8px;border-radius:4px;cursor:pointer" style-hover="background:var(--sel)">
+                <span style="width:6px;height:6px;background:var(--fg);flex-shrink:0"></span>
+                <span style="font-size:12.5px;flex:1">Chronicle「脱獄」のEvidenceが消失</span>
+                <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;color:var(--mut)">EVIDENCE</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="height:1px;background:var(--wlline)"></div>
+        <div style="padding:12px 16px 10px">
+          <div style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">LATER</div>
+          <div style="margin-top:6px;display:flex;flex-direction:column;gap:1px;font-size:12px;color:var(--fg)">
+            <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;margin:0 -8px;border-radius:4px" style-hover="background:var(--sel)"><span style="width:6px;height:6px;border:1px solid var(--mut);flex-shrink:0"></span>伏線「青い剣」の回収位置を再確認</div>
+            <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;margin:0 -8px;border-radius:4px" style-hover="background:var(--sel)"><span style="width:6px;height:6px;border:1px solid var(--mut);flex-shrink:0"></span>東西分断後の時系列を確認</div>
+          </div>
+        </div>
+        <div style="height:1px;background:var(--wlline)"></div>
+        <div style="display:flex;align-items:center;gap:14px;padding:9px 16px;font-size:12px;color:var(--mut)"><span style="cursor:pointer" style-hover="color:var(--fg)">＋ 作業を捕捉</span><span onClick="{{ goLedger }}" style="cursor:pointer" style-hover="color:var(--fg)">すべての作業 →</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em">ESC 閉じる · ↵ 開く</span></div>
+      </div>
+    </sc-if>
+
+    <!-- ══ RESOLVE LENS sheet ══ -->
+    <sc-if value="{{ isLens }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;top:10px;right:10px;width:396px;bottom:406px;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;box-shadow:var(--wlshadow);z-index:20;display:flex;flex-direction:column;overflow:hidden">
+        <div style="display:flex;align-items:center;padding:10px 14px;border-bottom:1px solid var(--wlline)">
+          <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">RESOLVE</span>
+          <div style="flex:1"></div>
+          <span style="font-family:ui-monospace,Menlo,monospace;font-size:10px;font-variant-numeric:tabular-nums;color:var(--mut)">1 / 2</span>
+          <span style="margin-left:10px;color:var(--mut);font-size:11px">⇄</span>
+        </div>
+        <div style="flex:1;min-height:0;overflow:hidden;padding:10px 14px;display:flex;flex-direction:column;gap:9px">
+          <div>
+            <div style="font-size:14.5px;font-weight:600">「アリス」の参照先が曖昧</div>
+            <div style="margin-top:3px;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em;color:var(--mut)">SOURCE · SCENE 12 地下牢</div>
+          </div>
+          <div style="border-left:2px solid var(--wlline);padding:2px 0 2px 10px;font-family:'Noto Serif JP',serif;font-size:12.5px;line-height:1.8">「<b style="border-bottom:2px solid var(--fg);font-weight:600">アリス</b>は鍵を拾い、地下牢を出た」</div>
+          <div>
+            <div style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut);margin-bottom:6px">候補</div>
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <div style="display:flex;align-items:center;gap:9px;border:1.5px solid var(--fg);border-radius:4px;padding:7px 10px;cursor:pointer">
+                <span style="width:12px;height:12px;border:1.5px solid var(--fg);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0"><span style="width:6px;height:6px;border-radius:50%;background:var(--fg)"></span></span>
+                <span style="font-size:12.5px;font-weight:500;flex:1">アリス・レイン</span>
+                <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut)">登場 12 SCENE</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:9px;border:1px solid var(--wlline);border-radius:4px;padding:7px 10px;cursor:pointer" style-hover="background:var(--sel)">
+                <span style="width:12px;height:12px;border:1.5px solid var(--mut);border-radius:50%;flex-shrink:0"></span>
+                <span style="font-size:12.5px;flex:1">アリス・ハーグ</span>
+                <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut)">登場 3 SCENE</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:9px;border:1px dashed var(--wlline);border-radius:4px;padding:7px 10px;color:var(--mut);cursor:pointer" style-hover="background:var(--sel)">
+                <span style="width:12px;height:12px;border:1.5px solid var(--mut);border-radius:50%;flex-shrink:0"></span>
+                <span style="font-size:12.5px;flex:1">新しい人物として作成</span>
+              </div>
+            </div>
+          </div>
+          <sc-if value="{{ isPortal }}" hint-placeholder-val="{{ false }}">
+            <div style="border:1px dashed var(--wlline);border-radius:4px;padding:7px 12px 5px;background:color-mix(in oklch, var(--fg) 3%, var(--bg))">
+              <div style="display:flex;align-items:center;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.14em;color:var(--mut)">CONTEXT PORTAL · CODEX BINDING<div style="flex:1"></div>一時的な召喚</div>
+              <div style="margin-top:9px;display:flex;gap:10px">
+                <span style="width:30px;height:30px;border-radius:50%;background:oklch(0.62 0.14 250);flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;color:white;font-size:13px;font-weight:700">ア</span>
+                <div style="min-width:0;flex:1">
+                  <div style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600">アリス・レイン <span style="background:var(--sel);border-radius:4px;padding:0 6px;font-size:9.5px;font-weight:400">主人公</span></div>
+                  <div style="margin-top:2px;font-size:10.5px;color:var(--mut)">登場: 12 Scene · Alias: アリス / A. Rain</div>
+                  <div style="margin-top:3px;font-size:11px;line-height:1.7">牢を訪れた剣士。青い剣の持ち主。十二章時点では囚人。</div>
+                </div>
+              </div>
+              <div style="margin-top:10px;display:flex;gap:7px;align-items:center">
+                <button style="background:var(--fg);color:var(--bg);border:none;border-radius:4px;padding:6px 14px;font-size:11.5px;font-weight:600;cursor:pointer;font-family:'M PLUS 1',sans-serif">この Entry へ Binding</button>
+                <span style="font-size:10.5px;color:var(--mut);text-decoration:underline;text-underline-offset:2px;cursor:pointer">Codexで開く →</span>
+              </div>
+              <div style="margin-top:4px;padding-top:5px;border-top:1px solid var(--line);font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.1em;color:var(--mut)">DOCKタブではない · 閉じてもレイアウト不変 · APPLY後に自動で消える</div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ showLensMeta }}" hint-placeholder-val="{{ true }}">
+          <div style="display:grid;grid-template-columns:74px 1fr;gap:4px 10px;font-size:11px;line-height:1.6">
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding-top:2px">理由</span><span>Surface「アリス」が 2 件の Codex 候補に一致（Relation: 囚人 / 青い剣）</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding-top:2px">以前</span><span style="color:var(--mut)">Binding なし</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding-top:2px">影響</span><span>Chronicle「脱獄」 · Related Scenes 4 · Chat Context 2</span>
+          </div>
+          <div style="display:flex;gap:14px;border-top:1px solid var(--line);padding-top:9px;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.08em;color:var(--mut)">
+            <span>REVIEW <b style="color:var(--fg)">—</b></span>
+            <span>FRESHNESS <b style="color:var(--fg)">AMBIGUOUS</b></span>
+            <span>PROJECTION <b style="color:var(--fg)">NONE</b></span>
+            <div style="flex:1"></div>
+            <span onClick="{{ goInspect }}" style="cursor:pointer;color:var(--fg)" style-hover="text-decoration:underline">INSPECT →</span>
+          </div>
+          </sc-if>
+        </div>
+        <div style="border-top:1px solid var(--wlline);padding:10px 14px;display:flex;flex-direction:column;gap:7px">
+          <div style="display:flex;gap:7px">
+            <button onClick="{{ goResolve }}" style="flex:1;background:var(--fg);color:var(--bg);border:none;border-radius:4px;padding:8px 0;font-size:12px;font-weight:600;cursor:pointer;font-family:'M PLUS 1',sans-serif">アリス・レインへ Binding</button>
+            <button style="background:none;border:1px solid var(--wlline);border-radius:4px;padding:8px 14px;font-size:12px;color:var(--fg);cursor:pointer;font-family:'M PLUS 1',sans-serif" style-hover="background:var(--sel)">保留</button>
+          </div>
+          <div style="display:flex;align-items:center;font-size:10.5px;color:var(--mut)">
+            <span style="text-decoration:underline;text-underline-offset:2px;cursor:pointer">この2件を今後同一候補にしない</span>
+            <div style="flex:1"></div>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em">次: EVIDENCE消失 → · ESC TRAY</span>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ══ SYSTEM ACTIVITY 小展開（SYSセグメントから） ══ -->
+    <sc-if value="{{ isActivity }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;top:8px;left:50%;transform:translateX(56px);width:324px;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;box-shadow:var(--wlshadow);z-index:20;overflow:hidden">
+        <div style="display:flex;align-items:center;padding:9px 14px;border-bottom:1px solid var(--wlline);font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">SYSTEM ACTIVITY<div style="flex:1"></div><span style="color:var(--fg)">◐ RUNNING</span></div>
+        <div style="padding:10px 14px;display:flex;flex-direction:column;gap:6px;font-size:11.5px">
+          <div style="display:flex;align-items:center;gap:8px"><span style="color:var(--fg)">◐</span><span style="flex:1;font-weight:500">Recheck</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut)">12 CONSUMER · 実行中</span></div>
+          <div style="display:flex;align-items:center;gap:8px;color:var(--mut)"><span>✓</span><span style="flex:1">Rebuild — Related Scenes</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:9px">1.4s</span></div>
+          <div style="display:flex;align-items:center;gap:8px;color:var(--mut)"><span>✓</span><span style="flex:1">Verify — Evidence 21件</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:9px">0.2s</span></div>
+        </div>
+        <div style="padding:9px 14px;border-top:1px solid var(--line);font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.1em;color:var(--mut);line-height:1.9">決定的 MAINTENANCE のみ · AI は自動適用しない<br>RUN 8f31 · EPOCH 42 · QUEUE —</div>
+        <div style="display:flex;align-items:center;padding:8px 14px;border-top:1px solid var(--wlline);font-size:11px;color:var(--mut)"><span style="cursor:pointer" style-hover="color:var(--fg)">履歴 →</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em">ESC 閉じる</span></div>
+      </div>
+    </sc-if>
+
+    <!-- ══ DEEP INSPECTION overlay ══ -->
+    <sc-if value="{{ isInspect }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:0;background:color-mix(in oklch, black 42%, transparent);z-index:30"></div>
+      <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:1180px;height:660px;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;box-shadow:var(--wlshadow);z-index:40;display:flex;flex-direction:column;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--wlline)">
+          <span style="font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:0.16em">DEEP INSPECTION</span>
+          <span style="font-family:ui-monospace,Menlo,monospace;font-size:9.5px;color:var(--mut)">FINDING · evidence-source-missing · f_39a2</span>
+          <div style="flex:1"></div>
+          <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em;color:var(--mut)">ESC → LENS</span>
+        </div>
+        <div style="flex:1;min-height:0;display:flex">
+          <div style="flex:1.25;min-width:0;padding:16px 22px;overflow:hidden">
+            <div style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut);margin-bottom:12px">MATERIAL CHAIN</div>
+            <div style="display:flex;gap:12px">
+              <div style="width:1.5px;background:var(--wlline);flex-shrink:0;margin:6px 0"></div>
+              <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:11px;margin-left:-19px">
+                <div style="display:flex;gap:12px"><span style="width:12px;height:12px;border:1.5px solid var(--fg);border-radius:50%;background:var(--bg);flex-shrink:0;margin-top:2px"></span><div style="flex:1;min-width:0"><div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut)">SOURCE</span><span style="font-size:11.5px">scene-body · scene_12 「地下牢」</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;color:var(--fg)">v47 → v48</span></div><div style="font-size:10.5px;color:var(--mut)">改稿により本文 Revision が前進</div></div></div>
+                <div style="display:flex;gap:12px"><span style="width:12px;height:12px;border:1.5px solid var(--fg);border-radius:50%;background:var(--fg);flex-shrink:0;margin-top:2px"></span><div style="flex:1;min-width:0"><div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut)">EVIDENCE ANCHOR</span><span style="font-size:11.5px;font-family:'Noto Serif JP',serif">「彼女は青い剣を鞘から抜いた」</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;font-weight:700">MISSING</span></div><div style="font-size:10.5px;color:var(--mut)">¶14 · v48 に一致なし · 近傍: 「腰の青い剣には、最後まで触れなかった」</div></div></div>
+                <div style="display:flex;gap:12px"><span style="width:12px;height:12px;border:1.5px solid var(--mut);border-radius:50%;background:var(--bg);flex-shrink:0;margin-top:2px"></span><div style="flex:1;min-width:0"><div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut)">ASSERTION REVISION</span><span style="font-size:11.5px">scene-event@1 · asr_82c1</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;color:var(--mut)">RUN 6b02</span></div><div style="font-size:10.5px;color:var(--mut)">抽出時の material basis はこの Anchor に依存</div></div></div>
+                <div style="display:flex;gap:12px"><span style="width:12px;height:12px;border:1.5px solid var(--mut);border-radius:50%;background:var(--bg);flex-shrink:0;margin-top:2px"></span><div style="flex:1;min-width:0"><div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut)">DEPENDENCY EDGE</span><span style="font-size:11.5px">direct-evidence · edge_c114</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;color:var(--mut)">DECLARED</span></div><div style="font-size:10.5px;color:var(--mut)">asr_82c1 → chronicle-event : evt_39a2</div></div></div>
+                <div style="display:flex;gap:12px"><span style="width:12px;height:12px;border:1.5px solid var(--fg);border-radius:50%;background:var(--bg);flex-shrink:0;margin-top:2px"></span><div style="flex:1;min-width:0"><div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut)">CONSUMER FRESHNESS</span><span style="font-size:11.5px">Chronicle Event 「脱獄」</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;font-weight:700">SOURCE-MISSING</span></div><div style="font-size:10.5px;color:var(--mut)">Review: accepted（人間承認済） · Projection: applied（適用済） — 三状態は潰さず並記</div></div></div>
+                <div style="display:flex;gap:12px"><span style="width:12px;height:12px;border:1.5px solid var(--fg);border-radius:50%;background:var(--bg);flex-shrink:0;margin-top:2px"></span><div style="flex:1;min-width:0"><div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut)">FINDING OBSERVATION</span><span style="font-size:11.5px">evidence-source-missing</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;color:var(--mut)">RECURRING · 2回目</span></div><div style="font-size:10.5px;color:var(--mut)">Attention: 未処分（Hold / Dismiss / Snooze なし）</div></div></div>
+              </div>
+            </div>
+          </div>
+          <div style="width:1px;background:var(--wlline)"></div>
+          <div style="width:390px;flex-shrink:0;padding:16px 20px;display:flex;flex-direction:column;gap:14px;overflow:hidden">
+            <div>
+              <div style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut);margin-bottom:10px">RUN LEDGER</div>
+              <div style="display:grid;grid-template-columns:max-content 1fr;gap:5px 14px;font-size:11px;font-family:ui-monospace,Menlo,monospace">
+                <span style="font-size:8.5px;letter-spacing:0.1em;color:var(--mut);padding-top:1px">RUN</span><span>8f31 · trigger: source-change scene_12</span>
+                <span style="font-size:8.5px;letter-spacing:0.1em;color:var(--mut);padding-top:1px">AUTHORITY</span><span>workspace gen 7 · EPOCH 42</span>
+                <span style="font-size:8.5px;letter-spacing:0.1em;color:var(--mut);padding-top:1px">TASK</span><span>verify ✓ 0.21s</span>
+                <span style="font-size:8.5px;letter-spacing:0.1em;color:var(--mut);padding-top:1px"></span><span>rebuild ✓ 1.4s</span>
+                <span style="font-size:8.5px;letter-spacing:0.1em;color:var(--mut);padding-top:1px"></span><span style="color:var(--fg)">recheck ◐ · ATTEMPT 1/1</span>
+                <span style="font-size:8.5px;letter-spacing:0.1em;color:var(--mut);padding-top:1px">FAILURE</span><span style="color:var(--mut)">—</span>
+              </div>
+            </div>
+            <div style="border:1px dashed var(--wlline);border-radius:4px;padding:10px 12px;font-size:10.5px;line-height:1.8;color:var(--mut)">変更検知・再解析・既存構造の書き換えは別段階。Reanchor 候補は決定的に計算するが、自動適用はしない。</div>
+            <div style="flex:1"></div>
+            <div style="display:flex;gap:7px;flex-wrap:wrap">
+              <button style="background:var(--fg);color:var(--bg);border:none;border-radius:4px;padding:7px 14px;font-size:11.5px;font-weight:600;cursor:pointer;font-family:'M PLUS 1',sans-serif">再検証</button>
+              <button style="background:none;border:1px solid var(--wlline);border-radius:4px;padding:7px 12px;font-size:11.5px;color:var(--fg);cursor:pointer;font-family:'M PLUS 1',sans-serif" style-hover="background:var(--sel)">Reanchor候補を見る</button>
+              <button style="background:none;border:1px solid var(--wlline);border-radius:4px;padding:7px 12px;font-size:11.5px;color:var(--fg);cursor:pointer;font-family:'M PLUS 1',sans-serif" style-hover="background:var(--sel)">Sceneへジャンプ</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ══ TASK TRAY v2 — 1つの部屋・2つのドア（ATTNドア状態） ══ -->
+    <sc-if value="{{ isTray2 }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);width:432px;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;box-shadow:var(--wlshadow);z-index:20;overflow:hidden">
+        <div style="background:var(--fg);color:var(--bg);display:flex;align-items:center;padding:7px 16px;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em">
+          ATTENTION<div style="flex:1"></div><span style="font-size:12px;font-weight:700;letter-spacing:0">2</span>
+        </div>
+        <div style="padding:11px 16px 12px;border-bottom:1px solid var(--wlline)">
+          <div style="display:flex;gap:10px">
+            <div style="width:1.5px;background:var(--fg);flex-shrink:0;margin:3px 0"></div>
+            <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+              <div style="font-size:10px;color:var(--mut)">Scene 12 の改稿に関連 — 判断すると自動で解消します</div>
+              <div onClick="{{ goLens }}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;margin-left:-8px;border-radius:4px;cursor:pointer" style-hover="background:var(--sel)">
+                <span style="width:6px;height:6px;background:var(--fg);flex-shrink:0"></span>
+                <span style="font-size:12.5px;flex:1">「アリス」の参照先が曖昧</span>
+                <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;color:var(--mut)">BINDING</span>
+                <span style="color:var(--mut);font-size:11px">→</span>
+              </div>
+              <div onClick="{{ goReview }}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;margin-left:-8px;border-radius:4px;cursor:pointer" style-hover="background:var(--sel)">
+                <span style="width:6px;height:6px;background:var(--fg);flex-shrink:0"></span>
+                <span style="font-size:12.5px;flex:1">Chronicle「脱獄」のEvidenceが消失</span>
+                <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;color:var(--mut)">EVIDENCE</span>
+                <span style="color:var(--mut);font-size:11px">→</span>
+              </div>
+            </div>
+          </div>
+          <div style="margin-top:8px;text-align:right"><span onClick="{{ goProjection }}" style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em;border:1px solid var(--wlline);border-radius:3px;padding:3px 9px;cursor:pointer" style-hover="background:var(--sel)">2件をまとめて RESOLVE で開く →</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:9px;padding:9px 16px;border-bottom:1px solid var(--line);cursor:pointer" style-hover="background:var(--sel)">
+          <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">NOW</span>
+          <span style="font-size:12.5px;font-weight:500">地下牢の改稿</span>
+          <span style="font-size:10.5px;color:var(--mut)">Scene 12</span>
+          <div style="flex:1"></div><span style="color:var(--mut);font-size:10px">▸</span>
+        </div>
+        <div style="padding:10px 16px">
+          <div style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">LATER</div>
+          <div style="margin-top:6px;display:flex;flex-direction:column;gap:1px;font-size:12px">
+            <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;margin:0 -8px;border-radius:4px" style-hover="background:var(--sel)"><span style="width:6px;height:6px;border:1px solid var(--mut);flex-shrink:0"></span>伏線「青い剣」の回収位置を再確認</div>
+            <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;margin:0 -8px;border-radius:4px" style-hover="background:var(--sel)"><span style="width:6px;height:6px;border:1px solid var(--mut);flex-shrink:0"></span>東西分断後の時系列を確認</div>
+          </div>
+        </div>
+        <div style="height:1px;background:var(--wlline)"></div>
+        <div style="display:flex;align-items:center;gap:14px;padding:9px 16px;font-size:12px;color:var(--mut)"><span style="cursor:pointer" style-hover="color:var(--fg)">＋ 作業を捕捉</span><span onClick="{{ goLedger }}" style="cursor:pointer" style-hover="color:var(--fg)">すべての作業 →</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em">ESC 閉じる</span></div>
+      </div>
+    </sc-if>
+
+    <!-- ══ TASK TRAY v2 — FOCUSドア状態 ══ -->
+    <sc-if value="{{ isTray2Focus }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);width:432px;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;box-shadow:var(--wlshadow);z-index:20;overflow:hidden">
+        <div style="padding:12px 16px 13px">
+          <div style="display:flex;align-items:baseline;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">NOW<div style="flex:1"></div><span>○ 進行中 · 2日目</span></div>
+          <div style="margin-top:6px;font-size:15px;font-weight:600">地下牢の改稿</div>
+          <div style="margin-top:2px;font-size:11px;color:var(--mut)">Scene 12 · Codex: アリス</div>
+          <div style="margin-top:10px;display:flex;flex-direction:column;gap:1px">
+            <div style="display:flex;align-items:center;gap:9px;padding:6px 8px;margin:0 -8px;border-radius:4px;cursor:pointer" style-hover="background:var(--sel)">
+              <span style="width:11px;height:11px;border:1.5px solid var(--mut);border-radius:2px;flex-shrink:0"></span>
+              <span style="font-size:12.5px;flex:1">地下牢の描写を短くする</span>
+              <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;color:var(--mut)">AUTHOR TASK</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:9px;padding:6px 8px;margin:0 -8px;border-radius:4px;cursor:pointer" style-hover="background:var(--sel)">
+              <span style="width:11px;height:11px;border:1.5px solid var(--mut);border-radius:2px;flex-shrink:0;background:var(--sel);display:inline-flex;align-items:center;justify-content:center;font-size:8px">✓</span>
+              <span style="font-size:12.5px;flex:1;color:var(--mut);text-decoration:line-through">脱獄の足音の描写を足す</span>
+            </div>
+          </div>
+          <div style="margin-top:7px;font-size:11px;color:var(--mut);cursor:pointer" style-hover="color:var(--fg)">＋ この作業にタスクを追加</div>
+        </div>
+        <div onClick="{{ goTray2 }}" style="background:var(--fg);color:var(--bg);display:flex;align-items:center;gap:10px;padding:7px 16px;cursor:pointer">
+          <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em">ATTENTION</span>
+          <span style="font-size:11.5px;opacity:0.75;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">「アリス」の参照先が曖昧 ほか</span>
+          <span style="font-size:12px;font-weight:700">2</span>
+          <span style="font-size:11px;opacity:0.75">→</span>
+        </div>
+        <div style="padding:11px 16px 10px">
+          <div style="display:flex;align-items:baseline;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">LATER<div style="flex:1"></div><span>クリックで FOCUS に切替</span></div>
+          <div style="margin-top:6px;display:flex;flex-direction:column;gap:1px;font-size:12px">
+            <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;margin:0 -8px;border-radius:4px;cursor:pointer" style-hover="background:var(--sel)"><span style="width:6px;height:6px;border:1px solid var(--mut);flex-shrink:0"></span><span style="flex:1">伏線「青い剣」の回収位置を再確認</span><span style="color:var(--mut2);font-size:10px">▸</span></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;margin:0 -8px;border-radius:4px;cursor:pointer" style-hover="background:var(--sel)"><span style="width:6px;height:6px;border:1px solid var(--mut);flex-shrink:0"></span><span style="flex:1">東西分断後の時系列を確認</span><span style="color:var(--mut2);font-size:10px">▸</span></div>
+          </div>
+        </div>
+        <div style="height:1px;background:var(--wlline)"></div>
+        <div style="display:flex;align-items:center;gap:14px;padding:9px 16px;font-size:12px;color:var(--mut)"><span style="cursor:pointer" style-hover="color:var(--fg)">＋ 作業を捕捉</span><span onClick="{{ goLedger }}" style="cursor:pointer" style-hover="color:var(--fg)">すべての作業 →</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em">ESC 閉じる</span></div>
+      </div>
+    </sc-if>
+
+    <!-- ══ WORK LEDGER — 全量ビュー（台帳） ══ -->
+    <sc-if value="{{ isLedger }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);width:620px;max-height:calc(100% - 16px);background:var(--bg);border:1px solid var(--wlline);border-radius:4px;box-shadow:var(--wlshadow);z-index:20;display:flex;flex-direction:column;overflow:hidden">
+        <div style="display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid var(--wlline)">
+          <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">ALL WORK</span>
+          <span style="margin-left:10px;font-size:13px;font-weight:600">すべての作業</span>
+          <div style="flex:1"></div>
+          <span onClick="{{ goTray2Focus }}" style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em;color:var(--mut);cursor:pointer" style-hover="color:var(--fg)">← トレイに戻る</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;padding:9px 16px;border-bottom:1px solid var(--wlline);font-size:11px">
+          <span style="border:1px solid var(--fg);background:var(--fg);color:var(--bg);border-radius:99px;padding:2.5px 11px;cursor:pointer">すべて 9</span>
+          <span style="border:1px solid var(--wlline);border-radius:99px;padding:2.5px 11px;color:var(--mut);cursor:pointer" style-hover="background:var(--sel)">進行中 1</span>
+          <span style="border:1px solid var(--wlline);border-radius:99px;padding:2.5px 11px;color:var(--mut);cursor:pointer" style-hover="background:var(--sel)">待機 2</span>
+          <span style="border:1px solid var(--wlline);border-radius:99px;padding:2.5px 11px;color:var(--mut);cursor:pointer" style-hover="background:var(--sel)">保留 3</span>
+          <span style="border:1px solid var(--wlline);border-radius:99px;padding:2.5px 11px;color:var(--mut);cursor:pointer" style-hover="background:var(--sel)">完了 3</span>
+          <div style="flex:1"></div>
+          <span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.1em;color:var(--mut2)">更新順</span>
+        </div>
+        <div style="flex:1;min-height:0;overflow:auto">
+          <div style="padding:9px 16px 4px;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.16em;color:var(--mut)">進行中</div>
+          <div onClick="{{ goTray2Focus }}" style="display:flex;align-items:center;gap:10px;padding:8px 16px;cursor:pointer" style-hover="background:var(--sel)">
+            <span style="width:7px;height:7px;border-radius:50%;background:var(--fg);flex-shrink:0"></span>
+            <span style="font-size:12.5px;font-weight:500;flex:1">地下牢の改稿</span>
+            <span style="font-size:10.5px;color:var(--mut)">タスク 1/2 · Scene 12</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;border:1px solid var(--line);border-radius:2px;padding:1px 5px;color:var(--mut)">NOW</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut2);width:52px;text-align:right">2日前〜</span>
+          </div>
+          <div style="padding:9px 16px 4px;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.16em;color:var(--mut)">待機（LATER）</div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 16px;cursor:pointer" style-hover="background:var(--sel)">
+            <span style="width:7px;height:7px;border:1px solid var(--mut);flex-shrink:0"></span>
+            <span style="font-size:12.5px;flex:1">伏線「青い剣」の回収位置を再確認</span>
+            <span style="font-size:10.5px;color:var(--mut)">Codex: 青い剣</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut2);width:52px;text-align:right">昨日</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 16px;cursor:pointer" style-hover="background:var(--sel)">
+            <span style="width:7px;height:7px;border:1px solid var(--mut);flex-shrink:0"></span>
+            <span style="font-size:12.5px;flex:1">東西分断後の時系列を確認</span>
+            <span style="font-size:10.5px;color:var(--mut)">Chronicle: 分断</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut2);width:52px;text-align:right">3日前</span>
+          </div>
+          <div style="padding:9px 16px 4px;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.16em;color:var(--mut)">保留</div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 16px;cursor:pointer" style-hover="background:var(--sel)">
+            <span style="width:7px;height:7px;border:1px dashed var(--mut);flex-shrink:0"></span>
+            <span style="font-size:12.5px;flex:1;color:var(--mut)">「アリサ」の表記ゆれ疑い</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;border:1px solid var(--line);border-radius:2px;padding:1px 5px;color:var(--mut)">SNOOZE</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut2);width:52px;text-align:right">再浮上 3日後</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 16px;cursor:pointer" style-hover="background:var(--sel)">
+            <span style="width:7px;height:7px;border:1px dashed var(--mut);flex-shrink:0"></span>
+            <span style="font-size:12.5px;flex:1;color:var(--mut)">Chronicle「脱獄」のEvidence消失</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;border:1px solid var(--line);border-radius:2px;padding:1px 5px;color:var(--mut)">HOLD</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut2);width:52px;text-align:right">作者判断</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 16px;cursor:pointer" style-hover="background:var(--sel)">
+            <span style="width:7px;height:7px;border:1px dashed var(--mut2);flex-shrink:0"></span>
+            <span style="font-size:12.5px;flex:1;color:var(--mut)">旧識別のAttention 1件</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;border:1px dashed var(--line);border-radius:2px;padding:1px 5px;color:var(--mut)">LEGACY</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut2);width:52px;text-align:right">EPOCH 38</span>
+          </div>
+          <div style="padding:9px 16px 4px;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.16em;color:var(--mut)">完了</div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 16px;cursor:pointer" style-hover="background:var(--sel)">
+            <span style="font-size:10px;color:var(--mut);flex-shrink:0;width:7px">✓</span>
+            <span style="font-size:12.5px;flex:1;color:var(--mut);text-decoration:line-through">第二部の章タイトル見直し</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut2);width:52px;text-align:right">昨日</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 16px;cursor:pointer" style-hover="background:var(--sel)">
+            <span style="font-size:10px;color:var(--mut);flex-shrink:0;width:7px">✓</span>
+            <span style="font-size:12.5px;flex:1;color:var(--mut);text-decoration:line-through">看守の名前を統一</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut2);width:52px;text-align:right">4日前</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 16px 12px;cursor:pointer" style-hover="background:var(--sel)">
+            <span style="font-size:10px;color:var(--mut);flex-shrink:0;width:7px">✓</span>
+            <span style="font-size:12.5px;flex:1;color:var(--mut);text-decoration:line-through">序章の視点を三人称に変更</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut2);width:52px;text-align:right">先週</span>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;padding:9px 16px;border-top:1px solid var(--wlline);font-size:12px;color:var(--mut)"><span style="cursor:pointer" style-hover="color:var(--fg)">＋ 作業を捕捉</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em">ESC トレイへ</span></div>
+      </div>
+    </sc-if>
+
+    <!-- ══ 解消の瞬間（Binding確定直後のLens） ══ -->
+    <sc-if value="{{ isResolve }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;top:10px;right:10px;width:396px;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;box-shadow:var(--wlshadow);z-index:20;overflow:hidden">
+        <div style="display:flex;align-items:center;padding:10px 14px;border-bottom:1px solid var(--wlline)">
+          <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">RESOLVE</span>
+          <div style="flex:1"></div>
+          <span style="font-family:ui-monospace,Menlo,monospace;font-size:10px;font-variant-numeric:tabular-nums;color:var(--mut)">✓ 1 / 2 解消</span>
+        </div>
+        <div style="padding:14px;display:flex;flex-direction:column;gap:11px">
+          <div style="display:flex;align-items:baseline;gap:9px">
+            <span style="font-size:13px">✓</span>
+            <span style="font-size:14px;font-weight:600;color:var(--mut);text-decoration:line-through">「アリス」の参照先が曖昧</span>
+          </div>
+          <div style="display:grid;grid-template-columns:74px 1fr;gap:5px 10px;font-size:11.5px;line-height:1.6">
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding-top:2px">確定</span><span>Binding → <b>アリス・レイン</b></span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding-top:2px">記録</span><span>Correction Memory 作成済み · Human-derived Revision</span>
+            <span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding-top:2px">再評価</span><span>Freshness ◐ 実行中 · 影響 3 Consumer</span>
+          </div>
+          <div style="border:1px dashed var(--line);border-radius:4px;padding:7px 10px;font-size:10.5px;line-height:1.7;color:var(--mut)">Finding は判断の結果として自動的に解消されました。チェックを外す操作はありません — 根拠が再び失われれば、同じ identity で再浮上します。</div>
+        </div>
+        <div style="border-top:1px solid var(--wlline);padding:10px 14px;display:flex;gap:7px;align-items:center">
+          <button onClick="{{ goReview }}" style="flex:1;background:var(--fg);color:var(--bg);border:none;border-radius:4px;padding:8px 0;font-size:12px;font-weight:600;cursor:pointer;font-family:'M PLUS 1',sans-serif">次: Chronicle「脱獄」のEvidence消失 →</button>
+          <button onClick="{{ goAmbient }}" style="background:none;border:1px solid var(--wlline);border-radius:4px;padding:8px 14px;font-size:12px;color:var(--fg);cursor:pointer;font-family:'M PLUS 1',sans-serif" style-hover="background:var(--sel)">閉じる</button>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ══ TASK TRAY — Empty state（Attention 0 / Focus未設定） ══ -->
+    <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);width:432px;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;box-shadow:var(--wlshadow);z-index:20;overflow:hidden">
+        <div style="padding:12px 16px 13px">
+          <div style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">NOW</div>
+          <div style="margin-top:6px;font-size:13px;color:var(--mut2)">Focus なし</div>
+          <div style="margin-top:6px;display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--mut)"><span style="font-size:11px">✓</span><span style="text-decoration:line-through">地下牢の改稿</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.1em;color:var(--mut2)">昨日 完了</span></div>
+        </div>
+        <div style="height:1px;background:var(--wlline)"></div>
+        <div style="padding:11px 16px 10px">
+          <div style="display:flex;align-items:baseline;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">LATER<div style="flex:1"></div><span>クリックで FOCUS に切替</span></div>
+          <div style="margin-top:6px;display:flex;flex-direction:column;gap:1px;font-size:12px">
+            <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;margin:0 -8px;border-radius:4px;cursor:pointer" style-hover="background:var(--sel)"><span style="width:6px;height:6px;border:1px solid var(--mut);flex-shrink:0"></span><span style="flex:1">伏線「青い剣」の回収位置を再確認</span><span style="color:var(--mut2);font-size:10px">▸</span></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;margin:0 -8px;border-radius:4px;cursor:pointer" style-hover="background:var(--sel)"><span style="width:6px;height:6px;border:1px solid var(--mut);flex-shrink:0"></span><span style="flex:1">東西分断後の時系列を確認</span><span style="color:var(--mut2);font-size:10px">▸</span></div>
+          </div>
+        </div>
+        <div style="height:1px;background:var(--wlline)"></div>
+        <div style="display:flex;align-items:center;padding:9px 16px;font-size:12px;color:var(--mut)">＋ 作業を捕捉<div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em">ESC 閉じる</span></div>
+      </div>
+    </sc-if>
+
+    <!-- ══ TASK TRAY — 処分済みAttentionの居場所 ══ -->
+    <sc-if value="{{ isDisposed }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);width:432px;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;box-shadow:var(--wlshadow);z-index:20;overflow:hidden">
+        <div style="background:var(--fg);color:var(--bg);display:flex;align-items:center;padding:7px 16px;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em">
+          ATTENTION<div style="flex:1"></div><span style="font-size:12px;font-weight:700;letter-spacing:0">1</span>
+        </div>
+        <div style="padding:11px 16px 12px;border-bottom:1px solid var(--wlline)">
+          <div style="display:flex;gap:10px">
+            <div style="width:1.5px;background:var(--fg);flex-shrink:0;margin:3px 0"></div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:10px;color:var(--mut)">Scene 12 の改稿に関連</div>
+              <div onClick="{{ goLens }}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;margin-left:-8px;border-radius:4px;cursor:pointer" style-hover="background:var(--sel)">
+                <span style="width:6px;height:6px;background:var(--fg);flex-shrink:0"></span>
+                <span style="font-size:12.5px;flex:1">「アリス」の参照先が曖昧</span>
+                <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;color:var(--mut)">BINDING</span>
+                <span style="color:var(--mut);font-size:11px">→</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="padding:10px 16px 11px;border-bottom:1px solid var(--wlline)">
+          <div style="display:flex;align-items:baseline;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">処分済み · 3<div style="flex:1"></div><span>件数外 · 削除しない</span></div>
+          <div style="margin-top:7px;display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--mut)">
+            <div style="display:flex;align-items:center;gap:8px;padding:4px 8px;margin:0 -8px;border-radius:4px" style-hover="background:var(--sel)">
+              <span style="font-family:ui-monospace,Menlo,monospace;font-size:7.5px;letter-spacing:0.1em;border:1px solid var(--line);border-radius:2px;padding:1px 5px;flex-shrink:0">SNOOZE</span>
+              <span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">「アリサ」の表記ゆれ疑い</span>
+              <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;color:var(--mut2)">再浮上 3日後</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;padding:4px 8px;margin:0 -8px;border-radius:4px" style-hover="background:var(--sel)">
+              <span style="font-family:ui-monospace,Menlo,monospace;font-size:7.5px;letter-spacing:0.1em;border:1px solid var(--line);border-radius:2px;padding:1px 5px;flex-shrink:0">HOLD</span>
+              <span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Chronicle「脱獄」のEvidence消失</span>
+              <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;color:var(--mut2)">作者判断まで保持</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;padding:4px 8px;margin:0 -8px;border-radius:4px" style-hover="background:var(--sel)">
+              <span style="font-family:ui-monospace,Menlo,monospace;font-size:7.5px;letter-spacing:0.1em;border:1px dashed var(--line);border-radius:2px;padding:1px 5px;flex-shrink:0">LEGACY</span>
+              <span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">旧識別のAttention 1件</span>
+              <span style="font-family:ui-monospace,Menlo,monospace;font-size:8px;color:var(--mut2)">推測再割当しない</span>
+            </div>
+          </div>
+          <div style="margin-top:8px;font-size:10px;line-height:1.7;color:var(--mut2)">Dismiss 済みは material basis が変わると新しい Finding として再浮上する（同一問題の再通知はしない）。</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:9px;padding:9px 16px;border-bottom:1px solid var(--line);cursor:pointer" style-hover="background:var(--sel)">
+          <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">NOW</span>
+          <span style="font-size:12.5px;font-weight:500">地下牢の改稿</span>
+          <div style="flex:1"></div><span style="color:var(--mut);font-size:10px">▸</span>
+        </div>
+        <div style="display:flex;align-items:center;padding:9px 16px;font-size:12px;color:var(--mut)">＋ 作業を捕捉<div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em">ESC 閉じる</span></div>
+      </div>
+    </sc-if>
+
+    <!-- ══ SYSTEM BLOCKED（SYSセグメントから） ══ -->
+    <sc-if value="{{ isBlocked }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;top:8px;left:50%;transform:translateX(56px);width:368px;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;box-shadow:var(--wlshadow);z-index:20;overflow:hidden">
+        <div style="display:flex;align-items:center;padding:9px 14px;border-bottom:1px solid var(--wlline);font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em"><span style="font-weight:700">■ BLOCKED</span><div style="flex:1"></div><span style="color:var(--mut)">自動処理できない契約エラー</span></div>
+        <div style="padding:11px 14px;display:flex;flex-direction:column;gap:9px">
+          <div>
+            <div style="font-size:12.5px;font-weight:600">Rebuild — Semantic Index（Related Scenes）が停止</div>
+            <div style="margin-top:3px;font-size:11px;line-height:1.7;color:var(--mut)">Dependency 契約エラー <b style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--fg)">NEX-042</b> — Producer が宣言していない Edge を参照。</div>
+          </div>
+          <div style="display:grid;grid-template-columns:max-content 1fr;gap:3px 14px;font-family:ui-monospace,Menlo,monospace;font-size:10px">
+            <span style="font-size:8px;letter-spacing:0.1em;color:var(--mut);padding-top:1px">RUN</span><span>8f31 · TASK rebuild · ATTEMPT 2/2 失敗</span>
+            <span style="font-size:8px;letter-spacing:0.1em;color:var(--mut);padding-top:1px">EPOCH</span><span>42 · 最終成功: 昨日 21:04</span>
+          </div>
+          <div style="border:1px dashed var(--line);border-radius:4px;padding:7px 10px;font-size:10.5px;line-height:1.7;color:var(--mut)">この Index を使う機能は最後に成功した結果を返し続けます — 壊れず、古くなるだけ。執筆は妨げられません。</div>
+        </div>
+        <div style="border-top:1px solid var(--wlline);padding:10px 14px;display:flex;flex-direction:column;gap:7px">
+          <div style="display:flex;gap:7px">
+            <button style="background:var(--fg);color:var(--bg);border:none;border-radius:4px;padding:7px 14px;font-size:11.5px;font-weight:600;cursor:pointer;font-family:'M PLUS 1',sans-serif">再実行</button>
+            <button style="background:none;border:1px solid var(--wlline);border-radius:4px;padding:7px 12px;font-size:11.5px;color:var(--fg);cursor:pointer;font-family:'M PLUS 1',sans-serif" style-hover="background:var(--sel)">INSPECT →</button>
+            <button style="background:none;border:1px solid var(--wlline);border-radius:4px;padding:7px 12px;font-size:11.5px;color:var(--fg);cursor:pointer;font-family:'M PLUS 1',sans-serif" style-hover="background:var(--sel)">Artifactを切り離す</button>
+          </div>
+          <div style="font-size:9.5px;color:var(--mut2)">切り離し（Detach）は再構築不能な Artifact を依存から外す不可逆操作 — 実行前に確認します。</div>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ══ RESOLVE PROJECTION — Zen/Zoomと同じ一時的プロジェクション ══ -->
+    <sc-if value="{{ isProjectionShell }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;align-items:center;gap:14px;background:var(--fg);color:var(--bg);border-radius:3px;padding:8px 16px;font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:0.14em;flex-shrink:0">
+          RESOLVE PROJECTION
+          <span style="opacity:0.6;font-family:'M PLUS 1',sans-serif;font-size:11.5px;letter-spacing:0">地下牢の改稿</span>
+          <div style="flex:1"></div>
+        </div>
+        <div style="flex:1;min-height:0;display:flex;gap:10px">
+          <!-- WORK GRAPH -->
+          <div style="width:302px;flex-shrink:0;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;display:flex;flex-direction:column;overflow:hidden">
+            <div style="display:flex;align-items:center;padding:10px 14px;border-bottom:1px solid var(--wlline);font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">WORK GRAPH · 原因別<div style="flex:1"></div><span style="color:var(--fg)">AUTHOR 2</span></div>
+            <div style="flex:1;min-height:0;overflow:hidden;padding:10px 12px">
+              <div style="font-size:12.5px;font-weight:600">Scene 12「地下牢」改稿</div>
+              <div style="margin:8px 0 0 4px;display:flex;gap:10px">
+                <div style="width:1.5px;background:var(--wlline);flex-shrink:0"></div>
+                <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:10px">
+                  <div>
+                    <div style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.14em;color:var(--fg);font-weight:700">要判断 · 2</div>
+                    <sc-if value="{{ isProjection }}" hint-placeholder-val="{{ true }}">
+                      <div style="margin-top:4px;display:flex;align-items:center;gap:8px;padding:6px 9px;border:1.5px solid var(--fg);border-radius:4px;font-size:12px;font-weight:500"><span style="width:6px;height:6px;background:var(--fg);flex-shrink:0"></span>「アリス」の参照先が曖昧</div>
+                      <div onClick="{{ goReview }}" style="margin-top:3px;display:flex;align-items:center;gap:8px;padding:6px 9px;border:1px solid var(--line);border-radius:4px;font-size:12px;cursor:pointer" style-hover="background:var(--sel)"><span style="width:6px;height:6px;background:var(--fg);flex-shrink:0"></span>Chronicle「脱獄」のEvidence消失</div>
+                    </sc-if>
+                    <sc-if value="{{ isReview }}" hint-placeholder-val="{{ false }}">
+                      <div onClick="{{ goProjection }}" style="margin-top:4px;display:flex;align-items:center;gap:8px;padding:6px 9px;border:1px solid var(--line);border-radius:4px;font-size:12px;cursor:pointer" style-hover="background:var(--sel)"><span style="width:6px;height:6px;background:var(--fg);flex-shrink:0"></span>「アリス」の参照先が曖昧</div>
+                      <div style="margin-top:3px;display:flex;align-items:center;gap:8px;padding:6px 9px;border:1.5px solid var(--fg);border-radius:4px;font-size:12px;font-weight:500"><span style="width:6px;height:6px;background:var(--fg);flex-shrink:0"></span>Chronicle「脱獄」の変更Proposal</div>
+                    </sc-if>
+                    <sc-if value="{{ isBatch }}" hint-placeholder-val="{{ false }}">
+                      <div style="margin-top:4px;display:flex;align-items:center;gap:8px;padding:6px 9px;border:1.5px solid var(--fg);border-radius:4px;font-size:12px;font-weight:500"><span style="width:6px;height:6px;background:var(--fg);flex-shrink:0"></span>Chronicle Proposal · 6件<span style="margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.1em;color:var(--mut)">SAFE 4</span></div>
+                      <div style="margin-top:3px;display:flex;align-items:center;gap:8px;padding:6px 9px;border:1px solid var(--line);border-radius:4px;font-size:12px;cursor:pointer" style-hover="background:var(--sel)"><span style="width:6px;height:6px;background:var(--fg);flex-shrink:0"></span>「アリス」の参照先が曖昧</div>
+                      <div onClick="{{ goReview }}" style="margin-top:3px;display:flex;align-items:center;gap:8px;padding:6px 9px;border:1px solid var(--line);border-radius:4px;font-size:12px;cursor:pointer" style-hover="background:var(--sel)"><span style="width:6px;height:6px;background:var(--fg);flex-shrink:0"></span>Chronicle「脱獄」のEvidence消失</div>
+                    </sc-if>
+                  </div>
+                  <div>
+                    <div style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.14em;color:var(--mut)">自動処理 · 3</div>
+                    <div style="margin-top:4px;display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:var(--mut)">
+                      <div style="display:flex;align-items:center;gap:7px"><span>✓</span>Evidence再検証<div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px">DONE</span></div>
+                      <div style="display:flex;align-items:center;gap:7px"><span>✓</span>Related Scenes再構築<div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px">DONE</span></div>
+                      <div style="display:flex;align-items:center;gap:7px;color:var(--fg)"><span>◐</span>Semantic Index更新<div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px">RUN</span></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.14em;color:var(--mut)">影響なし · 1</div>
+                    <div style="margin-top:4px;display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--mut)"><span>○</span>伏線「青い剣」<div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px">KEEP</span></div>
+                  </div>
+                </div>
+              </div>
+              <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+                <div style="font-size:12px;color:var(--mut)">東西分断後の時系列を確認</div>
+                <div style="margin-top:2px;font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.12em;color:var(--mut2)">AUTHOR TASK · 関連Findingなし</div>
+              </div>
+            </div>
+          </div>
+          <!-- INTERVENTION CANVAS -->
+          <sc-if value="{{ isProjection }}" hint-placeholder-val="{{ true }}">
+          <div style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;display:flex;flex-direction:column;overflow:hidden">
+            <div style="display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid var(--wlline);font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">対象 · SCENE 12 本文<div style="flex:1"></div><span style="cursor:pointer;color:var(--fg)">エディタで開く →</span></div>
+            <div style="flex:1;min-height:0;overflow:hidden;padding:26px 40px;font-family:'Noto Serif JP',serif;font-size:15.5px;line-height:2.1">
+              <p style="margin:0 0 0.6em;color:var(--mut)">錠が落ちる音は、思っていたより軽かった。十年ぶりの音だった。</p>
+              <p style="position:relative;margin:0 0 0.6em">
+                <span style="position:absolute;left:-20px;top:6px;bottom:6px;width:3px;background:var(--fg)"></span>
+                <span style="background:color-mix(in oklch, var(--fg) 9%, transparent);border-bottom:2px solid var(--fg);padding:0 1px">アリス</span><span style="position:relative;top:-9px;margin:0 3px;border:1px solid var(--wlline);border-radius:2px;padding:1px 5px;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.1em;background:var(--bg);white-space:nowrap">参照曖昧</span>は鍵を拾い、地下牢を出た。振り返りはしなかった。</p>
+              <p style="margin:0 0 1.4em;color:var(--mut)">通路の先で松明が揺れている。壁づたいに角を三つ数え、彼女は最後の扉に手を掛けた。</p>
+              <div style="font-family:'M PLUS 1',sans-serif">
+                <div style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut);margin-bottom:6px">候補</div>
+                <div style="display:flex;flex-direction:column;gap:4px;max-width:460px">
+                  <div style="display:flex;align-items:center;gap:9px;border:1.5px solid var(--fg);border-radius:4px;padding:8px 12px;cursor:pointer">
+                    <span style="width:12px;height:12px;border:1.5px solid var(--fg);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0"><span style="width:6px;height:6px;border-radius:50%;background:var(--fg)"></span></span>
+                    <span style="font-size:12.5px;font-weight:500;flex:1">アリス・レイン</span>
+                    <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut)">登場 12 SCENE</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:9px;border:1px solid var(--wlline);border-radius:4px;padding:8px 12px;cursor:pointer" style-hover="background:var(--sel)">
+                    <span style="width:12px;height:12px;border:1.5px solid var(--mut);border-radius:50%;flex-shrink:0"></span>
+                    <span style="font-size:12.5px;flex:1">アリス・ハーグ</span>
+                    <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;color:var(--mut)">登場 3 SCENE</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:9px;border:1px dashed var(--wlline);border-radius:4px;padding:8px 12px;color:var(--mut);cursor:pointer" style-hover="background:var(--sel)">
+                    <span style="width:12px;height:12px;border:1.5px solid var(--mut);border-radius:50%;flex-shrink:0"></span>
+                    <span style="font-size:12.5px;flex:1">新しい人物として作成</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style="border-top:1px solid var(--wlline);padding:11px 16px;display:flex;gap:8px;align-items:center">
+              <button onClick="{{ goResolve }}" style="background:var(--fg);color:var(--bg);border:none;border-radius:4px;padding:8px 18px;font-size:12px;font-weight:600;cursor:pointer;font-family:'M PLUS 1',sans-serif">アリス・レインへ Binding</button>
+              <button style="background:none;border:1px solid var(--wlline);border-radius:4px;padding:8px 14px;font-size:12px;color:var(--fg);cursor:pointer;font-family:'M PLUS 1',sans-serif" style-hover="background:var(--sel)">保留</button>
+              <span style="font-size:10.5px;color:var(--mut);text-decoration:underline;text-underline-offset:2px;cursor:pointer;margin-left:6px">この2件を今後同一候補にしない</span>
+              <div style="flex:1"></div>
+              <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em;color:var(--mut)">次: EVIDENCE消失 →</span>
+            </div>
+          </div>
+          </sc-if>
+          <!-- CHANGE REVIEW CANVAS -->
+          <sc-if value="{{ isReview }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;display:flex;flex-direction:column;overflow:hidden">
+            <div style="display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid var(--wlline);font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">対象 · CHRONICLE EVENT 「脱獄」 · 変更レビュー<div style="flex:1"></div><span style="cursor:pointer;color:var(--fg)">Chronicleで開く →</span></div>
+            <div style="flex:1;min-height:0;overflow:hidden;padding:18px 24px;display:flex;flex-direction:column;gap:14px">
+              <div style="border:1px dashed var(--wlline);border-radius:4px;padding:8px 12px;font-size:11px;line-height:1.7;color:var(--mut)">Scene 12 の再解釈により、承認済みの内容と異なる Proposal が生成されました。適用するまで Story Bible は書き換えられません。</div>
+              <div style="display:grid;grid-template-columns:76px 1fr 1fr;gap:0 18px;font-size:12px;line-height:1.8">
+                <div></div>
+                <div style="display:flex;align-items:baseline;gap:8px;padding-bottom:7px;border-bottom:1px solid var(--wlline)"><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut)">承認済み · V1</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:7.5px;letter-spacing:0.1em;border:1px solid var(--line);border-radius:2px;padding:1px 5px;color:var(--mut)">ACCEPTED · 3日前</span></div>
+                <div style="display:flex;align-items:baseline;gap:8px;padding-bottom:7px;border-bottom:1px solid var(--wlline)"><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;font-weight:700">PROPOSAL · V2</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:7.5px;letter-spacing:0.1em;border:1px solid var(--wlline);border-radius:2px;padding:1px 5px;color:var(--mut)">RUN 8f31</span></div>
+
+                <div style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding:9px 0 0">タイトル</div>
+                <div style="padding:8px 0 0;color:var(--mut)">脱獄</div>
+                <div style="padding:8px 0 0;color:var(--mut)">脱獄 <span style="font-family:ui-monospace,Menlo,monospace;font-size:7.5px;letter-spacing:0.1em;color:var(--mut2)">変更なし</span></div>
+
+                <div style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding:9px 0 0;border-top:1px solid var(--line);margin-top:8px">手段</div>
+                <div style="padding:8px 0 0;border-top:1px solid var(--line);margin-top:8px"><s style="color:var(--mut)">青い剣で錠を斬り、牢を破る</s></div>
+                <div style="padding:8px 0 0;border-top:1px solid var(--line);margin-top:8px"><span style="display:inline-block;border-left:3px solid var(--fg);padding-left:9px;font-weight:600">拾った鍵で錠を開け、牢を出る</span></div>
+
+                <div style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding:9px 0 0;border-top:1px solid var(--line);margin-top:8px">時期</div>
+                <div style="padding:8px 0 0;border-top:1px solid var(--line);margin-top:8px;color:var(--mut)">3年霜月 · 確定</div>
+                <div style="padding:8px 0 0;border-top:1px solid var(--line);margin-top:8px;color:var(--mut)">3年霜月 · 確定 <span style="font-family:ui-monospace,Menlo,monospace;font-size:7.5px;letter-spacing:0.1em;color:var(--mut2)">変更なし</span></div>
+
+                <div style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding:9px 0 0;border-top:1px solid var(--line);margin-top:8px">補足</div>
+                <div style="padding:8px 0 0;border-top:1px solid var(--line);margin-top:8px"><s style="color:var(--mut)">剣の呪いが解けたことを示す</s></div>
+                <div style="padding:8px 0 0;border-top:1px solid var(--line);margin-top:8px;color:var(--mut)">— <span style="font-family:ui-monospace,Menlo,monospace;font-size:7.5px;letter-spacing:0.12em;border:1px solid var(--wlline);border-radius:2px;padding:1px 5px">REMOVED</span></div>
+
+                <div style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding:9px 0 0;border-top:1px solid var(--wlline);margin-top:8px">EVIDENCE</div>
+                <div style="padding:8px 0 0;border-top:1px solid var(--wlline);margin-top:8px"><span style="font-family:'Noto Serif JP',serif;font-size:12px;color:var(--mut)">「彼女は青い剣を鞘から抜いた」</span><br><span style="font-family:ui-monospace,Menlo,monospace;font-size:7.5px;letter-spacing:0.12em;font-weight:700">MISSING</span> <span style="font-family:ui-monospace,Menlo,monospace;font-size:7.5px;letter-spacing:0.1em;color:var(--mut2)">v48 に一致なし</span></div>
+                <div style="padding:8px 0 0;border-top:1px solid var(--wlline);margin-top:8px"><span style="font-family:'Noto Serif JP',serif;font-size:12px">「アリスは鍵を拾い、地下牢を出た」</span><br><span style="font-family:ui-monospace,Menlo,monospace;font-size:7.5px;letter-spacing:0.12em;color:var(--mut)">¶2 · ANCHORED</span></div>
+              </div>
+              <div style="margin-top:auto">
+                <div style="display:flex;gap:14px;border-top:1px solid var(--line);padding-top:9px;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.08em;color:var(--mut)">
+                  <span>REVIEW <b style="color:var(--fg)">ACCEPTED · V1</b></span>
+                  <span>FRESHNESS <b style="color:var(--fg)">SOURCE-MISSING</b></span>
+                  <span>PROJECTION <b style="color:var(--fg)">APPLIED · V1</b></span>
+                  <div style="flex:1"></div>
+                  <span onClick="{{ goInspect }}" style="cursor:pointer;color:var(--fg)" style-hover="text-decoration:underline">INSPECT →</span>
+                </div>
+
+              </div>
+            </div>
+            <div style="border-top:1px solid var(--wlline);padding:11px 16px;display:flex;gap:8px;align-items:center">
+              <button style="background:var(--fg);color:var(--bg);border:none;border-radius:4px;padding:8px 18px;font-size:12px;font-weight:600;cursor:pointer;font-family:'M PLUS 1',sans-serif">Proposal を適用</button>
+              <button style="background:none;border:1px solid var(--wlline);border-radius:4px;padding:8px 14px;font-size:12px;color:var(--fg);cursor:pointer;font-family:'M PLUS 1',sans-serif" style-hover="background:var(--sel)">編集して適用</button>
+              <button style="background:none;border:1px solid var(--wlline);border-radius:4px;padding:8px 14px;font-size:12px;color:var(--fg);cursor:pointer;font-family:'M PLUS 1',sans-serif" style-hover="background:var(--sel)">Reject</button>
+              <button style="background:none;border:1px solid var(--wlline);border-radius:4px;padding:8px 14px;font-size:12px;color:var(--fg);cursor:pointer;font-family:'M PLUS 1',sans-serif" style-hover="background:var(--sel)">保留</button>
+              <div style="flex:1"></div>
+              <span style="font-size:10.5px;color:var(--mut);text-decoration:underline;text-underline-offset:2px;cursor:pointer">このMaterial Basisだけ無視</span>
+              <span style="font-size:10.5px;color:var(--mut);text-decoration:underline;text-underline-offset:2px;cursor:pointer;margin-left:10px">Correction ruleを作成</span>
+            </div>
+          </div>
+          </sc-if>
+          <!-- BATCH APPROVAL CANVAS -->
+          <sc-if value="{{ isBatch }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--wlline);border-radius:4px;display:flex;flex-direction:column;overflow:hidden">
+            <div style="display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid var(--wlline);font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">対象 · CHRONICLE PROPOSAL · 一括承認<div style="flex:1"></div><span style="color:var(--fg)">4 / 6 件選択</span></div>
+            <div style="flex:1;min-height:0;overflow:hidden;padding:18px 24px;display:flex;flex-direction:column;gap:12px">
+              <div style="border:1px dashed var(--wlline);border-radius:4px;padding:8px 12px;font-size:11px;line-height:1.7;color:var(--mut)">SAFE の判定は決定的: <b style="color:var(--fg)">新規追加のみ・既存 Event と矛盾なし・Evidence anchored・重複候補なし</b>。1つでも満たさなければ個別判断へ回ります。</div>
+              <div style="display:flex;flex-direction:column;gap:4px">
+                <div style="display:flex;align-items:center;gap:10px;border:1px solid var(--wlline);border-radius:4px;padding:8px 12px"><span style="width:13px;height:13px;background:var(--fg);border-radius:2px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;color:var(--bg);font-size:9px">✓</span><span style="font-size:12.5px;flex:1">scene-event 追加 「鍵の入手」</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;color:var(--mut)">¶2 · SAFE</span></div>
+                <div style="display:flex;align-items:center;gap:10px;border:1px solid var(--wlline);border-radius:4px;padding:8px 12px"><span style="width:13px;height:13px;background:var(--fg);border-radius:2px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;color:var(--bg);font-size:9px">✓</span><span style="font-size:12.5px;flex:1">scene-event 追加 「牢からの脱出」</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;color:var(--mut)">¶2 · SAFE</span></div>
+                <div style="display:flex;align-items:center;gap:10px;border:1px solid var(--wlline);border-radius:4px;padding:8px 12px"><span style="width:13px;height:13px;background:var(--fg);border-radius:2px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;color:var(--bg);font-size:9px">✓</span><span style="font-size:12.5px;flex:1">state 変化 「アリス: 幽囚 → 逃亡」</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;color:var(--mut)">SAFE</span></div>
+                <div style="display:flex;align-items:center;gap:10px;border:1px solid var(--wlline);border-radius:4px;padding:8px 12px"><span style="width:13px;height:13px;background:var(--fg);border-radius:2px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;color:var(--bg);font-size:9px">✓</span><span style="font-size:12.5px;flex:1">relation 「アリス — 地下牢: 脱出」</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;color:var(--mut)">SAFE</span></div>
+                <div style="display:flex;align-items:center;gap:10px;border:1px dashed var(--line);border-radius:4px;padding:8px 12px;color:var(--mut)"><span style="width:13px;height:13px;border:1.5px solid var(--mut2);border-radius:2px;flex-shrink:0"></span><span style="font-size:12.5px;flex:1">event 変更 「脱獄」手段の書換</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px">要個別判断 · 承認済みV1と矛盾 →</span></div>
+                <div style="display:flex;align-items:center;gap:10px;border:1px dashed var(--line);border-radius:4px;padding:8px 12px;color:var(--mut)"><span style="width:13px;height:13px;border:1.5px solid var(--mut2);border-radius:2px;flex-shrink:0"></span><span style="font-size:12.5px;flex:1">entity binding 「アリス」</span><span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px">要個別判断 · 候補2件 →</span></div>
+              </div>
+            </div>
+            <div style="border-top:1px solid var(--wlline);padding:11px 16px;display:flex;gap:8px;align-items:center">
+              <button style="background:var(--fg);color:var(--bg);border:none;border-radius:4px;padding:8px 18px;font-size:12px;font-weight:600;cursor:pointer;font-family:'M PLUS 1',sans-serif">4件を一括承認</button>
+              <button onClick="{{ goReview }}" style="background:none;border:1px solid var(--wlline);border-radius:4px;padding:8px 14px;font-size:12px;color:var(--fg);cursor:pointer;font-family:'M PLUS 1',sans-serif" style-hover="background:var(--sel)">個別に見る</button>
+              <div style="flex:1"></div>
+              <span style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em;color:var(--mut)">1つの HUMAN DECISION として記録</span>
+            </div>
+          </div>
+          </sc-if>
+          <!-- EVIDENCE / IMPACT -->
+          <div style="width:320px;flex-shrink:0;display:flex;flex-direction:column;gap:10px;min-height:0">
+          <sc-if value="{{ isBatch }}" hint-placeholder-val="{{ false }}">
+            <div style="background:var(--bg);border:1px solid var(--wlline);border-radius:4px;padding:12px 14px;flex:1">
+              <div style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">承認した場合の影響</div>
+              <div style="margin-top:7px;display:flex;flex-direction:column;gap:5px;font-size:11.5px">
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:6px;height:6px;border:1px solid var(--fg);flex-shrink:0"></span>Chronicle · Event +2 / State +1 / Relation +1</div>
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:6px;height:6px;border:1px solid var(--fg);flex-shrink:0"></span>Timeline 再構築 · 1</div>
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:6px;height:6px;border:1px solid var(--fg);flex-shrink:0"></span>Related Scenes 再評価 · 4件</div>
+              </div>
+              <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.1em;color:var(--mut);line-height:1.9">一括承認は 1 Decision · 個別に取り消し可能<br>要個別判断の 2 件は選択不可（safe 判定外）</div>
+              <div onClick="{{ goInspect }}" style="margin-top:12px;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em;color:var(--mut);cursor:pointer" style-hover="color:var(--fg)">DEEP INSPECTION（NIR / EDGE / RUN）→</div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ isReview }}" hint-placeholder-val="{{ false }}">
+            <div style="background:var(--bg);border:1px solid var(--wlline);border-radius:4px;padding:12px 14px">
+              <div style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">変更を引き起こした本文</div>
+              <div style="margin-top:8px;border-left:2px solid var(--wlline);padding:2px 0 2px 10px;font-family:'Noto Serif JP',serif;font-size:12.5px;line-height:1.9">「アリスは鍵を拾い、地下牢を出た。振り返りはしなかった。」</div>
+              <div style="margin-top:7px;display:flex;align-items:center;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.1em;color:var(--mut)">SCENE 12 · ¶2 · v48<div style="flex:1"></div><span style="cursor:pointer;color:var(--fg)">Sceneへ →</span></div>
+            </div>
+            <div style="background:var(--bg);border:1px solid var(--wlline);border-radius:4px;padding:12px 14px;flex:1">
+              <div style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">適用した場合の影響</div>
+              <div style="margin-top:7px;display:flex;flex-direction:column;gap:5px;font-size:11.5px">
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:6px;height:6px;border:1px solid var(--fg);flex-shrink:0"></span>Timeline 「脱獄」ノード</div>
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:6px;height:6px;border:1px solid var(--fg);flex-shrink:0"></span>Related Scenes · 4件</div>
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:6px;height:6px;border:1px solid var(--fg);flex-shrink:0"></span>伏線「青い剣」 — 回収位置に波及</div>
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:6px;height:6px;border:1px solid var(--fg);flex-shrink:0"></span>Chat Context materialization · 2件</div>
+              </div>
+              <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-family:ui-monospace,Menlo,monospace;font-size:8px;letter-spacing:0.1em;color:var(--mut);line-height:1.9">適用時: V2 を Human-derived Revision として保存し<br>下流 Consumer を再投影 · Reject 時: V1 を維持し<br>この Material Basis を negative memory に記録</div>
+              <div onClick="{{ goInspect }}" style="margin-top:12px;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em;color:var(--mut);cursor:pointer" style-hover="color:var(--fg)">DEEP INSPECTION（NIR / EDGE / RUN）→</div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ isProjection }}" hint-placeholder-val="{{ true }}">
+            <div style="background:var(--bg);border:1px solid var(--wlline);border-radius:4px;padding:12px 14px">
+              <div style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">検出理由</div>
+              <div style="margin-top:7px;font-size:11.5px;line-height:1.8">Surface「アリス」が 2 件の Codex 候補に一致。Scene: 地下牢 / Relation context: 囚人・青い剣。</div>
+              <div style="margin-top:8px;display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;font-size:11px">
+                <span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding-top:2px">以前</span><span style="color:var(--mut)">Binding なし</span>
+                <span style="font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.12em;color:var(--mut);padding-top:2px">近傍</span><span style="font-family:'Noto Serif JP',serif">「アリスは鍵を拾い、地下牢を出た」</span>
+              </div>
+            </div>
+            <div style="background:var(--bg);border:1px dashed var(--wlline);border-radius:4px;padding:11px 14px">
+              <div style="display:flex;align-items:center;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.14em;color:var(--mut)">CONTEXT PORTAL · CODEX<div style="flex:1"></div>選択中の候補</div>
+              <div style="margin-top:9px;display:flex;gap:10px">
+                <span style="width:28px;height:28px;border-radius:50%;background:oklch(0.62 0.14 250);flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700">ア</span>
+                <div style="min-width:0;flex:1">
+                  <div style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600">アリス・レイン <span style="background:var(--sel);border-radius:4px;padding:0 6px;font-size:9px;font-weight:400">主人公</span></div>
+                  <div style="margin-top:2px;font-size:10px;color:var(--mut)">登場: 12 Scene · Alias: アリス / A. Rain</div>
+                  <div style="margin-top:3px;font-size:10.5px;line-height:1.7">牢を訪れた剣士。青い剣の持ち主。十二章時点では囚人。</div>
+                </div>
+              </div>
+              <div style="margin-top:8px;display:flex;align-items:center;font-size:10px;color:var(--mut)"><span style="text-decoration:underline;text-underline-offset:2px;cursor:pointer">Codexで開く →</span><div style="flex:1"></div><span style="font-family:ui-monospace,Menlo,monospace;font-size:7.5px;letter-spacing:0.1em">候補の選択に追従</span></div>
+            </div>
+            <div style="background:var(--bg);border:1px solid var(--wlline);border-radius:4px;padding:12px 14px;flex:1">
+              <div style="font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.16em;color:var(--mut)">影響</div>
+              <div style="margin-top:7px;display:flex;flex-direction:column;gap:5px;font-size:11.5px">
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:6px;height:6px;border:1px solid var(--fg);flex-shrink:0"></span>Chronicle Event「脱獄」</div>
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:6px;height:6px;border:1px solid var(--fg);flex-shrink:0"></span>Related Scenes · 4件</div>
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:6px;height:6px;border:1px solid var(--fg);flex-shrink:0"></span>Chat Context materialization · 2件</div>
+              </div>
+              <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:4px;font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:0.08em;color:var(--mut)">
+                <div>REVIEW <b style="color:var(--fg)">—</b></div>
+                <div>FRESHNESS <b style="color:var(--fg)">AMBIGUOUS</b></div>
+                <div>PROJECTION <b style="color:var(--fg)">NONE</b></div>
+              </div>
+              <div onClick="{{ goInspect }}" style="margin-top:12px;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em;color:var(--mut);cursor:pointer" style-hover="color:var(--fg)">DEEP INSPECTION（NIR / EDGE / RUN）→</div>
+            </div>
+          </sc-if>
+          </div>
+        </div>
+        <!-- PIPELINE -->
+        <div style="display:flex;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--wlline);border-radius:3px;padding:8px 16px;font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:0.1em;color:var(--mut);flex-shrink:0">
+          <span>SOURCE CHANGE ✓</span><span>→</span><span>FRESHNESS ✓</span><span>→</span><span>VERIFY ✓</span><span>→</span><span>REBUILD ✓</span><span>→</span><span style="color:var(--fg)">RECHECK ◐</span><span>→</span><span style="color:var(--fg);font-weight:700">AUTHOR REVIEW · 2</span>
+          <div style="flex:1"></div>
+          <span>RUN 8f31 · EPOCH 42</span>
+        </div>
+      </div>
+    </sc-if>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;: {&quot;width&quot;: 1560, &quot;height&quot;: 975}, &quot;mode&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;ambient&quot;, &quot;arrive&quot;, &quot;resolve&quot;, &quot;trayempty&quot;, &quot;traydisposed&quot;, &quot;blocked&quot;, &quot;activity&quot;, &quot;tray&quot;, &quot;tray2&quot;, &quot;tray2focus&quot;, &quot;ledger&quot;, &quot;lens&quot;, &quot;portal&quot;, &quot;inspect&quot;, &quot;projection&quot;, &quot;review&quot;, &quot;batch&quot;], &quot;default&quot;: &quot;ambient&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Work Layer&quot;}, &quot;dark&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Work Layer&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const mode = this.props.mode ?? "ambient";
+    const dark = this.props.dark ?? false;
+    const nav = m => () => { if (this.props.onNav) this.props.onNav(m); };
+    const lensish = mode === "lens" || mode === "portal" || mode === "inspect";
+    return {
+      themeAttr: dark ? "dark" : "light",
+      isTray: mode === "tray",
+      isTray2: mode === "tray2",
+      isTray2Focus: mode === "tray2focus",
+      isLedger: mode === "ledger",
+      goLedger: nav("ledger"),
+      isLens: lensish,
+      notLens: !lensish,
+      isAmbient: mode === "ambient" || mode === "activity" || mode === "blocked",
+      isArrive: mode === "arrive",
+      isResolve: mode === "resolve",
+      isEmpty: mode === "trayempty",
+      notEmpty: mode !== "trayempty",
+      isDisposed: mode === "traydisposed",
+      isBlocked: mode === "blocked",
+      isBatch: mode === "batch",
+      isOverlay: ["tray", "tray2", "tray2focus", "ledger", "lens", "portal", "inspect", "projection", "review", "batch"].includes(mode),
+      sysBusy: ["activity", "arrive", "resolve"].includes(mode),
+      sysQuiet: !["activity", "arrive", "resolve", "blocked"].includes(mode),
+      sysBlocked: mode === "blocked",
+      isProjection: mode === "projection",
+      isReview: mode === "review",
+      isProjectionShell: ["projection", "review", "batch"].includes(mode),
+      showWorkspace: !["projection", "review", "batch"].includes(mode),
+      goAmbient: nav("ambient"), goTray2: nav("tray2"), goTray2Focus: nav("tray2focus"),
+      goLens: nav("lens"), goInspect: nav("inspect"), goProjection: nav("projection"),
+      goReview: nav("review"), goResolve: nav("resolve"), goActivity: nav("activity"),
+      isPortal: mode === "portal",
+      isInspect: mode === "inspect",
+      isActivity: mode === "activity",
+      notActivity: mode !== "activity",
+      hasCodexCol: mode !== "portal",
+      showLensMeta: lensish && mode !== "portal",
+    };
+  }
+}
+</script>
+</body>
+</html>

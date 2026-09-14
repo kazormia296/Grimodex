@@ -111,3 +111,11 @@ PNG 15枚をリポジトリ内へ追加済み。以下の目録とギャラリ�
 ### 15 — DISPOSED
 
 ![DISPOSED](15-disposed-attention.png)
+
+
+## HTMLモック
+
+[操作可能なHTMLモックとローカル直開きの手順](mock/README.md) を同梱する。
+元のDesign Component書き出しは`file://`上で起動HTMLとsibling componentを`fetch()`するため
+CORSで失敗していた。保存版ではFrameをBlob resourceとして事前登録し、表示内容を変えずに
+`prototype.dc.html`と`ui-study.dc.html`をブラウザから直接開けるようにしている。
