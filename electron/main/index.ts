@@ -499,6 +499,9 @@ if (!gotSingleInstanceLock) {
       profileEgress.registerMainEgressParticipant("license-validation", () =>
         licenseValidation.quiesceForProfileEgress(),
       );
+      profileEgress.registerMainEgressParticipant("vivliostyle", () =>
+        vivliostyle.quiesceForProfileEgress(),
+      );
     }
     let narrativeMaintenanceTriggers: NarrativeMaintenanceTriggerCoordinator | null =
       null;

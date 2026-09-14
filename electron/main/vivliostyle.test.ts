@@ -23,6 +23,8 @@ import {
   type VivliostyleManager,
   type VivliostyleSaveDialogOptions,
 } from "./vivliostyle.js";
+import { createProfileEgressGate } from "./profileEgress.js";
+import type { NapiBackendLike } from "../shared/ipcContract.js";
 
 class FakeRunningProcess implements RunningCliProcess {
   readonly pid = 4242;
@@ -823,6 +825,101 @@ describe("VivliostyleManager preview / lifecycle", () => {
     );
     second.finish(null, "SIGKILL");
     await stop;
+  });
+
+  it("profile egress quiescenceはspawn前のbuildを閉じて完了を待つ", async () => {
+    let resolveDetection!: (candidate: string | null) => void;
+    const h = createHarness({
+      detectBinary: () =>
+        new Promise((resolve) => {
+          resolveDetection = resolve;
+        }),
+    });
+    await h.manager.handlers.vivliostyle_build(buildArgs());
+    await vi.waitFor(() => expect(h.detectBinary).toHaveBeenCalledOnce());
+
+    let quiesced = false;
+    const quiesce = h.manager.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(quiesced).toBe(false);
+    expect(h.runner.startCalls).toHaveLength(0);
+
+    resolveDetection("/usr/local/bin/vivliostyle");
+    await quiesce;
+    expect(quiesced).toBe(true);
+    expect(h.runner.startCalls).toHaveLength(0);
+  });
+
+  it("profile egress quiescenceはactive preview childの完了を待つ", async () => {
+    const h = createHarness();
+    const process = h.runner.enqueue();
+    await h.manager.handlers.vivliostyle_preview_start({
+      files,
+      binaryPath: null,
+    });
+
+    let quiesced = false;
+    const quiesce = h.manager.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    expect(process.terminate).toHaveBeenCalledWith("SIGKILL");
+    await Promise.resolve();
+    expect(quiesced).toBe(false);
+
+    process.finish(null, "SIGKILL");
+    await quiesce;
+    expect(quiesced).toBe(true);
+  });
+
+  it("child停止失敗時はprofile activationをfail-closedにする", async () => {
+    const h = createHarness();
+    const process = h.runner.enqueue();
+    await h.manager.handlers.vivliostyle_build(buildArgs());
+    await waitForStarts(h.runner, 1);
+    process.terminate.mockImplementation(() => {
+      throw new Error("child stop failed");
+    });
+
+    const status = {
+      profileId: "profile-1",
+      callerEpoch: 1,
+      restricted: false,
+      handlesInvalidated: false,
+      inFlightStopped: true,
+      sqlPolicy: {
+        version: 1,
+        protectedTables: ["messages"],
+        protectedColumns: [],
+      },
+    };
+    const activateProfileEgress = vi.fn(async () =>
+      JSON.stringify({
+        ...status,
+        restricted: true,
+        handlesInvalidated: true,
+        callerEpoch: 2,
+      }),
+    );
+    const gate = await createProfileEgressGate({
+      initializeProfileEgress: async () => JSON.stringify(status),
+      registerProfileEgressCaller: vi.fn(),
+      invalidateProfileEgressCallers: vi.fn(),
+      activateProfileEgress,
+    } as unknown as NapiBackendLike);
+    gate.registerMainEgressParticipant("vivliostyle", () =>
+      h.manager.quiesceForProfileEgress(),
+    );
+
+    const activation = gate.activateFirstRestrictedPublication!();
+    process.finish(null, "SIGKILL");
+    await expect(activation).rejects.toThrow(
+      "main egress participant failed to drain: vivliostyle: child stop failed",
+    );
+    expect(activateProfileEgress).not.toHaveBeenCalled();
+    expect(gate.restricted).toBe(true);
+    expect(gate.unavailable).toBe(true);
   });
 
   it("起動時に前セッションtempを掃除し、disposeAllは全child/outputを同期回収する", async () => {
