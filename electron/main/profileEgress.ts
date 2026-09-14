@@ -70,6 +70,9 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["send_agent_message", "old-external-ai"],
   ["list_ai_models", "old-external-ai"],
   ["test_ai_connection", "external-url"],
+  ["activate_license", "external-url"],
+  ["revalidate_license", "external-url"],
+  ["deactivate_license", "external-url"],
   ["start_post_effect_run", "old-external-ai"],
   ["start_post_effect_run_multi", "old-external-ai"],
   ["send_cli_chat_stream", "old-external-ai"],
@@ -84,6 +87,8 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["codex_app_update_history_revision", "old-external-ai"],
   ["codex_app_archive_session_thread", "old-external-ai"],
   ["codex_app_set_thread_name", "old-external-ai"],
+  ["vivliostyle_build", "external-url"],
+  ["vivliostyle_preview_start", "external-url"],
   ["get_mcp_config", "old-external-ai"],
   ["narrative_extraction_get_run_review_bundle", "plaintext-publication"],
   ["ai_audit_read_snapshot", "plaintext-publication"],
@@ -516,6 +521,11 @@ export interface ProfileEgressGate {
   assertInvoke(command: string, args: CommandArgs): void;
   allowsBackendEvent(channel: string): boolean;
   assertExternalUrl(): void;
+  /** Main-only lifecycle participants; never exposed through renderer IPC. */
+  registerMainEgressParticipant(
+    name: string,
+    quiesce: () => Promise<void>,
+  ): void;
   activateFirstRestrictedPublication?(): Promise<void>;
   observeBackendEvent?(channel: string, payload: unknown): void;
 }
@@ -532,6 +542,11 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   private policy: NativeProfileEgressPolicy;
   private readonly activateProfileEgress: (() => Promise<string>) | null;
   private activationPromise: Promise<void> | null = null;
+  private activationCompleted = false;
+  private readonly mainEgressParticipants = new Map<
+    string,
+    () => Promise<void>
+  >();
   private workspaceId: string | null = null;
   private readonly identities = new Map<number, MainIssuedCallerIdentity>();
   private readonly registrationErrors = new Map<number, string>();
@@ -709,6 +724,25 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     throw denied("external-url", "external URL opening is disabled");
   }
 
+  registerMainEgressParticipant(
+    name: string,
+    quiesce: () => Promise<void>,
+  ): void {
+    if (name.trim() !== name || name.length === 0) {
+      throw new Error("main egress participant name must be non-empty");
+    }
+    if (this.activationPromise) {
+      throw new Error("main egress activation has already started");
+    }
+    if (this.activationCompleted || this.unavailable) {
+      throw new Error("main egress activation has already completed");
+    }
+    if (this.mainEgressParticipants.has(name)) {
+      throw new Error(`main egress participant is already registered: ${name}`);
+    }
+    this.mainEgressParticipants.set(name, quiesce);
+  }
+
   async activateFirstRestrictedPublication(): Promise<void> {
     if (this.activationPromise) return this.activationPromise;
     if (this.unavailable) {
@@ -726,6 +760,26 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     const activate = this.activateProfileEgress;
     this.activationPromise = (async () => {
       try {
+        const participants = [...this.mainEgressParticipants.entries()];
+        if (participants.length > 0) {
+          const results = await Promise.allSettled(
+            participants.map(async ([name, quiesce]) => {
+              try {
+                await quiesce();
+              } catch (error) {
+                throw new Error(
+                  `main egress participant failed to drain: ${name}: ${error instanceof Error ? error.message : String(error)}`,
+                  { cause: error },
+                );
+              }
+            }),
+          );
+          const failed = results.find(
+            (result): result is PromiseRejectedResult =>
+              result.status === "rejected",
+          );
+          if (failed) throw failed.reason;
+        }
         if (!activate) {
           throw denied(
             "unclassified",
@@ -756,6 +810,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
         this.policy = policy;
         this.identities.clear();
         this.registrationErrors.clear();
+        this.activationCompleted = true;
       } catch (error) {
         this._unavailable = true;
         this._restricted = true;

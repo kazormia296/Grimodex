@@ -85,6 +85,15 @@ describe("D2a profile egress gate", () => {
     expect(gate.restricted).toBe(false);
     expect(gate.unavailable).toBe(false);
     expect(() => gate.assertInvoke("send_chat_message", {})).not.toThrow();
+    for (const [command, args] of [
+      ["activate_license", { key: "arbitrary-plaintext-license-key" }],
+      ["revalidate_license", {}],
+      ["deactivate_license", {}],
+      ["vivliostyle_build", {}],
+      ["vivliostyle_preview_start", {}],
+    ] as const) {
+      expect(() => gate.assertInvoke(command, args), command).not.toThrow();
+    }
     expect(() => gate.assertInvoke("db_execute", {})).not.toThrow();
     expect(gate.allowsBackendEvent("chat:stream-chunk")).toBe(true);
     expect(() => gate.assertExternalUrl()).not.toThrow();
@@ -144,6 +153,94 @@ describe("D2a profile egress gate", () => {
       }),
     ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
     expect(registerProfileEgressCaller).toHaveBeenCalledOnce();
+  });
+
+  it("awaits every main-owned transport drain before Native activation", async () => {
+    const nativeStatus = JSON.parse(
+      await backend().initializeProfileEgress!(),
+    ) as Record<string, unknown>;
+    let releaseDrain!: () => void;
+    const drain = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseDrain = resolve;
+        }),
+    );
+    const activateProfileEgress = vi.fn(async () =>
+      JSON.stringify({
+        ...nativeStatus,
+        profileId: "profile-activated",
+        callerEpoch: 5,
+        restricted: true,
+        handlesInvalidated: true,
+        inFlightStopped: true,
+      }),
+    );
+    const gate = await createProfileEgressGate({
+      ...backend({ restricted: false, handlesInvalidated: false }),
+      activateProfileEgress,
+    });
+
+    gate.registerMainEgressParticipant?.("cli", drain);
+    const activation = gate.activateFirstRestrictedPublication!();
+    await vi.waitFor(() => expect(drain).toHaveBeenCalledOnce());
+    expect(gate.restricted).toBe(true);
+    expect(activateProfileEgress).not.toHaveBeenCalled();
+
+    releaseDrain();
+    await activation;
+    expect(activateProfileEgress).toHaveBeenCalledOnce();
+    expect(gate.unavailable).toBe(false);
+    expect(() =>
+      gate.registerMainEgressParticipant?.("late", async () => {}),
+    ).toThrow("already completed");
+  });
+
+  it("waits for every participant before failing activation", async () => {
+    let releaseSecond!: () => void;
+    const first = vi.fn(async () => {
+      throw new Error("first drain failed");
+    });
+    const second = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseSecond = resolve;
+        }),
+    );
+    const activateProfileEgress = vi.fn(async () => "never-called");
+    const gate = await createProfileEgressGate({
+      ...backend({ restricted: false, handlesInvalidated: false }),
+      activateProfileEgress,
+    });
+    gate.registerMainEgressParticipant?.("first", first);
+    gate.registerMainEgressParticipant?.("second", second);
+
+    const activation = gate.activateFirstRestrictedPublication!();
+    await vi.waitFor(() => expect(second).toHaveBeenCalledOnce());
+    expect(activateProfileEgress).not.toHaveBeenCalled();
+    releaseSecond();
+
+    await expect(activation).rejects.toThrow("first drain failed");
+    expect(activateProfileEgress).not.toHaveBeenCalled();
+    expect(gate.unavailable).toBe(true);
+  });
+
+  it("fails closed when a main-owned transport cannot drain", async () => {
+    const activateProfileEgress = vi.fn(async () => "never-called");
+    const gate = await createProfileEgressGate({
+      ...backend({ restricted: false, handlesInvalidated: false }),
+      activateProfileEgress,
+    });
+    gate.registerMainEgressParticipant?.("codex-app-server", async () => {
+      throw new Error("Codex drain failed");
+    });
+
+    await expect(gate.activateFirstRestrictedPublication!()).rejects.toThrow(
+      "Codex drain failed",
+    );
+    expect(activateProfileEgress).not.toHaveBeenCalled();
+    expect(gate.restricted).toBe(true);
+    expect(gate.unavailable).toBe(true);
   });
 
   it("stays fail-closed when main-only activation fails", async () => {
@@ -294,6 +391,11 @@ describe("D2a profile egress gate", () => {
     ["send_cli_chat_stream", {}],
     ["codex_app_start_turn", {}],
     ["codex_app_get_status", {}],
+    ["activate_license", { key: "arbitrary-plaintext-license-key" }],
+    ["revalidate_license", {}],
+    ["deactivate_license", {}],
+    ["vivliostyle_build", {}],
+    ["vivliostyle_preview_start", {}],
     ["nir1_pack_context", {}],
     ["fts_search", {}],
     ["narrative_extraction_get_run_review_bundle", { payload: {} }],

@@ -221,6 +221,8 @@ export interface CodexAppServerManager {
   handleWorkspaceChanged(): Promise<void>;
   handleOwnerDestroyed(ownerId: number): Promise<void>;
   dispose(): Promise<void>;
+  /** Main-only D2a barrier: stop and await app-server transports. */
+  quiesceForProfileEgress(): Promise<void>;
 }
 
 export class CodexAppServerError extends Error {
@@ -714,6 +716,8 @@ export function createCodexAppServerManager(
   let process: CodexAppServerProcessLike | null = null;
   let connection: JsonRpcConnection | null = null;
   let startFlight: Promise<void> | null = null;
+  const startTurnFlights = new Set<Promise<unknown>>();
+  let disposeFlight: Promise<void> | null = null;
   let disposed = false;
   const activeTurns = new Map<string, ActiveTurn>();
   const startingTurns = new Map<string, StartingTurn>();
@@ -1876,7 +1880,7 @@ export function createCodexAppServerManager(
     }
   };
 
-  const startTurn = async (
+  const startTurnOperation = async (
     input: StartCodexAppTurnPayload,
     ownerId: number | null = null,
   ): Promise<{
@@ -1884,6 +1888,9 @@ export function createCodexAppServerManager(
     codexTurnId: string;
     reusedThread: boolean;
   }> => {
+    if (disposed) {
+      throw new Error("Codex App Server manager is disposed");
+    }
     if (isPendingHistoryRevision(input.historyRevision)) {
       throw new CodexAppServerError(
         "Codex history revision uses a reserved internal prefix",
@@ -1954,6 +1961,23 @@ export function createCodexAppServerManager(
     } finally {
       startingTurns.delete(turnKey);
     }
+  };
+
+  const startTurn = (
+    input: StartCodexAppTurnPayload,
+    ownerId: number | null = null,
+  ): Promise<{
+    codexThreadId: string;
+    codexTurnId: string;
+    reusedThread: boolean;
+  }> => {
+    const operation = startTurnOperation(input, ownerId);
+    startTurnFlights.add(operation);
+    void operation.then(
+      () => startTurnFlights.delete(operation),
+      () => startTurnFlights.delete(operation),
+    );
+    return operation;
   };
 
   const interruptTurn = async (
@@ -2242,9 +2266,12 @@ export function createCodexAppServerManager(
     }
   };
 
-  const dispose = async (): Promise<void> => {
-    if (disposed) return;
+  const dispose = (): Promise<void> => {
+    if (disposeFlight) return disposeFlight;
     disposed = true;
+    for (const starting of startingTurns.values()) {
+      starting.interruptRequested = true;
+    }
     status = { ...status, state: "closing" };
     for (const pending of pendingRequests.values()) {
       clearTimeout(pending.timeout);
@@ -2255,14 +2282,21 @@ export function createCodexAppServerManager(
     connection = null;
     const flight = startFlight;
     const currentProcess = process;
-    await currentProcess?.dispose();
-    await flight?.catch(() => {});
-    if (process && process !== currentProcess) await process.dispose();
-    process = null;
-    activeTurns.clear();
-    startingTurns.clear();
-    completedTurns.clear();
-    status = { ...status, state: "stopped" };
+    const currentStartTurns = [...startTurnFlights];
+    disposeFlight = (async () => {
+      await currentProcess?.dispose();
+      await flight?.catch(() => {});
+      if (process && process !== currentProcess) await process.dispose();
+      await Promise.all(
+        currentStartTurns.map((operation) => operation.catch(() => {})),
+      );
+      process = null;
+      activeTurns.clear();
+      startingTurns.clear();
+      completedTurns.clear();
+      status = { ...status, state: "stopped" };
+    })();
+    return disposeFlight;
   };
 
   const createHandlers = (ownerId: number | null): ShellCommandHandlers => ({
@@ -2389,5 +2423,6 @@ export function createCodexAppServerManager(
     handleWorkspaceChanged,
     handleOwnerDestroyed,
     dispose,
+    quiesceForProfileEgress: dispose,
   };
 }

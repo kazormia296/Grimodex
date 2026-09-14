@@ -2130,6 +2130,7 @@ describe("NIR-1 router sender binding", () => {
       }),
       allowsBackendEvent: vi.fn(() => true),
       assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
     };
     registerIpcRouter(
       { sendChatMessage } as unknown as NapiBackendLike,
@@ -2170,6 +2171,7 @@ describe("NIR-1 router sender binding", () => {
       assertInvoke: vi.fn(),
       allowsBackendEvent: vi.fn(() => true),
       assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
     };
     registerIpcRouter(
       { saveAiSettings } as unknown as NapiBackendLike,
@@ -2272,6 +2274,8 @@ describe("NIR-1 router sender binding", () => {
       saveGlobalSettings: nativeTransport("saveGlobalSettings"),
     };
     const childDispatches: string[] = [];
+    const vivliostyleBuild = vi.fn(async () => "run-id");
+    const vivliostylePreviewStart = vi.fn(async () => null);
     const cliManager = createCliAiManager(() => undefined, {
       runner: {
         run: async () => {
@@ -2290,7 +2294,11 @@ describe("NIR-1 router sender binding", () => {
     );
     registerIpcRouter(
       nativeCalls as unknown as NapiBackendLike,
-      cliManager.handlers,
+      {
+        ...cliManager.handlers,
+        vivliostyle_build: vivliostyleBuild,
+        vivliostyle_preview_start: vivliostylePreviewStart,
+      },
       undefined,
       undefined,
       { active: false },
@@ -2318,6 +2326,14 @@ describe("NIR-1 router sender binding", () => {
       ["codex_app_get_status", { sessionId: undefined }],
       ["codex_app_list_models", { workspaceId: "other", retry: true }],
       ["codex_app_test_connection", { redirect: true }],
+      ["activate_license", { key: "arbitrary-plaintext-license-key" }],
+      ["revalidate_license", {}],
+      ["deactivate_license", {}],
+      [
+        "vivliostyle_build",
+        { files: [{ path: "sentinel.md", content: "sentinel" }] },
+      ],
+      ["vivliostyle_preview_start", { url: "https://sentinel.invalid" }],
       ["narrative_extraction_get_run_review_bundle", { messages: ["old"] }],
       ["project_snapshot_restore_context", { workspaceId: "other" }],
       ["lint_ignore_list", { projectId: "other" }],
@@ -2353,6 +2369,8 @@ describe("NIR-1 router sender binding", () => {
     }
     expect(nativeTransportCalls).toEqual([]);
     expect(childDispatches).toEqual([]);
+    expect(vivliostyleBuild).not.toHaveBeenCalled();
+    expect(vivliostylePreviewStart).not.toHaveBeenCalled();
 
     const save = await invokeHandler()(
       { sender: { id: 42 } },

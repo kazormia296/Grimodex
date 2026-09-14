@@ -2459,6 +2459,87 @@ describe("Codex App Server manager", () => {
     expect(process.disposeCalls).toBeGreaterThanOrEqual(1);
   });
 
+  it("quiesces a pending app-server start before the child can start", async () => {
+    let resolveProcess!: (process: FakeProcess) => void;
+    const process = new FakeProcess();
+    const manager = createCodexAppServerManager({
+      createProcess: () =>
+        new Promise((resolve) => {
+          resolveProcess = resolve;
+        }),
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+    });
+
+    const listing = manager.listModels();
+    await vi.waitFor(() => expect(resolveProcess).toBeTypeOf("function"));
+    const quiescing = manager.quiesceForProfileEgress();
+    resolveProcess(process);
+
+    await quiescing;
+    await expect(listing).rejects.toThrow("manager is disposed");
+    expect(process.startCalls).toBe(0);
+    expect(process.disposeCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it("quiesces an active app-server turn before activation resolves", async () => {
+    const process = new FakeProcess();
+    const events: unknown[] = [];
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+      broadcast: (_channel, payload) => events.push(payload),
+    });
+    await manager.startTurn(input("profile-egress-quiesce"));
+
+    await manager.quiesceForProfileEgress();
+    expect(process.disposeCalls).toBeGreaterThan(0);
+    const eventCount = events.length;
+    process.emitData(
+      JSON.stringify({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          turn: { id: "turn-1", status: "completed", items: [] },
+        },
+      }) + "\n",
+    );
+    expect(events).toHaveLength(eventCount);
+  });
+
+  it("quiesces an in-flight turn start before turn/start dispatch", async () => {
+    const process = new FakeProcess();
+    let resolveMcp!: (value: null) => void;
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+      getReadOnlyMcpServer: async () =>
+        new Promise((resolve) => {
+          resolveMcp = resolve;
+        }),
+    });
+    const starting = manager.startTurn(input("profile-egress-start"));
+    await vi.waitFor(() => expect(resolveMcp).toBeTypeOf("function"));
+
+    let quiesced = false;
+    const quiescing = manager.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    expect(quiesced).toBe(false);
+    resolveMcp(null);
+    await expect(starting).rejects.toThrow(/disposed|connection|interrupted/i);
+    await quiescing;
+    expect(quiesced).toBe(true);
+    expect(
+      process.writes.some((request) => request.method === "thread/start"),
+    ).toBe(false);
+    expect(
+      process.writes.some((request) => request.method === "turn/start"),
+    ).toBe(false);
+  });
+
   it("disposes the ready process after malformed server output", async () => {
     const process = new FakeProcess();
     const manager = createCodexAppServerManager({
