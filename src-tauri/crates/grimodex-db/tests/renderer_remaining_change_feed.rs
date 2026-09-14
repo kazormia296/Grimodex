@@ -1,6 +1,9 @@
 #[path = "../test-support/adapter.rs"]
 mod test_support;
 
+use grimodex_db::domain_writes::{
+    project_create, tree_node_create, ProjectCreatePayload, TreeNodeCreatePayload,
+};
 use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::narrative_extraction::{temporal_scene_patch, TemporalScenePatchPayload};
 use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
@@ -8,18 +11,56 @@ use grimodex_db::Database;
 
 fn fixture() -> Database {
     let db = test_support::current_schema_memory().expect("current-schema fixture");
-    db.with_conn(|conn| {
-        conn.execute_batch(
-            "INSERT INTO projects (id, title) VALUES ('p1', 'One'), ('p2', 'Two');
-             INSERT INTO tree_nodes
-               (id, project_id, node_type, title, sort_order, version)
-             VALUES
-               ('scene-p1', 'p1', 'scene', 'One', 'a0', 0),
-               ('scene-p2', 'p2', 'scene', 'Two', 'a0', 0);",
-        )?;
-        Ok(())
-    })
-    .expect("seed database");
+    for (project_id, title) in [("p1", "One"), ("p2", "Two")] {
+        project_create(
+            &db,
+            ProjectCreatePayload {
+                project_id: project_id.to_string(),
+                request_id: format!("fixture-project-{project_id}"),
+                session_id: "fixture-session".to_string(),
+                event_uid: format!("fixture-project-{project_id}-event"),
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                title: title.to_string(),
+                genre: None,
+                pov: None,
+                tense: None,
+                language: None,
+                style_guide: None,
+                ai_instructions: None,
+                outline: None,
+                target_readers: None,
+                created_at: "2026-08-13T00:00:00.000Z".to_string(),
+                updated_at: "2026-08-13T00:00:00.000Z".to_string(),
+            },
+        )
+        .expect("seed project through production writer");
+        tree_node_create(
+            &db,
+            TreeNodeCreatePayload {
+                id: format!("scene-{project_id}"),
+                project_id: project_id.to_string(),
+                request_id: format!("fixture-scene-{project_id}"),
+                session_id: "fixture-session".to_string(),
+                event_uid: format!("fixture-scene-{project_id}-event"),
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                parent_id: None,
+                node_type: "scene".to_string(),
+                title: title.to_string(),
+                sort_order: "a0".to_string(),
+                synopsis: None,
+                status: None,
+                source_uri: None,
+                source_mtime: None,
+                content: None,
+                canonical_payload: None,
+            },
+        )
+        .expect("seed scene through production writer");
+    }
     db
 }
 
@@ -66,8 +107,14 @@ fn temporal_scene_patch_is_atomic_idempotent_and_project_scoped() {
             |row| row.get(0),
         )?;
         let event_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM narrative_change_events
-              WHERE project_id = 'p1'",
+            "SELECT COUNT(*)
+               FROM narrative_change_events event
+               JOIN narrative_change_transactions feed_tx
+                 ON feed_tx.id = event.transaction_id
+              WHERE feed_tx.project_id = 'p1'
+                AND feed_tx.request_id = 'temporal-request-1'
+                AND json_extract(event.object_key_json, '$.kind')
+                    IN ('scene', 'scene-scope')",
             [],
             |row| row.get(0),
         )?;
@@ -77,7 +124,7 @@ fn temporal_scene_patch_is_atomic_idempotent_and_project_scoped() {
             [],
             |row| row.get(0),
         )?;
-        assert_eq!((transaction_count, event_count), (1, 1));
+        assert_eq!((transaction_count, event_count), (1, 2));
         assert_eq!(origin, "human");
         Ok(())
     })
