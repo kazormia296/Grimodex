@@ -1747,6 +1747,40 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(method).toHaveBeenCalledExactlyOnceWith(args);
   });
 
+  it("A1 scene scope read strips the main-only D2a caller identity before Native", async () => {
+    const method = vi.fn().mockResolvedValue(
+      '{"registry":{"registryVersion":"narrative-scene-scope-registry/1","timelineRefs":[],"worldlineRefs":[],"narrativeLayerRefs":[]},"registryRevision":1,"registrySourceToken":"sha256:0000000000000000000000000000000000000000000000000000000000000000","registryUpdatedAt":"2026-09-13T00:00:00.000Z","binding":{"projectId":"project-1","sceneId":"scene-1"}}',
+    );
+    const { backend } = fakeBackend({
+      narrativeSceneScopeRead: method,
+    });
+    const args = {
+      expectedWorkspacePath: "/workspace/project-1",
+      projectId: "project-1",
+      sceneId: "scene-1",
+      callerIdentity: {
+        profileId: "profile-1",
+        callerId: "caller-1",
+        callerEpoch: 2,
+        senderId: 7,
+        workspaceId: null,
+        sessionId: "session-1",
+      },
+    };
+
+    const env = await dispatchInvoke("narrative_scene_scope_read", args, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(env.ok).toBe(true);
+    expect(method).toHaveBeenCalledExactlyOnceWith({
+      expectedWorkspacePath: args.expectedWorkspacePath,
+      projectId: args.projectId,
+      sceneId: args.sceneId,
+    });
+  });
+
   it("A1 scene scope mutation は未知の引数を拒否し、typed payloadを一度だけ渡す", async () => {
     const method = vi.fn().mockResolvedValue(
       '{"binding":{"projectId":"project-1","sceneId":"scene-1","version":2}}',
@@ -1779,7 +1813,22 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         audience: { kind: "reader" },
       },
     };
-    const args = { expectedWorkspacePath: "/workspace/project-1", payload };
+    const args = {
+      expectedWorkspacePath: "/workspace/project-1",
+      payload,
+      callerIdentity: {
+        profileId: "profile-1",
+        callerId: "caller-1",
+        callerEpoch: 2,
+        senderId: 7,
+        workspaceId: null,
+        sessionId: "session-1",
+      },
+    };
+    const nativeArgs = {
+      expectedWorkspacePath: args.expectedWorkspacePath,
+      payload: args.payload,
+    };
 
     const env = await dispatchInvoke("narrative_scene_scope_update", args, {
       backend,
@@ -1789,7 +1838,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       ok: true,
       value: { binding: { projectId: "project-1", sceneId: "scene-1", version: 2 } },
     });
-    expect(method).toHaveBeenCalledExactlyOnceWith(args);
+    expect(method).toHaveBeenCalledExactlyOnceWith(nativeArgs);
 
     const rejected = await dispatchInvoke(
       "narrative_scene_scope_update",
@@ -1797,7 +1846,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { backend, shell: noShell },
     );
     expect(rejected.ok).toBe(false);
-    expect(method).toHaveBeenCalledExactlyOnceWith(args);
+    expect(method).toHaveBeenCalledExactlyOnceWith(nativeArgs);
   });
 
   it("semantic per-entity commands forward workspace/project authority before the entity id", async () => {

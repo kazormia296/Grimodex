@@ -6442,7 +6442,15 @@ function requireNir1PackingRequest(args: CommandArgs): CommandArgs {
 
 function requireSceneScopeReadRequest(args: CommandArgs): CommandArgs {
   const command = "narrative_scene_scope_read";
-  const allowedKeys = new Set(["expectedWorkspacePath", "projectId", "sceneId"]);
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "sceneId",
+    // Main-only D2a identity is checked by electron/main/profileEgress.ts;
+    // this Native A1 reader does not need it and must not forward it into its
+    // deny-unknown-fields request.
+    "callerIdentity",
+  ]);
   for (const key of Object.keys(args)) {
     if (!allowedKeys.has(key)) {
       throw new Error(`invalid args \`${key}\` for command \`${command}\`: unknown field`);
@@ -6456,7 +6464,14 @@ function requireSceneScopeReadRequest(args: CommandArgs): CommandArgs {
 }
 
 function requireSceneScopeMutationRequest(args: CommandArgs, command: string): CommandArgs {
-  const allowedKeys = new Set(["expectedWorkspacePath", "payload"]);
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "payload",
+    // Main-only D2a identity is checked by electron/main/profileEgress.ts;
+    // A1 writers remain Native-authority-bound without forwarding it into the
+    // deny-unknown-fields request.
+    "callerIdentity",
+  ]);
   for (const key of Object.keys(args)) {
     if (!allowedKeys.has(key)) {
       throw new Error(`invalid args \`${key}\` for command \`${command}\`: unknown field`);

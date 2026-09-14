@@ -193,6 +193,9 @@ describe("D2a profile egress gate", () => {
       "agent_snippet_create",
       "save_global_settings",
       "project_patch",
+      "narrative_scene_scope_read",
+      "narrative_scene_scope_update",
+      "narrative_scene_scope_registry_update",
     ]) {
       expect(() => gate.assertInvoke(command, {})).not.toThrow();
     }

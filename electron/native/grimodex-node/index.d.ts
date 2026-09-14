@@ -18,9 +18,15 @@ export declare class Backend {
    * is installed by Electron main.
    */
   initializeProfileEgress(): Promise<string>
-  /** Main-only registration of a main-issued caller identity. */
+  /**
+   * Main-only registration of one exact caller identity for this Backend
+   * process generation. Renderer IPC never exposes this method.
+   */
   registerProfileEgressCaller(identity: string): void
-  /** Main-only invalidation after the trusted workspace binding changes. */
+  /**
+   * Main-only invalidation when the trusted workspace binding changes.
+   * Renderer-provided identities cannot clear or retain Native registrations.
+   */
   invalidateProfileEgressCallers(): void
   /**
    * Main-process-only bridge used during the Electron v2 first-run
