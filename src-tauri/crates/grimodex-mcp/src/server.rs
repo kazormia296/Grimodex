@@ -1,14 +1,49 @@
 //! GrimodexServer – rmcp ServerHandler implementation.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ServerCapabilities, ServerInfo};
+use rmcp::service::RequestContext;
 use rmcp::{tool, tool_handler, tool_router, ErrorData};
 use rusqlite::Connection;
 
+use crate::profile_egress::ProfileEgressGuard;
 use crate::tools;
+
+const PROFILE_PLAINTEXT_TOOLS: &[&str] = &[
+    "list_projects",
+    "get_project",
+    "get_project_stats",
+    "list_tree",
+    "read_scene",
+    "read_scenes_batch",
+    "list_codex_entries",
+    "get_codex_entry",
+    "list_codex_tags",
+    "find_related_entries",
+    "search_codex_by_tags",
+    "get_chapter_summaries",
+    "list_open_foreshadows",
+    "get_foreshadow_detail",
+    "get_scene_timeline_neighbors",
+    "search_project",
+    "list_chat_sessions",
+    "read_chat_history",
+    "list_snippets",
+    "get_attribution_report",
+    "get_writing_context",
+    "list_events",
+    "get_event_detail",
+    "get_character_timeline",
+    "get_chronicle_state",
+];
+
+fn is_profile_plaintext_tool(tool_name: &str) -> bool {
+    PROFILE_PLAINTEXT_TOOLS.contains(&tool_name)
+}
 
 /// Map an internal error to a generic MCP error, logging the full detail to the
 /// server log (stderr + file) instead of returning it to the client.
@@ -43,6 +78,10 @@ pub struct GrimodexServer {
     /// Startup snapshot only; mutating tools call `reload_policy()`.
     #[allow(dead_code)]
     pub policy: grimodex_core::policy::AiPolicyToggles,
+    /// Read-only consumer of the Native-owned profile authority.  Isolated
+    /// unit-test constructors leave this absent so their in-memory fixtures
+    /// retain their existing semantics; production always supplies it.
+    profile_egress: Option<Arc<ProfileEgressGuard>>,
 }
 
 impl GrimodexServer {
@@ -55,18 +94,16 @@ impl GrimodexServer {
         session_id: String,
         policy: grimodex_core::policy::AiPolicyToggles,
     ) -> Self {
-        Self::new_with_license_file(
-            conn,
-            project_id,
+        Self {
+            conn: grimodex_db::Database::from_connection(conn),
+            current_project: Mutex::new(project_id),
             all_projects,
             readonly,
             session_id,
             policy,
-            // The convenience constructor is used by isolated tool tests.
-            // Production launchers always call `new_with_license_file` with
-            // their resolved app-data path.
-            None,
-        )
+            license_file_path: None,
+            profile_egress: None,
+        }
     }
 
     pub fn new_with_license_file(
@@ -78,6 +115,9 @@ impl GrimodexServer {
         policy: grimodex_core::policy::AiPolicyToggles,
         license_file_path: Option<PathBuf>,
     ) -> Self {
+        let profile_egress = Arc::new(ProfileEgressGuard::from_license_file(
+            license_file_path.as_deref(),
+        ));
         Self {
             conn: grimodex_db::Database::from_connection(conn),
             current_project: Mutex::new(project_id),
@@ -86,6 +126,18 @@ impl GrimodexServer {
             session_id,
             policy,
             license_file_path,
+            profile_egress: Some(profile_egress),
+        }
+    }
+
+    pub(crate) fn profile_egress_guard(&self) -> Option<Arc<ProfileEgressGuard>> {
+        self.profile_egress.as_ref().map(Arc::clone)
+    }
+
+    pub(crate) fn ensure_profile_plaintext_allowed(&self) -> Result<(), ErrorData> {
+        match &self.profile_egress {
+            Some(guard) => guard.ensure_plaintext_allowed(),
+            None => Ok(()),
         }
     }
 
@@ -575,6 +627,26 @@ impl GrimodexServer {
 
 #[tool_handler]
 impl rmcp::ServerHandler for GrimodexServer {
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<rmcp::RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let profile_plaintext_tool = is_profile_plaintext_tool(request.name.as_ref());
+        if profile_plaintext_tool {
+            self.ensure_profile_plaintext_allowed()?;
+        }
+        let tool_context = ToolCallContext::new(self, request, context);
+        let result = Self::tool_router().call(tool_context).await;
+        // The authority is Native-written via atomic replacement.  A pending
+        // or restricted transition may land while the DB read is in flight;
+        // never return the already-built plaintext result after that change.
+        if profile_plaintext_tool && result.is_ok() {
+            self.ensure_profile_plaintext_allowed()?;
+        }
+        result
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
     }
@@ -638,5 +710,20 @@ mod license_tests {
             .join("license.json");
         let server = server_with_license_path(path);
         assert!(server.ensure_license_allows_write().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod profile_egress_tests {
+    use super::is_profile_plaintext_tool;
+
+    #[test]
+    fn only_read_tools_are_profile_plaintext_gated() {
+        assert!(is_profile_plaintext_tool("read_scene"));
+        assert!(is_profile_plaintext_tool("read_chat_history"));
+        assert!(is_profile_plaintext_tool("get_writing_context"));
+        assert!(!is_profile_plaintext_tool("propose_scene_body"));
+        assert!(!is_profile_plaintext_tool("create_snippet"));
+        assert!(!is_profile_plaintext_tool("unknown-tool"));
     }
 }

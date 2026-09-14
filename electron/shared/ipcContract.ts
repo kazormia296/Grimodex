@@ -6275,6 +6275,27 @@ function parseWire(json: string): unknown {
   return JSON.parse(json) as unknown;
 }
 
+/**
+ * `reply_to_annotation` commits a local DB row, but Native's read-back row
+ * contains the reply body and other annotation plaintext.  Keep the local
+ * mutation usable while returning only the opaque generated id over IPC.
+ */
+function parseOpaqueReplyToAnnotation(json: string): unknown {
+  const value = parseWire(json);
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof (value as Record<string, unknown>).id === "string" &&
+    (value as Record<string, string>).id.trim() ===
+      (value as Record<string, string>).id &&
+    (value as Record<string, string>).id.length > 0
+  ) {
+    return { id: (value as Record<string, string>).id };
+  }
+  throw new Error("reply_to_annotation returned no opaque id");
+}
+
 function parseEntitySeedWire(json: string): unknown {
   if (
     json.length > MAX_ENTITY_SEED_RESPONSE_BYTES ||
@@ -8999,9 +9020,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   },
   reply_to_annotation: {
     // FE は snake_case キーを `args` にネストして送る（ReplyToAnnotationArgs は
-    // rename_all 無し）。オブジェクトをそのまま渡す。
+    // rename_all 無し）。Nativeのread-back rowは本文を含むため、返り値は
+    // opaqueな生成済みIDだけに絞る。
     run: async (b, a) =>
-      parseWire(
+      parseOpaqueReplyToAnnotation(
         await b.replyToAnnotation(
           requirePresent(a, "args", "reply_to_annotation"),
         ),

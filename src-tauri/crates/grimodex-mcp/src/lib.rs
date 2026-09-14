@@ -2,6 +2,7 @@ mod chronicle_snapshot;
 mod convert;
 mod db;
 mod license_gate;
+mod profile_egress;
 mod sanitize;
 mod server;
 mod tools;
@@ -143,8 +144,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         license_file_path,
     );
     let (stdin, stdout) = rmcp::transport::io::stdio();
-    let service = rmcp::serve_server(handler, (stdin, stdout)).await?;
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let watcher = handler
+        .profile_egress_guard()
+        .map(|guard| tokio::spawn(guard.watch(cancellation.clone())));
+    let service =
+        rmcp::service::serve_server_with_ct(handler, (stdin, stdout), cancellation).await?;
     service.waiting().await?;
+    if let Some(watcher) = watcher {
+        watcher.abort();
+        let _ = watcher.await;
+    }
 
     Ok(())
 }

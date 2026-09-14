@@ -222,6 +222,20 @@ describe("D2a profile egress gate", () => {
     ).not.toThrow();
   });
 
+  it("keeps the DB-only annotation reply mutation available while restricted", async () => {
+    const gate = await createProfileEgressGate(backend());
+    expect(() =>
+      gate.assertInvoke("reply_to_annotation", {
+        args: {
+          parent_id: "a1",
+          content: "返信",
+          author_role: "user",
+          project_id: "p1",
+        },
+      }),
+    ).not.toThrow();
+  });
+
   it("fails closed when the Native startup barrier is unavailable", async () => {
     const gate = await createProfileEgressGate(null);
     expect(gate.unavailable).toBe(true);

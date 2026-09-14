@@ -823,7 +823,9 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     ) as never,
     replyToAnnotation: record(
       "replyToAnnotation",
-      Promise.resolve('{"id":"a2","parent_id":"a1"}'),
+      Promise.resolve(
+        '{"id":"a2","parent_id":"a1","content":"返信本文","sceneId":"s1"}',
+      ),
     ) as never,
     savePostEffectAnnotations: record(
       "savePostEffectAnnotations",
@@ -9197,7 +9199,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(upd).toEqual({ ok: true, value: { id: "a1", status: "dismissed" } });
   });
 
-  it("reply_to_annotation: snake_case の {args} をネストしたまま素通し", async () => {
+  it("reply_to_annotation: snake_case の {args} を渡し、返り値は opaque id に絞る", async () => {
     const { backend, calls } = fakeBackend();
     const args = {
       parent_id: "a1",
@@ -9211,7 +9213,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { backend, shell: noShell },
     );
     expect(calls).toEqual([{ method: "replyToAnnotation", args: [args] }]);
-    expect(env).toEqual({ ok: true, value: { id: "a2", parent_id: "a1" } });
+    expect(env).toEqual({ ok: true, value: { id: "a2" } });
   });
 
   it("save_post_effect_annotations: unit 返りは null（annotations 配列を素通し）", async () => {
