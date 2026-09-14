@@ -2867,14 +2867,6 @@ impl Backend {
     /// is installed by Electron main.
     #[napi]
     pub async fn initialize_profile_egress(&self) -> Result<String> {
-        // Serialize the entire Native transition against MCP's shared output
-        // lease. The lease must be acquired before the first state mutation;
-        // it is held through the final in-flight stop publication below.
-        let _publication_lease = self
-            .state
-            .profile_egress
-            .acquire_publication_exclusive()
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
         // Load persisted state first. Only the first explicit publication
         // transitions a fresh profile; ordinary restarts must not rotate or
         // re-activate the restriction.

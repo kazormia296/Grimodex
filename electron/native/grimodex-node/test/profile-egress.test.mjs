@@ -12,12 +12,31 @@ const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { Backend } = require(join(here, "..", "grimodex-node.node"));
 
+async function boundedStartup(promise, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} exceeded bounded startup window`)),
+          5000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 test("D2a profile restriction survives restart without workspace SQLite", async () => {
   const root = mkdtempSync(join(tmpdir(), "grimodex-node-d2a-"));
   const appData = join(root, "app-data");
   try {
     const first = new Backend(appData);
-    const activated = JSON.parse(await first.initializeProfileEgress());
+    const activated = JSON.parse(
+      await boundedStartup(first.initializeProfileEgress(), "first Native startup"),
+    );
     assert.equal(activated.restricted, true);
     assert.equal(activated.handlesInvalidated, true);
     assert.equal(activated.inFlightStopped, true);
@@ -35,7 +54,9 @@ test("D2a profile restriction survives restart without workspace SQLite", async 
     assert.equal(existsSync(join(appData, "global-settings.json")), false);
 
     const second = new Backend(appData);
-    const restarted = JSON.parse(await second.initializeProfileEgress());
+    const restarted = JSON.parse(
+      await boundedStartup(second.initializeProfileEgress(), "restarted Native startup"),
+    );
     assert.equal(restarted.profileId, activated.profileId);
     assert.equal(restarted.callerEpoch, activated.callerEpoch);
     assert.equal(restarted.restricted, true);

@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context};
-use grimodex_core::profile_egress::{PublicationLease, PublicationLockMode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -238,22 +237,6 @@ impl ProfileEgressState {
 
     pub fn status(&self) -> ProfileEgressStatus {
         status_locked(&self.lock())
-    }
-
-    /// Acquire the cross-process publication lease before changing or
-    /// publishing the restriction. MCP holds the shared side until its
-    /// complete framed response is emitted, so the native transition cannot
-    /// publish `inFlightStopped` while a plaintext response is still writing.
-    pub fn acquire_publication_exclusive(&self) -> anyhow::Result<PublicationLease> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-        }
-        PublicationLease::acquire(&self.path, PublicationLockMode::Exclusive).with_context(|| {
-            format!(
-                "acquire profile publication lease beside {}",
-                self.path.display()
-            )
-        })
     }
 
     /// Reserve one legacy Native dispatch while it performs its local work.

@@ -46,7 +46,6 @@ pub mod narrative_scope_authority_basis;
 pub mod narrative_scope_dependency_projection;
 pub mod pm_text;
 pub mod policy;
-pub mod profile_egress;
 pub mod snapshots;
 pub mod undo_journal;
 pub mod workspace_schema;
