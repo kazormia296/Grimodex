@@ -11,6 +11,9 @@ mod tools;
 // call `grimodex_mcp::Cli::parse_from(...)` without taking a direct clap dep.
 pub use clap::Parser;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use rmcp::transport::async_rw::AsyncRwTransport;
 
 #[derive(Parser, Debug)]
 #[command(name = "grimodex-mcp", about = "Grimodex MCP server")]
@@ -144,17 +147,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         license_file_path,
     );
     let (stdin, stdout) = rmcp::transport::io::stdio();
-    let cancellation = tokio_util::sync::CancellationToken::new();
-    let watcher = handler
+    let egress_guard = handler
         .profile_egress_guard()
-        .map(|guard| tokio::spawn(guard.watch(cancellation.clone())));
-    let service =
-        rmcp::service::serve_server_with_ct(handler, (stdin, stdout), cancellation).await?;
+        .ok_or_else(|| anyhow::anyhow!("profile egress authority is not configured"))?;
+    let transport = AsyncRwTransport::<rmcp::RoleServer, _, _>::new_server(stdin, stdout);
+    let transport =
+        profile_egress::ProfileOutputTransport::new(transport, Arc::clone(&egress_guard));
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let watcher = tokio::spawn(egress_guard.watch(cancellation.clone()));
+    let service = rmcp::service::serve_server_with_ct(handler, transport, cancellation).await?;
     service.waiting().await?;
-    if let Some(watcher) = watcher {
-        watcher.abort();
-        let _ = watcher.await;
-    }
+    watcher.abort();
+    let _ = watcher.await;
 
     Ok(())
 }

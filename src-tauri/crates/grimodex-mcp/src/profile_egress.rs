@@ -2,25 +2,31 @@
 //!
 //! Electron Native owns and persists `profile-egress.json`.  Standalone MCP
 //! must observe that same file, but it must not create a second authority or
-//! write an exception into it.  The path is derived from the established
-//! `license.json` path so existing Electron-generated MCP configurations and
-//! the legacy default executable path keep their current launch contract.
+//! write an exception into it.  The path is fixed to the packaged
+//! OS/profile app-data root; the `--license-file` option remains a licensing
+//! input only and cannot select a second egress authority.
 
+use std::collections::HashMap;
 use std::fs::{self, Metadata};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rmcp::ErrorData;
+use grimodex_core::profile_egress::{PublicationLease, PublicationLockMode, PROFILE_EGRESS_FILE};
+use rmcp::model::{JsonRpcMessage, RequestId};
+use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::transport::Transport;
+use rmcp::{ErrorData, RoleServer};
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 pub const D2A_EGRESS_DENIED_MARKER: &str = "D2A_EGRESS_DENIED:";
 
-const PROFILE_EGRESS_FILE: &str = "profile-egress.json";
 const STATE_VERSION: u32 = 2;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_PENDING_PUBLICATIONS: usize = 4096;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,23 +53,19 @@ struct ProfileEgressSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Observation {
     Valid(ProfileEgressSnapshot),
-    /// No authority has ever been published at the established legacy path.
-    /// This is the one compatibility case for a pre-D2a direct invocation.
-    LegacyUnrestricted,
     Unavailable,
 }
 
 /// Consumer-side view of the profile authority.
 ///
-/// This type never writes the authority.  A missing file at a known legacy
-/// path is the only compatibility case that remains unrestricted: it proves
-/// that this profile has not published the D2a authority yet.  A malformed,
-/// inconsistent, or unresolvable authority is represented as `Unavailable`
-/// and denied before any workspace plaintext is returned.
+/// This type never writes the authority.  A missing, malformed, inconsistent,
+/// or unresolvable authority is represented as `Unavailable` and denied before
+/// any workspace plaintext is returned.
 pub struct ProfileEgressGuard {
     path: Option<PathBuf>,
     observation: Mutex<Observation>,
     session_invalidated: AtomicBool,
+    pending_publications: Mutex<HashMap<RequestId, usize>>,
 }
 
 impl std::fmt::Debug for ProfileEgressGuard {
@@ -76,26 +78,37 @@ impl std::fmt::Debug for ProfileEgressGuard {
     }
 }
 
-/// Resolve the profile authority beside an already-resolved license file.
-///
-/// `license_file` is supplied by Electron main for its configured user-data
-/// directory.  When the legacy executable resolves the default license path,
-/// the same sibling convention points at the same profile state.  No new
-/// command-line argument or alternate storage location is introduced.
-pub(crate) fn profile_path_for_license(license_file: Option<&Path>) -> Option<PathBuf> {
-    license_file
-        .and_then(Path::parent)
-        .map(|parent| parent.join(PROFILE_EGRESS_FILE))
+/// Resolve the one canonical OS/profile authority.  Electron's packaged
+/// userData path uses the same identifier.  Dev/custom userData has no
+/// authenticated mapping here, so MCP remains closed there.
+pub(crate) fn canonical_profile_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|data_dir| {
+        data_dir
+            .join(grimodex_core::license::APP_IDENTIFIER)
+            .join(PROFILE_EGRESS_FILE)
+    })
 }
 
 impl ProfileEgressGuard {
+    pub(crate) fn canonical() -> Self {
+        Self::from_path(canonical_profile_path())
+    }
+
+    /// Keep the licensing CLI argument at the server boundary, but never let
+    /// it select the D2a profile authority.  This adapter is intentionally
+    /// explicit so a launcher/config value cannot become a second authority.
     pub(crate) fn from_license_file(license_file: Option<&Path>) -> Self {
-        let path = profile_path_for_license(license_file);
+        let _ = license_file;
+        Self::canonical()
+    }
+
+    fn from_path(path: Option<PathBuf>) -> Self {
         let observation = load_observation(path.as_deref());
         Self {
             path,
             observation: Mutex::new(observation),
             session_invalidated: AtomicBool::new(false),
+            pending_publications: Mutex::new(HashMap::new()),
         }
     }
 
@@ -120,7 +133,7 @@ impl ProfileEgressGuard {
     }
 
     /// Deny every profile plaintext read unless the persisted authority is a
-    /// valid, currently unrestricted snapshot.  The refresh immediately before
+    /// valid, complete restricted snapshot.  The refresh immediately before
     /// dispatch closes the file-replacement race between polling ticks.
     pub(crate) fn ensure_plaintext_allowed(&self) -> Result<(), ErrorData> {
         self.refresh();
@@ -131,11 +144,12 @@ impl ProfileEgressGuard {
         let allowed = !self.session_invalidated()
             && matches!(
                 &*current,
-                Observation::LegacyUnrestricted
-                    | Observation::Valid(ProfileEgressSnapshot {
-                        restricted: false,
-                        ..
-                    })
+                Observation::Valid(ProfileEgressSnapshot {
+                    restricted: true,
+                    handles_invalidated: true,
+                    in_flight_stopped: true,
+                    ..
+                })
             );
         if allowed {
             Ok(())
@@ -147,6 +161,58 @@ impl ProfileEgressGuard {
                 None,
             ))
         }
+    }
+
+    /// Mark one workspace-plaintext response until the output transport is
+    /// about to emit its complete JSON-RPC frame.
+    pub(crate) fn register_publication(&self, id: RequestId) -> Result<(), ErrorData> {
+        let mut pending = match self.pending_publications.lock() {
+            Ok(guard) => guard,
+            Err(poison) => poison.into_inner(),
+        };
+        let pending_count = pending.values().copied().sum::<usize>();
+        if pending_count >= MAX_PENDING_PUBLICATIONS {
+            return Err(ErrorData::internal_error(
+                "MCP plaintext publication queue is full".to_string(),
+                None,
+            ));
+        }
+        *pending.entry(id).or_insert(0) += 1;
+        Ok(())
+    }
+
+    fn take_publication(&self, id: &RequestId) -> bool {
+        let mut pending = match self.pending_publications.lock() {
+            Ok(guard) => guard,
+            Err(poison) => poison.into_inner(),
+        };
+        let Some(count) = pending.get_mut(id) else {
+            return false;
+        };
+        if *count == 1 {
+            pending.remove(id);
+        } else {
+            *count -= 1;
+        }
+        true
+    }
+
+    pub(crate) fn discard_publication(&self, id: &RequestId) {
+        let _ = self.take_publication(id);
+    }
+
+    async fn acquire_publication_shared(&self) -> io::Result<PublicationLease> {
+        let Some(path) = self.path.clone() else {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "canonical profile publication path is unavailable",
+            ));
+        };
+        tokio::task::spawn_blocking(move || {
+            PublicationLease::acquire(&path, PublicationLockMode::Shared)
+        })
+        .await
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?
     }
 
     /// Watch the same persistent state for the lifetime of one stdio session.
@@ -173,6 +239,67 @@ impl ProfileEgressGuard {
     }
 }
 
+/// Output-side linearization point for workspace plaintext.  Native's
+/// exclusive lease cannot be acquired while this wrapper holds the shared
+/// lease, so the recheck and complete framed write are one publication unit.
+pub(crate) struct ProfileOutputTransport<T> {
+    inner: T,
+    guard: Arc<ProfileEgressGuard>,
+}
+
+impl<T> ProfileOutputTransport<T> {
+    pub(crate) fn new(inner: T, guard: Arc<ProfileEgressGuard>) -> Self {
+        Self { inner, guard }
+    }
+}
+
+impl<T> Transport<RoleServer> for ProfileOutputTransport<T>
+where
+    T: Transport<RoleServer, Error = io::Error> + 'static,
+{
+    type Error = io::Error;
+
+    fn send(
+        &mut self,
+        item: TxJsonRpcMessage<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+        let publication_id = match &item {
+            JsonRpcMessage::Response(response) => Some(response.id.clone()),
+            JsonRpcMessage::Error(error) => error.id.clone(),
+            JsonRpcMessage::Request(_) | JsonRpcMessage::Notification(_) => None,
+        };
+        let gated = publication_id
+            .as_ref()
+            .is_some_and(|id| self.guard.take_publication(id));
+        let guard = Arc::clone(&self.guard);
+        // AsyncRwTransport's send future owns the framed writer lock.  It is
+        // created before the async block but does no I/O until awaited.
+        let send = self.inner.send(item);
+        async move {
+            let _publication_lease = if gated {
+                let lease = guard.acquire_publication_shared().await?;
+                guard.ensure_plaintext_allowed().map_err(|error| {
+                    io::Error::new(io::ErrorKind::PermissionDenied, error.to_string())
+                })?;
+                Some(lease)
+            } else {
+                None
+            };
+            send.await
+        }
+    }
+
+    fn receive(
+        &mut self,
+    ) -> impl std::future::Future<Output = Option<RxJsonRpcMessage<RoleServer>>> + Send {
+        self.inner.receive()
+    }
+
+    fn close(&mut self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        self.inner.close()
+    }
+}
+
 fn load_observation(path: Option<&Path>) -> Observation {
     let Some(path) = path else {
         return Observation::Unavailable;
@@ -185,7 +312,7 @@ fn load_observation(path: Option<&Path>) -> Observation {
     let before = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Observation::LegacyUnrestricted;
+            return Observation::Unavailable
         }
         Err(_) => return Observation::Unavailable,
     };
@@ -213,7 +340,7 @@ fn load_observation(path: Option<&Path>) -> Observation {
         return Observation::Unavailable;
     }
 
-    // Match Native's v1 compatibility defaults.  For an unrestricted
+    // Match Native's v1 compatibility defaults. For a non-restricted
     // snapshot, any invalidation bit or an unfinished stop barrier is
     // inconsistent and therefore fails closed rather than widening access.
     let handles_invalidated = saved.handles_invalidated.unwrap_or(saved.restricted);
@@ -267,9 +394,14 @@ mod tests {
         (path.clone(), Cleanup(path))
     }
 
-    fn write_state(path: &Path, profile_id: &str, epoch: u64, restricted: bool) {
-        let handles_invalidated = restricted;
-        let in_flight_stopped = true;
+    fn write_state(
+        path: &Path,
+        profile_id: &str,
+        epoch: u64,
+        restricted: bool,
+        handles_invalidated: bool,
+        in_flight_stopped: bool,
+    ) {
         fs::write(
             path,
             serde_json::json!({
@@ -286,33 +418,57 @@ mod tests {
     }
 
     #[test]
-    fn existing_mcp_config_resolves_the_authority_sibling() {
+    fn canonical_authority_ignores_alternate_license_argument() {
         let (directory, _cleanup) = fixture_dir();
         let license = directory.join("license.json");
-        assert_eq!(
-            profile_path_for_license(Some(&license)),
-            Some(directory.join(PROFILE_EGRESS_FILE))
+        let guard = ProfileEgressGuard::from_license_file(Some(&license));
+        assert_eq!(guard.path, canonical_profile_path());
+        assert!(guard
+            .path
+            .as_deref()
+            .is_some_and(|path| path.ends_with(Path::new(PROFILE_EGRESS_FILE))));
+        assert!(
+            guard
+                .path
+                .as_deref()
+                .is_none_or(|path| !path.starts_with(&directory)),
+            "an untrusted --license-file path must not select the authority"
         );
     }
 
     #[test]
-    fn missing_authority_preserves_legacy_unrestricted_start() {
+    fn missing_authority_denies_plaintext() {
         let (directory, _cleanup) = fixture_dir();
-        let license = directory.join("license.json");
         let profile = directory.join(PROFILE_EGRESS_FILE);
-        let missing = ProfileEgressGuard::from_license_file(Some(&license));
-        assert!(missing.ensure_plaintext_allowed().is_ok());
-
-        fs::write(&profile, "{\"schemaVersion\":2,\"restricted\":false}")
-            .expect("write inconsistent fixture");
-        let inconsistent = ProfileEgressGuard::from_license_file(Some(&license));
-        assert!(inconsistent.ensure_plaintext_allowed().is_err());
+        let missing = ProfileEgressGuard::from_path(Some(profile));
+        assert!(missing.ensure_plaintext_allowed().is_err());
     }
 
     #[test]
-    fn missing_authority_location_fails_closed() {
-        let guard = ProfileEgressGuard::from_license_file(None);
+    fn malformed_authority_denies_plaintext() {
+        let (directory, _cleanup) = fixture_dir();
+        let profile = directory.join(PROFILE_EGRESS_FILE);
+        fs::write(&profile, "not-json").expect("write malformed fixture");
+        let guard = ProfileEgressGuard::from_path(Some(profile));
         assert!(guard.ensure_plaintext_allowed().is_err());
+    }
+
+    #[test]
+    fn forged_unrestricted_authority_denies_plaintext() {
+        let (directory, _cleanup) = fixture_dir();
+        let profile = directory.join(PROFILE_EGRESS_FILE);
+        write_state(&profile, "profile-1", 1, false, false, true);
+        let guard = ProfileEgressGuard::from_path(Some(profile));
+        assert!(guard.ensure_plaintext_allowed().is_err());
+    }
+
+    #[test]
+    fn complete_restricted_authority_allows_plaintext() {
+        let (directory, _cleanup) = fixture_dir();
+        let profile = directory.join(PROFILE_EGRESS_FILE);
+        write_state(&profile, "profile-1", 1, true, true, true);
+        let guard = ProfileEgressGuard::from_path(Some(profile));
+        assert!(guard.ensure_plaintext_allowed().is_ok());
     }
 
     #[cfg(unix)]
@@ -321,27 +477,25 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let (directory, _cleanup) = fixture_dir();
-        let license = directory.join("license.json");
         let target = directory.join("authority-target.json");
         let profile = directory.join(PROFILE_EGRESS_FILE);
-        write_state(&target, "profile-1", 1, false);
+        write_state(&target, "profile-1", 1, true, true, true);
         symlink(&target, &profile).expect("symlink fixture");
 
-        let guard = ProfileEgressGuard::from_license_file(Some(&license));
+        let guard = ProfileEgressGuard::from_path(Some(profile));
         assert!(guard.ensure_plaintext_allowed().is_err());
     }
 
     #[test]
     fn restart_reads_the_same_restricted_epoch_without_widening_access() {
         let (directory, _cleanup) = fixture_dir();
-        let license = directory.join("license.json");
         let profile = directory.join(PROFILE_EGRESS_FILE);
-        write_state(&profile, "profile-1", 7, true);
+        write_state(&profile, "profile-1", 7, true, true, true);
 
-        let first = ProfileEgressGuard::from_license_file(Some(&license));
-        let second = ProfileEgressGuard::from_license_file(Some(&license));
-        assert!(first.ensure_plaintext_allowed().is_err());
-        assert!(second.ensure_plaintext_allowed().is_err());
+        let first = ProfileEgressGuard::from_path(Some(profile.clone()));
+        let second = ProfileEgressGuard::from_path(Some(profile));
+        assert!(first.ensure_plaintext_allowed().is_ok());
+        assert!(second.ensure_plaintext_allowed().is_ok());
         assert!(!first.session_invalidated());
         assert!(!second.session_invalidated());
     }
@@ -349,23 +503,10 @@ mod tests {
     #[test]
     fn pending_restriction_is_denied_before_stop_barrier_completes() {
         let (directory, _cleanup) = fixture_dir();
-        let license = directory.join("license.json");
         let profile = directory.join(PROFILE_EGRESS_FILE);
-        fs::write(
-            &profile,
-            serde_json::json!({
-                "schemaVersion": STATE_VERSION,
-                "profileId": "profile-1",
-                "callerEpoch": 2,
-                "restricted": true,
-                "handlesInvalidated": true,
-                "inFlightStopped": false,
-            })
-            .to_string(),
-        )
-        .expect("write pending profile egress fixture");
+        write_state(&profile, "profile-1", 2, true, true, false);
 
-        let guard = ProfileEgressGuard::from_license_file(Some(&license));
+        let guard = ProfileEgressGuard::from_path(Some(profile));
         assert!(guard.ensure_plaintext_allowed().is_err());
         assert!(!guard.session_invalidated());
     }
@@ -373,17 +514,16 @@ mod tests {
     #[tokio::test]
     async fn already_running_session_is_invalidated_when_restriction_changes() {
         let (directory, _cleanup) = fixture_dir();
-        let license = directory.join("license.json");
         let profile = directory.join(PROFILE_EGRESS_FILE);
-        write_state(&profile, "profile-1", 1, false);
-        let guard = Arc::new(ProfileEgressGuard::from_license_file(Some(&license)));
+        write_state(&profile, "profile-1", 1, true, true, true);
+        let guard = Arc::new(ProfileEgressGuard::from_path(Some(profile.clone())));
         guard
             .ensure_plaintext_allowed()
-            .expect("unrestricted fixture allows plaintext");
+            .expect("complete authority allows plaintext");
 
         let cancellation = CancellationToken::new();
         let watcher = tokio::spawn(Arc::clone(&guard).watch(cancellation.clone()));
-        write_state(&profile, "profile-1", 2, true);
+        write_state(&profile, "profile-1", 2, false, false, true);
         tokio::time::timeout(Duration::from_secs(2), cancellation.cancelled())
             .await
             .expect("authority transition cancels the running session");
@@ -393,18 +533,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_unrestricted_session_stops_when_authority_is_published() {
+    async fn running_session_stops_when_authority_is_deleted() {
         let (directory, _cleanup) = fixture_dir();
-        let license = directory.join("license.json");
         let profile = directory.join(PROFILE_EGRESS_FILE);
-        let guard = Arc::new(ProfileEgressGuard::from_license_file(Some(&license)));
+        write_state(&profile, "profile-1", 1, true, true, true);
+        let guard = Arc::new(ProfileEgressGuard::from_path(Some(profile.clone())));
         guard
             .ensure_plaintext_allowed()
-            .expect("missing authority keeps pre-D2a direct invocation usable");
+            .expect("complete authority allows plaintext");
 
         let cancellation = CancellationToken::new();
         let watcher = tokio::spawn(Arc::clone(&guard).watch(cancellation.clone()));
-        write_state(&profile, "profile-1", 1, true);
+        fs::remove_file(&profile).expect("delete authority fixture");
         tokio::time::timeout(Duration::from_secs(2), cancellation.cancelled())
             .await
             .expect("publishing the authority cancels the legacy session");

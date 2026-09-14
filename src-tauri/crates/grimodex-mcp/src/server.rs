@@ -13,36 +13,86 @@ use rusqlite::Connection;
 use crate::profile_egress::ProfileEgressGuard;
 use crate::tools;
 
-const PROFILE_PLAINTEXT_TOOLS: &[&str] = &[
-    "list_projects",
-    "get_project",
-    "get_project_stats",
-    "list_tree",
-    "read_scene",
-    "read_scenes_batch",
-    "list_codex_entries",
-    "get_codex_entry",
-    "list_codex_tags",
-    "find_related_entries",
-    "search_codex_by_tags",
-    "get_chapter_summaries",
-    "list_open_foreshadows",
-    "get_foreshadow_detail",
-    "get_scene_timeline_neighbors",
-    "search_project",
-    "list_chat_sessions",
-    "read_chat_history",
-    "list_snippets",
-    "get_attribution_report",
-    "get_writing_context",
-    "list_events",
-    "get_event_detail",
-    "get_character_timeline",
-    "get_chronicle_state",
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProfileToolDisposition {
+    /// The result can contain workspace database/content plaintext and must be
+    /// published under the Native-owned profile lease.
+    Plaintext,
+    /// Mutation results contain only opaque identifiers/status/version values;
+    /// they do not disclose workspace content to the MCP client.
+    OpaqueMutation,
+}
+
+/// Exhaustive profile egress ledger.  Keep this set equal to the generated
+/// router inventory below; an unlisted tool is denied by default before its
+/// handler runs.
+const PROFILE_TOOL_LEDGER: &[(&str, ProfileToolDisposition)] = &[
+    ("list_projects", ProfileToolDisposition::Plaintext),
+    ("select_project", ProfileToolDisposition::Plaintext),
+    ("get_project", ProfileToolDisposition::Plaintext),
+    ("get_project_stats", ProfileToolDisposition::Plaintext),
+    ("list_tree", ProfileToolDisposition::Plaintext),
+    ("read_scene", ProfileToolDisposition::Plaintext),
+    ("read_scenes_batch", ProfileToolDisposition::Plaintext),
+    ("list_codex_entries", ProfileToolDisposition::Plaintext),
+    ("get_codex_entry", ProfileToolDisposition::Plaintext),
+    ("list_codex_tags", ProfileToolDisposition::Plaintext),
+    ("find_related_entries", ProfileToolDisposition::Plaintext),
+    ("search_codex_by_tags", ProfileToolDisposition::Plaintext),
+    ("get_chapter_summaries", ProfileToolDisposition::Plaintext),
+    ("list_open_foreshadows", ProfileToolDisposition::Plaintext),
+    ("get_foreshadow_detail", ProfileToolDisposition::Plaintext),
+    ("create_foreshadow", ProfileToolDisposition::OpaqueMutation),
+    ("update_foreshadow", ProfileToolDisposition::OpaqueMutation),
+    (
+        "get_scene_timeline_neighbors",
+        ProfileToolDisposition::Plaintext,
+    ),
+    ("search_project", ProfileToolDisposition::Plaintext),
+    ("list_chat_sessions", ProfileToolDisposition::Plaintext),
+    ("read_chat_history", ProfileToolDisposition::Plaintext),
+    ("list_snippets", ProfileToolDisposition::Plaintext),
+    ("create_snippet", ProfileToolDisposition::OpaqueMutation),
+    ("get_attribution_report", ProfileToolDisposition::Plaintext),
+    ("create_codex_entry", ProfileToolDisposition::OpaqueMutation),
+    ("update_codex_entry", ProfileToolDisposition::OpaqueMutation),
+    ("get_writing_context", ProfileToolDisposition::Plaintext),
+    ("propose_scene_body", ProfileToolDisposition::OpaqueMutation),
+    ("list_events", ProfileToolDisposition::Plaintext),
+    ("get_event_detail", ProfileToolDisposition::Plaintext),
+    ("get_character_timeline", ProfileToolDisposition::Plaintext),
+    ("get_chronicle_state", ProfileToolDisposition::Plaintext),
+    ("create_event", ProfileToolDisposition::OpaqueMutation),
+    ("update_event", ProfileToolDisposition::OpaqueMutation),
+    ("delete_event", ProfileToolDisposition::OpaqueMutation),
+    ("stamp_scene_event", ProfileToolDisposition::OpaqueMutation),
+    (
+        "unstamp_scene_event",
+        ProfileToolDisposition::OpaqueMutation,
+    ),
+    (
+        "set_event_participants",
+        ProfileToolDisposition::OpaqueMutation,
+    ),
+    ("add_event_relation", ProfileToolDisposition::OpaqueMutation),
+    (
+        "remove_event_relation",
+        ProfileToolDisposition::OpaqueMutation,
+    ),
 ];
 
+fn profile_tool_disposition(tool_name: &str) -> Option<ProfileToolDisposition> {
+    PROFILE_TOOL_LEDGER
+        .iter()
+        .find_map(|(name, disposition)| (*name == tool_name).then_some(*disposition))
+}
+
+#[cfg(test)]
 fn is_profile_plaintext_tool(tool_name: &str) -> bool {
-    PROFILE_PLAINTEXT_TOOLS.contains(&tool_name)
+    matches!(
+        profile_tool_disposition(tool_name),
+        Some(ProfileToolDisposition::Plaintext)
+    )
 }
 
 /// Map an internal error to a generic MCP error, logging the full detail to the
@@ -632,17 +682,41 @@ impl rmcp::ServerHandler for GrimodexServer {
         request: CallToolRequestParams,
         context: RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let profile_plaintext_tool = is_profile_plaintext_tool(request.name.as_ref());
+        let disposition = profile_tool_disposition(request.name.as_ref()).ok_or_else(|| {
+            ErrorData::invalid_params(
+                format!(
+                    "{} unknown MCP tool is denied by the profile egress ledger",
+                    crate::profile_egress::D2A_EGRESS_DENIED_MARKER
+                ),
+                None,
+            )
+        })?;
+        let profile_plaintext_tool = disposition == ProfileToolDisposition::Plaintext;
+        let request_id = context.id.clone();
         if profile_plaintext_tool {
             self.ensure_profile_plaintext_allowed()?;
+            if let Some(guard) = &self.profile_egress {
+                guard.register_publication(request_id.clone())?;
+            }
         }
         let tool_context = ToolCallContext::new(self, request, context);
         let result = Self::tool_router().call(tool_context).await;
-        // The authority is Native-written via atomic replacement.  A pending
-        // or restricted transition may land while the DB read is in flight;
-        // never return the already-built plaintext result after that change.
-        if profile_plaintext_tool && result.is_ok() {
-            self.ensure_profile_plaintext_allowed()?;
+        if profile_plaintext_tool {
+            // The authority is Native-written via atomic replacement.  A
+            // pending or restricted transition may land while the DB read is
+            // in flight; never return the already-built plaintext result after
+            // that change.  Failed tool calls are opaque errors and must not
+            // leave an output-lease entry behind.
+            if result.is_ok() {
+                if let Err(error) = self.ensure_profile_plaintext_allowed() {
+                    if let Some(guard) = &self.profile_egress {
+                        guard.discard_publication(&request_id);
+                    }
+                    return Err(error);
+                }
+            } else if let Some(guard) = &self.profile_egress {
+                guard.discard_publication(&request_id);
+            }
         }
         result
     }
@@ -715,15 +789,46 @@ mod license_tests {
 
 #[cfg(test)]
 mod profile_egress_tests {
-    use super::is_profile_plaintext_tool;
+    use super::{
+        is_profile_plaintext_tool, profile_tool_disposition, GrimodexServer,
+        ProfileToolDisposition, PROFILE_TOOL_LEDGER,
+    };
+    use std::collections::HashSet;
 
     #[test]
-    fn only_read_tools_are_profile_plaintext_gated() {
+    fn plaintext_tools_are_profile_gated_and_unknown_tools_fail_closed() {
         assert!(is_profile_plaintext_tool("read_scene"));
         assert!(is_profile_plaintext_tool("read_chat_history"));
         assert!(is_profile_plaintext_tool("get_writing_context"));
+        assert!(is_profile_plaintext_tool("select_project"));
         assert!(!is_profile_plaintext_tool("propose_scene_body"));
         assert!(!is_profile_plaintext_tool("create_snippet"));
         assert!(!is_profile_plaintext_tool("unknown-tool"));
+    }
+
+    #[test]
+    fn profile_egress_ledger_matches_every_router_tool_exactly() {
+        let ledger_names: HashSet<&str> =
+            PROFILE_TOOL_LEDGER.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            ledger_names.len(),
+            PROFILE_TOOL_LEDGER.len(),
+            "the profile egress ledger must not contain duplicate tool names"
+        );
+        let router_names: HashSet<String> = GrimodexServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect();
+        assert_eq!(ledger_names.len(), router_names.len());
+        assert_eq!(
+            ledger_names,
+            router_names.iter().map(String::as_str).collect(),
+            "every generated router tool must have an explicit egress disposition"
+        );
+        assert_eq!(
+            profile_tool_disposition("select_project"),
+            Some(ProfileToolDisposition::Plaintext)
+        );
     }
 }
