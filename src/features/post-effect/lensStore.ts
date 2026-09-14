@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { isD2aEgressDenied } from "@/lib/tauri";
 import { listSceneLensForProject } from "./api";
 import type { SceneLensRecord } from "./types";
 
@@ -27,6 +28,10 @@ export const useLensStore = create<LensState>()((set) => ({
       }
       set({ bySceneId: map });
     } catch (e) {
+      if (isD2aEgressDenied(e)) {
+        set({ bySceneId: new Map() });
+        return;
+      }
       console.error("lens load error", e);
     }
   },

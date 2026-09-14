@@ -366,36 +366,54 @@ const PROTECTED_DB_TABLES = new Set([
   "post_effect_annotations",
 ]);
 
-const LOCAL_DB_TABLES = new Set([
-  "app_settings",
-]);
+function normalizeSqlTableName(reference: string): string | undefined {
+  const parts = reference.split(".");
+  const table = parts.at(-1)?.trim();
+  if (!table) return undefined;
+  return table.replace(/^(?:["`]|\[)|(?:["`]|\])$/g, "").toLowerCase();
+}
 
-function dbReadRoute(sql: unknown): D2aRoute {
+function sqlTableNames(sql: string): Array<string | undefined> {
+  return [
+    ...sql.matchAll(
+      /\b(?:from|join|into|update|delete\s+from)\s+((?:[\w]+|"[^"]+"|`[^`]+`|\[[^\]]+\])(?:\s*\.\s*(?:[\w]+|"[^"]+"|`[^`]+`|\[[^\]]+\]))?)/gi,
+    ),
+  ].map((match) => normalizeSqlTableName(match[1] ?? ""));
+}
+
+function dbReadRoute(sql: unknown, hasBoundCaller = false): D2aRoute {
   if (typeof sql !== "string") return "unclassified";
-  const tableNames = [
-    ...sql.matchAll(/\b(?:from|join|into|update)\s+([\w.]+)/gi),
-  ].map((match) => match[1]?.split(".").at(-1)?.toLowerCase());
+  const tableNames = sqlTableNames(sql);
   if (tableNames.some((table) => table && PROTECTED_DB_TABLES.has(table))) {
     return "plaintext-publication";
   }
   if (
     /^\s*(?:select|pragma|with)\b/i.test(sql) &&
     tableNames.length > 0 &&
-    tableNames.every((table) => table && LOCAL_DB_TABLES.has(table))
+    hasBoundCaller
   ) {
     return "internal";
   }
   return "unclassified";
 }
 
-function dbStatementRoute(sql: unknown): D2aRoute {
+function dbStatementRoute(sql: unknown, hasBoundCaller = false): D2aRoute {
   if (typeof sql !== "string") return "unclassified";
-  if (/^\s*(select|pragma|with)\b/i.test(sql)) return dbReadRoute(sql);
-  return /^\s*(insert|update|delete|replace|create|alter|drop|vacuum|attach|detach)\b/i.test(
-    sql,
-  )
-    ? "native-mutation"
-    : "unclassified";
+  const tableNames = sqlTableNames(sql);
+  if (tableNames.some((table) => table && PROTECTED_DB_TABLES.has(table))) {
+    return "plaintext-publication";
+  }
+  if (/^\s*(select|pragma|with)\b/i.test(sql)) {
+    return dbReadRoute(sql, hasBoundCaller);
+  }
+  if (
+    /^\s*(insert|update|delete|replace|create|alter|drop)\b/i.test(sql) &&
+    hasBoundCaller &&
+    tableNames.length > 0
+  ) {
+    return "native-mutation";
+  }
+  return "unclassified";
 }
 
 function typedResultRoute(command: string): D2aRoute | undefined {
@@ -428,9 +446,10 @@ function commandRoute(command: string, args: CommandArgs): D2aRoute {
   const explicit = DENIED_COMMANDS.get(command);
   if (explicit) return explicit;
   if (ALLOWED_STOP_COMMANDS.has(command)) return "native-mutation";
+  const hasBoundCaller =
+    args.callerIdentity !== undefined && args.callerIdentity !== null;
   if (command === "db_execute") {
-    const method = args.method;
-    return method === "run" ? "native-mutation" : dbReadRoute(args.sql);
+    return dbStatementRoute(args.sql, hasBoundCaller);
   }
   if (command === "db_execute_batch") {
     const statements = args.statements;
@@ -440,7 +459,7 @@ function commandRoute(command: string, args: CommandArgs): D2aRoute {
         return "unclassified" as const;
       }
       const sql = (statement as Record<string, unknown>).sql;
-      return dbStatementRoute(sql);
+      return dbStatementRoute(sql, hasBoundCaller);
     });
     if (routes.some((route) => route === "plaintext-publication")) {
       return "plaintext-publication";
@@ -551,6 +570,17 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     }
     const route = commandRoute(command, args);
     const callerIdentity = args.callerIdentity;
+    const requiresBoundCaller =
+      command === "db_execute" || command === "db_execute_batch";
+    if (
+      requiresBoundCaller &&
+      (callerIdentity === undefined || callerIdentity === null)
+    ) {
+      throw denied(
+        "unclassified",
+        `route ${command} requires a main-issued caller identity`,
+      );
+    }
     if (callerIdentity !== undefined && callerIdentity !== null) {
       if (
         typeof callerIdentity !== "object" ||

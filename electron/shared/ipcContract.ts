@@ -411,8 +411,18 @@ export interface NapiBackendLike {
   registerProfileEgressCaller?(identity: string): void;
   /** Main-only invalidation after the trusted workspace binding changes. */
   invalidateProfileEgressCallers?(): void;
-  dbExecute(sql: string, params: unknown, method: string): Promise<string>;
-  dbExecuteBatch(statements: unknown): Promise<string>;
+  /**
+   * Main-issued JSON identity for the restricted profile's generic DB seam.
+   * Renderer claims are ignored by Electron main; Native validates the exact
+   * registered tuple before dispatch.
+   */
+  dbExecute(
+    sql: string,
+    params: unknown,
+    method: string,
+    callerIdentity?: string,
+  ): Promise<string>;
+  dbExecuteBatch(statements: unknown, callerIdentity?: string): Promise<string>;
   narrativeRuntimePolicyGet?(): Promise<string>;
   narrativeRuntimePolicySet?(payload: unknown): Promise<string>;
   editorStickyList?(projectId: string, documentKey: string): Promise<string>;
@@ -6514,25 +6524,48 @@ function requireSceneScopeMutationRequest(args: CommandArgs, command: string): C
   };
 }
 
+function callerIdentityWire(args: CommandArgs): string | undefined {
+  if (args.callerIdentity === undefined) return undefined;
+  try {
+    const serialized = JSON.stringify(args.callerIdentity);
+    if (serialized === undefined) {
+      throw new Error("caller identity is not JSON-serializable");
+    }
+    return serialized;
+  } catch (error) {
+    throw new Error(
+      `invalid args \`callerIdentity\` for database command: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 /** napi 実装済みコマンドの明示写像（Phase 3 の各バッチで追加）。 */
 export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   db_execute: {
-    run: async (b, a) =>
-      parseWire(
-        await b.dbExecute(
-          requireString(a, "sql", "db_execute"),
-          requirePresent(a, "params", "db_execute"),
-          requireString(a, "method", "db_execute"),
-        ),
-      ),
+    run: async (b, a) => {
+      const sql = requireString(a, "sql", "db_execute");
+      const params = requirePresent(a, "params", "db_execute");
+      const method = requireString(a, "method", "db_execute");
+      const callerIdentity = callerIdentityWire(a);
+      const raw =
+        callerIdentity === undefined
+          ? await b.dbExecute(sql, params, method)
+          : await b.dbExecute(sql, params, method, callerIdentity);
+      return parseWire(raw);
+    },
   },
   db_execute_batch: {
-    run: async (b, a) =>
-      parseWire(
-        await b.dbExecuteBatch(
-          requirePresent(a, "statements", "db_execute_batch"),
-        ),
-      ),
+    run: async (b, a) => {
+      const statements = requirePresent(a, "statements", "db_execute_batch");
+      const callerIdentity = callerIdentityWire(a);
+      const raw =
+        callerIdentity === undefined
+          ? await b.dbExecuteBatch(statements)
+          : await b.dbExecuteBatch(statements, callerIdentity);
+      return parseWire(raw);
+    },
   },
   narrative_runtime_policy_get: {
     run: async (b) =>

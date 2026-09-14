@@ -145,14 +145,14 @@ export declare class Backend {
    * は "run" | "get" | "all" | "values"。
    * 返り値: `QueryResult` の JSON 文字列 `{"rows":[…]}` (Tauri ワイヤと同形)。
    */
-  dbExecute(sql: string, params: any, method: string): Promise<string>
+  dbExecute(sql: string, params: any, method: string, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * 複数文を単一トランザクションで実行 (BEGIN IMMEDIATE、途中失敗で全
    * ROLLBACK — grimodex-db の `execute_batch_tx`)。オートセーブの通り道。
    * `statements` は `[{ sql, params, method }, …]`。
    * 返り値: 最終文の rows を載せた `QueryResult` の JSON 文字列。
    */
-  dbExecuteBatch(statements: any): Promise<string>
+  dbExecuteBatch(statements: any, callerIdentity?: string | undefined | null): Promise<string>
   /** Read Native-owned Narrative runtime policy (Release Gate B Foundation). */
   narrativeRuntimePolicyGet(): Promise<string>
   /** CAS update for Native-owned Narrative runtime policy. */

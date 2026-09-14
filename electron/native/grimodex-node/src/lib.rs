@@ -2595,6 +2595,21 @@ fn caller_identity_from_args(
     from_wire("callerIdentity", value.clone()).map_err(app_err_to_napi)
 }
 
+fn caller_identity_from_wire(
+    serialized: Option<String>,
+) -> Result<Option<profile_egress::CallerIdentity>> {
+    serialized
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|error| {
+                Error::from_reason(format!(
+                    "{} caller identity is malformed: {error}",
+                    profile_egress::D2A_EGRESS_DENIED_MARKER
+                ))
+            })
+        })
+        .transpose()
+}
+
 struct RevalidatedNarrativeWorkspace<'a> {
     _open_guard: std::sync::MutexGuard<'a, ()>,
     authority: PinnedWorkspaceDb,
@@ -4139,9 +4154,16 @@ impl Backend {
         sql: String,
         params: serde_json::Value,
         method: String,
+        caller_identity: Option<String>,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
+        let caller_identity = caller_identity_from_wire(caller_identity)?;
         run_blocking(move || {
+            let dispatch = state
+                .profile_egress
+                .begin_dispatch(caller_identity.as_ref())
+                .map_err(AppError::Anyhow)?;
+            dispatch.ensure_open().map_err(AppError::Anyhow)?;
             let params = params_array(params)?;
             with_db_state(&state.ws, |db| {
                 let rows = if state.profile_egress.status().restricted {
@@ -4162,9 +4184,19 @@ impl Backend {
     /// `statements` は `[{ sql, params, method }, …]`。
     /// 返り値: 最終文の rows を載せた `QueryResult` の JSON 文字列。
     #[napi]
-    pub async fn db_execute_batch(&self, statements: serde_json::Value) -> Result<String> {
+    pub async fn db_execute_batch(
+        &self,
+        statements: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
         let state = Arc::clone(&self.state);
+        let caller_identity = caller_identity_from_wire(caller_identity)?;
         run_blocking(move || {
+            let dispatch = state
+                .profile_egress
+                .begin_dispatch(caller_identity.as_ref())
+                .map_err(AppError::Anyhow)?;
+            dispatch.ensure_open().map_err(AppError::Anyhow)?;
             let statements: Vec<BatchStatement> = from_wire("statements", statements)?;
             with_db_state(&state.ws, |db| {
                 let rows = if state.profile_egress.status().restricted {

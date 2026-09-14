@@ -16,6 +16,7 @@ import type {
 } from "./types";
 import { UNDO_ABSORB_WINDOW_MS } from "./types";
 import { isCreateResultEntityPresent } from "@/lib/createResultMetadata";
+import { isD2aEgressDenied } from "@/lib/tauri";
 import {
   captureMutationAuthority,
   isCurrentMutationAuthority,
@@ -192,8 +193,10 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
         isCurrentMutationAuthority(authority)
       ) {
         set({ isLoading: false });
-        toast.error(i18next.t("trashBin.loadFailed"));
-        debugLog.error("TrashBinStore", "loadItems", errorDetail(e));
+        if (!isD2aEgressDenied(e)) {
+          toast.error(i18next.t("trashBin.loadFailed"));
+          debugLog.error("TrashBinStore", "loadItems", errorDetail(e));
+        }
       }
       throw e;
     }

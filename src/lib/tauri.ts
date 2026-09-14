@@ -17,6 +17,39 @@ export { isElectron } from "./shell";
 
 const IPC_TIMEOUT_MS = 10_000;
 
+const D2A_EGRESS_DENIED_MARKER = "D2A_EGRESS_DENIED:";
+
+/**
+ * D2a denials may be wrapped by Drizzle's query error before reaching a
+ * feature store. Walk the standard `cause` chain so expected restricted
+ * optional reads can degrade without being reported as runtime failures.
+ */
+export function isD2aEgressDenied(error: unknown): boolean {
+  const seen = new Set<object>();
+  let current: unknown = error;
+  while (current !== null && current !== undefined) {
+    if (typeof current === "string") {
+      return current.includes(D2A_EGRESS_DENIED_MARKER);
+    }
+    if (typeof current !== "object") return false;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    if (
+      "message" in current &&
+      String((current as { readonly message?: unknown }).message ?? "").includes(
+        D2A_EGRESS_DENIED_MARKER,
+      )
+    ) {
+      return true;
+    }
+    current =
+      "cause" in current
+        ? (current as { readonly cause?: unknown }).cause
+        : undefined;
+  }
+  return false;
+}
+
 /** AI inference can take several minutes on local hardware (Ollama etc.) */
 const AI_IPC_TIMEOUT_MS = 300_000; // 5 minutes
 

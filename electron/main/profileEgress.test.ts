@@ -188,6 +188,7 @@ describe("D2a profile egress gate", () => {
 
   it("keeps native-only saves and stop controls available", async () => {
     const gate = await createProfileEgressGate(backend());
+    const callerIdentity = gate.issueCallerIdentity(11);
     for (const command of [
       "save_scene_body_bundle",
       "agent_snippet_create",
@@ -201,25 +202,80 @@ describe("D2a profile egress gate", () => {
     }
     expect(() =>
       gate.assertInvoke("db_execute", {
+        callerIdentity,
         method: "all",
         sql: "SELECT key, value FROM app_settings ORDER BY key",
       }),
     ).not.toThrow();
     expect(() =>
       gate.assertInvoke("db_execute", {
+        callerIdentity,
         method: "run",
         sql: "UPDATE app_settings SET value = ? WHERE key = ?",
       }),
     ).not.toThrow();
     expect(() =>
       gate.assertInvoke("db_execute", {
+        callerIdentity,
         method: "all",
         sql: "SELECT id, title FROM projects ORDER BY id",
       }),
-    ).toThrow(new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`));
+    ).not.toThrow();
     expect(() =>
       gate.assertInvoke("abort_chat_stream", { streamId: "s1" }),
     ).not.toThrow();
+  });
+
+  it("allows trusted Electron project listing while denying egress routes", async () => {
+    const gate = await createProfileEgressGate(backend());
+    const callerIdentity = gate.issueCallerIdentity(11);
+
+    expect(() =>
+      gate.assertInvoke("db_execute", {
+        callerIdentity,
+        method: "all",
+        sql: `
+          SELECT "projects"."id"
+          FROM "projects"
+          WHERE NOT EXISTS (
+            SELECT "project_settings"."project_id"
+            FROM "project_settings"
+            WHERE "project_settings"."project_id" = "projects"."id"
+          )
+        `,
+      }),
+    ).not.toThrow();
+
+    for (const [command, args] of [
+      ["send_chat_message", {}],
+      ["send_cli_chat_stream", {}],
+      ["get_mcp_config", {}],
+      ["fts_search", {}],
+      ["db_execute", { method: "all", sql: "SELECT body FROM messages" }],
+      ["db_execute", { method: "all", sql: "SELECT 1" }],
+    ] as const) {
+      expect(() =>
+        gate.assertInvoke(command, { ...args, callerIdentity }),
+      ).toThrow(new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`));
+    }
+  });
+
+  it("requires the main-issued identity for generic DB operations", async () => {
+    const gate = await createProfileEgressGate(backend());
+    expect(() =>
+      gate.assertInvoke("db_execute", {
+        method: "all",
+        sql: "SELECT id FROM projects",
+      }),
+    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
+    const callerIdentity = gate.issueCallerIdentity(11);
+    expect(() =>
+      gate.assertInvoke("db_execute", {
+        callerIdentity,
+        method: "all",
+        sql: "SELECT 1",
+      }),
+    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
   });
 
   it("keeps the DB-only annotation reply mutation available while restricted", async () => {

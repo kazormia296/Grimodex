@@ -326,29 +326,33 @@ fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
     }
 }
 
-// Profile-restricted renderer SQL is allowed to read or mutate only the
-// app-level settings and SQLite schema bookkeeping. Project, scene, Codex,
-// event, and every other workspace table can contain model-visible material;
-// they remain Native typed-writer-only. SQLite's authorizer supplies the
-// actual table names, so quoted identifiers, CTEs, subqueries, and
-// INSERT ... SELECT cannot bypass classification with spelling changes.
-// Everything else, including a newly introduced table, is fail-closed.
-const D2A_LOCAL_TABLES: &[&str] = &[
-    "app_settings",
-    "sqlite_master",
-    "sqlite_schema",
-    "sqlite_sequence",
+// Profile-restricted renderer SQL keeps the existing renderer authorizer for
+// ordinary Electron UI CRUD. D2a adds a small denylist for plaintext surfaces
+// that must not be returned through generic SQL; it deliberately does not try
+// to maintain a workspace-table allowlist. SQLite's authorizer supplies the
+// actual table/column names, so quoted identifiers, CTEs, subqueries, and
+// INSERT ... SELECT cannot bypass these checks with spelling changes.
+const D2A_PROTECTED_PLAINTEXT_TABLES: &[&str] = &[
+    "chat_messages",
+    "chat_message_prompts",
+    "chat_sessions",
+    "messages",
+    "ai_audit_events",
+    "narrative_extraction_artifacts",
+    "narrative_extraction_runs",
+    "narrative_proposal_revisions",
+    "narrative_proposal_decisions",
+    "post_effect_runs",
+    "post_effect_annotations",
 ];
 
-fn d2a_table_is_local(table_name: &str) -> bool {
+fn d2a_table_name(table_name: &str) -> &str {
     let normalized = table_name
         .rsplit('.')
         .next()
         .unwrap_or(table_name)
         .trim_matches(|character| matches!(character, '`' | '"' | '[' | ']'));
-    D2A_LOCAL_TABLES
-        .iter()
-        .any(|table| table.eq_ignore_ascii_case(normalized))
+    normalized
 }
 
 fn renderer_profile_egress_sql_rejection(ctx: &AuthContext<'_>) -> Option<String> {
@@ -362,15 +366,39 @@ fn renderer_profile_egress_sql_rejection(ctx: &AuthContext<'_>) -> Option<String
         ));
     }
     match &ctx.action {
-        AuthAction::Read { table_name, .. } if !d2a_table_is_local(table_name) => Some(format!(
-            "{RENDERER_PROFILE_EGRESS_ERROR}: restricted or unknown plaintext read from {table_name}"
-        )),
+        AuthAction::Read {
+            table_name,
+            column_name,
+        } if D2A_PROTECTED_PLAINTEXT_TABLES
+            .iter()
+            .any(|table| table.eq_ignore_ascii_case(d2a_table_name(table_name))) =>
+        {
+            Some(format!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: protected plaintext read from {table_name}.{column_name}"
+            ))
+        }
+        AuthAction::Read {
+            table_name,
+            column_name,
+        } if d2a_table_name(table_name).eq_ignore_ascii_case("change_events")
+            && column_name.eq_ignore_ascii_case("payload") =>
+        {
+            Some(format!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: change_events.payload is not published through generic SQL"
+            ))
+        }
         AuthAction::Delete { table_name }
         | AuthAction::Insert { table_name }
         | AuthAction::Update { table_name, .. }
-            if !d2a_table_is_local(table_name) => Some(format!(
-                "{RENDERER_PROFILE_EGRESS_ERROR}: restricted or unknown DML target {table_name}"
-            )),
+            if D2A_PROTECTED_PLAINTEXT_TABLES
+                .iter()
+                .any(|table| table.eq_ignore_ascii_case(d2a_table_name(table_name)))
+                || d2a_table_name(table_name).eq_ignore_ascii_case("change_events") =>
+        {
+            Some(format!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: protected DML target {table_name}"
+            ))
+        }
         _ => None,
     }
 }
@@ -1075,6 +1103,12 @@ mod tests {
         db.execute("CREATE TABLE d2a_unknown (value TEXT)", &[], "run")
             .expect("trusted unknown schema setup");
         db.execute(
+            "CREATE TABLE change_events (sequence INTEGER, domain TEXT, payload TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted change event schema setup");
+        db.execute(
             "CREATE TEMP TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)",
             &[],
             "run",
@@ -1086,6 +1120,25 @@ mod tests {
             "run",
         )
         .expect("trusted restricted seed");
+        db.execute(
+            "INSERT INTO change_events (sequence, domain, payload) VALUES (1, 'editor', '{\"text\":\"private\"}')",
+            &[],
+            "run",
+        )
+        .expect("trusted change event seed");
+
+        let rows = db
+            .execute_renderer_profile_egress("SELECT id FROM projects", &[], "all")
+            .expect("ordinary workspace reads remain available");
+        assert!(rows.is_empty());
+        let rows = db
+            .execute_renderer_profile_egress(
+                "SELECT domain, sequence FROM change_events",
+                &[],
+                "all",
+            )
+            .expect("change event metadata read remains available");
+        assert_eq!(rows.len(), 1);
 
         let error = db
             .execute_renderer_profile_egress("SELECT content FROM messages", &[], "all")
@@ -1108,25 +1161,35 @@ mod tests {
             "WITH source AS (SELECT content FROM messages) SELECT content FROM source",
             "SELECT value FROM (SELECT content AS value FROM messages)",
             "SELECT value FROM app_settings WHERE value IN (SELECT content FROM messages)",
-            "SELECT value FROM d2a_unknown",
-            "INSERT INTO d2a_unknown (value) VALUES ('unknown')",
-            "UPDATE d2a_unknown SET value = 'unknown'",
-            "DELETE FROM d2a_unknown",
             "UPDATE app_settings SET value = (SELECT content FROM messages)",
             "WITH source AS (SELECT content FROM messages) INSERT INTO app_settings (key, value) SELECT 'leak', value FROM source",
+            "SELECT payload FROM change_events",
+            "SELECT * FROM change_events",
+            "INSERT INTO change_events (sequence, domain, payload) VALUES (2, 'editor', 'private')",
         ] {
             let error = db
                 .execute_renderer_profile_egress(sql, &[], "all")
-                .expect_err("D2a must reject restricted and unknown table access");
+                .expect_err("D2a must reject protected plaintext access");
             assert!(
                 error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
                 "unexpected error for {sql}: {error}"
             );
         }
 
+        // There is intentionally no workspace-table allowlist here. Main's
+        // issued caller binding and route ledger decide whether a generic
+        // renderer query is trusted; this layer closes known plaintext
+        // surfaces and dangerous SQLite operations.
+        db.execute_renderer_profile_egress(
+            "INSERT INTO d2a_unknown (value) VALUES ('local')",
+            &[],
+            "run",
+        )
+        .expect("ordinary workspace DML remains available");
+
         let error = db
             .execute_renderer_profile_egress(
-                "INSERT INTO projects (id, value) VALUES (1, 'local') RETURNING value",
+                "INSERT INTO d2a_unknown (value) VALUES ('local') RETURNING value",
                 &[],
                 "all",
             )

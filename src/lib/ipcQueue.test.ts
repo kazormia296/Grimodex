@@ -123,6 +123,21 @@ describe("enqueueIpc", () => {
     vi.useRealTimers();
   });
 
+  it("ignores an expected D2a denial while draining strict quiescence", async () => {
+    const caller = enqueueIpc(
+      "foreshadow_get_scene_context",
+      async () => {
+        throw new Error("D2A_EGRESS_DENIED: plaintext-publication");
+      },
+      null,
+    );
+
+    await expect(
+      flushQuiescenceProviderStage("ipc-actual-tasks"),
+    ).resolves.toBeUndefined();
+    await expect(caller).rejects.toThrow("D2A_EGRESS_DENIED");
+  });
+
   it("reserves a slot for mutations when three timed-out reads never settle", async () => {
     vi.useFakeTimers();
     const readGates = Array.from({ length: 4 }, () => {

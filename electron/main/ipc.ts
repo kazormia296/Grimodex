@@ -50,7 +50,10 @@ import {
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
 import { createRelatedScenesSearchAuthority } from "./relatedScenesSearchAuthority.js";
 import { createRelatedScenesReconciler } from "./relatedScenesReconciler.js";
-import type { ProfileEgressGate } from "./profileEgress.js";
+import type {
+  MainIssuedCallerIdentity,
+  ProfileEgressGate,
+} from "./profileEgress.js";
 
 const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_create",
@@ -976,12 +979,21 @@ async function policyAllowsAgentTool(
   backend: NapiBackendLike,
   projectId: string,
   policy: AgentAuthorityPolicy,
+  callerIdentity?: MainIssuedCallerIdentity,
 ): Promise<boolean> {
-  const raw = await backend.dbExecute(
-    "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
-    [projectId],
-    "get",
-  );
+  const raw =
+    callerIdentity === undefined
+      ? await backend.dbExecute(
+          "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+          [projectId],
+          "get",
+        )
+      : await backend.dbExecute(
+          "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+          [projectId],
+          "get",
+          JSON.stringify(callerIdentity),
+        );
   const parsed = JSON.parse(raw) as { rows?: unknown };
   const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
   if (rows.length === 0) return false;
@@ -1496,6 +1508,7 @@ async function issueAgentAuthorityCapabilitiesForSender(
   args: CommandArgs,
   response: unknown,
   backend: NapiBackendLike | null,
+  callerIdentity?: MainIssuedCallerIdentity,
 ): Promise<unknown> {
   if (!backend || !isRecord(args.auditContext)) return response;
   if (args.auditContext.pathId !== "chat_agent_main") return response;
@@ -1525,7 +1538,14 @@ async function issueAgentAuthorityCapabilitiesForSender(
     ) {
       continue;
     }
-    if (!(await policyAllowsAgentTool(backend, projectId, definition.policy))) {
+    if (
+      !(await policyAllowsAgentTool(
+        backend,
+        projectId,
+        definition.policy,
+        callerIdentity,
+      ))
+    ) {
       continue;
     }
     const canonicalInputDigest = canonicalAgentToolInputDigest(
@@ -2005,8 +2025,17 @@ export function registerIpcRouter(
         const callerIdentity = profileEgress?.issueCallerIdentity(
           event.sender.id,
         );
+        // Keep the main-issued identity available to the profile gate and the
+        // generic DB adapter without changing the enumerable wire shape of
+        // typed commands. A number of existing Native requests deliberately
+        // reject unknown fields, so an enumerable authority sidecar would
+        // make otherwise valid UI calls fail their exact-key validation.
         const dispatchArgs = callerIdentity
-          ? { ...boundArgs, callerIdentity }
+          ? Object.defineProperty({ ...boundArgs }, "callerIdentity", {
+              value: callerIdentity,
+              enumerable: false,
+              configurable: true,
+            })
           : boundArgs;
         try {
           profileEgress?.assertInvoke(cmd, dispatchArgs);
@@ -2024,6 +2053,7 @@ export function registerIpcRouter(
               agentArgs,
               response,
               backend,
+              callerIdentity,
             ),
         });
         if (envelope.ok && typeof boundArgs.ownerKey === "string") {
