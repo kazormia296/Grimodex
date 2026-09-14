@@ -2893,7 +2893,7 @@ impl Backend {
             .profile_egress
             .confirm_in_flight_stopped()
             .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-        debug_assert_eq!(status.in_flight_stopped, true);
+        debug_assert!(status.in_flight_stopped);
         let mut json =
             serde_json::to_value(status).map_err(|error| Error::from_reason(error.to_string()))?;
         if let Some(object) = json.as_object_mut() {
