@@ -5,6 +5,7 @@ use grimodex_core::canonical_json_digest;
 use grimodex_db::narrative_extraction::{
     read_revision_material_membership, MaterialMembershipRead,
 };
+use grimodex_db::Database;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -269,6 +270,9 @@ fn duplicate_window_in_resealed_plan_rejects_two_window_membership() {
 #[test]
 fn normal_scope_dependencies_are_healthy_in_project_verify_before_canonical_cutover() {
     let fixture = Fixture::new();
+    let db = Database::new(&fixture.path).expect("open disposable fixture through Database");
+    db.migrate().expect("migrate and backfill disposable fixture");
+    drop(db);
     let conn =
         Connection::open_with_flags(&fixture.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .expect("read only");
