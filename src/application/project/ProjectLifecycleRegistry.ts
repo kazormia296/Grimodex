@@ -73,6 +73,15 @@ export interface ProjectLifecycleReloadResult {
 
 export interface ProjectLifecycleRegistryOptions {
   optionalConcurrency?: number;
+  /**
+   * Classify an optional failure as an expected empty/degraded result. This
+   * hook is intentionally limited to optional hydration; critical and
+   * activation failures remain visible to the caller.
+   */
+  isExpectedOptionalFailure?: (
+    participant: ProjectLifecycleParticipant,
+    error: unknown,
+  ) => boolean;
   onOptionalFailure?: (
     participant: ProjectLifecycleParticipant,
     error: unknown,
@@ -177,6 +186,7 @@ async function runInBatches(
   participants: readonly ProjectLifecycleParticipant[],
   context: ProjectLifecycleContext,
   concurrency: number,
+  isExpectedFailure: ProjectLifecycleRegistryOptions["isExpectedOptionalFailure"],
   onFailure: ProjectLifecycleRegistryOptions["onOptionalFailure"],
   timingObserver: ProjectLifecycleTimingObserver | undefined,
 ): Promise<ProjectLifecycleFailure[]> {
@@ -197,6 +207,14 @@ async function runInBatches(
     results.forEach((result, index) => {
       if (result.status === "rejected") {
         const participant = batch[index]!;
+        let expected = false;
+        try {
+          expected = isExpectedFailure?.(participant, result.reason) ?? false;
+        } catch {
+          // A diagnostic classifier must not hide an optional failure if its
+          // own inspection fails.
+        }
+        if (expected) return;
         failures.push({ participantId: participant.id, error: result.reason });
         onFailure?.(participant, result.reason);
       }
@@ -280,6 +298,7 @@ export function createProjectLifecycleRegistry(
         optionalParticipants,
         context,
         options.optionalConcurrency ?? 3,
+        options.isExpectedOptionalFailure,
         options.onOptionalFailure,
         reloadOptions?.lifecycleTiming,
       );

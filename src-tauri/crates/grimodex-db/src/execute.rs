@@ -1002,6 +1002,7 @@ impl Database {
 mod tests {
     use super::super::narrative_extraction::maintenance_runtime::SCAN_IMPORT_STATE_KEY;
     use super::*;
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
 
     fn test_db() -> Database {
@@ -1264,6 +1265,147 @@ mod tests {
                 "unexpected error for protected table {table}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn profile_egress_protects_denied_route_tables_and_fts_shadow_content_in_migrated_db() {
+        let db = test_db();
+        db.migrate().expect("migrate current schema");
+
+        let existing_tables = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT name FROM sqlite_master
+                     WHERE type IN ('table', 'virtual') AND name NOT LIKE 'sqlite_%'",
+                )?;
+                let names = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+                Ok(names)
+            })
+            .expect("read migrated schema");
+
+        let protected_tables = [
+            "project_snapshot_tree_nodes",
+            "project_snapshot_codex_entries",
+            "project_snapshot_snippets",
+            "project_snapshot_aux",
+            "content_versions",
+            "trash_items",
+            "foreshadows",
+            "foreshadow_setups",
+            "foreshadow_payoffs",
+            "foreshadow_setup_payoff_links",
+            "foreshadow_codex_links",
+            "plot_threads",
+            "plot_thread_scene_links",
+            "plot_thread_branches",
+            "lint_ignored_diagnostics",
+            "lint_term_dictionary",
+            "narrative_consumer_freshness",
+            "narrative_maintenance_finding_observations",
+            "narrative_maintenance_finding_lifecycle",
+            "narrative_maintenance_attention",
+            "narrative_proposal_applications",
+            "narrative_extraction_stage_model_bindings",
+            "narrative_extraction_stage_receipts",
+        ];
+        for table in protected_tables {
+            assert!(
+                existing_tables.contains(table),
+                "migrated schema is missing sentinel table {table}"
+            );
+            let error = db
+                .execute_renderer_profile_egress(
+                    &format!("SELECT * FROM \"{table}\" LIMIT 0"),
+                    &[],
+                    "all",
+                )
+                .expect_err("protected route table read must be denied");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected read error for {table}: {error}"
+            );
+
+            let error = db
+                .execute_renderer_profile_egress(
+                    &format!("DELETE FROM \"{table}\" WHERE 0"),
+                    &[],
+                    "run",
+                )
+                .expect_err("protected route table DML must be denied");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected DML error for {table}: {error}"
+            );
+        }
+
+        let fts_shadow_tables = [
+            "chat_messages_fts_config",
+            "chat_messages_fts_data",
+            "chat_messages_fts_docsize",
+            "chat_messages_fts_idx",
+            "chat_messages_fts_en_config",
+            "chat_messages_fts_en_content",
+            "chat_messages_fts_en_data",
+            "chat_messages_fts_en_docsize",
+            "chat_messages_fts_en_idx",
+            "post_effect_annotations_fts_config",
+            "post_effect_annotations_fts_data",
+            "post_effect_annotations_fts_docsize",
+            "post_effect_annotations_fts_idx",
+            "post_effect_annotations_fts_en_config",
+            "post_effect_annotations_fts_en_content",
+            "post_effect_annotations_fts_en_data",
+            "post_effect_annotations_fts_en_docsize",
+            "post_effect_annotations_fts_en_idx",
+        ];
+        for table in fts_shadow_tables {
+            assert!(
+                existing_tables.contains(table),
+                "migrated schema is missing sentinel table {table}"
+            );
+            let error = db
+                .execute_renderer_profile_egress(&format!("SELECT * FROM \"{table}\""), &[], "all")
+                .expect_err("protected route table read must be denied");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected read error for {table}: {error}"
+            );
+        }
+
+        db.execute_renderer_profile_egress(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            &[Value::from("d2a-test"), Value::from("local")],
+            "run",
+        )
+        .expect("ordinary app settings insert remains available");
+        let settings = db
+            .execute_renderer_profile_egress(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                &[Value::from("d2a-test")],
+                "all",
+            )
+            .expect("ordinary app settings read remains available");
+        assert_eq!(settings[0]["value"], Value::from("local"));
+        db.execute_renderer_profile_egress(
+            "UPDATE app_settings SET value = ?1 WHERE key = ?2",
+            &[Value::from("updated"), Value::from("d2a-test")],
+            "run",
+        )
+        .expect("ordinary app settings update remains available");
+        db.execute_renderer_profile_egress(
+            "DELETE FROM app_settings WHERE key = ?1",
+            &[Value::from("d2a-test")],
+            "run",
+        )
+        .expect("ordinary app settings delete remains available");
+        db.execute_renderer_profile_egress(
+            "SELECT id, title FROM projects ORDER BY id",
+            &[],
+            "all",
+        )
+        .expect("ordinary project read remains available");
     }
 
     #[test]

@@ -270,6 +270,7 @@
     "delete": "Delete",
     "copy": "Copy",
     "close": "Close",
+    "retry": "Retry",
     "add": "Add",
     "edit": "Edit",
     "reset": "Reset",
@@ -5360,7 +5361,12 @@
     "reindexComplete": "Reindex complete",
     "reindexing": "Semantic reindexing…",
     "noScenes": "No scenes to index",
-    "progressDetail": "{{scene}} / {{total}} scenes · {{chunks}} chunks"
+    "progressDetail": "{{scene}} / {{total}} scenes · {{chunks}} chunks",
+    "modelDownloadFailed": "Embedding model download failed",
+    "modelDownloadComplete": "Embedding model is ready",
+    "modelDownloading": "Downloading embedding model…",
+    "modelDownloadFallback": "Continuing with full-text search (FTS)",
+    "retryModelDownload": "Retry"
   },
   "beat": {
     "generateBeats": {
