@@ -326,26 +326,6 @@ fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
     }
 }
 
-// Profile-restricted renderer SQL keeps the existing renderer authorizer for
-// ordinary Electron UI CRUD. D2a adds a small denylist for plaintext surfaces
-// that must not be returned through generic SQL; it deliberately does not try
-// to maintain a workspace-table allowlist. SQLite's authorizer supplies the
-// actual table/column names, so quoted identifiers, CTEs, subqueries, and
-// INSERT ... SELECT cannot bypass these checks with spelling changes.
-const D2A_PROTECTED_PLAINTEXT_TABLES: &[&str] = &[
-    "chat_messages",
-    "chat_message_prompts",
-    "chat_sessions",
-    "messages",
-    "ai_audit_events",
-    "narrative_extraction_artifacts",
-    "narrative_extraction_runs",
-    "narrative_proposal_revisions",
-    "narrative_proposal_decisions",
-    "post_effect_runs",
-    "post_effect_annotations",
-];
-
 fn d2a_table_name(table_name: &str) -> &str {
     let normalized = table_name
         .rsplit('.')
@@ -355,6 +335,9 @@ fn d2a_table_name(table_name: &str) -> &str {
     normalized
 }
 
+// The table inventory is Native-owned in profile_egress_policy and is also
+// published to Electron main. SQLite authorizer callbacks are the authority;
+// main's SQL classification is only an early, fail-closed advisory.
 fn renderer_profile_egress_sql_rejection(ctx: &AuthContext<'_>) -> Option<String> {
     if !PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get) {
         return None;
@@ -369,9 +352,7 @@ fn renderer_profile_egress_sql_rejection(ctx: &AuthContext<'_>) -> Option<String
         AuthAction::Read {
             table_name,
             column_name,
-        } if D2A_PROTECTED_PLAINTEXT_TABLES
-            .iter()
-            .any(|table| table.eq_ignore_ascii_case(d2a_table_name(table_name))) =>
+        } if crate::profile_egress_policy::is_protected_table(d2a_table_name(table_name)) =>
         {
             Some(format!(
                 "{RENDERER_PROFILE_EGRESS_ERROR}: protected plaintext read from {table_name}.{column_name}"
@@ -380,20 +361,21 @@ fn renderer_profile_egress_sql_rejection(ctx: &AuthContext<'_>) -> Option<String
         AuthAction::Read {
             table_name,
             column_name,
-        } if d2a_table_name(table_name).eq_ignore_ascii_case("change_events")
-            && column_name.eq_ignore_ascii_case("payload") =>
+        } if crate::profile_egress_policy::is_protected_column(
+            d2a_table_name(table_name),
+            column_name,
+        ) =>
         {
             Some(format!(
-                "{RENDERER_PROFILE_EGRESS_ERROR}: change_events.payload is not published through generic SQL"
+                "{RENDERER_PROFILE_EGRESS_ERROR}: {table_name}.{column_name} is not published through generic SQL"
             ))
         }
         AuthAction::Delete { table_name }
         | AuthAction::Insert { table_name }
         | AuthAction::Update { table_name, .. }
-            if D2A_PROTECTED_PLAINTEXT_TABLES
-                .iter()
-                .any(|table| table.eq_ignore_ascii_case(d2a_table_name(table_name)))
-                || d2a_table_name(table_name).eq_ignore_ascii_case("change_events") =>
+            if crate::profile_egress_policy::is_protected_table(d2a_table_name(table_name))
+                || d2a_table_name(table_name).eq_ignore_ascii_case("change_events")
+                || d2a_table_name(table_name).eq_ignore_ascii_case("state_snapshots") =>
         {
             Some(format!(
                 "{RENDERER_PROFILE_EGRESS_ERROR}: protected DML target {table_name}"
@@ -1100,6 +1082,36 @@ mod tests {
         .expect("trusted settings schema setup");
         db.execute("CREATE TABLE messages (content TEXT NOT NULL)", &[], "run")
             .expect("trusted restricted schema setup");
+        db.execute(
+            "CREATE TABLE chat_summaries (id TEXT PRIMARY KEY, summary TEXT NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted chat summary schema setup");
+        db.execute(
+            "CREATE TABLE chat_message_chunks (message_id TEXT PRIMARY KEY, text TEXT NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted chat chunk schema setup");
+        db.execute(
+            "CREATE TABLE generation_logs (id TEXT PRIMARY KEY, prompt_full TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted generation log schema setup");
+        db.execute(
+            "CREATE TABLE ab_comparisons (id TEXT PRIMARY KEY, response_a TEXT, response_b TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted A/B comparison schema setup");
+        db.execute(
+            "CREATE TABLE ab_comparison_runs (id TEXT PRIMARY KEY, slots TEXT NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted A/B run schema setup");
         db.execute("CREATE TABLE d2a_unknown (value TEXT)", &[], "run")
             .expect("trusted unknown schema setup");
         db.execute(
@@ -1158,6 +1170,11 @@ mod tests {
 
         for sql in [
             "SELECT content FROM \"messages\"",
+            "SELECT summary FROM chat_summaries",
+            "SELECT text FROM chat_message_chunks",
+            "SELECT prompt_full FROM generation_logs",
+            "SELECT response_a, response_b FROM ab_comparisons",
+            "SELECT slots FROM ab_comparison_runs",
             "WITH source AS (SELECT content FROM messages) SELECT content FROM source",
             "SELECT value FROM (SELECT content AS value FROM messages)",
             "SELECT value FROM app_settings WHERE value IN (SELECT content FROM messages)",
@@ -1228,6 +1245,69 @@ mod tests {
             "run",
         )
         .expect("non-model local DML remains available");
+    }
+
+    #[test]
+    fn profile_egress_protects_every_native_inventory_table_in_a_real_database() {
+        let db = test_db();
+        for table in crate::profile_egress_policy::PROFILE_EGRESS_PROTECTED_TABLES {
+            db.execute(&format!("CREATE TABLE {table} (value TEXT)"), &[], "run")
+                .unwrap_or_else(|error| panic!("create protected table {table}: {error}"));
+        }
+
+        for table in crate::profile_egress_policy::PROFILE_EGRESS_PROTECTED_TABLES {
+            let error = db
+                .execute_renderer_profile_egress(&format!("SELECT * FROM {table}"), &[], "all")
+                .expect_err("every inventory table must be denied through generic SQL");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected error for protected table {table}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_egress_denies_snapshot_payload_but_keeps_metadata_readable() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE state_snapshots (
+                id INTEGER PRIMARY KEY,
+                domain TEXT NOT NULL,
+                anchor_sequence INTEGER NOT NULL,
+                payload TEXT NOT NULL
+            )",
+            &[],
+            "run",
+        )
+        .expect("trusted snapshot schema setup");
+        db.execute(
+            "INSERT INTO state_snapshots (id, domain, anchor_sequence, payload)
+             VALUES (1, 'editor', 1, '{\"text\":\"private\"}')",
+            &[],
+            "run",
+        )
+        .expect("trusted snapshot seed");
+        let rows = db
+            .execute_renderer_profile_egress(
+                "SELECT domain, anchor_sequence FROM state_snapshots",
+                &[],
+                "all",
+            )
+            .expect("snapshot metadata remains readable");
+        assert_eq!(rows.len(), 1);
+        let error = db
+            .execute_renderer_profile_egress("SELECT payload FROM state_snapshots", &[], "all")
+            .expect_err("snapshot payload must not be published");
+        assert!(error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR));
+        let error = db
+            .execute_renderer_profile_egress(
+                "INSERT INTO state_snapshots (id, domain, anchor_sequence, payload)
+                 VALUES (2, 'editor', 2, 'private')",
+                &[],
+                "run",
+            )
+            .expect_err("snapshot payload writes stay Native-owned");
+        assert!(error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR));
     }
 
     #[test]

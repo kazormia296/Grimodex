@@ -23,6 +23,14 @@ interface NativeProfileEgressStatus {
   restricted?: unknown;
   handlesInvalidated?: unknown;
   inFlightStopped?: unknown;
+  sqlPolicy?: unknown;
+}
+
+const PROFILE_EGRESS_POLICY_VERSION = 1;
+
+interface NativeProfileEgressPolicy {
+  readonly protectedTables: ReadonlySet<string>;
+  readonly protectedColumns: ReadonlySet<string>;
 }
 
 type D2aRoute =
@@ -352,20 +360,6 @@ const INTERNAL_COMMANDS = new Set([
   "vivliostyle_save_output",
 ]);
 
-const PROTECTED_DB_TABLES = new Set([
-  "chat_messages",
-  "chat_message_prompts",
-  "chat_sessions",
-  "messages",
-  "ai_audit_events",
-  "narrative_extraction_artifacts",
-  "narrative_extraction_runs",
-  "narrative_proposal_revisions",
-  "narrative_proposal_decisions",
-  "post_effect_runs",
-  "post_effect_annotations",
-]);
-
 function normalizeSqlTableName(reference: string): string | undefined {
   const parts = reference.split(".");
   const table = parts.at(-1)?.trim();
@@ -381,10 +375,34 @@ function sqlTableNames(sql: string): Array<string | undefined> {
   ].map((match) => normalizeSqlTableName(match[1] ?? ""));
 }
 
-function dbReadRoute(sql: unknown, hasBoundCaller = false): D2aRoute {
+function hasProtectedColumnReference(
+  sql: string,
+  tableNames: ReadonlyArray<string | undefined>,
+  policy: NativeProfileEgressPolicy,
+): boolean {
+  // This is an early route classification only. Native's SQLite authorizer
+  // consumes the same policy and remains the enforcement authority.
+  return [...policy.protectedColumns].some((reference) => {
+    const [table, column] = reference.split(".");
+    if (!table || !column) return false;
+    if (!tableNames.some((name) => name === table)) return false;
+    if (/\bselect\s+\*/i.test(sql)) return true;
+    const escapedColumn = column.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\b${escapedColumn}\\b`, "i").test(sql);
+  });
+}
+
+function dbReadRoute(
+  sql: unknown,
+  hasBoundCaller = false,
+  policy: NativeProfileEgressPolicy,
+): D2aRoute {
   if (typeof sql !== "string") return "unclassified";
   const tableNames = sqlTableNames(sql);
-  if (tableNames.some((table) => table && PROTECTED_DB_TABLES.has(table))) {
+  if (
+    tableNames.some((table) => table && policy.protectedTables.has(table)) ||
+    hasProtectedColumnReference(sql, tableNames, policy)
+  ) {
     return "plaintext-publication";
   }
   if (
@@ -397,14 +415,21 @@ function dbReadRoute(sql: unknown, hasBoundCaller = false): D2aRoute {
   return "unclassified";
 }
 
-function dbStatementRoute(sql: unknown, hasBoundCaller = false): D2aRoute {
+function dbStatementRoute(
+  sql: unknown,
+  hasBoundCaller = false,
+  policy: NativeProfileEgressPolicy,
+): D2aRoute {
   if (typeof sql !== "string") return "unclassified";
   const tableNames = sqlTableNames(sql);
-  if (tableNames.some((table) => table && PROTECTED_DB_TABLES.has(table))) {
+  if (
+    tableNames.some((table) => table && policy.protectedTables.has(table)) ||
+    hasProtectedColumnReference(sql, tableNames, policy)
+  ) {
     return "plaintext-publication";
   }
   if (/^\s*(select|pragma|with)\b/i.test(sql)) {
-    return dbReadRoute(sql, hasBoundCaller);
+    return dbReadRoute(sql, hasBoundCaller, policy);
   }
   if (
     /^\s*(insert|update|delete|replace|create|alter|drop)\b/i.test(sql) &&
@@ -440,7 +465,11 @@ const ALLOWED_BACKEND_EVENTS = new Set([
   "vivliostyle:error",
 ]);
 
-function commandRoute(command: string, args: CommandArgs): D2aRoute {
+function commandRoute(
+  command: string,
+  args: CommandArgs,
+  policy: NativeProfileEgressPolicy,
+): D2aRoute {
   const typedResult = typedResultRoute(command);
   if (typedResult) return typedResult;
   const explicit = DENIED_COMMANDS.get(command);
@@ -449,7 +478,7 @@ function commandRoute(command: string, args: CommandArgs): D2aRoute {
   const hasBoundCaller =
     args.callerIdentity !== undefined && args.callerIdentity !== null;
   if (command === "db_execute") {
-    return dbStatementRoute(args.sql, hasBoundCaller);
+    return dbStatementRoute(args.sql, hasBoundCaller, policy);
   }
   if (command === "db_execute_batch") {
     const statements = args.statements;
@@ -459,7 +488,7 @@ function commandRoute(command: string, args: CommandArgs): D2aRoute {
         return "unclassified" as const;
       }
       const sql = (statement as Record<string, unknown>).sql;
-      return dbStatementRoute(sql, hasBoundCaller);
+      return dbStatementRoute(sql, hasBoundCaller, policy);
     });
     if (routes.some((route) => route === "plaintext-publication")) {
       return "plaintext-publication";
@@ -494,6 +523,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     | ((identity: MainIssuedCallerIdentity) => void)
     | null;
   private readonly invalidateCallers: (() => void) | null;
+  private readonly policy: NativeProfileEgressPolicy;
   private workspaceId: string | null = null;
   private readonly identities = new Map<number, MainIssuedCallerIdentity>();
   private readonly registrationErrors = new Map<number, string>();
@@ -501,12 +531,14 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   constructor(
     status: NativeProfileEgressStatus | null,
     unavailable: boolean,
+    policy: NativeProfileEgressPolicy,
     registerCaller?: (identity: MainIssuedCallerIdentity) => void,
     invalidateCallers?: () => void,
   ) {
     const profileId = status?.profileId;
     const callerEpoch = status?.callerEpoch;
     this.unavailable = unavailable;
+    this.policy = policy;
     this.registerCaller = registerCaller ?? null;
     this.invalidateCallers = invalidateCallers ?? null;
     this.profileId =
@@ -568,7 +600,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
         `route ${command} is unavailable until the Native profile gate is ready`,
       );
     }
-    const route = commandRoute(command, args);
+    const route = commandRoute(command, args, this.policy);
     const callerIdentity = args.callerIdentity;
     const requiresBoundCaller =
       command === "db_execute" || command === "db_execute_batch";
@@ -689,6 +721,72 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   }
 }
 
+function parseNativeProfileEgressPolicy(
+  status: NativeProfileEgressStatus,
+): NativeProfileEgressPolicy | null {
+  if (
+    status.sqlPolicy === null ||
+    typeof status.sqlPolicy !== "object" ||
+    Array.isArray(status.sqlPolicy)
+  ) {
+    return null;
+  }
+  const policy = status.sqlPolicy as Record<string, unknown>;
+  if (
+    Object.keys(policy).some(
+      (key) =>
+        key !== "version" &&
+        key !== "protectedTables" &&
+        key !== "protectedColumns",
+    )
+  ) {
+    return null;
+  }
+  if (policy.version !== PROFILE_EGRESS_POLICY_VERSION) return null;
+  if (!Array.isArray(policy.protectedTables)) return null;
+  if (!Array.isArray(policy.protectedColumns)) return null;
+
+  const protectedTables = new Set<string>();
+  for (const value of policy.protectedTables) {
+    if (typeof value !== "string" || value.trim() !== value || value === "") {
+      return null;
+    }
+    const normalized = value.toLowerCase();
+    if (protectedTables.has(normalized)) return null;
+    protectedTables.add(normalized);
+  }
+  if (protectedTables.size === 0) return null;
+
+  const protectedColumns = new Set<string>();
+  for (const value of policy.protectedColumns) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+    const record = value as Record<string, unknown>;
+    if (
+      Object.keys(record).some((key) => key !== "table" && key !== "column")
+    ) {
+      return null;
+    }
+    const table = record.table;
+    const column = record.column;
+    if (
+      typeof table !== "string" ||
+      typeof column !== "string" ||
+      table.trim() !== table ||
+      column.trim() !== column ||
+      table === "" ||
+      column === ""
+    ) {
+      return null;
+    }
+    const key = `${table.toLowerCase()}.${column.toLowerCase()}`;
+    if (protectedColumns.has(key)) return null;
+    protectedColumns.add(key);
+  }
+  return { protectedTables, protectedColumns };
+}
+
 export async function createProfileEgressGate(
   backend: NapiBackendLike | null,
 ): Promise<ProfileEgressGate> {
@@ -697,21 +795,30 @@ export async function createProfileEgressGate(
     !backend.registerProfileEgressCaller ||
     !backend.invalidateProfileEgressCallers
   ) {
-    return new NativeBoundProfileEgressGate(null, true);
+    return new NativeBoundProfileEgressGate(null, true, {
+      protectedTables: new Set(),
+      protectedColumns: new Set(),
+    });
   }
   try {
     const raw = await backend.initializeProfileEgress();
     const status = JSON.parse(raw) as NativeProfileEgressStatus;
+    const policy = parseNativeProfileEgressPolicy(status);
     if (
       status.restricted !== true ||
       status.handlesInvalidated !== true ||
-      status.inFlightStopped !== true
+      status.inFlightStopped !== true ||
+      !policy
     ) {
-      return new NativeBoundProfileEgressGate(null, true);
+      return new NativeBoundProfileEgressGate(null, true, {
+        protectedTables: new Set(),
+        protectedColumns: new Set(),
+      });
     }
     return new NativeBoundProfileEgressGate(
       status,
       false,
+      policy,
       (identity) => {
         backend.registerProfileEgressCaller!(JSON.stringify(identity));
       },
@@ -721,6 +828,9 @@ export async function createProfileEgressGate(
     console.error(
       `[grimodex-electron] D2a profile egress startup failed: ${error instanceof Error ? error.message : String(error)}`,
     );
-    return new NativeBoundProfileEgressGate(null, true);
+    return new NativeBoundProfileEgressGate(null, true, {
+      protectedTables: new Set(),
+      protectedColumns: new Set(),
+    });
   }
 }

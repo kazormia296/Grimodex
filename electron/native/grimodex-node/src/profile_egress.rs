@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context};
@@ -40,6 +40,7 @@ pub struct ProfileEgressStatus {
     pub restricted: bool,
     pub handles_invalidated: bool,
     pub in_flight_stopped: bool,
+    pub sql_policy: grimodex_db::profile_egress_policy::ProfileEgressSqlPolicy,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -81,6 +82,10 @@ pub struct ProfileEgressState {
     active_dispatches: Arc<AtomicUsize>,
     dispatch_quiesced: Arc<Notify>,
     admissions_open: Arc<AtomicBool>,
+    /// Monotonic process-local binding generation. Every workspace bind,
+    /// caller invalidation, startup barrier, and registration replacement
+    /// revokes permits captured before the transition.
+    revocation_generation: Arc<AtomicU64>,
 }
 
 /// A Native dispatch lease. The startup transition closes new leases and
@@ -96,6 +101,8 @@ struct DispatchLease {
     active_dispatches: Arc<AtomicUsize>,
     dispatch_quiesced: Arc<Notify>,
     admissions_open: Arc<AtomicBool>,
+    revocation_generation: Arc<AtomicU64>,
+    generation: u64,
 }
 
 impl Drop for DispatchLease {
@@ -157,6 +164,7 @@ impl ProfileEgressState {
             active_dispatches: Arc::new(AtomicUsize::new(0)),
             dispatch_quiesced: Arc::new(Notify::new()),
             admissions_open: Arc::new(AtomicBool::new(admissions_open)),
+            revocation_generation: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -179,6 +187,7 @@ impl ProfileEgressState {
         state.handles_invalidated = true;
         state.in_flight_stopped = in_flight_stopped;
         state.registered_callers.clear();
+        self.revoke_permits();
         self.persist_locked(&state)?;
         self.admissions_open
             .store(in_flight_stopped, Ordering::Release);
@@ -198,6 +207,7 @@ impl ProfileEgressState {
         state.handles_invalidated = true;
         state.in_flight_stopped = false;
         state.registered_callers.clear();
+        self.revoke_permits();
         // Close admissions while holding the same mutex used by begin_dispatch;
         // no caller can pass authorization after this transition starts.
         self.admissions_open.store(false, Ordering::Release);
@@ -215,9 +225,16 @@ impl ProfileEgressState {
             "{D2A_EGRESS_DENIED_MARKER} caller registration is closed until startup quiesces"
         );
         authorize_locked(&state, Some(identity))?;
+        let replaced = state
+            .registered_callers
+            .get(&identity.sender_id)
+            .is_some_and(|registered| registered != identity);
         state
             .registered_callers
             .insert(identity.sender_id, identity.clone());
+        if replaced {
+            self.revoke_permits();
+        }
         Ok(())
     }
 
@@ -265,11 +282,14 @@ impl ProfileEgressState {
             );
         }
         self.active_dispatches.fetch_add(1, Ordering::AcqRel);
+        let generation = self.revocation_generation.load(Ordering::Acquire);
         Ok(ProfileDispatchPermit {
             lease: Arc::new(DispatchLease {
                 active_dispatches: Arc::clone(&self.active_dispatches),
                 dispatch_quiesced: Arc::clone(&self.dispatch_quiesced),
                 admissions_open: Arc::clone(&self.admissions_open),
+                revocation_generation: Arc::clone(&self.revocation_generation),
+                generation,
             }),
         })
     }
@@ -278,7 +298,9 @@ impl ProfileEgressState {
     /// binding changes. Old tuples must not remain usable until each sender
     /// happens to make a new invoke.
     pub fn invalidate_callers(&self) {
-        self.lock().registered_callers.clear();
+        let mut state = self.lock();
+        state.registered_callers.clear();
+        self.revoke_permits();
     }
 
     /// Rebind the trusted active workspace and invalidate all caller tuples.
@@ -289,6 +311,7 @@ impl ProfileEgressState {
         let mut state = self.lock();
         state.workspace_id = workspace_id;
         state.registered_callers.clear();
+        self.revoke_permits();
     }
 
     /// Wait until all leases acquired before the transition have dropped.
@@ -315,10 +338,49 @@ impl ProfileEgressState {
         authorize_locked(&state, identity)
     }
 
+    /// Revalidate a DB dispatch against the one pinned workspace authority.
+    /// The check is intentionally performed under the same state mutex as
+    /// bind/invalidate/registration transitions, so a swap cannot publish a
+    /// result after the caller tuple has been revoked.
+    pub fn reauthorize_dispatch(
+        &self,
+        permit: &ProfileDispatchPermit,
+        identity: Option<&CallerIdentity>,
+        pinned_workspace_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        permit.ensure_open()?;
+        let state = self.lock();
+        anyhow::ensure!(
+            permit.lease.generation == self.revocation_generation.load(Ordering::Acquire),
+            "{D2A_EGRESS_DENIED_MARKER} dispatch binding was revoked"
+        );
+        if state.restricted {
+            authorize_locked(&state, identity)?;
+            let identity = identity
+                .ok_or_else(|| anyhow!("{D2A_EGRESS_DENIED_MARKER} caller identity is missing"))?;
+            anyhow::ensure!(
+                identity.workspace_id.as_deref() == pinned_workspace_id,
+                "{D2A_EGRESS_DENIED_MARKER} pinned workspace does not match caller identity"
+            );
+            anyhow::ensure!(
+                state
+                    .registered_callers
+                    .get(&identity.sender_id)
+                    .is_some_and(|registered| registered == identity),
+                "{D2A_EGRESS_DENIED_MARKER} caller identity is no longer registered"
+            );
+        }
+        Ok(())
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn revoke_permits(&self) {
+        self.revocation_generation.fetch_add(1, Ordering::AcqRel);
     }
 
     fn persist_locked(&self, state: &State) -> anyhow::Result<()> {
@@ -368,6 +430,10 @@ impl ProfileDispatchPermit {
             self.lease.admissions_open.load(Ordering::Acquire),
             "{D2A_EGRESS_DENIED_MARKER} dispatch admissions are closed"
         );
+        anyhow::ensure!(
+            self.lease.revocation_generation.load(Ordering::Acquire) == self.lease.generation,
+            "{D2A_EGRESS_DENIED_MARKER} dispatch binding was revoked"
+        );
         Ok(())
     }
 }
@@ -408,6 +474,7 @@ fn status_locked(state: &State) -> ProfileEgressStatus {
         restricted: state.restricted,
         handles_invalidated: state.handles_invalidated,
         in_flight_stopped: state.in_flight_stopped,
+        sql_policy: grimodex_db::profile_egress_policy::sql_policy_for_status(),
     }
 }
 
@@ -439,6 +506,25 @@ mod tests {
         assert!(restored.restricted);
         assert!(restored.handles_invalidated);
         assert!(restored.in_flight_stopped);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn status_publishes_the_native_sql_policy_without_a_second_inventory() {
+        let path = temp_path("policy-status");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let status = state.status();
+        let policy = grimodex_db::profile_egress_policy::sql_policy_for_status();
+        assert_eq!(status.sql_policy.version, policy.version);
+        assert_eq!(status.sql_policy.protected_tables, policy.protected_tables);
+        assert_eq!(
+            status.sql_policy.protected_columns,
+            policy.protected_columns
+        );
+        let json = serde_json::to_value(status).expect("status JSON");
+        assert_eq!(json["sqlPolicy"]["version"], policy.version);
+        assert!(json["sqlPolicy"]["protectedTables"].is_array());
+        assert!(json["sqlPolicy"]["protectedColumns"].is_array());
         let _ = fs::remove_file(path);
     }
 
@@ -682,6 +768,136 @@ mod tests {
             .expect("activate");
         state.begin_startup_barrier().expect("startup barrier");
         assert!(permit.ensure_open().is_err());
+        drop(permit);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn workspace_bind_revokes_a_permit_issued_before_the_swap() {
+        let path = temp_path("permit-workspace-rebind");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let status = state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        state.bind_workspace(Some("workspace-a".to_string()));
+        let identity = CallerIdentity {
+            profile_id: status.profile_id,
+            caller_id: "main-issued".to_string(),
+            caller_epoch: status.caller_epoch,
+            sender_id: 44,
+            workspace_id: Some("workspace-a".to_string()),
+            session_id: "session-a".to_string(),
+        };
+        state.register_caller(&identity).expect("register caller");
+        let permit = state
+            .begin_dispatch(Some(&identity))
+            .expect("permit before swap");
+        state.bind_workspace(Some("workspace-b".to_string()));
+        assert!(
+            permit.ensure_open().is_err(),
+            "workspace bind must revoke an already-issued permit"
+        );
+        drop(permit);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn invalidate_callers_revokes_a_permit_during_a_pinned_operation() {
+        let path = temp_path("permit-invalidate");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let status = state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        state.bind_workspace(Some("workspace-a".to_string()));
+        let identity = CallerIdentity {
+            profile_id: status.profile_id,
+            caller_id: "main-issued".to_string(),
+            caller_epoch: status.caller_epoch,
+            sender_id: 45,
+            workspace_id: Some("workspace-a".to_string()),
+            session_id: "session-a".to_string(),
+        };
+        state.register_caller(&identity).expect("register caller");
+        let permit = state
+            .begin_dispatch(Some(&identity))
+            .expect("permit before invalidation");
+        state.invalidate_callers();
+        assert!(
+            permit.ensure_open().is_err(),
+            "caller invalidation must revoke an already-issued permit"
+        );
+        drop(permit);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn reauthorization_after_params_conversion_rejects_a_workspace_swap() {
+        let path = temp_path("reauthorize-params-race");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let status = state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        state.bind_workspace(Some("workspace-a".to_string()));
+        let identity = CallerIdentity {
+            profile_id: status.profile_id,
+            caller_id: "main-issued".to_string(),
+            caller_epoch: status.caller_epoch,
+            sender_id: 46,
+            workspace_id: Some("workspace-a".to_string()),
+            session_id: "session-a".to_string(),
+        };
+        state.register_caller(&identity).expect("register caller");
+        let permit = state
+            .begin_dispatch(Some(&identity))
+            .expect("permit before conversion");
+        state
+            .reauthorize_dispatch(&permit, Some(&identity), Some("workspace-a"))
+            .expect("pin reauthorization");
+        let _converted_params = serde_json::json!(["converted"]);
+        state.bind_workspace(Some("workspace-b".to_string()));
+        assert!(
+            state
+                .reauthorize_dispatch(&permit, Some(&identity), Some("workspace-a"))
+                .is_err(),
+            "a swap during parameter conversion must deny before SQL"
+        );
+        drop(permit);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn reauthorization_before_return_rejects_restore_on_the_same_path() {
+        let path = temp_path("reauthorize-restore-race");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let status = state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        state.bind_workspace(Some("workspace-a".to_string()));
+        let identity = CallerIdentity {
+            profile_id: status.profile_id,
+            caller_id: "main-issued".to_string(),
+            caller_epoch: status.caller_epoch,
+            sender_id: 47,
+            workspace_id: Some("workspace-a".to_string()),
+            session_id: "session-a".to_string(),
+        };
+        state.register_caller(&identity).expect("register caller");
+        let permit = state
+            .begin_dispatch(Some(&identity))
+            .expect("permit before serialization");
+        state
+            .reauthorize_dispatch(&permit, Some(&identity), Some("workspace-a"))
+            .expect("pin reauthorization");
+        let _serialized_result = serde_json::json!({ "rows": [{ "id": "a" }] });
+        // Restore may keep the same path. bind_workspace must still rotate
+        // the process-local binding generation and invalidate the permit.
+        state.bind_workspace(Some("workspace-a".to_string()));
+        assert!(
+            state
+                .reauthorize_dispatch(&permit, Some(&identity), Some("workspace-a"))
+                .is_err(),
+            "same-path restore must deny before returning the old result"
+        );
         drop(permit);
         let _ = fs::remove_file(path);
     }

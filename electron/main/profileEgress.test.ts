@@ -16,6 +16,51 @@ function backend(status: Record<string, unknown> = {}) {
         restricted: true,
         handlesInvalidated: true,
         inFlightStopped: true,
+        sqlPolicy: {
+          version: 1,
+          protectedTables: [
+            "ab_comparison_runs",
+            "ab_comparisons",
+            "ai_audit_events",
+            "chat_message_chunks",
+            "chat_messages_fts",
+            "chat_messages_fts_en",
+            "chat_message_prompts",
+            "chat_messages",
+            "chat_runtime_threads",
+            "chat_sessions",
+            "chat_summaries",
+            "generation_logs",
+            "messages",
+            "narrative_apply_commits",
+            "narrative_apply_operations",
+            "narrative_commit_journals",
+            "narrative_extraction_artifacts",
+            "narrative_extraction_attempts",
+            "narrative_extraction_runs",
+            "narrative_extraction_tasks",
+            "narrative_proposal_decisions",
+            "narrative_proposal_revisions",
+            "narrative_proposal_sets",
+            "narrative_proposals",
+            "post_effect_annotation_relations",
+            "post_effect_annotations",
+            "post_effect_annotations_fts",
+            "post_effect_annotations_fts_en",
+            "post_effect_runs",
+            "impact_review_baselines",
+            "scene_lens_data",
+            "scene_chunks",
+            "codex_chunks",
+            "event_chunks",
+            "undo_journal",
+            "prose_staging",
+          ],
+          protectedColumns: [
+            { table: "change_events", column: "payload" },
+            { table: "state_snapshots", column: "payload" },
+          ],
+        },
         ...status,
       }),
     registerProfileEgressCaller: () => undefined,
@@ -127,7 +172,8 @@ describe("D2a profile egress gate", () => {
     gate.issueCallerIdentity(11);
     expect(registerProfileEgressCaller).toHaveBeenCalledTimes(2);
     const registrations = registerProfileEgressCaller.mock.calls.map(
-      ([serialized]) => JSON.parse(serialized as string) as { callerId: string },
+      ([serialized]) =>
+        JSON.parse(serialized as string) as { callerId: string },
     );
     expect(registrations[1]?.callerId).not.toBe(before.callerId);
   });
@@ -164,6 +210,51 @@ describe("D2a profile egress gate", () => {
     expect(() => gate.assertInvoke(command, args)).toThrow(
       new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`),
     );
+  });
+
+  it.each([
+    ["chat_summaries", "summary"],
+    ["chat_message_chunks", "text"],
+    ["generation_logs", "prompt_full"],
+    ["ab_comparisons", "response_a"],
+    ["ab_comparison_runs", "slots"],
+  ])("consumes the Native inventory for %s", async (table, column) => {
+    const gate = await createProfileEgressGate(backend());
+    const callerIdentity = gate.issueCallerIdentity(11);
+    expect(() =>
+      gate.assertInvoke("db_execute", {
+        callerIdentity,
+        method: "all",
+        sql: `SELECT ${column} FROM ${table}`,
+      }),
+    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`));
+  });
+
+  it.each([
+    [
+      { sqlPolicy: { version: 2, protectedTables: [], protectedColumns: [] } },
+      "unknown policy version",
+    ],
+    [{ sqlPolicy: undefined }, "missing table inventory"],
+    [
+      {
+        sqlPolicy: {
+          version: 1,
+          protectedTables: ["chat_messages", "chat_messages"],
+          protectedColumns: [],
+        },
+      },
+      "duplicate table inventory",
+    ],
+  ])("fails closed for %s", async (status, _description) => {
+    const gate = await createProfileEgressGate(backend(status));
+    expect(gate.unavailable).toBe(true);
+    expect(() =>
+      gate.assertInvoke("db_execute", {
+        method: "all",
+        sql: "SELECT id FROM projects",
+      }),
+    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
   });
 
   it("keeps every typed plaintext-result exception tied to a current NAPI command", () => {

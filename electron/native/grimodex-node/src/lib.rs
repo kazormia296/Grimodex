@@ -2586,6 +2586,37 @@ fn begin_profile_egress_dispatch(
         .map_err(|error| Error::from_reason(format!("{error:#}")))
 }
 
+/// Pin the active workspace once for a generic DB dispatch and revalidate the
+/// Native caller binding against that exact authority. The snapshot is kept
+/// until serialization has completed; a workspace bind/invalidation during the
+/// operation therefore causes the final revalidation to deny the result
+/// instead of returning rows from either workspace.
+fn pin_profile_egress_workspace(
+    state: &Arc<AppState>,
+    dispatch: &profile_egress::ProfileDispatchPermit,
+    identity: Option<&profile_egress::CallerIdentity>,
+) -> std::result::Result<ActiveWorkspaceSnapshot, AppError> {
+    let workspace = active_workspace_snapshot(&state.ws)?;
+    let workspace_id = workspace.path().to_string_lossy().into_owned();
+    state
+        .profile_egress
+        .reauthorize_dispatch(dispatch, identity, Some(&workspace_id))
+        .map_err(AppError::Anyhow)?;
+    Ok(workspace)
+}
+
+fn reauthorize_profile_egress_workspace(
+    state: &Arc<AppState>,
+    dispatch: &profile_egress::ProfileDispatchPermit,
+    identity: Option<&profile_egress::CallerIdentity>,
+    workspace: &ActiveWorkspaceSnapshot,
+) -> anyhow::Result<()> {
+    let workspace_id = workspace.path().to_string_lossy().into_owned();
+    state
+        .profile_egress
+        .reauthorize_dispatch(dispatch, identity, Some(&workspace_id))
+}
+
 fn caller_identity_from_args(
     args: &serde_json::Value,
 ) -> Result<Option<profile_egress::CallerIdentity>> {
@@ -4163,18 +4194,38 @@ impl Backend {
                 .profile_egress
                 .begin_dispatch(caller_identity.as_ref())
                 .map_err(AppError::Anyhow)?;
-            dispatch.ensure_open().map_err(AppError::Anyhow)?;
+            let workspace =
+                pin_profile_egress_workspace(&state, &dispatch, caller_identity.as_ref())?;
             let params = params_array(params)?;
-            with_db_state(&state.ws, |db| {
-                let rows = if state.profile_egress.status().restricted {
-                    db.execute_renderer_profile_egress(&sql, &params, &method)?
-                } else {
-                    // Keep direct standalone Backend use compatible before the
-                    // explicit first-restricted-publication transition.
-                    db.execute_renderer(&sql, &params, &method)?
-                };
-                Ok(serde_json::to_string(&QueryResult { rows })?)
-            })
+            let restricted = state.profile_egress.status().restricted;
+            reauthorize_profile_egress_workspace(
+                &state,
+                &dispatch,
+                caller_identity.as_ref(),
+                &workspace,
+            )?;
+            let rows = if restricted {
+                workspace
+                    .authority
+                    .db()
+                    .execute_renderer_profile_egress(&sql, &params, &method)?
+            } else {
+                // Keep direct standalone Backend use compatible before the
+                // explicit first-restricted-publication transition.
+                workspace
+                    .authority
+                    .db()
+                    .execute_renderer(&sql, &params, &method)?
+            };
+            let serialized =
+                serde_json::to_string(&QueryResult { rows }).map_err(anyhow::Error::from)?;
+            reauthorize_profile_egress_workspace(
+                &state,
+                &dispatch,
+                caller_identity.as_ref(),
+                &workspace,
+            )?;
+            Ok(serialized)
         })
         .await
     }
@@ -4196,18 +4247,38 @@ impl Backend {
                 .profile_egress
                 .begin_dispatch(caller_identity.as_ref())
                 .map_err(AppError::Anyhow)?;
-            dispatch.ensure_open().map_err(AppError::Anyhow)?;
+            let workspace =
+                pin_profile_egress_workspace(&state, &dispatch, caller_identity.as_ref())?;
             let statements: Vec<BatchStatement> = from_wire("statements", statements)?;
-            with_db_state(&state.ws, |db| {
-                let rows = if state.profile_egress.status().restricted {
-                    db.execute_batch_tx_renderer_profile_egress(&statements)?
-                } else {
-                    // Keep direct standalone Backend use compatible before the
-                    // explicit first-restricted-publication transition.
-                    db.execute_batch_tx_renderer(&statements)?
-                };
-                Ok(serde_json::to_string(&QueryResult { rows })?)
-            })
+            let restricted = state.profile_egress.status().restricted;
+            reauthorize_profile_egress_workspace(
+                &state,
+                &dispatch,
+                caller_identity.as_ref(),
+                &workspace,
+            )?;
+            let rows = if restricted {
+                workspace
+                    .authority
+                    .db()
+                    .execute_batch_tx_renderer_profile_egress(&statements)?
+            } else {
+                // Keep direct standalone Backend use compatible before the
+                // explicit first-restricted-publication transition.
+                workspace
+                    .authority
+                    .db()
+                    .execute_batch_tx_renderer(&statements)?
+            };
+            let serialized =
+                serde_json::to_string(&QueryResult { rows }).map_err(anyhow::Error::from)?;
+            reauthorize_profile_egress_workspace(
+                &state,
+                &dispatch,
+                caller_identity.as_ref(),
+                &workspace,
+            )?;
+            Ok(serialized)
         })
         .await
     }
