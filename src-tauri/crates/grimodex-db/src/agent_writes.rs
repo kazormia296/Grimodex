@@ -2314,6 +2314,17 @@ pub(crate) fn apply_codex_entry_patch_in_tx(
             db_version
         );
     }
+    if let Some(next_type) = input.type_slug {
+        let current_type = before_snapshot["type"].as_str().unwrap_or_default();
+        if next_type != current_type {
+            crate::narrative_extraction::ensure_character_reference_mutation_allowed_in_tx(
+                conn,
+                input.project_id,
+                input.entry_id,
+                "change the type of",
+            )?;
+        }
+    }
     let current_parent_id = before_snapshot["parentId"].as_str();
     let effective_parent_id = match normalize_nullable_sentinel(input.parent_id) {
         Some(parent_id) => parent_id,
@@ -2560,7 +2571,7 @@ fn restore_deleted_codex_entry_from_snapshot(
     entry_id: &str,
     journal_snapshot: &Value,
     replay_version: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
     let entry = journal_snapshot
         .get("entry")
         .ok_or_else(|| anyhow::anyhow!("Codex delete journal snapshot has no entry"))?;
@@ -2736,7 +2747,17 @@ fn restore_deleted_codex_entry_from_snapshot(
             rusqlite::params![entry_id, tag.get("tagId").and_then(Value::as_str)],
         )?;
     }
-    Ok(())
+    let scope_events = if entry.get("type").and_then(Value::as_str) == Some("character") {
+        crate::narrative_extraction::invalidate_character_references_with_events_in_tx(
+            conn,
+            project_id,
+            entry_id,
+            &now,
+        )?
+    } else {
+        Vec::new()
+    };
+    Ok(scope_events)
 }
 
 fn restored_cascade_event(
@@ -3078,6 +3099,21 @@ pub(crate) fn delete_codex_entry_cascade(
     entry_id: &str,
     expected_version: Option<i64>,
 ) -> anyhow::Result<()> {
+    let entry_type: Option<String> = conn
+        .query_row(
+            "SELECT type FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+            rusqlite::params![entry_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if entry_type.as_deref() == Some("character") {
+        crate::narrative_extraction::ensure_character_reference_mutation_allowed_in_tx(
+            conn,
+            project_id,
+            entry_id,
+            "delete",
+        )?;
+    }
     let deleted = match expected_version {
         Some(version) => conn.execute(
             "DELETE FROM codex_entries WHERE id = ?1 AND project_id = ?2 AND version = ?3",
@@ -3155,7 +3191,7 @@ fn restore_renderer_codex_delete_cascade_in_tx(
         .base_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("Codex delete restore version overflow"))?;
-    restore_deleted_codex_entry_from_snapshot(
+    let scope_events = restore_deleted_codex_entry_from_snapshot(
         conn,
         &payload.project_id,
         entry_id,
@@ -3170,7 +3206,7 @@ fn restore_renderer_codex_delete_cascade_in_tx(
         replay_version,
     )?;
     let root_after = collect_codex_entry_snapshot(conn, entry_id)?;
-    let narrative_events = codex_delete_cascade_restore_feed_events(
+    let mut narrative_events = codex_delete_cascade_restore_feed_events(
         conn,
         &payload.project_id,
         entry_id,
@@ -3178,6 +3214,7 @@ fn restore_renderer_codex_delete_cascade_in_tx(
         &cascade,
         &child_before,
     )?;
+    narrative_events.extend(scope_events);
     let canonical_payload = context.canonical_payload.clone().unwrap_or_else(|| {
         json!({
             "name": root_after.get("name").cloned().unwrap_or(Value::Null),
@@ -5127,7 +5164,7 @@ fn replay_codex_delete_cascade_in_tx(
                 .base_version
                 .checked_add(1)
                 .ok_or_else(|| anyhow::anyhow!("Codex delete restore version overflow"))?;
-            restore_deleted_codex_entry_from_snapshot(
+            let scope_events = restore_deleted_codex_entry_from_snapshot(
                 conn,
                 project_id,
                 &row.entity_id,
@@ -5142,14 +5179,16 @@ fn replay_codex_delete_cascade_in_tx(
                 replay_version,
             )?;
             let root_after = collect_codex_entry_snapshot(conn, &row.entity_id)?;
-            codex_delete_cascade_restore_feed_events(
+            let mut events = codex_delete_cascade_restore_feed_events(
                 conn,
                 project_id,
                 &row.entity_id,
                 &root_after,
                 &cascade,
                 &child_before,
-            )?
+            )?;
+            events.extend(scope_events);
+            events
         }
         "redo" => {
             let root_before = collect_codex_entry_snapshot(conn, &row.entity_id)?;
@@ -10876,6 +10915,10 @@ mod tests {
             "run",
         )
         .expect("insert project");
+        db.with_conn(|conn| {
+            crate::narrative_extraction::ensure_scope_registry_in_tx(conn, &id, "fixture")
+        })
+        .expect("seed project scope registry");
         id
     }
 

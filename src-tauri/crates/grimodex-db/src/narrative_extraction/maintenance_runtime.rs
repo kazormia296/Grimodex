@@ -1079,7 +1079,7 @@ pub fn complete_foreground_system_work_run(
                     )?;
                 }
             }
-            super::terminal_failure::resolve_terminal_failure_for_run_in_tx(
+            super::terminal_failure::resolve_terminal_failure_for_run_generated_in_tx(
                 conn,
                 &project_id,
                 &barrier.run_id,

@@ -52,13 +52,19 @@ test("initial JS budget allows bounded shared-chunk churn without chasing bytes"
 
   assert.equal(
     budget.gzipBytes,
-    INITIAL_JS_GRAPH_BUDGET.baseline.gzipBytes +
-      INITIAL_JS_GRAPH_BUDGET.allowance.gzipBytes,
+    Math.min(
+      INITIAL_JS_GRAPH_BUDGET.baseline.gzipBytes +
+        INITIAL_JS_GRAPH_BUDGET.allowance.gzipBytes,
+      INITIAL_JS_GRAPH_BUDGET.absoluteMax.gzipBytes,
+    ),
   );
   assert.equal(
     budget.rawBytes,
-    INITIAL_JS_GRAPH_BUDGET.baseline.rawBytes +
-      INITIAL_JS_GRAPH_BUDGET.allowance.rawBytes,
+    Math.min(
+      INITIAL_JS_GRAPH_BUDGET.baseline.rawBytes +
+        INITIAL_JS_GRAPH_BUDGET.allowance.rawBytes,
+      INITIAL_JS_GRAPH_BUDGET.absoluteMax.rawBytes,
+    ),
   );
 });
 

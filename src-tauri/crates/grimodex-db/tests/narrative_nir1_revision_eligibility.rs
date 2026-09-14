@@ -270,7 +270,10 @@ fn scene_token(conn: &Connection, scene: &str) -> String {
     .expect("Native Scene source coordinates")
 }
 
-fn live_scope_token(conn: &Connection, fixture: &Fixture) -> String {
+fn live_scope_authority(
+    conn: &Connection,
+    fixture: &Fixture,
+) -> grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1 {
     // The exact cold fixture's Reading DFS order is S1 (inside the first
     // folder), then S2. These tests do not alter Reading order or membership.
     let scenes = ["s1", "s2"]
@@ -291,8 +294,30 @@ fn live_scope_token(conn: &Connection, fixture: &Fixture) -> String {
         .collect::<Vec<_>>();
     build_narrative_project_scope_authority_v1(fixture.project(), &scenes)
         .expect("Native Core live Scope authority")
-        .source
-        .revision_token
+}
+
+fn live_scope_token(conn: &Connection, fixture: &Fixture) -> String {
+    live_scope_authority(conn, fixture).source.revision_token
+}
+
+fn current_projection_token(conn: &Connection, fixture: &Fixture) -> String {
+    use grimodex_core::narrative_scope_dependency_projection::{
+        projection_revision, ScopeDependencyIdentity,
+    };
+    let source_key: String = conn
+        .query_row(
+            "SELECT source_object_identity
+               FROM narrative_dependency_edges
+              WHERE project_id = ?1 AND consumer_kind = 'proposal-revision'
+                AND consumer_key = ?2 AND source_object_identity LIKE 'scope-dependency:v1:%'",
+            params![fixture.project(), fixture.child()],
+            |row| row.get(0),
+        )
+        .expect("scope dependency projection Source");
+    let identity = ScopeDependencyIdentity::from_source_key(&source_key)
+        .expect("canonical projection identity");
+    projection_revision(&identity, &live_scope_authority(conn, fixture))
+        .expect("current projection token")
 }
 
 fn native_patch(db: &Database, fixture: &Fixture, scene: &str, patch: Value, keep_token: bool) {
@@ -438,8 +463,8 @@ fn exact_cold_human_child_has_legitimate_runless_current_epoch_freshness() {
         snapshot.last_evaluated_run_id.is_none(),
         "Native runless complete publication is valid"
     );
-    assert_eq!(snapshot.feed_acknowledged_through_sequence, 3);
-    assert_eq!(snapshot.feed_head_sequence, 3);
+    assert_eq!(snapshot.feed_acknowledged_through_sequence, 7);
+    assert_eq!(snapshot.feed_head_sequence, 7);
     assert!(!snapshot.declaration_set_id.is_empty());
     assert!(!snapshot.declaration_set_digest.is_empty());
     assert!(!snapshot.semantic_epoch_id.is_empty());
@@ -639,7 +664,7 @@ fn native_source_or_scope_changes_block_immediately_and_after_a_forged_ack() {
                     if source == "scene-body" {
                         scene_token(conn, fixture.scene("s1"))
                     } else {
-                        live_scope_token(conn, &fixture)
+                        current_projection_token(conn, &fixture)
                     },
                 ))
             })
@@ -662,9 +687,13 @@ fn native_source_or_scope_changes_block_immediately_and_after_a_forged_ack() {
             let current = if source == "scene-body" {
                 scene_token(conn, fixture.scene("s1"))
             } else {
-                live_scope_token(conn, &fixture)
+                current_projection_token(conn, &fixture)
             };
-            assert_ne!(current, before_token);
+            if source == "scene-body" {
+                assert_ne!(current, before_token);
+            } else {
+                assert_eq!(current, before_token);
+            }
             let (ack, head) = pending_coordinates(conn, &fixture);
             assert!(ack < head);
             assert_unavailable(conn, &fixture, "immediate pending Native source change");
@@ -678,11 +707,24 @@ fn native_source_or_scope_changes_block_immediately_and_after_a_forged_ack() {
         let (ack, head) = pending_coordinates(&conn, &fixture);
         assert_eq!(ack, head);
         assert_saved_fresh_none(&conn, &fixture);
-        assert_unavailable(
-            &conn,
-            &fixture,
-            "current Native token differs even with a forged ACK",
-        );
+        if source == "scene-body" {
+            assert_unavailable(
+                &conn,
+                &fixture,
+                "current Native token differs even with a forged ACK",
+            );
+        } else {
+            let tx = conn
+                .unchecked_transaction()
+                .expect("projection token read after forged ACK");
+            let actual = read_revision_canonical_freshness(&tx, fixture.project(), fixture.child())
+                .expect("scope story-order remains a complete read");
+            assert!(
+                matches!(actual, RevisionFreshnessRead::Fresh(_)),
+                "story-order is outside the selected non-secret projection: {actual:?}"
+            );
+            assert_eq!(current_projection_token(&tx, &fixture), before_token);
+        }
         assert_eq!(saved_state(&conn, &fixture), before_saved);
     }
 }
@@ -735,13 +777,7 @@ fn bounded_unrelated_native_pending_feed_preserves_freshness_with_ack_behind_hea
             ))
         })
         .expect("unchanged selected dependencies");
-    native_patch(
-        &db,
-        &fixture,
-        fixture.scene("s2"),
-        json!({"title": "Unrelated pending title"}),
-        false,
-    );
+    append_native_unrelated_two_event_transaction(&db, &fixture);
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         assert_eq!(saved_state(&tx, &fixture), before_saved);
@@ -821,7 +857,7 @@ fn global_or_unknown_pending_feed_cannot_reuse_the_same_saved_fresh_rows() {
                 ],
             )
             .expect("change only the private pending marker"),
-            1
+            2
         );
         reseal_private_transaction(&conn, &fixture, pending_sequence);
         assert_saved_fresh_none(&conn, &fixture);
@@ -866,13 +902,18 @@ fn missing_or_ahead_of_head_cursor_and_incomplete_feed_storage_are_unavailable()
                 .expect("private orphan copy FK setting");
             assert_eq!(foreign_keys, 0);
         }
-        assert_eq!(conn.execute(sql, params![fixture.project(), pending_sequence]).expect(case), 1);
+        let expected_changes = if case == "missing pending Feed row" { 2 } else { 1 };
+        assert_eq!(
+            conn.execute(sql, params![fixture.project(), pending_sequence])
+                .expect(case),
+            expected_changes
+        );
         if case == "missing pending Feed transaction" {
             let retained_events: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM narrative_change_events WHERE project_id = ?1 AND canonical_sequence = ?2",
                 params![fixture.project(), pending_sequence], |row| row.get(0),
             ).expect("orphan event witness remains stored");
-            assert_eq!(retained_events, 1);
+            assert_eq!(retained_events, 2);
         }
         assert_saved_fresh_none(&conn, &fixture);
         assert_unavailable(&conn, &fixture, case);
@@ -923,13 +964,7 @@ fn a_missing_trailing_event_cannot_match_the_native_multi_event_transaction_seal
 fn pending_event_budget_exhaustion_cannot_treat_a_partial_scan_as_unrelated() {
     let fixture = Fixture::new();
     let db = Database::new(&fixture.path).expect("Native private fixture");
-    native_patch(
-        &db,
-        &fixture,
-        fixture.scene("s2"),
-        json!({"title": "Unrelated pending budget seed"}),
-        false,
-    );
+    append_native_unrelated_two_event_transaction(&db, &fixture);
     drop(db);
     let conn = fixture.corruption_connection();
     let (ack, pending_sequence) = pending_coordinates(&conn, &fixture);
@@ -937,21 +972,26 @@ fn pending_event_budget_exhaustion_cannot_treat_a_partial_scan_as_unrelated() {
     // Keep one canonical sequence with 4097 event rows: head equality alone
     // cannot prove that a bounded scan examined every event in that sequence.
     assert_eq!(conn.execute(
-        "WITH RECURSIVE copies(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM copies WHERE n < 4096)
+        "WITH RECURSIVE copies(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM copies WHERE n < 4095)
          INSERT INTO narrative_change_events
             (id, project_id, transaction_id, canonical_change_event_uid, canonical_sequence,
              event_ordinal, object_key_json, change_kind, mutation_kind, before_version,
              before_digest, after_version, after_digest, changed_paths_json,
              text_impact_json, structural_impact_json, occurred_at)
          SELECT 'private-over-budget-' || copies.n, e.project_id, e.transaction_id,
-                e.canonical_change_event_uid, e.canonical_sequence, copies.n,
+                e.canonical_change_event_uid, e.canonical_sequence,
+                (SELECT MAX(existing.event_ordinal) + copies.n
+                   FROM narrative_change_events existing
+                  WHERE existing.project_id = e.project_id
+                    AND existing.canonical_change_event_uid = e.canonical_change_event_uid
+                    AND existing.canonical_sequence = e.canonical_sequence),
                 e.object_key_json, e.change_kind, e.mutation_kind, e.before_version,
                 e.before_digest, e.after_version, e.after_digest, e.changed_paths_json,
                 e.text_impact_json, e.structural_impact_json, e.occurred_at
            FROM narrative_change_events e CROSS JOIN copies
           WHERE e.project_id = ?1 AND e.canonical_sequence = ?2 AND e.event_ordinal = 0",
         params![fixture.project(), pending_sequence],
-    ).expect("expand only the private Feed budget corruption copy"), 4096);
+    ).expect("expand only the private Feed budget corruption copy"), 4095);
     assert_saved_fresh_none(&conn, &fixture);
     assert_unavailable(
         &conn,
@@ -964,13 +1004,7 @@ fn pending_event_budget_exhaustion_cannot_treat_a_partial_scan_as_unrelated() {
 fn pending_sequence_budget_exhaustion_cannot_treat_a_partial_scan_as_unrelated() {
     let fixture = Fixture::new();
     let db = Database::new(&fixture.path).expect("Native private fixture");
-    native_patch(
-        &db,
-        &fixture,
-        fixture.scene("s2"),
-        json!({"title": "Unrelated sequence budget seed"}),
-        false,
-    );
+    append_native_unrelated_two_event_transaction(&db, &fixture);
     drop(db);
     let conn = fixture.corruption_connection();
     let (ack, pending_sequence) = pending_coordinates(&conn, &fixture);

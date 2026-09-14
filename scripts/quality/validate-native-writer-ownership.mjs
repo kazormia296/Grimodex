@@ -96,6 +96,9 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/change_events.rs",
     "src-tauri/crates/grimodex-db/src/timelapse.rs",
     "src-tauri/crates/grimodex-core/src/change_events.rs",
+    // A1 scope registry and scene bindings extend the existing project Scope
+    // authority and are written only by the typed Native scope module.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_scope.rs",
   ],
   "narrative.revision-envelope": [
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 35,
+  "schemaVersion": 36,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -9731,6 +9731,187 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_runtime_policy ( singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1), runtime_mode TEXT NOT NULL DEFAULT 'review-only' CHECK (runtime_mode IN ('disabled','review-only','manual-apply','automatic')), maintenance_enabled INTEGER NOT NULL DEFAULT 0 CHECK (maintenance_enabled IN (0, 1)), generic_import_enabled INTEGER NOT NULL DEFAULT 0 CHECK (generic_import_enabled IN (0, 1)), background_ai_enabled INTEGER NOT NULL DEFAULT 0 CHECK (background_ai_enabled IN (0, 1)), version INTEGER NOT NULL DEFAULT 1 )"
     },
+    "narrative_scene_scope_bindings": {
+      "kind": "table",
+      "columns": {
+        "audience_json": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "compatibility_marker": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "knowledge_holder_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "material_constraint_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "query_identity_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "scene_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "scene_incarnation_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_token": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "1",
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "tree_nodes",
+          "from": "scene_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_scene_scope_bindings ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE, scene_incarnation_id TEXT NOT NULL CHECK(length(scene_incarnation_id) > 0), compatibility_marker TEXT NOT NULL CHECK(compatibility_marker IN ('legacy-absent', 'explicit', 'unknown')), query_identity_json TEXT NOT NULL CHECK(json_valid(query_identity_json) AND json_type(query_identity_json) = 'object'), material_constraint_json TEXT NOT NULL CHECK(json_valid(material_constraint_json) AND json_type(material_constraint_json) = 'object'), knowledge_holder_json TEXT NOT NULL CHECK(json_valid(knowledge_holder_json) AND json_type(knowledge_holder_json) = 'object'), audience_json TEXT NOT NULL CHECK(json_valid(audience_json) AND json_type(audience_json) = 'object'), version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1), source_token TEXT NOT NULL CHECK(length(source_token) = 71 AND source_token GLOB 'sha256:*' AND substr(source_token, 8) NOT GLOB '*[^0-9a-f]*'), updated_at TEXT NOT NULL, PRIMARY KEY(project_id, scene_id) )"
+    },
+    "narrative_scope_registries": {
+      "kind": "table",
+      "columns": {
+        "narrative_layer_refs_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "registry_version": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_token": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "timeline_refs_json": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "1",
+          "primaryKey": 0
+        },
+        "worldline_refs_json": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_scope_registries ( project_id TEXT NOT NULL PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, registry_version TEXT NOT NULL CHECK(length(registry_version) > 0), timeline_refs_json TEXT NOT NULL CHECK(json_valid(timeline_refs_json) AND json_type(timeline_refs_json) = 'array'), worldline_refs_json TEXT NOT NULL CHECK(json_valid(worldline_refs_json) AND json_type(worldline_refs_json) = 'array'), narrative_layer_refs_json TEXT NOT NULL CHECK(json_valid(narrative_layer_refs_json) AND json_type(narrative_layer_refs_json) = 'array'), version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1), source_token TEXT NOT NULL CHECK(length(source_token) = 71 AND source_token GLOB 'sha256:*' AND substr(source_token, 8) NOT GLOB '*[^0-9a-f]*'), updated_at TEXT NOT NULL )"
+    },
     "narrative_semantic_epochs": {
       "kind": "table",
       "columns": {
@@ -15477,6 +15658,34 @@
         }
       ],
       "createSql": "CREATE INDEX idx_narrative_projection_dependencies_source ON narrative_projection_dependencies(source_kind, source_key)"
+    },
+    "idx_narrative_scene_scope_bindings_project": {
+      "table": "narrative_scene_scope_bindings",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "version"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_scene_scope_bindings_project ON narrative_scene_scope_bindings(project_id, version)"
+    },
+    "idx_narrative_scene_scope_bindings_scene": {
+      "table": "narrative_scene_scope_bindings",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "scene_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_scene_scope_bindings_scene ON narrative_scene_scope_bindings(scene_id)"
     },
     "idx_narrative_semantic_epochs_project": {
       "table": "narrative_semantic_epochs",

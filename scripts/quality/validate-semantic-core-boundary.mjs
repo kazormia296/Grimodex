@@ -38,7 +38,8 @@ const REPO_ROOT = path.resolve(
 // remains its input.
 // SCHEMA 34 (NIR-0 C2A) adds non-authoritative Chronicle V2 persistence and
 // stage-provenance closure storage; D2 V2 evaluation remains a shadow lane.
-export const EXPECTED_SCHEMA_VERSION = 35;
+// SCHEMA 36 adds the NIR-1 A1 scene-scope authority storage.
+export const EXPECTED_SCHEMA_VERSION = 36;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

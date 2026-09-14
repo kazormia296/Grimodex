@@ -3711,6 +3711,68 @@ impl Database {
                 ON narrative_extraction_stage_receipts(project_id, run_id, task_id, attempt_id);
             ",
         )?;
+
+        // SCHEMA_VERSION 36 / NIR-1 A1: the existing tree/project Scope
+        // authority remains the
+        // owner of membership and order. These narrow rows hold only the
+        // typed scene-scope extension, its registry, and Native/OCC metadata;
+        // no prose or material closure is copied here.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_scope_registries (
+                project_id                TEXT NOT NULL PRIMARY KEY
+                    REFERENCES projects(id) ON DELETE CASCADE,
+                registry_version          TEXT NOT NULL
+                    CHECK(length(registry_version) > 0),
+                timeline_refs_json        TEXT NOT NULL
+                    CHECK(json_valid(timeline_refs_json)
+                      AND json_type(timeline_refs_json) = 'array'),
+                worldline_refs_json       TEXT NOT NULL
+                    CHECK(json_valid(worldline_refs_json)
+                      AND json_type(worldline_refs_json) = 'array'),
+                narrative_layer_refs_json TEXT NOT NULL
+                    CHECK(json_valid(narrative_layer_refs_json)
+                      AND json_type(narrative_layer_refs_json) = 'array'),
+                version                   INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+                source_token              TEXT NOT NULL
+                    CHECK(length(source_token) = 71
+                      AND source_token GLOB 'sha256:*'
+                      AND substr(source_token, 8) NOT GLOB '*[^0-9a-f]*'),
+                updated_at                TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_scene_scope_bindings (
+                project_id            TEXT NOT NULL
+                    REFERENCES projects(id) ON DELETE CASCADE,
+                scene_id              TEXT NOT NULL
+                    REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                scene_incarnation_id  TEXT NOT NULL CHECK(length(scene_incarnation_id) > 0),
+                compatibility_marker  TEXT NOT NULL
+                    CHECK(compatibility_marker IN ('legacy-absent', 'explicit', 'unknown')),
+                query_identity_json   TEXT NOT NULL
+                    CHECK(json_valid(query_identity_json)
+                      AND json_type(query_identity_json) = 'object'),
+                material_constraint_json TEXT NOT NULL
+                    CHECK(json_valid(material_constraint_json)
+                      AND json_type(material_constraint_json) = 'object'),
+                knowledge_holder_json  TEXT NOT NULL
+                    CHECK(json_valid(knowledge_holder_json)
+                      AND json_type(knowledge_holder_json) = 'object'),
+                audience_json          TEXT NOT NULL
+                    CHECK(json_valid(audience_json)
+                      AND json_type(audience_json) = 'object'),
+                version                INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+                source_token           TEXT NOT NULL
+                    CHECK(length(source_token) = 71
+                      AND source_token GLOB 'sha256:*'
+                      AND substr(source_token, 8) NOT GLOB '*[^0-9a-f]*'),
+                updated_at             TEXT NOT NULL,
+                PRIMARY KEY(project_id, scene_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_scene_scope_bindings_scene
+                ON narrative_scene_scope_bindings(scene_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_scene_scope_bindings_project
+                ON narrative_scene_scope_bindings(project_id, version);
+            ",
+        )?;
         Self::repair_narrative_v2_monotonicity_trigger(&conn)?;
         Self::repair_timelapse_creation_baseline_triggers(&conn)?;
 
@@ -3945,6 +4007,16 @@ impl Database {
         // `user_version` remains unchanged until the checkpoint below.
         conn.execute_batch("SAVEPOINT narrative_c2_schema_32")?;
         let c2zb_result = (|| -> anyhow::Result<()> {
+            // A1 owns the SCHEMA 36 boundary. A schema-35 user_version is the
+            // durable marker for the ordinary pre-A1 upgrade path; current /
+            // post-A1 workspaces retain fail-closed missing-row semantics.
+            if current < SCHEMA_VERSION {
+                // A1 migration compatibility is Native-owned: every pre-A1
+                // scene gets one persisted legacy marker and a fresh
+                // incarnation id. This runs in the schema savepoint so a
+                // failed migration cannot leave partial scope state behind.
+                crate::narrative_extraction::backfill_scene_scope_storage_in_tx(&conn)?;
+            }
             let c2zb_marker_due = crate::narrative_extraction::c2zb_application_rekey::migrate_narrative_application_rekey_v32(
                 &conn,
             )?;
@@ -9690,6 +9762,114 @@ mod tests {
     }
 
     #[test]
+    fn restore_preflight_keeps_current_missing_scene_scope_binding_fail_closed() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('scope-current', 'Current scope')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                 VALUES ('scope-scene', 'scope-current', 'scene', 'Scene', 'a0')",
+                [],
+            )?;
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                "scope-current",
+                "scope-scene",
+                "2026-09-14T00:00:00.000Z",
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'scope-current' AND scene_id = 'scope-scene'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed a current A1 workspace with a missing binding");
+
+        db.migrate()
+            .expect("ordinary current migration must retain the missing row");
+        db.migrate_for_restore_preflight()
+            .expect("current restore preflight must retain the missing row");
+
+        db.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'scope-current' AND scene_id = 'scope-scene'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                count, 0,
+                "current A1 state must not be backfilled as legacy"
+            );
+            let error = crate::narrative_extraction::read_narrative_scene_scope(
+                conn,
+                "scope-current",
+                "scope-scene",
+            )
+            .expect_err("a missing current binding must remain unavailable");
+            assert!(error
+                .to_string()
+                .contains("NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE"));
+            Ok(())
+        })
+        .expect("inspect the fail-closed current scope");
+    }
+
+    #[test]
+    fn migration_backfills_scene_scope_rows_from_schema_35_pre_a1_workspace() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('scope-legacy', 'Legacy scope')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                 VALUES ('scope-legacy-scene', 'scope-legacy', 'scene', 'Scene', 'a0')",
+                [],
+            )?;
+            conn.execute_batch(
+                "DROP TABLE narrative_scene_scope_bindings;
+                 DROP TABLE narrative_scope_registries;",
+            )?;
+            assert_eq!(
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+                35,
+                "this shadow fixture models the ordinary origin/master schema-35 base"
+            );
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
+            Ok(())
+        })
+        .expect("seed a pre-A1 schema marker without A1 storage");
+
+        db.migrate().expect("migrate the pre-A1 schema");
+
+        db.with_conn(|conn| {
+            let marker: String = conn.query_row(
+                "SELECT compatibility_marker FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'scope-legacy' AND scene_id = 'scope-legacy-scene'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(marker, "legacy-absent");
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            Ok(())
+        })
+        .expect("pre-A1 scenes must receive the legacy compatibility marker");
+    }
+
+    #[test]
     fn restore_preflight_seeds_default_project_for_a_fresh_database() {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
 
@@ -11198,6 +11378,27 @@ mod tests {
         // otherwise never exercised. Restore relies on these being present.
         let db = Database::new(std::path::Path::new(":memory:")).unwrap();
         db.with_conn(|conn| {
+            // The legacy scene belongs to a real project.  Without this row,
+            // the current migration's scope backfill cannot establish the
+            // Native registry before it visits the scene.
+            conn.execute_batch(
+                "CREATE TABLE projects (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT 'Test',
+                    genre TEXT,
+                    pov TEXT,
+                    tense TEXT,
+                    language TEXT NOT NULL DEFAULT 'ja',
+                    style_guide TEXT,
+                    ai_instructions TEXT,
+                    outline TEXT,
+                    target_readers TEXT,
+                    phase_resolution_mode TEXT NOT NULL DEFAULT 'auto',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 INSERT INTO projects (id, title) VALUES ('p1', 'Project 1');",
+            )?;
             // Pre-chronicle tree_nodes / project_snapshot_tree_nodes (no chronicle_*).
             conn.execute_batch(
                 "CREATE TABLE tree_nodes (

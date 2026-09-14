@@ -8,7 +8,9 @@ use super::super::{
     dependency_edges::{canonical_source_object_identity, find_edges_by_consumer, DependencyEdge},
     project_scope_authority::load_live_project_scope_authority,
     retrieval_admission::{
-        build::{read_build_candidate, BuildCandidate},
+        build::{
+            finalize_build_candidate, preflight_build_candidate, BuildCandidate,
+        },
         ChronicleRetrievalDocument,
     },
     revision_eligibility::pending::{self, FeedSnapshot},
@@ -144,9 +146,49 @@ pub(super) fn read_snapshot(
         }
         Err(_) => return Ok(Err(Reason::ScopeUnavailable)),
     };
-    let mut candidates = Vec::new();
+    // Keep membership, approval, binding, and disclosure checks candidate
+    // local. Only preflight-passing candidates contribute to the one global
+    // scope preload, so a missing scope row in an ineligible roster entry
+    // cannot suppress a valid candidate.
+    let mut preflights = Vec::new();
     for revision in &roster.revisions {
-        if let Ok(candidate) = read_build_candidate(conn, project, revision, &authority)? {
+        if let Ok(preflight) = preflight_build_candidate(conn, project, revision, &authority)? {
+            preflights.push(preflight);
+        }
+    }
+    let material_source_keys = preflights
+        .iter()
+        .flat_map(|preflight| {
+            preflight
+                .membership
+                .materials
+                .iter()
+                .map(|material| material.source_key.clone())
+        })
+        .collect::<Vec<_>>();
+    let material_scope_cache = match super::super::scene_scope::preload_material_scene_scopes(
+        conn,
+        project,
+        &material_source_keys,
+    ) {
+        Ok(scopes) => scopes,
+        Err(error)
+            if error.downcast_ref::<rusqlite::Error>().is_some()
+                || error.downcast_ref::<std::io::Error>().is_some() =>
+        {
+            return Err(error)
+        }
+        Err(_) => return Ok(Err(Reason::ScopeUnavailable)),
+    };
+    let mut candidates = Vec::new();
+    for preflight in preflights {
+        if let Ok(candidate) = finalize_build_candidate(
+            conn,
+            project,
+            &authority,
+            preflight,
+            &material_scope_cache,
+        )? {
             candidates.push(candidate);
         }
     }

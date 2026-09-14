@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use flate2::read::GzDecoder;
 use grimodex_core::{canonical_json_digest, canonical_json_string};
+use grimodex_db::agent_writes::{agent_codex_create_impl, AgentCodexCreatePayload};
 use grimodex_db::domain_writes::{
     project_patch, tree_node_patch, ProjectPatchPayload, TreeNodePatchPayload,
 };
@@ -13,10 +14,13 @@ use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::narrative_extraction::{
     narrative_extraction_append_human_decision,
     narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto,
-    read_revision_canonical_freshness, read_revision_material_membership,
-    read_revision_retrieval_eligibility, run_incremental_freshness_cycle, AppendDecisionPayload,
+    read_narrative_scene_scope, read_revision_canonical_freshness, read_revision_material_membership,
+    read_revision_retrieval_eligibility, run_incremental_freshness_cycle,
+    update_narrative_scene_scope, update_narrative_scene_scope_registry, AppendDecisionPayload,
     CreateHumanDerivedRevisionRequest, IncrementalFreshnessCycleOutcome, MaterialMembershipRead,
-    NarrativeAdapterIdentity, RevisionEligibilityRead, RevisionFreshnessRead,
+    NarrativeAdapterIdentity, NarrativeSceneScopeRegistryUpdatePayload,
+    NarrativeSceneScopeUpdatePayload, RevisionEligibilityRead, RevisionEligibilityReason,
+    RevisionFreshnessRead,
 };
 use grimodex_db::Database;
 use rusqlite::{params, Connection, OpenFlags};
@@ -460,6 +464,42 @@ fn native_set_mode(db: &Database, fixture: &Fixture, mode: &str) {
     .expect("production Native project query mode update");
 }
 
+fn update_live_scene_scope(
+    db: &Database,
+    fixture: &Fixture,
+    scene_id: &str,
+    request_id: &str,
+    mutate: impl FnOnce(&mut Value),
+) {
+    let current = db.with_read_transaction(|conn| {
+        read_narrative_scene_scope(conn, fixture.project(), scene_id)
+    }).expect("read Native scene scope before update");
+    let mut scope = json!({
+        "schemaVersion": current.binding.schema_version,
+        "compatibilityMarker": current.binding.compatibility_marker,
+        "queryIdentity": current.binding.query_identity,
+        "materialConstraint": current.binding.material_constraint,
+        "knowledgeHolder": current.binding.knowledge_holder,
+        "audience": current.binding.audience,
+    });
+    mutate(&mut scope);
+    let scope = serde_json::from_value(scope).expect("typed Native scene scope update");
+    update_narrative_scene_scope(
+        db,
+        NarrativeSceneScopeUpdatePayload {
+            project_id: fixture.project().to_owned(),
+            scene_id: scene_id.to_owned(),
+            request_id: request_id.to_owned(),
+            session_id: "nir1-admission-session".to_owned(),
+            event_uid: format!("{request_id}-event"),
+            base_version: current.binding.version,
+            updated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            scope,
+        },
+    )
+    .expect("Native scene scope update");
+}
+
 fn drain_native_feed(db: &Database) {
     let mut processed = false;
     for _ in 0..8 {
@@ -547,6 +587,152 @@ fn normal_current_human_approved_child_is_eligible_for_distinct_later_s2() {
         before,
         "admission writes no receipt, state, or approval"
     );
+}
+
+#[test]
+fn native_worldline_only_scope_change_denies_old_revision_after_feed_and_cold_reopen() {
+    let fixture = Fixture::new();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    let initial_scope = db
+        .with_read_transaction(|conn| {
+            read_narrative_scene_scope(conn, fixture.project(), fixture.scene("s1"))
+        })
+        .expect("read Native registry before alternate worldline");
+    let mut registry = initial_scope.registry.clone();
+    registry.worldline_refs.push("worldline:alternate".to_owned());
+    update_narrative_scene_scope_registry(
+        &db,
+        NarrativeSceneScopeRegistryUpdatePayload {
+            project_id: fixture.project().to_owned(),
+            request_id: "nir1-worldline-alternate-registry".to_owned(),
+            session_id: "nir1-admission-session".to_owned(),
+            event_uid: "nir1-worldline-alternate-registry-event".to_owned(),
+            base_version: initial_scope.registry_revision,
+            updated_at: "2026-09-14T00:10:00.000Z".to_owned(),
+            registry,
+        },
+    )
+    .expect("Native alternate worldline registry update");
+
+    let current = native_fresh_nonsecret_child(&db, &fixture);
+    drain_native_feed(&db);
+    db.with_conn(|conn| {
+        assert_complete_and_fresh(conn, &fixture, &current);
+        assert_eligible(conn, &fixture, &current);
+        Ok(())
+    })
+    .expect("baseline eligibility");
+
+    let source_before: String = db.with_conn(|conn| Ok(conn.query_row(
+        "SELECT content FROM tree_nodes WHERE id = ?1", [fixture.scene("s1")], |row| row.get(0),
+    )?))
+        .expect("material body before scope mutation");
+    update_live_scene_scope(
+        &db,
+        &fixture,
+        fixture.scene("s1"),
+        "nir1-worldline-only-scope-mutation",
+        |scope| {
+            scope["materialConstraint"]["worldline"] =
+                json!({"kind":"exact","ref":"worldline:alternate"});
+        },
+    );
+    let source_after: String = db.with_conn(|conn| Ok(conn.query_row(
+        "SELECT content FROM tree_nodes WHERE id = ?1", [fixture.scene("s1")], |row| row.get(0),
+    )?))
+        .expect("material body after scope mutation");
+    assert_eq!(source_after, source_before, "worldline-only mutation changes no body");
+    drain_native_feed(&db);
+
+    let cold_db = Database::new(&fixture.path).expect("cold Database reopen");
+    for database in [&db, &cold_db] {
+        database.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let actual = read_revision_retrieval_eligibility(
+                &tx,
+                fixture.project(),
+                &current,
+                fixture.scene("s2"),
+            )?;
+            assert!(matches!(
+                actual,
+                RevisionEligibilityRead::Unavailable {
+                    reason: RevisionEligibilityReason::ScopeUnsupported
+                }
+            ));
+            let old_vectors: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_nir1_chronicle_vectors
+                  WHERE project_id = ?1 AND revision_id = ?2",
+                params![fixture.project(), &current],
+                |row| row.get(0),
+            )?;
+            assert_eq!(old_vectors, 0, "cold reopen cannot restore old IR vector");
+            Ok(())
+        })
+        .expect("worldline-only revision remains denied after feed and reopen");
+    }
+}
+
+#[test]
+fn native_character_material_principal_is_only_scope_unsupported_after_fresh_approval() {
+    let fixture = Fixture::new();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    let character_id = "nir1-scope-principal-character";
+    agent_codex_create_impl(
+        &db,
+        AgentCodexCreatePayload {
+            request_id: Some("nir1-scope-principal-character-create".to_owned()),
+            entry_id: Some(character_id.to_owned()),
+            project_id: fixture.project().to_owned(),
+            session_id: "nir1-admission-session".to_owned(),
+            surface: Some("manual".to_owned()),
+            type_slug: "character".to_owned(),
+            name: "NIR1 Scope Principal".to_owned(),
+            summary: Some(String::new()),
+            content: Some("{}".to_owned()),
+            aliases: None,
+            excluded_aliases: None,
+            readings: None,
+            tags_cache: None,
+            parent_id: None,
+            source_chat_message_id: None,
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: Vec::new(),
+        },
+    )
+    .expect("production Codex character create");
+    update_live_scene_scope(
+        &db,
+        &fixture,
+        fixture.scene("s1"),
+        "nir1-character-principal-scope",
+        |scope| {
+            scope["knowledgeHolder"] = json!({"kind":"character","ref":character_id});
+        },
+    );
+
+    let current = native_fresh_nonsecret_child(&db, &fixture);
+    drain_native_feed(&db);
+    db.with_conn(|conn| {
+        assert_complete_and_fresh(conn, &fixture, &current);
+        let tx = conn.unchecked_transaction()?;
+        let actual = read_revision_retrieval_eligibility(
+            &tx,
+            fixture.project(),
+            &current,
+            fixture.scene("s2"),
+        )?;
+        assert!(matches!(
+            actual,
+            RevisionEligibilityRead::Unavailable {
+                reason: RevisionEligibilityReason::ScopeUnsupported
+            }
+        ));
+        Ok(())
+    })
+    .expect("only unsupported material principal denies the fresh approved child");
 }
 
 #[test]
@@ -863,7 +1049,7 @@ fn native_source_scope_archive_and_order_changes_deny_before_and_after_evaluatio
                 fixture.scene("s1"),
                 json!({"archivedAt":"2026-09-08T09:00:00.000Z"}),
             ),
-            "scope-story" => (fixture.scene("s2"), json!({"storyTimeOrder":"a1"})),
+            "scope-story" => (fixture.scene("s2"), json!({"storyTimeOrder":"z9"})),
             "reading-order" => (fixture.scene("s2"), json!({"sortOrder":"Zz"})),
             _ => unreachable!("enumerated Native mutation"),
         };
@@ -879,11 +1065,42 @@ fn native_source_scope_archive_and_order_changes_deny_before_and_after_evaluatio
         .expect("saved fresh summary does not create an admission window after Native mutation");
         drain_native_feed(&db);
         db.with_conn(|conn| {
-            assert_ne!(saved_canonical_state(conn, fixture.child()).0, "fresh");
-            assert_unavailable(conn, &fixture, fixture.child(), fixture.scene("s2"));
+            match case {
+                "source-body" | "source-archived" => {
+                    assert_ne!(saved_canonical_state(conn, fixture.child()).0, "fresh");
+                    assert_unavailable(conn, &fixture, fixture.child(), fixture.scene("s2"));
+                }
+                "scope-story" => {
+                    assert_eq!(
+                        saved_canonical_state(conn, fixture.child()),
+                        ("fresh".to_owned(), "none".to_owned())
+                    );
+                    assert_eligible(conn, &fixture, fixture.child());
+                }
+                "reading-order" => {
+                    assert_eq!(
+                        saved_canonical_state(conn, fixture.child()),
+                        ("fresh".to_owned(), "none".to_owned())
+                    );
+                    let tx = conn.unchecked_transaction()?;
+                    let actual = read_revision_retrieval_eligibility(
+                        &tx,
+                        fixture.project(),
+                        fixture.child(),
+                        fixture.scene("s2"),
+                    )?;
+                    assert!(matches!(
+                        actual,
+                        RevisionEligibilityRead::Unavailable {
+                            reason: RevisionEligibilityReason::SourceNotBeforeQuery
+                        }
+                    ));
+                }
+                _ => unreachable!("enumerated Native mutation"),
+            }
             Ok(())
         })
-        .expect("stored canonical invalidation remains ineligible");
+        .expect("stored canonical state is re-evaluated for the Native mutation");
     }
 }
 

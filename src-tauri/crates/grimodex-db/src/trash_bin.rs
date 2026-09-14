@@ -400,6 +400,17 @@ fn restore_scene_in_tx(
     .next()
     .map(Value::Object)
     .ok_or_else(|| anyhow::anyhow!("restored Scene was not persisted"))?;
+    let updated_at: String = conn.query_row(
+        "SELECT updated_at FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+        params![new_id, project_id],
+        |row| row.get(0),
+    )?;
+    crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+        conn,
+        project_id,
+        &new_id,
+        &updated_at,
+    )?;
     Ok(RestoredStructure {
         new_id: new_id.clone(),
         broken_links,

@@ -544,6 +544,22 @@ export declare class Backend {
    */
   nir1EntityRelationRevisionRead(payload: any): Promise<string>
   /**
+   * Read the Native-owned A1 scene Scope binding and registry from the
+   * workspace selected at IPC arrival. The renderer supplies identity only;
+   * the active workspace path remains the Native authority check.
+   */
+  narrativeSceneScopeRead(payload: any): Promise<string>
+  /**
+   * Atomically update one A1 scene Scope binding with Native OCC and the
+   * existing Change Feed/invalidation writer.
+   */
+  narrativeSceneScopeUpdate(payload: any): Promise<string>
+  /**
+   * Atomically update the project Scope vocabulary registry. Scene bindings
+   * are revalidated against the new registry inside the same transaction.
+   */
+  narrativeSceneScopeRegistryUpdate(payload: any): Promise<string>
+  /**
    * Rebuild可能なsemantic background indexingを協調停止する。
    * 4-cache epochをrotateし、既にpin済みのscene/bulk jobはitem/chunk境界で
    * `IPC_DERIVED_CANCELLED` を返す。途中生成したindex payloadはcommitしない。

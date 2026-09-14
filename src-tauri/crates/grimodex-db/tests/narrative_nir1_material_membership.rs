@@ -352,9 +352,22 @@ fn normal_ui_child_membership_retains_root_input_and_scope_control_after_cold_re
                     fixture.manifest["s1"].as_str().expect("S1")
                 )));
         assert_eq!(membership.active_scope_controls.len(), 1);
+        let expected_scope_source_key: String = tx
+            .query_row(
+                "SELECT source_key FROM narrative_revision_source_basis
+                  WHERE revision_id = ?1 AND source_kind = 'scope-dependency-projection-v1'",
+                [child],
+                |row| row.get(0),
+            )
+            .expect("persisted projection Scope control");
+        assert!(expected_scope_source_key.starts_with("scope-dependency:v1:"));
+        assert_eq!(
+            membership.active_scope_controls[0].source_kind,
+            "scope-dependency-projection-v1"
+        );
         assert_eq!(
             membership.active_scope_controls[0].source_key,
-            format!("project:scope-authority:{project}")
+            expected_scope_source_key
         );
     }
     drop(tx);
@@ -565,7 +578,7 @@ fn missing_scope_control_observation_never_publishes_complete_membership() {
     assert_eq!(
         conn.execute(
             "DELETE FROM narrative_revision_source_basis
-              WHERE revision_id = ?1 AND source_kind = 'project-scope-authority'",
+              WHERE revision_id = ?1 AND source_kind = 'scope-dependency-projection-v1'",
             [fixture.child()],
         )
         .expect("remove the selected Scope control only on the private copy"),
@@ -591,15 +604,23 @@ fn missing_unselected_root_input_span_never_publishes_complete_membership() {
         )
         .expect("sealed whole-request root input");
     let mut snapshot: Value = serde_json::from_str(&raw).expect("snapshot JSON");
-    let removed = snapshot["evidence"]["catalog"]["entries"]
-        .as_array_mut()
-        .expect("root span catalog")
-        .pop()
-        .expect("unselected final span");
     let root = load_envelope(&conn, fixture.root());
-    assert!(root["effectiveMaterialBasis"]["evidenceSet"]
+    let selected_evidence = root["effectiveMaterialBasis"]["evidenceSet"]
         .as_array()
-        .expect("selected assertion evidence")
+        .expect("selected assertion evidence");
+    let catalog = snapshot["evidence"]["catalog"]["entries"]
+        .as_array_mut()
+        .expect("root span catalog");
+    let removed_index = catalog
+        .iter()
+        .position(|entry| {
+            !selected_evidence
+                .iter()
+                .any(|evidence| evidence["quote"] == entry["quote"])
+        })
+        .expect("an unselected root span");
+    let removed = catalog.remove(removed_index);
+    assert!(selected_evidence
         .iter()
         .all(|evidence| evidence["quote"] != removed["quote"]));
     {
@@ -792,7 +813,10 @@ fn native_scope_grandchild_accepts_ancestor_with_an_older_scope_authority_token(
             assert_eq!(current_revision(conn, fixture.child()), fixture.child());
             assert_eq!(stored_freshness(conn, &fixture, fixture.child()), "fresh");
             let token = scope_token(conn, fixture.child())?;
-            assert_eq!(token, current_native_scope_token(conn, &fixture));
+            assert_eq!(
+                token,
+                current_projection_token(conn, &fixture, fixture.child())
+            );
             Ok(token)
         })
         .expect("initial selected child and current Native authority");
@@ -827,7 +851,7 @@ fn native_scope_grandchild_accepts_ancestor_with_an_older_scope_authority_token(
         .with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
             assert_eq!(current_revision(&tx, fixture.child()), fixture.child());
-            assert_eq!(stored_freshness(&tx, &fixture, fixture.child()), "stale");
+            assert_eq!(stored_freshness(&tx, &fixture, fixture.child()), "fresh");
             assert_eq!(scope_token(&tx, fixture.child())?, old_scope_token);
             let current = current_native_scope_token(&tx, &fixture);
             assert_ne!(current, old_scope_token);
@@ -841,7 +865,7 @@ fn native_scope_grandchild_accepts_ancestor_with_an_older_scope_authority_token(
                 membership.active_scope_controls[0].revision_token,
                 old_scope_token
             );
-            assert_eq!(stored_freshness(&tx, &fixture, fixture.child()), "stale");
+            assert_eq!(stored_freshness(&tx, &fixture, fixture.child()), "fresh");
             Ok(current)
         })
         .expect("Complete membership does not refresh the selected stale child");
@@ -852,7 +876,7 @@ fn native_scope_grandchild_accepts_ancestor_with_an_older_scope_authority_token(
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         assert_eq!(current_revision(&tx, fixture.child()), grandchild);
-        assert_eq!(stored_freshness(&tx, &fixture, fixture.child()), "stale");
+        assert_eq!(stored_freshness(&tx, &fixture, fixture.child()), "fresh");
         assert_eq!(scope_token(&tx, fixture.child())?, old_scope_token);
         let new_projection_token = current_projection_token(&tx, &fixture, &grandchild);
         assert_eq!(scope_token(&tx, &grandchild)?, new_projection_token);
@@ -877,7 +901,7 @@ fn native_scope_grandchild_accepts_ancestor_with_an_older_scope_authority_token(
                 *expected_token
             );
         }
-        assert_eq!(stored_freshness(&tx, &fixture, fixture.child()), "stale");
+        assert_eq!(stored_freshness(&tx, &fixture, fixture.child()), "fresh");
         Ok(())
     })
     .expect("historical Scope lineage read");
@@ -897,7 +921,6 @@ fn native_projection_then_scope_chain_retains_all_historical_material() {
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         assert_eq!(current_revision(&tx, fixture.child()), scope);
-        let authority_token = current_native_scope_token(&tx, &fixture);
         for (revision, expected_depth) in
             [(fixture.child(), 2), (&projection[..], 3), (&scope[..], 4)]
         {
@@ -913,11 +936,7 @@ fn native_projection_then_scope_chain_retains_all_historical_material() {
             assert_eq!(membership.active_scope_controls.len(), 1);
             assert_eq!(
                 membership.active_scope_controls[0].revision_token,
-                if revision == scope {
-                    current_projection_token(&tx, &fixture, &scope)
-                } else {
-                    authority_token.clone()
-                }
+                current_projection_token(&tx, &fixture, revision)
             );
         }
         let selected_envelope = load_envelope(&tx, &scope);
@@ -956,7 +975,7 @@ fn new_nonsecret_scope_replaces_legacy_dependency_and_survives_unrelated_story_c
     });
     let original = db.with_conn(|conn| {
         let tx=conn.unchecked_transaction()?;
-        for (revision,generation) in [(fixture.child(),1),(&secret,2),(&child,2),(&projection,2)] {
+        for (revision,generation) in [(fixture.child(),2),(&secret,2),(&child,2),(&projection,2)] {
             let actual: i64=tx.query_row("SELECT producer_generation FROM narrative_dependency_declaration_heads WHERE consumer_kind='proposal-revision' AND consumer_key=?1",[revision],|r|r.get(0))?;
             assert_eq!(actual,generation);
         }
@@ -1024,8 +1043,8 @@ fn new_nonsecret_scope_replaces_legacy_dependency_and_survives_unrelated_story_c
         );
         assert_eq!(
             stored_freshness(&tx, &fixture, fixture.child()),
-            "stale",
-            "legacy contract still detects aggregate change"
+            "fresh",
+            "nonsecret projection ignores unrelated story change"
         );
         let fresh = read_revision_canonical_freshness(&tx, fixture.project(), &projection)?;
         assert!(

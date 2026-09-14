@@ -8,6 +8,9 @@ use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
     CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
 };
+use grimodex_db::domain_writes::{
+    project_create, tree_node_create, ProjectCreatePayload, TreeNodeCreatePayload,
+};
 use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
 use grimodex_db::{
     load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
@@ -17,19 +20,68 @@ use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
     let db = test_support::current_schema_memory().expect("current-schema fixture");
-    db.execute(
-        "INSERT INTO projects (id, title) VALUES (?, 'Project')",
-        &[Value::String("project-1".to_string())],
-        "run",
+    project_create(
+        &db,
+        ProjectCreatePayload {
+            project_id: "project-1".to_string(),
+            request_id: "fixture-project-1".to_string(),
+            session_id: "fixture-session".to_string(),
+            event_uid: "fixture-project-1-event".to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            title: "Project".to_string(),
+            genre: None,
+            pov: None,
+            tense: None,
+            language: None,
+            style_guide: None,
+            ai_instructions: None,
+            outline: None,
+            target_readers: None,
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+        },
     )
-    .expect("insert project");
-    db.execute(
-        "INSERT INTO tree_nodes (id, project_id, node_type, title, version)
-         VALUES ('scene-1', 'project-1', 'scene', 'Scene', 0)",
-        &[],
-        "run",
+    .expect("seed project through production writer");
+    tree_node_create(
+        &db,
+        TreeNodeCreatePayload {
+            id: "scene-1".to_string(),
+            project_id: "project-1".to_string(),
+            request_id: "fixture-scene-1".to_string(),
+            session_id: "fixture-session".to_string(),
+            event_uid: "fixture-scene-1-event".to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            parent_id: None,
+            node_type: "scene".to_string(),
+            title: "Scene".to_string(),
+            sort_order: "a0".to_string(),
+            synopsis: None,
+            status: None,
+            source_uri: None,
+            source_mtime: None,
+            content: None,
+            canonical_payload: None,
+        },
     )
-    .expect("insert scene");
+    .expect("seed scene through production writer");
+    // Keep the production-created scene and its A1 scope binding, but model a
+    // pre-Feed legacy scene: its canonical audit row exists, while no prior
+    // scene Feed head forces the order-only snapshot to chain from a
+    // different snapshot shape.
+    db.execute(
+        "DELETE FROM narrative_change_transactions
+          WHERE project_id = ? AND source_change_event_uid = ?",
+        &[
+            Value::String("project-1".to_string()),
+            Value::String("fixture-scene-1-event".to_string()),
+        ],
+        "remove setup scene Feed transaction",
+    )
+    .expect("seed legacy scene without Feed history");
     db
 }
 

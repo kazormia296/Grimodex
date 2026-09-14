@@ -20,7 +20,7 @@ fn nir1_schema_owns_only_rebuildable_vectors_and_explicit_producer_identity() {
     db.with_conn(|conn| {
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0))?,
-            35
+            36
         );
         let metadata = columns(conn, "narrative_semantic_index_metadata");
         assert!(metadata.contains(&"producer_id".into()));

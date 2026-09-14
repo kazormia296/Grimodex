@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 const COLD_QUERY_TEXT: &str = "NIR1_S2_MUST_NOT_ENTER_REQUEST";
 const COLD_QUERY_STORAGE: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"NIR1_S2_MUST_NOT_ENTER_REQUEST"}]}]}"#;
-const COLD_QUERY_UPDATED_AT: &str = "2026-09-08T05:15:06.055605704+00:00";
+const COLD_QUERY_UPDATED_AT: &str = "2026-09-13T17:34:37.044908178+00:00";
 
 struct Fixture {
     path: PathBuf,
@@ -307,27 +307,19 @@ fn reading_context_exposes_each_a2_identity_state_without_inventing_authority() 
     );
     assert_eq!(
         context.knowledge_holder,
-        QueryIdentityState::NotApplicable {
-            reason: "reader-reference-purpose"
-        }
+        QueryIdentityState::Resolved("reader".into())
     );
     assert_eq!(
         context.timeline,
-        QueryIdentityState::Unavailable {
-            reason: "query-scene-has-no-timeline-authority"
-        }
+        QueryIdentityState::Resolved("timeline:main".into())
     );
     assert_eq!(
         context.worldline,
-        QueryIdentityState::Unavailable {
-            reason: "query-scene-has-no-worldline-authority"
-        }
+        QueryIdentityState::Resolved("worldline:prime".into())
     );
     assert_eq!(
         context.narrative_layer,
-        QueryIdentityState::Unavailable {
-            reason: "query-scene-has-no-layer-authority"
-        }
+        QueryIdentityState::Resolved("layer:manuscript".into())
     );
     assert_eq!(
         context.reading_order,

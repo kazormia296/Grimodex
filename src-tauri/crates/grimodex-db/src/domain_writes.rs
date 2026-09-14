@@ -759,6 +759,7 @@ fn apply_codex_rename_updates_in_tx(
         .collect::<anyhow::Result<Vec<_>>>()?;
     keyed_indices.sort_by(|left, right| left.0.cmp(&right.0));
     let mut aggregate_versions: HashMap<String, (i64, i64)> = HashMap::new();
+    let mut changed_scene_ids = BTreeSet::new();
     for (_, index) in keyed_indices {
         let update = &updates[index];
         let (object_key, change_kind, changed_paths) =
@@ -927,6 +928,12 @@ fn apply_codex_rename_updates_in_tx(
                 update.ref_id, project_id, expected_version
             );
         }
+        if matches!(
+            update.kind.as_str(),
+            "scene-body" | "node-title" | "node-synopsis"
+        ) {
+            changed_scene_ids.insert(update.ref_id.clone());
+        }
 
         match update.kind.as_str() {
             "scene-body" => {
@@ -1038,6 +1045,20 @@ fn apply_codex_rename_updates_in_tx(
             changed_paths,
             text_impact: None,
         });
+    }
+    // A rename of any scene-owned field changes the scene's retrieval source.
+    // Refresh each binding once after all fields for that scene have been
+    // applied, and carry the paired authority event in this same transaction
+    // so forward, undo, and redo cannot leave a stale scope token behind.
+    for scene_id in changed_scene_ids {
+        feed_events.push(
+            crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                conn,
+                project_id,
+                &scene_id,
+                updated_at,
+            )?,
+        );
     }
     Ok(CodexRenameApplyOutcome {
         versions,
@@ -1571,6 +1592,11 @@ pub fn project_create(db: &Database, payload: ProjectCreatePayload) -> anyhow::R
                 payload.created_at,
                 payload.updated_at,
             ],
+        )?;
+        crate::narrative_extraction::ensure_scope_registry_in_tx(
+            &tx,
+            &payload.project_id,
+            &payload.updated_at,
         )?;
 
         if language.starts_with("en") {
@@ -3074,6 +3100,14 @@ pub fn tree_node_create_with_authority(
             ],
             "run",
         )?;
+        if payload.node_type == "scene" {
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                &tx,
+                &payload.project_id,
+                &payload.id,
+                &now,
+            )?;
+        }
         let row = select_tree_node(&tx, &payload.project_id, &payload.id)?;
         let journal_id = payload
             .undo_journal_id
@@ -3274,6 +3308,11 @@ pub fn tree_node_delete_with_authority(
                     None,
                     &occurred_at,
                     "tree-node-writer",
+                )?;
+                tx.execute(
+                    "DELETE FROM narrative_scene_scope_bindings
+                      WHERE project_id = ?1 AND scene_id = ?2",
+                    params![payload.project_id, node_id],
                 )?;
             }
         }
@@ -3700,7 +3739,18 @@ pub fn tree_node_patch_with_authority(
                 "tree node content event target must be a scene"
             );
         }
+        let mut scene_scope_refresh_event = None;
         if row.get("nodeType").and_then(Value::as_str) == Some("scene") {
+            if let Some(updated_at) = row.get("updatedAt").and_then(Value::as_str) {
+                scene_scope_refresh_event = Some(
+                    crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                        tx,
+                        &payload.project_id,
+                        &payload.node_id,
+                        updated_at,
+                    )?,
+                );
+            }
             let field_paths: Vec<&str> = payload
                 .patch
                 .keys()
@@ -3812,6 +3862,18 @@ pub fn tree_node_patch_with_authority(
                 },
             )?;
         }
+        let mut feed_events = vec![tree_feed_event(
+            &payload.node_id,
+            if is_restore { None } else { Some(&before) },
+            Some(&row),
+            tree_patch_change_kind(&changed_paths),
+            if is_restore { "restore" } else { "update" },
+            changed_paths,
+            live_scene_subtree_impact,
+        )?];
+        if let Some(scene_scope_refresh_event) = scene_scope_refresh_event {
+            feed_events.push(scene_scope_refresh_event);
+        }
         let append = append_tree_feed_result(
             tx,
             TreeFeedAppend {
@@ -3838,15 +3900,7 @@ pub fn tree_node_patch_with_authority(
                 occurred_at: &payload.updated_at,
                 timestamp,
                 cause_kind: tree_cause_kind(payload.origin),
-                events: vec![tree_feed_event(
-                    &payload.node_id,
-                    if is_restore { None } else { Some(&before) },
-                    Some(&row),
-                    tree_patch_change_kind(&changed_paths),
-                    if is_restore { "restore" } else { "update" },
-                    changed_paths,
-                    live_scene_subtree_impact,
-                )?],
+                events: feed_events,
                 origin: payload.origin,
                 original_transaction_id: payload.original_transaction_id.as_deref(),
                 undo_journal_id: Some(&journal_id),
@@ -5227,6 +5281,7 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
         }
 
         let mut before = BTreeMap::<String, Value>::new();
+        let mut scene_scope_refresh_events = Vec::new();
         for update in &payload.updates {
             let snapshot = select_tree_node(&tx, &payload.project_id, &update.id)?;
             anyhow::ensure!(
@@ -5283,6 +5338,14 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                     payload.updated_at,
                 ],
             )?;
+            if create.node_type == "scene" {
+                crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                    &tx,
+                    &payload.project_id,
+                    &create.id,
+                    &payload.updated_at,
+                )?;
+            }
         }
 
         for update in &payload.updates {
@@ -5346,6 +5409,21 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 "AI_TREE_PLAN_VERSION_MISMATCH: node '{}' changed before apply",
                 update.id
             );
+            if before
+                .get(&update.id)
+                .and_then(|snapshot| snapshot.get("nodeType"))
+                .and_then(Value::as_str)
+                == Some("scene")
+            {
+                scene_scope_refresh_events.push(
+                    crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                        &tx,
+                        &payload.project_id,
+                        &update.id,
+                        &payload.updated_at,
+                    )?,
+                );
+            }
         }
 
         // Authority is recorded only after the corresponding entity mutation
@@ -5477,6 +5555,7 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 live_scene_subtree_impact,
             )?);
         }
+        events.extend(scene_scope_refresh_events);
         let maintenance_transaction_id = append_tree_feed(
             &tx,
             TreeFeedAppend {
@@ -5620,6 +5699,7 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
         }
 
         let mut after = BTreeMap::<String, Value>::new();
+        let mut scene_scope_refresh_events = Vec::new();
         for snapshot in &journal.updated_before {
             let id = snapshot
                 .get("id")
@@ -5657,6 +5737,16 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
                 ],
             )?;
             anyhow::ensure!(changed == 1, "AI_TREE_PLAN_VERSION_MISMATCH during undo");
+            if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene") {
+                scene_scope_refresh_events.push(
+                    crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                        &tx,
+                        &payload.project_id,
+                        id,
+                        &payload.updated_at,
+                    )?,
+                );
+            }
             after.insert(
                 id.to_string(),
                 select_tree_node(&tx, &payload.project_id, id)?,
@@ -5734,6 +5824,7 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
                 _ => anyhow::bail!("AI tree plan undo produced an incomplete state"),
             }
         }
+        events.extend(scene_scope_refresh_events);
         let entity_id: String = tx.query_row(
             "SELECT entity_id FROM undo_journal WHERE id = ?1 AND project_id = ?2",
             params![payload.undo_journal_id, payload.project_id],
@@ -5887,6 +5978,17 @@ mod tests {
                    VALUES ('tag-b', 'p1', 'Beta', '#222'),
                           ('tag-a', 'p1', 'Alpha', NULL),
                           ('tag-x', 'p2', 'Foreign', NULL);",
+            )?;
+            crate::narrative_extraction::ensure_scope_registry_in_tx(
+                conn,
+                "p1",
+                "2026-08-13T00:00:00.000Z",
+            )?;
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                "p1",
+                "moved",
+                "2026-08-13T00:00:00.000Z",
             )?;
             Ok(())
         })
@@ -6517,7 +6619,7 @@ mod tests {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-            assert_eq!(counts, (1, 1, 2, 1));
+            assert_eq!(counts, (1, 1, 3, 1));
             let created_authority: (i64, i64) = conn.query_row(
                 "SELECT
                     (SELECT COUNT(*) FROM narrative_field_authority
@@ -7703,6 +7805,12 @@ mod tests {
                         1,
                         2,
                     ),
+                    (
+                        json!({"kind": "scene-scope", "sceneId": "moved"}),
+                        json!(["/binding/sourceToken", "/binding/updatedAt", "/binding/version"]),
+                        1,
+                        2,
+                    ),
                 ]
             );
 
@@ -8035,6 +8143,25 @@ mod tests {
                     ),
                 ]
             );
+            let scope_version: i64 = conn.query_row(
+                "SELECT version FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'p1' AND scene_id = 'moved'",
+                [],
+                |row| row.get(0),
+            )?;
+            let scope_event_count: i64 = conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_change_events event
+                   JOIN narrative_change_transactions feed_tx
+                     ON feed_tx.id = event.transaction_id
+                  WHERE feed_tx.project_id = 'p1'
+                    AND json_extract(event.object_key_json, '$.kind') = 'scene-scope'
+                    AND json_extract(event.object_key_json, '$.sceneId') = 'moved'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(scope_version, 4, "forward/undo/redo refreshes scope OCC");
+            assert_eq!(scope_event_count, 3, "forward/undo/redo append scope Feed events");
             Ok(())
         })
         .expect("inspect rename body snapshots");
@@ -8925,7 +9052,7 @@ mod tests {
                     ))
                 },
             )?;
-            assert_eq!(state, ("second".to_string(), 2, 2, 2, 2, 2, 2));
+            assert_eq!(state, ("second".to_string(), 2, 2, 2, 2, 4, 2));
             Ok(())
         })
         .expect("verify duplicate UID rollback");

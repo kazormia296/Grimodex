@@ -2826,4 +2826,149 @@ mod tests {
         drop(source);
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn restore_of_schema_35_pre_a1_backup_backfills_existing_scenes_as_legacy_absent() {
+        let (dir, state) = fixture("schema-35-pre-a1");
+        let backup_name = "grimodex-20200101-000000.db";
+        let backup_path = dir.join("backups").join(backup_name);
+
+        with_db_state(&state, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('restore-legacy', 'Legacy scope')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO tree_nodes
+                        (id, project_id, node_type, title, sort_order)
+                     VALUES ('restore-legacy-scene', 'restore-legacy', 'scene', 'Scene', 'a0')",
+                    [],
+                )?;
+                Ok(())
+            })
+        })
+        .expect("seed a pre-A1 scene without a scope binding");
+        backup_active(&state, &backup_path);
+
+        // Model an ordinary origin/master schema-35 backup: the scene exists,
+        // but A1's scope tables have not been introduced yet.
+        let candidate = Database::new(&backup_path).expect("open backup candidate");
+        candidate
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "DROP TABLE narrative_scene_scope_bindings;
+                     DROP TABLE narrative_scope_registries;",
+                )?;
+                conn.pragma_update(
+                    None,
+                    "user_version",
+                    grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+                )?;
+                Ok(())
+            })
+            .expect("stamp schema-35 pre-A1 candidate");
+        drop(candidate);
+
+        restore_backup_core(&state, backup_name, || {})
+            .expect("schema-35 restore must run the A1 compatibility backfill");
+
+        with_db_state(&state, |db| {
+            db.with_read_transaction(|conn| {
+                let marker: String = conn.query_row(
+                    "SELECT compatibility_marker
+                       FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'restore-legacy'
+                        AND scene_id = 'restore-legacy-scene'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let version: i32 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                assert_eq!(marker, "legacy-absent");
+                assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+                Ok(())
+            })
+        })
+        .expect("inspect restored legacy scope");
+
+        assert_no_internal_restore_files(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restore_of_current_a1_backup_with_missing_binding_remains_fail_closed() {
+        let (dir, state) = fixture("missing-a1-binding");
+        let backup_name = "grimodex-20200101-000000.db";
+        let backup_path = dir.join("backups").join(backup_name);
+
+        with_db_state(&state, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('restore-scope', 'Restore scope')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO tree_nodes
+                        (id, project_id, node_type, title, sort_order)
+                     VALUES ('restore-scope-scene', 'restore-scope', 'scene', 'Scene', 'a0')",
+                    [],
+                )?;
+                crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                    conn,
+                    "restore-scope",
+                    "restore-scope-scene",
+                    "2026-09-14T00:00:00.000Z",
+                )?;
+                Ok(())
+            })
+        })
+        .expect("seed current A1 scope binding");
+        backup_active(&state, &backup_path);
+
+        // Make the candidate look like a current A1 backup with a damaged
+        // binding row. The restore preflight must not reinterpret that damage
+        // as the pre-A1 legacy state.
+        let candidate = Database::new(&backup_path).expect("open backup candidate");
+        candidate
+            .with_conn(|conn| {
+                conn.execute(
+                    "DELETE FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'restore-scope' AND scene_id = 'restore-scope-scene'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("remove candidate binding");
+        drop(candidate);
+
+        restore_backup_core(&state, backup_name, || {})
+            .expect("current A1 restore must preserve the missing binding");
+
+        with_db_state(&state, |db| {
+            db.with_read_transaction(|conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'restore-scope' AND scene_id = 'restore-scope-scene'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0, "restore must not synthesize a legacy binding");
+                let error = crate::narrative_extraction::read_narrative_scene_scope(
+                    conn,
+                    "restore-scope",
+                    "restore-scope-scene",
+                )
+                .expect_err("restored missing binding must remain unavailable");
+                assert!(error
+                    .to_string()
+                    .contains("NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE"));
+                Ok(())
+            })
+        })
+        .expect("inspect restored fail-closed scope");
+
+        assert_no_internal_restore_files(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

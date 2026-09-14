@@ -18,7 +18,7 @@ use grimodex_db::Database;
 use rusqlite::{params, Connection};
 
 const PREVIOUS_SCHEMA: i32 = 31;
-const TARGET_SCHEMA: i32 = 35;
+const TARGET_SCHEMA: i32 = 36;
 const APPLICATION_REKEY_MARKER: &str = "narrative-c2-application-rekey-v32";
 const RUN_CONSUMER_KIND: &str = "narrative-extraction-run";
 const APPLICATION_CONSUMER_KIND: &str = "application";

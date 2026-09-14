@@ -10,9 +10,35 @@ use super::{
     read_retrieval_scene_source, QueryIdentityState, RetrievalQueryContext,
     RetrievalQueryContextRead, RetrievalSceneSourceRead, RevisionEligibilityReason,
 };
+use grimodex_core::narrative_scene_scope::{
+    NarrativeScopeCompatibilityMarkerV1, NarrativeScopeConstraintV1, NarrativeScopePrincipalV1,
+};
 
 fn unavailable(reason: RevisionEligibilityReason) -> RetrievalQueryContextRead {
     RetrievalQueryContextRead::Unavailable { reason }
+}
+
+fn query_identity_state(constraint: &NarrativeScopeConstraintV1) -> QueryIdentityState {
+    match constraint {
+        NarrativeScopeConstraintV1::Exact { reference } => {
+            QueryIdentityState::Resolved(reference.clone())
+        }
+        NarrativeScopeConstraintV1::Unresolved { .. } => QueryIdentityState::Unavailable {
+            reason: "scene-scope-axis-unresolved",
+        },
+        NarrativeScopeConstraintV1::Any => QueryIdentityState::Unavailable {
+            reason: "scene-scope-query-any-forbidden",
+        },
+    }
+}
+
+fn principal_state(principal: &NarrativeScopePrincipalV1) -> QueryIdentityState {
+    match principal {
+        NarrativeScopePrincipalV1::Reader {} => QueryIdentityState::Resolved("reader".into()),
+        NarrativeScopePrincipalV1::Character { reference } => {
+            QueryIdentityState::Resolved(format!("character:{reference}"))
+        }
+    }
 }
 
 pub fn read_retrieval_query_context(
@@ -76,6 +102,76 @@ pub fn read_retrieval_query_context(
             RevisionEligibilityReason::QueryContextUnavailable,
         ));
     };
+    let scope = match super::super::scene_scope::read_narrative_scene_scope(conn, project, scene) {
+        Ok(scope) => scope.binding,
+        Err(error)
+            if error.downcast_ref::<rusqlite::Error>().is_some()
+                || error.downcast_ref::<std::io::Error>().is_some() =>
+        {
+            return Err(error)
+        }
+        Err(_) => {
+            return Ok(unavailable(
+                RevisionEligibilityReason::QueryContextUnavailable,
+            ))
+        }
+    };
+    let scope_is_unavailable = match scope.compatibility_marker {
+        NarrativeScopeCompatibilityMarkerV1::Unknown => true,
+        NarrativeScopeCompatibilityMarkerV1::Explicit => [
+            &scope.query_identity.timeline,
+            &scope.query_identity.worldline,
+            &scope.query_identity.narrative_layer,
+        ]
+        .into_iter()
+        .any(|axis| matches!(axis, NarrativeScopeConstraintV1::Unresolved { .. })),
+        NarrativeScopeCompatibilityMarkerV1::LegacyAbsent => false,
+    };
+    if scope_is_unavailable {
+        return Ok(unavailable(RevisionEligibilityReason::ScopeUnsupported));
+    }
+    let (audience, knowledge_holder, timeline, worldline, narrative_layer) =
+        match scope.compatibility_marker {
+            NarrativeScopeCompatibilityMarkerV1::LegacyAbsent => (
+                QueryIdentityState::Resolved("reader".into()),
+                QueryIdentityState::NotApplicable {
+                    reason: "reader-reference-purpose",
+                },
+                QueryIdentityState::Unavailable {
+                    reason: "query-scene-has-no-timeline-authority",
+                },
+                QueryIdentityState::Unavailable {
+                    reason: "query-scene-has-no-worldline-authority",
+                },
+                QueryIdentityState::Unavailable {
+                    reason: "query-scene-has-no-layer-authority",
+                },
+            ),
+            NarrativeScopeCompatibilityMarkerV1::Explicit => (
+                principal_state(&scope.audience),
+                principal_state(&scope.knowledge_holder),
+                query_identity_state(&scope.query_identity.timeline),
+                query_identity_state(&scope.query_identity.worldline),
+                query_identity_state(&scope.query_identity.narrative_layer),
+            ),
+            NarrativeScopeCompatibilityMarkerV1::Unknown => (
+                QueryIdentityState::Unavailable {
+                    reason: "scene-scope-unknown",
+                },
+                QueryIdentityState::Unavailable {
+                    reason: "scene-scope-unknown",
+                },
+                QueryIdentityState::Unavailable {
+                    reason: "scene-scope-unknown",
+                },
+                QueryIdentityState::Unavailable {
+                    reason: "scene-scope-unknown",
+                },
+                QueryIdentityState::Unavailable {
+                    reason: "scene-scope-unknown",
+                },
+            ),
+        };
     Ok(RetrievalQueryContextRead::Available(
         RetrievalQueryContext {
             project_id: project.into(),
@@ -85,22 +181,14 @@ pub fn read_retrieval_query_context(
             phase_resolution_mode: source.phase_resolution_mode,
             effective_axis: "reading",
             axis_fallback_reason: axis.fallback_reason,
-            audience: QueryIdentityState::Resolved("reader".into()),
+            audience,
             viewpoint: QueryIdentityState::NotApplicable {
                 reason: "reader-reference-purpose",
             },
-            knowledge_holder: QueryIdentityState::NotApplicable {
-                reason: "reader-reference-purpose",
-            },
-            timeline: QueryIdentityState::Unavailable {
-                reason: "query-scene-has-no-timeline-authority",
-            },
-            worldline: QueryIdentityState::Unavailable {
-                reason: "query-scene-has-no-worldline-authority",
-            },
-            narrative_layer: QueryIdentityState::Unavailable {
-                reason: "query-scene-has-no-layer-authority",
-            },
+            knowledge_holder,
+            timeline,
+            worldline,
+            narrative_layer,
             reading_order: QueryIdentityState::Resolved(target.reading_order_ref.clone()),
             story_time: QueryIdentityState::Unavailable {
                 reason: "initial-reading-profile",

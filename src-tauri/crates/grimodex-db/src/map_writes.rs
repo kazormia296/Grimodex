@@ -778,6 +778,14 @@ fn promote_sticky(tx: &Transaction<'_>, payload: &MapWritePayload) -> anyhow::Re
                     updated_at
                 ],
             )?;
+            if target_type == "scene" {
+                crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                    tx,
+                    project_id,
+                    new_entity_id,
+                    updated_at,
+                )?;
+            }
             (target_type.to_string(), Some(new_entity_id), None, None)
         }
         "snippet" => {

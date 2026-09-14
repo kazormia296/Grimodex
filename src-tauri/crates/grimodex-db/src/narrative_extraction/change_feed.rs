@@ -906,6 +906,18 @@ fn ensure_feed_object_project_scope(
             "SELECT project_id FROM tree_nodes WHERE id = ?1",
             identity("sceneId")?,
         )),
+        "scene-scope" => Some((
+            "SELECT project_id FROM tree_nodes
+              WHERE id = ?1 AND node_type = 'scene'",
+            identity("sceneId")?,
+        )),
+        "scope-registry" => {
+            anyhow::ensure!(
+                identity("projectId")? == project_id,
+                "Narrative Change Feed scope registry belongs to another project"
+            );
+            None
+        }
         "chronicle-event" => Some((
             "SELECT project_id FROM events WHERE id = ?1",
             identity("eventId")?,
@@ -2223,6 +2235,8 @@ pub fn narrative_object_key(entity_kind: &str, entity_id: &str) -> Value {
         "scene" | "temporal_scene_chronicle" | "temporal_scene_story_order" => {
             json!({ "kind": "scene", "sceneId": entity_id })
         }
+        "scene_scope" => json!({ "kind": "scene-scope", "sceneId": entity_id }),
+        "scope_registry" => json!({ "kind": "scope-registry", "projectId": entity_id }),
         "event" | "temporal_event_chronicle" => {
             json!({ "kind": "chronicle-event", "eventId": entity_id })
         }
@@ -2303,6 +2317,8 @@ pub(crate) fn object_key_identity_field(kind: &str) -> anyhow::Result<&'static s
     Ok(match kind {
         "project" => "projectId",
         "scene" => "sceneId",
+        "scene-scope" => "sceneId",
+        "scope-registry" => "projectId",
         "chronicle-event" => "eventId",
         "codex-entry" => "entryId",
         "codex-relation" => "relationId",
