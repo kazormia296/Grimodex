@@ -2112,6 +2112,56 @@ describe("registerIpcRouter workspace-open main trace", () => {
 });
 
 describe("NIR-1 router sender binding", () => {
+  it("routes every manual license mutation through the main scheduler seam", async () => {
+    const runManualOperation = vi.fn(
+      (operation: () => Promise<unknown>): Promise<unknown> => operation(),
+    );
+    const licenseValidation = {
+      runManualOperation<T>(operation: () => Promise<T>): Promise<T> {
+        return runManualOperation(operation) as Promise<T>;
+      },
+    };
+    const state = JSON.stringify({ status: "license_active" });
+    const backend = {
+      activateLicense: vi.fn(async () => state),
+      revalidateLicense: vi.fn(async () => state),
+      deactivateLicense: vi.fn(async () => state),
+      getLicenseState: vi.fn(async () => state),
+    };
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      undefined,
+      licenseValidation,
+    );
+
+    for (const [command, args] of [
+      ["activate_license", { key: "test-license-key" }],
+      ["revalidate_license", {}],
+      ["deactivate_license", {}],
+    ] as const) {
+      const envelope = await invokeHandler()(
+        { sender: { id: 42 } },
+        command,
+        args,
+      );
+      expect(envelope.ok, command).toBe(true);
+    }
+    expect(runManualOperation).toHaveBeenCalledTimes(3);
+
+    const stateEnvelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "get_license_state",
+      {},
+    );
+    expect(stateEnvelope.ok).toBe(true);
+    expect(runManualOperation).toHaveBeenCalledTimes(3);
+    expect(backend.getLicenseState).toHaveBeenCalledOnce();
+  });
+
   it("returns a denied egress route as an envelope before Native dispatch", async () => {
     const sendChatMessage = vi.fn();
     const profileEgress = {

@@ -19,6 +19,8 @@ export interface LicenseValidationScheduler {
   dispose(): void;
   /** Main-only D2a barrier: stop new cycles and await the admitted cycle. */
   quiesceForProfileEgress(): Promise<void>;
+  /** Main-only admission for manual license mutations. */
+  runManualOperation<T>(operation: () => Promise<T>): Promise<T>;
 }
 
 interface SchedulerOptions {
@@ -39,6 +41,7 @@ export function createLicenseValidationScheduler(
   let started = false;
   let disposed = false;
   let inFlightCycle: Promise<void> | null = null;
+  const manualOperations = new Set<Promise<unknown>>();
   let quiescenceFlight: Promise<void> | null = null;
 
   const clearTimer = (): void => {
@@ -90,6 +93,31 @@ export function createLicenseValidationScheduler(
     return cycle;
   };
 
+  const runManualOperation = <T>(
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    if (disposed) {
+      return Promise.reject(
+        new Error("license validation is closed for profile egress"),
+      );
+    }
+
+    let admitted: Promise<T>;
+    try {
+      // Invoke synchronously after the admission check so activation cannot
+      // begin between admission and the actual backend call.
+      admitted = Promise.resolve(operation());
+    } catch (error) {
+      admitted = Promise.reject(error);
+    }
+    manualOperations.add(admitted);
+    void admitted.then(
+      () => manualOperations.delete(admitted),
+      () => manualOperations.delete(admitted),
+    );
+    return admitted;
+  };
+
   return {
     start(): void {
       if (started || disposed) return;
@@ -116,8 +144,18 @@ export function createLicenseValidationScheduler(
       if (quiescenceFlight) return quiescenceFlight;
       disposed = true;
       clearTimer();
-      quiescenceFlight = inFlightCycle ?? Promise.resolve();
+      const pending = [
+        ...(inFlightCycle ? [inFlightCycle] : []),
+        ...manualOperations,
+      ];
+      // A manual mutation's application/network result belongs to its
+      // caller. Once that promise settles, it is no longer an in-flight
+      // transport and must not turn an otherwise successful activation into
+      // an unavailable profile.
+      quiescenceFlight = Promise.allSettled(pending).then(() => undefined);
       return quiescenceFlight;
     },
+
+    runManualOperation,
   };
 }

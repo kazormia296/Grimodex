@@ -48,6 +48,7 @@ import {
   scheduleNarrativeMaintenanceForegroundRelease,
 } from "./narrativeMaintenance.js";
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
+import type { LicenseValidationScheduler } from "./licenseValidation.js";
 import { createRelatedScenesSearchAuthority } from "./relatedScenesSearchAuthority.js";
 import { createRelatedScenesReconciler } from "./relatedScenesReconciler.js";
 import type {
@@ -59,6 +60,12 @@ const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_create",
   "snippet_update",
   "snippet_delete",
+]);
+
+const MANUAL_LICENSE_COMMANDS = new Set([
+  "activate_license",
+  "revalidate_license",
+  "deactivate_license",
 ]);
 
 // Scan publication is an import-only canonical writer. Keep it out of the
@@ -1972,6 +1979,10 @@ export function registerIpcRouter(
   broadcast?: (channel: string, payload: unknown) => void,
   narrativeMaintenanceCiSeam: NarrativeMaintenanceCiSeam = { active: false },
   profileEgress?: ProfileEgressGate,
+  licenseValidation?: Pick<
+    LicenseValidationScheduler,
+    "runManualOperation"
+  >,
 ): void {
   const relatedScenesReconciler = createRelatedScenesReconciler({
     reconcile: async () => {
@@ -2042,20 +2053,30 @@ export function registerIpcRouter(
         } catch (error) {
           return { ok: false, error: toErrorString(error) };
         }
-        const envelope = await dispatchInvoke(cmd, dispatchArgs, {
-          backend,
-          shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
-          secrets,
-          broadcast,
-          issueAgentAuthorityCapabilities: (agentArgs, response) =>
-            issueAgentAuthorityCapabilitiesForSender(
-              event.sender.id,
-              agentArgs,
-              response,
-              backend,
-              callerIdentity,
-            ),
-        });
+        const dispatch = (): Promise<Envelope> =>
+          dispatchInvoke(cmd, dispatchArgs, {
+            backend,
+            shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
+            secrets,
+            broadcast,
+            issueAgentAuthorityCapabilities: (agentArgs, response) =>
+              issueAgentAuthorityCapabilitiesForSender(
+                event.sender.id,
+                agentArgs,
+                response,
+                backend,
+                callerIdentity,
+              ),
+          });
+        let envelope: Envelope;
+        try {
+          envelope =
+            licenseValidation && MANUAL_LICENSE_COMMANDS.has(cmd)
+              ? await licenseValidation.runManualOperation(dispatch)
+              : await dispatch();
+        } catch (error) {
+          envelope = { ok: false, error: toErrorString(error) };
+        }
         if (envelope.ok && typeof boundArgs.ownerKey === "string") {
           if (cmd === "related_scenes_begin" && isRecord(envelope.value)) {
             const ir = envelope.value.ir;

@@ -5,7 +5,16 @@ import {
   D2A_EGRESS_DENIED_MARKER,
   D2A_TYPED_RESULT_POLICY,
 } from "./profileEgress.js";
+import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { NAPI_COMMANDS, type NapiBackendLike } from "../shared/ipcContract.js";
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 function backend(status: Record<string, unknown> = {}) {
   return {
@@ -194,6 +203,58 @@ describe("D2a profile egress gate", () => {
     expect(() =>
       gate.registerMainEgressParticipant?.("late", async () => {}),
     ).toThrow("already completed");
+  });
+
+  it("waits for admitted manual license operations before Native activation", async () => {
+    const initialStatus = JSON.parse(
+      await backend({
+        restricted: false,
+        handlesInvalidated: false,
+      }).initializeProfileEgress!(),
+    ) as Record<string, unknown>;
+    const activateProfileEgress = vi.fn(async () =>
+      JSON.stringify({
+        ...initialStatus,
+        profileId: "profile-activated",
+        callerEpoch: 5,
+        restricted: true,
+        handlesInvalidated: true,
+        inFlightStopped: true,
+      }),
+    );
+    const gate = await createProfileEgressGate({
+      ...backend({ restricted: false, handlesInvalidated: false }),
+      activateProfileEgress,
+    });
+    const scheduler = createLicenseValidationScheduler(null, vi.fn());
+    const manualOperations = [
+      deferred<string>(),
+      deferred<string>(),
+      deferred<string>(),
+    ];
+    gate.registerMainEgressParticipant(
+      "license-validation",
+      () => scheduler.quiesceForProfileEgress(),
+    );
+    const admitted = manualOperations.map((operation) =>
+      scheduler.runManualOperation(() => operation.promise),
+    );
+
+    const activation = gate.activateFirstRestrictedPublication!();
+    await vi.waitFor(() => expect(gate.restricted).toBe(true));
+    expect(activateProfileEgress).not.toHaveBeenCalled();
+
+    for (const [index, operation] of manualOperations.entries()) {
+      operation.resolve(`manual-${index}`);
+    }
+    await expect(Promise.all(admitted)).resolves.toEqual([
+      "manual-0",
+      "manual-1",
+      "manual-2",
+    ]);
+    await activation;
+    expect(activateProfileEgress).toHaveBeenCalledOnce();
+    expect(gate.unavailable).toBe(false);
   });
 
   it("closes participant registration before a drain callback can re-enter", async () => {

@@ -262,4 +262,51 @@ describe("createLicenseValidationScheduler", () => {
     await quiesce;
     expect(settled).toBe(true);
   });
+
+  it("activation前にadmitしたmanual license 3経路のsettleを待つ", async () => {
+    const manualOperations = [
+      deferred<string>(),
+      deferred<string>(),
+      deferred<string>(),
+    ];
+    const { scheduler } = createScheduler(null);
+    const admitted = manualOperations.map((operation) =>
+      scheduler.runManualOperation(() => operation.promise),
+    );
+
+    let quiesced = false;
+    const quiesce = scheduler.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    await Promise.resolve();
+    expect(quiesced).toBe(false);
+
+    for (const [index, operation] of manualOperations.entries()) {
+      operation.resolve(`manual-${index}`);
+    }
+    await expect(Promise.all(admitted)).resolves.toEqual([
+      "manual-0",
+      "manual-1",
+      "manual-2",
+    ]);
+    await quiesce;
+    expect(quiesced).toBe(true);
+  });
+
+  it("quiesce開始後のmanual license受付を拒否し、settled rejectはdrain失敗にしない", async () => {
+    const admittedOperation = deferred<string>();
+    const { scheduler } = createScheduler(null);
+    const admitted = scheduler.runManualOperation(
+      () => admittedOperation.promise,
+    );
+    const quiesce = scheduler.quiesceForProfileEgress();
+
+    await expect(
+      scheduler.runManualOperation(async () => "late-manual"),
+    ).rejects.toThrow(/closed|quiesc|disposed/i);
+
+    admittedOperation.reject(new Error("manual license drain failed"));
+    await expect(admitted).rejects.toThrow("manual license drain failed");
+    await expect(quiesce).resolves.toBeUndefined();
+  });
 });
