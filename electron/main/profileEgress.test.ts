@@ -196,6 +196,43 @@ describe("D2a profile egress gate", () => {
     ).toThrow("already completed");
   });
 
+  it("closes participant registration before a drain callback can re-enter", async () => {
+    const nativeStatus = JSON.parse(
+      await backend().initializeProfileEgress!(),
+    ) as Record<string, unknown>;
+    const activateProfileEgress = vi.fn(async () =>
+      JSON.stringify({
+        ...nativeStatus,
+        profileId: "profile-activated",
+        callerEpoch: 5,
+        restricted: true,
+        handlesInvalidated: true,
+        inFlightStopped: true,
+      }),
+    );
+    let registrationError: unknown;
+    const drain = vi.fn(async () => {
+      try {
+        gate.registerMainEgressParticipant("late", async () => {});
+      } catch (error) {
+        registrationError = error;
+      }
+    });
+    const gate = await createProfileEgressGate({
+      ...backend({ restricted: false, handlesInvalidated: false }),
+      activateProfileEgress,
+    });
+    gate.registerMainEgressParticipant("first", drain);
+
+    await gate.activateFirstRestrictedPublication!();
+
+    expect(registrationError).toBeInstanceOf(Error);
+    expect(registrationError).toMatchObject({
+      message: expect.stringMatching(/started|completed/),
+    });
+    expect(activateProfileEgress).toHaveBeenCalledOnce();
+  });
+
   it("waits for every participant before failing activation", async () => {
     let releaseSecond!: () => void;
     const first = vi.fn(async () => {

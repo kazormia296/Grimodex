@@ -1345,6 +1345,15 @@ export function createCliAiManager(
     );
     return operation;
   };
+  const handlerOperations = new Set<Promise<unknown>>();
+  const trackHandlerOperation = <T>(operation: Promise<T>): Promise<T> => {
+    handlerOperations.add(operation);
+    void operation.then(
+      () => handlerOperations.delete(operation),
+      () => handlerOperations.delete(operation),
+    );
+    return operation;
+  };
   const trackedRunner: CliProcessRunner = {
     run: (spec, options) => {
       let operation: Promise<CliProcessResult>;
@@ -1970,15 +1979,22 @@ export function createCliAiManager(
     }
   };
 
+  const trackedHandler =
+    <T>(
+      handler: (args: CommandArgs) => Promise<T>,
+    ): ((args: CommandArgs) => Promise<T>) =>
+    (args) =>
+      trackHandlerOperation(handler(args));
+
   const handlers: ShellCommandHandlers = {
-    detect_cli_binary: async (args) => {
+    detect_cli_binary: trackedHandler(async (args) => {
       ensureNotDisposed();
       const kind = parseCliKind(args.cli);
       const detected = await detectAndTrust(kind, true);
       return detected?.requestedPath ?? null;
-    },
+    }),
 
-    test_cli_connection: async (args) => {
+    test_cli_connection: trackedHandler(async (args) => {
       ensureNotDisposed();
       const kind = cliKindFromExecutable(args.binaryPath, platform);
       const authorized = await resolveExecutable(kind, args.binaryPath);
@@ -1988,9 +2004,9 @@ export function createCliAiManager(
         args: ["--version"],
       });
       return result.stdout.trim();
-    },
+    }),
 
-    list_cli_models: async (args) => {
+    list_cli_models: trackedHandler(async (args) => {
       ensureNotDisposed();
       const kind = parseCliKind(args.cli);
       if (kind === "claude") {
@@ -2008,11 +2024,11 @@ export function createCliAiManager(
       return kind === "codex"
         ? parseCodexModels(result.stdout)
         : parseOpenCodeModels(result.stdout);
-    },
+    }),
 
-    send_cli_chat_stream: sendCliStream,
+    send_cli_chat_stream: trackedHandler(sendCliStream),
 
-    abort_cli_chat_stream: async (args) => {
+    abort_cli_chat_stream: trackedHandler(async (args) => {
       ensureNotDisposed();
       const streamId = requireTrimmedNonEmptyString(args.streamId, "streamId");
       const completed = completedAbortReceipts.get(streamId);
@@ -2048,7 +2064,7 @@ export function createCliAiManager(
         abortCommandAcknowledged: true,
         transportTerminationObserved: processStopped && lifecycleStopped,
       };
-    },
+    }),
   };
 
   const disposeAllNow = (): void => {
@@ -2068,6 +2084,7 @@ export function createCliAiManager(
     if (quiescenceFlight) return quiescenceFlight;
     const activeLifecycles = [...lifecycles.values()];
     const activeRunnerOperations = [...runnerOperations];
+    const activeHandlerOperations = [...handlerOperations];
     quiescenceFlight = (async () => {
       // Mark the manager closed before awaiting anything. A handler admitted
       // before activation can finish its current await, but its next
@@ -2078,7 +2095,7 @@ export function createCliAiManager(
       } catch (error) {
         disposeError = error;
       }
-      const [stopped, commandsSettled] = await Promise.all([
+      const [stopped, commandsSettled, handlersSettled] = await Promise.all([
         Promise.all(
           activeLifecycles.map((lifecycle) => waitForLifecycle(lifecycle)),
         ),
@@ -2087,11 +2104,17 @@ export function createCliAiManager(
             waitForRunnerOperation(operation),
           ),
         ),
+        Promise.all(
+          activeHandlerOperations.map((operation) =>
+            waitForRunnerOperation(operation),
+          ),
+        ),
       ]);
       if (disposeError) throw toError(disposeError);
       if (
         stopped.some((value) => !value) ||
-        commandsSettled.some((value) => !value)
+        commandsSettled.some((value) => !value) ||
+        handlersSettled.some((value) => !value)
       ) {
         throw new Error("CLI egress transport did not quiesce");
       }

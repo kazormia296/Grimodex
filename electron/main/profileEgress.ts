@@ -543,6 +543,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   private readonly activateProfileEgress: (() => Promise<string>) | null;
   private activationPromise: Promise<void> | null = null;
   private activationCompleted = false;
+  private mainEgressRegistrationOpen = true;
   private readonly mainEgressParticipants = new Map<
     string,
     () => Promise<void>
@@ -737,6 +738,9 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     if (this.activationCompleted || this.unavailable) {
       throw new Error("main egress activation has already completed");
     }
+    if (!this.mainEgressRegistrationOpen) {
+      throw new Error("main egress activation has already started");
+    }
     if (this.mainEgressParticipants.has(name)) {
       throw new Error(`main egress participant is already registered: ${name}`);
     }
@@ -756,6 +760,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     // Close all egress synchronously while Native performs the durable
     // transition and quiescence barrier. No invoke/event/url can slip through
     // the activation window.
+    this.mainEgressRegistrationOpen = false;
     this._restricted = true;
     const activate = this.activateProfileEgress;
     this.activationPromise = (async () => {

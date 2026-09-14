@@ -17,10 +17,14 @@ export interface LicenseValidationBackendLike {
 export interface LicenseValidationScheduler {
   start(): void;
   dispose(): void;
+  /** Main-only D2a barrier: stop new cycles and await the admitted cycle. */
+  quiesceForProfileEgress(): Promise<void>;
 }
 
 interface SchedulerOptions {
   warn?: (...args: unknown[]) => void;
+  /** Startup is disabled while the persisted profile gate is restricted. */
+  startEnabled?: boolean;
 }
 
 type Broadcast = (channel: string, payload: unknown) => void;
@@ -34,7 +38,8 @@ export function createLicenseValidationScheduler(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let started = false;
   let disposed = false;
-  let inFlight = false;
+  let inFlightCycle: Promise<void> | null = null;
+  let quiescenceFlight: Promise<void> | null = null;
 
   const clearTimer = (): void => {
     if (timer === null) return;
@@ -50,35 +55,46 @@ export function createLicenseValidationScheduler(
     }, delayMs);
   };
 
-  const runCycle = async (): Promise<void> => {
-    if (disposed || inFlight) return;
+  const runCycle = (): Promise<void> => {
+    if (disposed || inFlightCycle !== null) return Promise.resolve();
     const method = backend?.runLicenseValidateCycle;
-    if (typeof method !== "function") return;
+    if (typeof method !== "function") return Promise.resolve();
 
-    inFlight = true;
-    try {
-      // bindを失うとnapi class methodのselfが壊れるためbackend経由で呼ぶ。
-      const result = await method.call(backend);
-      if (disposed) return;
-      if (result !== null) {
-        const payload = JSON.parse(result) as unknown;
-        if (!disposed) broadcast("license:state_changed", payload);
+    const cycle = (async (): Promise<void> => {
+      try {
+        // bindを失うとnapi class methodのselfが壊れるためbackend経由で呼ぶ。
+        const result = await method.call(backend);
+        if (disposed) return;
+        if (result !== null) {
+          const payload = JSON.parse(result) as unknown;
+          if (!disposed) broadcast("license:state_changed", payload);
+        }
+      } catch (error) {
+        if (!disposed) {
+          warn("[license] background validation cycle failed:", error);
+        }
+      } finally {
+        // setIntervalではなく、通信を含むcycle完了から6時間を数える。
+        if (!disposed) schedule(VALIDATION_INTERVAL_MS);
       }
-    } catch (error) {
-      if (!disposed) {
-        warn("[license] background validation cycle failed:", error);
-      }
-    } finally {
-      inFlight = false;
-      // setIntervalではなく、通信を含むcycle完了から6時間を数える。
-      if (!disposed) schedule(VALIDATION_INTERVAL_MS);
-    }
+    })();
+    inFlightCycle = cycle;
+    void cycle.then(
+      () => {
+        if (inFlightCycle === cycle) inFlightCycle = null;
+      },
+      () => {
+        if (inFlightCycle === cycle) inFlightCycle = null;
+      },
+    );
+    return cycle;
   };
 
   return {
     start(): void {
       if (started || disposed) return;
       started = true;
+      if (options.startEnabled === false) return;
       if (typeof backend?.runLicenseValidateCycle !== "function") {
         warn(
           "[license] background validation disabled: native method unavailable",
@@ -94,6 +110,14 @@ export function createLicenseValidationScheduler(
       clearTimer();
       // in-flight native callは安全に取消できない。完了後のemit/rescheduleは
       // disposed guardで抑止する。
+    },
+
+    quiesceForProfileEgress(): Promise<void> {
+      if (quiescenceFlight) return quiescenceFlight;
+      disposed = true;
+      clearTimer();
+      quiescenceFlight = inFlightCycle ?? Promise.resolve();
+      return quiescenceFlight;
     },
   };
 }

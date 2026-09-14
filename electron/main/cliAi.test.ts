@@ -1248,6 +1248,38 @@ describe("CliAiManager", () => {
     expect(runner.startCalls).toHaveLength(0);
   });
 
+  it("profile egress quiescence awaits a direct detection handler", async () => {
+    let resolveDetection!: (value: string) => void;
+    const manager = createCliAiManager(() => {}, {
+      runner: new FakeRunner(),
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      detectBinary: async () =>
+        new Promise<string>((resolve) => {
+          resolveDetection = resolve;
+        }),
+      hashFile: stableHashFile,
+      authorizeExecutable: async () => true,
+      forceKillAfterMs: 20,
+    });
+    const detection = manager.handlers.detect_cli_binary({ cli: "claude" });
+    await vi.waitFor(() => expect(resolveDetection).toBeTypeOf("function"));
+
+    let quiesced = false;
+    const quiesce = manager.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    expect(quiesced).toBe(false);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(quiesced).toBe(false);
+    resolveDetection("/usr/local/bin/claude");
+
+    await expect(detection).rejects.toThrow("CLI manager is disposed");
+    await quiesce;
+    expect(quiesced).toBe(true);
+  });
+
   it("profile egress quiescence awaits active CLI transport termination", async () => {
     const { manager, runner } = createHarness();
     const send = manager.handlers.send_cli_chat_stream({

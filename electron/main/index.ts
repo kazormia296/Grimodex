@@ -446,17 +446,6 @@ if (!gotSingleInstanceLock) {
         );
       },
     });
-    // D2a activation is main-owned: close and drain the two external AI
-    // managers before Native persists the restricted profile state. These
-    // callbacks never cross the renderer/preload contract.
-    if (!profileEgress.unavailable) {
-      profileEgress.registerMainEgressParticipant("cli-ai", () =>
-        cliAi.quiesceForProfileEgress(),
-      );
-      profileEgress.registerMainEgressParticipant("codex-app-server", () =>
-        codexApp.quiesceForProfileEgress(),
-      );
-    }
     // Vivliostyle（バッチ5）: build/preview child、成果物token、tempをmain lifetime
     // で共有する。custom pathはnative確認を通したvivliostyle名だけを許可し、
     // 保存先はrendererから受けずnative dialogで選ぶ。
@@ -493,7 +482,24 @@ if (!gotSingleInstanceLock) {
     const licenseValidation = createLicenseValidationScheduler(
       backend,
       broadcastBackendEvent,
+      {
+        startEnabled: !profileEgress.restricted && !profileEgress.unavailable,
+      },
     );
+    // D2a activation is main-owned: close and drain all main-owned external
+    // transports before Native persists the restricted profile state. These
+    // callbacks never cross the renderer/preload contract.
+    if (!profileEgress.unavailable) {
+      profileEgress.registerMainEgressParticipant("cli-ai", () =>
+        cliAi.quiesceForProfileEgress(),
+      );
+      profileEgress.registerMainEgressParticipant("codex-app-server", () =>
+        codexApp.quiesceForProfileEgress(),
+      );
+      profileEgress.registerMainEgressParticipant("license-validation", () =>
+        licenseValidation.quiesceForProfileEgress(),
+      );
+    }
     let narrativeMaintenanceTriggers: NarrativeMaintenanceTriggerCoordinator | null =
       null;
     const narrativeFreshness = createNarrativeFreshnessScheduler(backend, {

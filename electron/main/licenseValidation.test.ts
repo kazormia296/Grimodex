@@ -65,6 +65,26 @@ describe("createLicenseValidationScheduler", () => {
     expect(runLicenseValidateCycle).toHaveBeenCalledOnce();
   });
 
+  it("main profile gateが閉じた起動ではcycleを開始しない", async () => {
+    const runLicenseValidateCycle = vi.fn().mockResolvedValue(null);
+    const broadcast = vi.fn();
+    const scheduler = createLicenseValidationScheduler(
+      { runLicenseValidateCycle },
+      broadcast,
+      {
+        warn: vi.fn(),
+        startEnabled: false,
+      },
+    );
+    schedulers.push(scheduler);
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + 1);
+
+    expect(runLicenseValidateCycle).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
   it("次のcycleは前回cycleの完了時点から6時間後に実行する", async () => {
     const first = deferred<string | null>();
     const runLicenseValidateCycle = vi
@@ -220,5 +240,26 @@ describe("createLicenseValidationScheduler", () => {
 
     expect(broadcast).not.toHaveBeenCalled();
     expect(runLicenseValidateCycle).toHaveBeenCalledOnce();
+  });
+
+  it("profile egress quiescenceはin-flight cycleの完了を待つ", async () => {
+    const first = deferred<string | null>();
+    const runLicenseValidateCycle = vi.fn().mockReturnValueOnce(first.promise);
+    const { scheduler } = createScheduler({ runLicenseValidateCycle });
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runLicenseValidateCycle).toHaveBeenCalledOnce();
+
+    let settled = false;
+    const quiesce = scheduler.quiesceForProfileEgress().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    first.resolve(null);
+    await quiesce;
+    expect(settled).toBe(true);
   });
 });
