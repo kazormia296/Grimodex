@@ -27,12 +27,9 @@
 
 ## 画像取り込み状況
 
-**Draft PR時点では、PNG 15枚のGitHubへの転送は未完了。**
-このREADMEとmanifestは受領済み原本の目録であり、画像が既にこのブランチに含まれるという主張ではない。
-画像のないリンクやプレースホルダーを完成品として置かず、追加パッチで原本PNGと下記ギャラリーを揃える。
-全15枚のbyte数・hash・リンク確認が済むまで画像追加は未完了として扱う。
+PNG 15枚をリポジトリ内へ追加済み。以下の目録とギャラリーから参照できる。
 
-## 受領済み画像の目録
+## 画像の目録
 
 | # | 状態 | PNGファイル | 今回の読み方 |
 | --- | --- | --- | --- |
@@ -51,3 +48,66 @@
 | 13 | BLOCKED | `13-system-blocked.png` | 障害表示の参考。「最後の結果を返す」という旧説明は現行Freshness／開示契約を上書きしない。 |
 | 14 | EMPTY | `14-focus-empty.png` | Focusなしを正常な状態として扱う。次の仕事を自動選択しない。 |
 | 15 | DISPOSED | `15-disposed-attention.png` | 処分済みAttentionの別扱い。再浮上やidentityの厳密な挙動は既存契約に従う。 |
+
+
+## ギャラリー
+
+### 01 — ARRIVE +1
+
+![ARRIVE +1](01-arrive.png)
+
+### 02 — TRAY · FOCUS
+
+![TRAY · FOCUS](02-tray-focus.png)
+
+### 03 — TRAY · ATTN
+
+![TRAY · ATTN](03-tray-attention.png)
+
+### 04 — ALL WORK
+
+![ALL WORK](04-all-work.png)
+
+### 05 — LENS
+
+![LENS](05-resolve-lens.png)
+
+### 06 — RESOLVED
+
+![RESOLVED](06-resolved.png)
+
+### 07 — PORTAL
+
+![PORTAL](07-context-portal.png)
+
+### 08 — INSPECT
+
+![INSPECT](08-deep-inspection.png)
+
+### 09 — PROJECTION
+
+![PROJECTION](09-resolve-projection.png)
+
+### 10 — REVIEW
+
+![REVIEW](10-change-review.png)
+
+### 11 — BATCH
+
+![BATCH](11-batch-review.png)
+
+### 12 — SYS · RUN
+
+![SYS · RUN](12-system-running.png)
+
+### 13 — BLOCKED
+
+![BLOCKED](13-system-blocked.png)
+
+### 14 — EMPTY
+
+![EMPTY](14-focus-empty.png)
+
+### 15 — DISPOSED
+
+![DISPOSED](15-disposed-attention.png)
