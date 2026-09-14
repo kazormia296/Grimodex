@@ -53,9 +53,6 @@ const WORKSPACE_CHAT_AUTHORITY_TITLE = WORKSPACE_CHAT_AUTHORITY_PROMPT.slice(
   0,
   30,
 );
-const MCP_CLEAN_EXTERNAL_TEXT = `MCP-CLEAN-EXTERNAL-JOURNEY-${Date.now()}`;
-const MCP_DIRTY_LOCAL_TEXT = `MCP-DIRTY-LOCAL-JOURNEY-${Date.now()}`;
-const MCP_DIRTY_EXTERNAL_TEXT = `MCP-DIRTY-EXTERNAL-JOURNEY-${Date.now()}`;
 const CODEX_CONTEXT_MARKER = "CODEX-CONTEXT-JOURNEY";
 const AUTHORING_PROMPT = `AUTHORING-JOURNEY-${Date.now()}`;
 const AUTHORING_OUTPUT = "AUTHORING-AI-OUTPUT";
@@ -958,37 +955,6 @@ async function commitExternalSceneWrite(
   return content;
 }
 
-function parseMcpTextResult(result, label) {
-  const textBlock = result?.content?.find(
-    (item) => item?.type === "text" && typeof item.text === "string",
-  );
-  if (!textBlock) {
-    throw new Error(`${label} did not return a text content block`);
-  }
-  try {
-    return JSON.parse(textBlock.text);
-  } catch (error) {
-    throw new Error(`${label} returned invalid JSON: ${textBlock.text}`, {
-      cause: error,
-    });
-  }
-}
-
-async function findProseStage(harness, page, stagingId) {
-  const rows = await queryRows(
-    harness,
-    page,
-    `SELECT id, project_id AS projectId, scene_id AS sceneId,
-      proposed_content AS proposedContent, base_version AS baseVersion,
-      status, source_surface AS sourceSurface,
-      source_session_id AS sourceSessionId
-     FROM prose_staging
-     WHERE id = ?`,
-    [stagingId],
-  );
-  return rows[0] ?? null;
-}
-
 async function findSceneWithText(harness, page, text) {
   const result = await harness.invokeOk(page, "db_execute", {
     sql: "SELECT id, title, content FROM tree_nodes WHERE node_type = 'scene'",
@@ -1807,40 +1773,44 @@ async function runExternalWriteConflictJourney(harness) {
   }
 }
 
-async function runMcpExternalWriteConflictJourney(harness) {
-  const workspace = harness.workspacePath("mcp-external-write-conflict");
-  await configureWorkspace(harness, workspace, {
-    appSettings: {
-      "editor.autoSaveDelay": PENDING_SAVE_AUTOSAVE_DELAY_MS,
-    },
-  });
-  const preparedProject = await prepareProjectSettings(
-    harness,
-    "mcp-external-write-conflict",
-    workspace,
-    {
-      "ai.autoAcceptBodyProposals": true,
-    },
-  );
+async function runMcpD2aEgressDenialJourney(harness) {
+  const journeyId = "mcp-external-write-conflict";
+  const workspace = harness.workspacePath(journeyId);
+  await configureWorkspace(harness, workspace);
 
-  const external = await harness.launch("mcp-external-write-conflict");
+  const external = await harness.launch(journeyId);
   let mcpClient = null;
-  let dirtyStagingId = null;
   let journeyFailure = null;
   try {
-    const clean = await createSceneThroughUi(harness, external.page);
-    if (clean.projectId !== preparedProject.id) {
-      throw new Error("MCP journey started under the wrong project");
+    const scene = await createSceneThroughUi(harness, external.page);
+    const beforeRows = await queryRows(
+      harness,
+      external.page,
+      `SELECT id, project_id AS projectId, version, content
+       FROM tree_nodes
+       WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+      [scene.sceneId, scene.projectId],
+    );
+    if (beforeRows.length !== 1) {
+      throw new Error("MCP D2a journey could not read its scene snapshot");
     }
+    const beforeEvents = await queryRows(
+      harness,
+      external.page,
+      `SELECT domain, op_type AS opType, entity_id AS entityId, sequence
+       FROM change_events
+       WHERE project_id = ? AND domain = 'prose'
+       ORDER BY sequence`,
+      [scene.projectId],
+    );
+
     const mcpArtifact = await resolveMcpArtifact();
     mcpClient = await launchProductJourneyMcpClient({
       binaryPath: mcpArtifact.path,
       workspacePath: workspace,
-      projectId: clean.projectId,
+      projectId: scene.projectId,
       onStderr: (chunk) =>
-        process.stderr.write(
-          `  [product:mcp-external-write-conflict:mcp] ${String(chunk)}`,
-        ),
+        process.stderr.write(`  [product:${journeyId}:mcp] ${String(chunk)}`),
     });
     const tools = await mcpClient.listTools();
     if (
@@ -1850,192 +1820,103 @@ async function runMcpExternalWriteConflictJourney(harness) {
       throw new Error("MCP server did not advertise propose_scene_body");
     }
 
-    const cleanResult = parseMcpTextResult(
+    const sentinel = `D2A-MCP-DENIAL-${Date.now()}`;
+    const denialMarker = "D2A_EGRESS_DENIED:";
+    const expectedRpcPrefix = `MCP JSON-RPC error (-32602): ${denialMarker}`;
+    try {
       await mcpClient.callTool("propose_scene_body", {
-        scene_id: clean.sceneId,
-        text: MCP_CLEAN_EXTERNAL_TEXT,
+        scene_id: scene.sceneId,
+        text: sentinel,
         mode: "append",
-      }),
-      "clean propose_scene_body",
-    );
-    if (
-      cleanResult.scene_id !== clean.sceneId ||
-      cleanResult.status !== "proposed" ||
-      typeof cleanResult.staging_id !== "string"
-    ) {
-      throw new Error(
-        `clean MCP proposal returned an invalid authority result: ${JSON.stringify(cleanResult)}`,
-      );
+      });
+      throw new Error("MCP propose_scene_body unexpectedly succeeded");
+    } catch (error) {
+      const message = String(error?.message ?? error);
+      if (!message.startsWith(expectedRpcPrefix)) {
+        throw new Error(`MCP D2a denial had an unexpected cause: ${message}`, {
+          cause: error,
+        });
+      }
+      if (message.includes(sentinel)) {
+        throw new Error("MCP D2a denial leaked the proposed sentinel");
+      }
     }
-    const cleanEvidence = await harness.waitUntil(async () => {
-      const [stage, scene] = await Promise.all([
-        findProseStage(harness, external.page, cleanResult.staging_id),
-        findSceneById(harness, external.page, clean.sceneId),
-      ]);
-      return stage?.status === "accepted" &&
-        stage.sourceSurface === "mcp" &&
-        String(scene?.content ?? "").includes(MCP_CLEAN_EXTERNAL_TEXT)
-        ? { stage, scene }
-        : null;
-    }, "MCP clean auto-apply");
-    await clean.editor
-      .locator(`text=${MCP_CLEAN_EXTERNAL_TEXT}`)
-      .waitFor({ state: "visible", timeout: 30_000 });
-    if (
-      await clean.editorSurface.getByTestId("external-edit-conflict").count()
-    ) {
-      throw new Error("clean MCP external write incorrectly opened a conflict");
-    }
-    const cleanEvents = await queryRows(
+
+    const afterRows = await queryRows(
       harness,
       external.page,
-      `SELECT session_id AS sessionId, domain, op_type AS opType,
-        entity_id AS entityId
+      `SELECT id, project_id AS projectId, version, content
+       FROM tree_nodes
+       WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+      [scene.sceneId, scene.projectId],
+    );
+    const afterEvents = await queryRows(
+      harness,
+      external.page,
+      `SELECT domain, op_type AS opType, entity_id AS entityId, sequence
        FROM change_events
-       WHERE entity_id = ? AND domain = 'prose' AND op_type = 'prose.propose'`,
-      [cleanResult.staging_id],
+       WHERE project_id = ? AND domain = 'prose'
+       ORDER BY sequence`,
+      [scene.projectId],
     );
+    const beforeScene = beforeRows[0];
+    const afterScene = afterRows[0];
+    const sceneContentUnchanged = beforeScene?.content === afterScene?.content;
     if (
-      cleanEvents.length !== 1 ||
-      cleanEvents[0].sessionId !== cleanEvidence.stage.sourceSessionId
+      afterRows.length !== 1 ||
+      String(afterScene?.id) !== String(beforeScene?.id) ||
+      String(afterScene?.projectId) !== String(beforeScene?.projectId) ||
+      Number(afterScene?.version) !== Number(beforeScene?.version) ||
+      !sceneContentUnchanged
     ) {
-      throw new Error(
-        "clean MCP proposal did not retain its external writer session",
-      );
+      throw new Error("MCP D2a denial changed the scene row");
     }
-    harness.recordTimeline("mcp-clean-external-write-reloaded", {
+    const changeEventsUnchanged =
+      JSON.stringify(beforeEvents) === JSON.stringify(afterEvents);
+    if (!changeEventsUnchanged) {
+      throw new Error("MCP D2a denial changed prose change-event metadata");
+    }
+    if (
+      (await scene.editorSurface
+        .getByTestId("external-edit-conflict")
+        .count()) !== 0
+    ) {
+      throw new Error("MCP D2a denial opened an editor conflict");
+    }
+
+    harness.recordTimeline("mcp-d2a-pre-dispatch-denial", {
       workspace,
-      projectId: clean.projectId,
-      sceneId: clean.sceneId,
-      stagingId: cleanResult.staging_id,
-      sourceSurface: cleanEvidence.stage.sourceSurface,
-      status: cleanEvidence.stage.status,
-      conflict: false,
+      projectId: scene.projectId,
+      sceneId: scene.sceneId,
+      tool: "propose_scene_body",
+      denial: { code: -32602, marker: denialMarker },
+      handlerDispatch: false,
+      sceneVersionBefore: beforeScene.version,
+      sceneVersionAfter: afterScene.version,
+      sceneContentUnchanged,
+      changeEventsBefore: beforeEvents.length,
+      changeEventsAfter: afterEvents.length,
+      changeEventsUnchanged,
+      editorConflict: false,
     });
-
-    const dirty = await createSceneThroughUi(harness, external.page);
-    await dirty.editor.click();
-    await external.page.keyboard.type(MCP_DIRTY_LOCAL_TEXT);
-    if (
-      await findSceneWithTextForProject(
-        harness,
-        external.page,
-        dirty.projectId,
-        MCP_DIRTY_LOCAL_TEXT,
-      )
-    ) {
-      throw new Error("dirty MCP setup autosaved before the proposal");
-    }
-    const dirtyResult = parseMcpTextResult(
-      await mcpClient.callTool("propose_scene_body", {
-        scene_id: dirty.sceneId,
-        text: MCP_DIRTY_EXTERNAL_TEXT,
-        mode: "append",
-      }),
-      "dirty propose_scene_body",
-    );
-    dirtyStagingId = String(dirtyResult.staging_id ?? "");
-    if (
-      dirtyResult.scene_id !== dirty.sceneId ||
-      dirtyResult.status !== "proposed" ||
-      !dirtyStagingId
-    ) {
-      throw new Error(
-        `dirty MCP proposal returned an invalid authority result: ${JSON.stringify(dirtyResult)}`,
-      );
-    }
-
-    const conflict = dirty.editorSurface.getByTestId("external-edit-conflict");
-    await conflict.waitFor({ state: "visible", timeout: 30_000 });
-    const dirtyEvidence = await harness.waitUntil(async () => {
-      const [stage, scene] = await Promise.all([
-        findProseStage(harness, external.page, dirtyStagingId),
-        findSceneById(harness, external.page, dirty.sceneId),
-      ]);
-      return stage?.status === "proposed" &&
-        stage.sourceSurface === "mcp" &&
-        String(stage.proposedContent ?? "").includes(MCP_DIRTY_EXTERNAL_TEXT) &&
-        String(scene?.content ?? "").includes(MCP_DIRTY_LOCAL_TEXT) &&
-        !String(scene?.content ?? "").includes(MCP_DIRTY_EXTERNAL_TEXT)
-        ? { stage, scene }
-        : null;
-    }, "MCP dirty stale conflict");
-    if (!(await dirty.editor.textContent())?.includes(MCP_DIRTY_LOCAL_TEXT)) {
-      throw new Error("dirty MCP conflict overwrote the local editor draft");
-    }
-    harness.recordTimeline("mcp-dirty-external-write-conflict", {
-      workspace,
-      projectId: dirty.projectId,
-      sceneId: dirty.sceneId,
-      stagingId: dirtyStagingId,
-      sourceSurface: dirtyEvidence.stage.sourceSurface,
-      status: dirtyEvidence.stage.status,
-      localDraftPersisted: true,
-      externalProposalApplied: false,
-      conflict: true,
-    });
-
-    const reject = external.page.getByRole("button", {
-      name: /Reject/,
-    });
-    await reject.waitFor({ state: "visible", timeout: 30_000 });
-    await external.page.keyboard.press("Escape");
-    await harness.waitUntil(async () => {
-      const stage = await findProseStage(
-        harness,
-        external.page,
-        dirtyStagingId,
-      );
-      return stage?.status === "discarded" ? stage : null;
-    }, "MCP stale proposal discard");
-    await conflict.getByTestId("external-edit-keep").click();
-    await conflict.waitFor({ state: "detached", timeout: 30_000 });
     log(
-      "MCP external write: clean auto-apply and dirty stale conflict both passed",
+      "MCP D2a egress denial: pre-dispatch, no DB or external-write-feed mutation",
     );
+    return {
+      id: journeyId,
+      workspace,
+      projectId: scene.projectId,
+      sceneId: scene.sceneId,
+      d2aDenial: { code: -32602, marker: denialMarker },
+      handlerDispatch: false,
+      sceneContentUnchanged,
+      changeEventsUnchanged,
+      editorConflict: false,
+    };
   } catch (error) {
     journeyFailure = error;
     throw error;
   } finally {
-    if (!external.page.isClosed()) {
-      if (dirtyStagingId) {
-        const stage = await findProseStage(
-          harness,
-          external.page,
-          dirtyStagingId,
-        ).catch(() => null);
-        if (stage?.status === "proposed") {
-          await external.page.keyboard.press("Escape").catch(() => undefined);
-          const afterEscape = await findProseStage(
-            harness,
-            external.page,
-            dirtyStagingId,
-          ).catch(() => null);
-          if (afterEscape?.status === "proposed") {
-            await harness
-              .invokeOk(external.page, "agent_discard_prose_stage", {
-                payload: {
-                  projectId: preparedProject.id,
-                  sessionId: "product-journey-cleanup",
-                  stagingId: dirtyStagingId,
-                },
-              })
-              .catch(() => undefined);
-          }
-        }
-      }
-      const visibleKeep = external.page.locator(
-        '[data-testid="external-edit-conflict"]:visible [data-testid="external-edit-keep"]',
-      );
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        if ((await visibleKeep.count()) === 0) break;
-        await visibleKeep
-          .first()
-          .click()
-          .then(() => external.page.waitForTimeout(250))
-          .catch(() => undefined);
-      }
-    }
     await mcpClient?.close().catch((error) => {
       if (!journeyFailure) throw error;
       console.error(
@@ -2045,11 +1926,7 @@ async function runMcpExternalWriteConflictJourney(harness) {
       );
     });
     try {
-      await harness.close(
-        external.app,
-        external.page,
-        "mcp-external-write-conflict",
-      );
+      await harness.close(external.app, external.page, journeyId);
     } catch (closeError) {
       if (!journeyFailure) throw closeError;
       console.error(
@@ -2279,7 +2156,7 @@ export const PRODUCT_JOURNEYS = [
   },
   {
     id: "mcp-external-write-conflict",
-    run: runMcpExternalWriteConflictJourney,
+    run: runMcpD2aEgressDenialJourney,
   },
   ...NATIVE_ROUND_TRIP_JOURNEYS,
   createChronicleExtractionJourney({
