@@ -94,7 +94,8 @@ use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::task_leases::with_immediate_transaction;
 use super::terminal_failure::{
-    project_terminal_failure_for_run_in_tx, resolve_terminal_failure_for_run_in_tx,
+    project_terminal_failure_for_run_generated_in_tx,
+    resolve_terminal_failure_for_run_generated_in_tx,
 };
 use crate::Database;
 
@@ -767,14 +768,19 @@ fn finalize_legacy_backfill_run_in_tx(
         Ok(_) => {
             let handle = load_maintenance_run_in_tx(conn, run_id)?;
             let finalized_at = complete_maintenance_run_in_tx(conn, &handle)?;
-            resolve_terminal_failure_for_run_in_tx(conn, project_id, run_id, &finalized_at)?;
+            resolve_terminal_failure_for_run_generated_in_tx(
+                conn,
+                project_id,
+                run_id,
+                &finalized_at,
+            )?;
         }
         Err(error) => {
             let message = error.to_string();
             let failure_kind = maintenance_failure_kind_for_message(&message);
             let handle = load_maintenance_run_in_tx(conn, run_id)?;
             let finalized_at = fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
-            project_terminal_failure_for_run_in_tx(
+            project_terminal_failure_for_run_generated_in_tx(
                 conn,
                 project_id,
                 run_id,
@@ -2051,6 +2057,110 @@ mod tests {
             Ok(())
         })
         .expect("read owner-finalized Backfill Run");
+    }
+
+    #[test]
+    fn backfill_finalizer_advances_restored_finding_lifecycle() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            Ok(())
+        })
+        .expect("seed project");
+
+        let create_backfill_run = |reuse| {
+            db.with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    let epoch_id = match get_current_epoch(conn, "project-1")? {
+                        Some(epoch) => epoch.id,
+                        None => create_epoch_in_tx(conn, "project-1", "initial", None)?,
+                    };
+                    let spec = json!({
+                        "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION
+                    });
+                    let spec_digest = format!("sha256:{}", digest_plan(&spec));
+                    let created = create_maintenance_run_in_tx(
+                        conn,
+                        "project-1",
+                        "backfill",
+                        &epoch_id,
+                        LEGACY_BACKFILL_WORK_KEY,
+                        &spec,
+                        &spec_digest,
+                        reuse,
+                    )?;
+                    Ok(created.run_id)
+                })
+            })
+        };
+
+        let first_run_id = create_backfill_run(SystemRunWorkKeyReuse::RunningAndCompleted)
+            .expect("create the historical Backfill Run");
+        let failed_result: anyhow::Result<BackfillSummary> = Err(anyhow::anyhow!(
+            "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: historical failure"
+        ));
+        finalize_legacy_backfill_run(&db, "project-1", &first_run_id, &failed_result)
+            .expect("finalize the historical Backfill failure");
+
+        let (finding_identity, finding_key): (String, String) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT finding_identity, finding_key
+                       FROM narrative_maintenance_finding_observations
+                      WHERE run_id = ?1",
+                    params![first_run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read historical Finding identity");
+
+        let restored_observation_at = "2000-01-01T00:00:00.000Z";
+        let restored_lifecycle_at = "2999-01-01T00:00:00.000Z";
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET observed_at = ?1
+                  WHERE finding_identity = ?2 AND finding_key = ?3",
+                params![restored_observation_at, finding_identity, finding_key],
+            )?;
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_lifecycle
+                    SET observed_at = ?1
+                  WHERE finding_identity = ?2 AND finding_key = ?3",
+                params![restored_lifecycle_at, finding_identity, finding_key],
+            )?;
+            Ok(())
+        })
+        .expect("restore Finding history with an ahead lifecycle coordinate");
+
+        let second_run_id = create_backfill_run(SystemRunWorkKeyReuse::RunningOnly)
+            .expect("create the successful Backfill Run");
+        let successful_result = Ok(BackfillSummary {
+            epoch_created: false,
+            contributions_created: 0,
+            edges_created: 0,
+            applications_without_run_id: 0,
+        });
+        finalize_legacy_backfill_run(&db, "project-1", &second_run_id, &successful_result)
+            .expect("finalize the successful Backfill Run");
+
+        let (state, observed_at): (String, String) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT lifecycle_state, observed_at
+                       FROM narrative_maintenance_finding_lifecycle
+                      WHERE finding_identity = ?1 AND finding_key = ?2
+                      ORDER BY julianday(observed_at) DESC, rowid DESC
+                      LIMIT 1",
+                    params![finding_identity, finding_key],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read the generated resolved lifecycle");
+        assert_eq!(state, "resolved");
+        assert_eq!(observed_at, "2999-01-01T00:00:00.001Z");
     }
 
     #[test]

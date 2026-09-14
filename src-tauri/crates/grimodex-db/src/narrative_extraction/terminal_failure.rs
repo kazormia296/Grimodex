@@ -408,25 +408,6 @@ fn skipped_outcome(
     })
 }
 
-pub(crate) fn project_terminal_failure_for_run_in_tx(
-    conn: &Connection,
-    project_id: &str,
-    run_id: &str,
-    failure_message: &str,
-    observed_at: &str,
-    allow_unset_terminal_code: bool,
-) -> anyhow::Result<TerminalFailureProjectionOutcome> {
-    project_terminal_failure_for_run_in_tx_with_origin(
-        conn,
-        project_id,
-        run_id,
-        failure_message,
-        observed_at,
-        allow_unset_terminal_code,
-        false,
-    )
-}
-
 pub(crate) fn project_terminal_failure_for_run_generated_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -976,15 +957,6 @@ pub(crate) fn project_graph_repair_required_in_tx(
         observed_at,
         true,
     )
-}
-
-pub(crate) fn resolve_terminal_failure_for_run_in_tx(
-    conn: &Connection,
-    project_id: &str,
-    run_id: &str,
-    observed_at: &str,
-) -> anyhow::Result<TerminalFailureResolutionOutcome> {
-    resolve_terminal_failure_for_run_in_tx_with_origin(conn, project_id, run_id, observed_at, false)
 }
 
 pub(crate) fn resolve_terminal_failure_for_run_generated_in_tx(
