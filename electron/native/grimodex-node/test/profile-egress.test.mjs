@@ -29,13 +29,30 @@ async function boundedStartup(promise, label) {
   }
 }
 
-test("D2a profile restriction survives restart without workspace SQLite", async () => {
+test("D2a startup stays dormant until explicit activation, then survives restart", async () => {
   const root = mkdtempSync(join(tmpdir(), "grimodex-node-d2a-"));
   const appData = join(root, "app-data");
   try {
     const first = new Backend(appData);
+    const initialized = JSON.parse(
+      await boundedStartup(
+        first.initializeProfileEgress(),
+        "first Native startup",
+      ),
+    );
+    assert.equal(initialized.restricted, false);
+    assert.equal(initialized.handlesInvalidated, false);
+    assert.equal(initialized.inFlightStopped, true);
+    assert.equal(initialized.chatStreamsStopped, 0);
+    assert.equal(initialized.inlineStreamsStopped, 0);
+    assert.equal(initialized.postEffectRunsStopped, 0);
+    assert.equal(existsSync(join(appData, "profile-egress.json")), false);
+
     const activated = JSON.parse(
-      await boundedStartup(first.initializeProfileEgress(), "first Native startup"),
+      await boundedStartup(
+        first.activateProfileEgress(),
+        "first Native activation",
+      ),
     );
     assert.equal(activated.restricted, true);
     assert.equal(activated.handlesInvalidated, true);
@@ -88,7 +105,8 @@ test("D2a accepts one registered identity, persists settings, then rejects it af
   const root = mkdtempSync(join(tmpdir(), "grimodex-node-d2a-rebind-"));
   try {
     const backend = new Backend(join(root, "app-data"));
-    const status = JSON.parse(await backend.initializeProfileEgress());
+    await backend.initializeProfileEgress();
+    const status = JSON.parse(await backend.activateProfileEgress());
     const firstWorkspace = join(root, "workspace-a");
     await backend.openWorkspace(firstWorkspace);
     const identity = {

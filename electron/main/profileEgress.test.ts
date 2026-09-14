@@ -69,6 +69,109 @@ function backend(status: Record<string, unknown> = {}) {
 }
 
 describe("D2a profile egress gate", () => {
+  it("does not expose main-only activation through renderer commands", () => {
+    expect(Object.hasOwn(NAPI_COMMANDS, "activate_profile_egress")).toBe(
+      false,
+    );
+  });
+
+  it("passes through a valid unrestricted startup without registering callers", async () => {
+    const registerProfileEgressCaller = vi.fn();
+    const gate = await createProfileEgressGate({
+      ...backend({ restricted: false, handlesInvalidated: false }),
+      registerProfileEgressCaller,
+    });
+
+    expect(gate.restricted).toBe(false);
+    expect(gate.unavailable).toBe(false);
+    expect(() => gate.assertInvoke("send_chat_message", {})).not.toThrow();
+    expect(() => gate.assertInvoke("db_execute", {})).not.toThrow();
+    expect(gate.allowsBackendEvent("chat:stream-chunk")).toBe(true);
+    expect(() => gate.assertExternalUrl()).not.toThrow();
+    gate.issueCallerIdentity(11);
+    expect(registerProfileEgressCaller).not.toHaveBeenCalled();
+  });
+
+  it("closes egress immediately, coalesces activation, and rotates old callers", async () => {
+    const nativeStatus = JSON.parse(
+      await backend().initializeProfileEgress!(),
+    ) as Record<string, unknown>;
+    let resolveActivation: (value: string) => void = () => {};
+    const activateProfileEgress = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveActivation = resolve;
+        }),
+    );
+    const registerProfileEgressCaller = vi.fn();
+    const gate = await createProfileEgressGate({
+      ...backend({ restricted: false, handlesInvalidated: false }),
+      activateProfileEgress,
+      registerProfileEgressCaller,
+    });
+    const oldIdentity = gate.issueCallerIdentity(11);
+
+    const first = gate.activateFirstRestrictedPublication!();
+    const second = gate.activateFirstRestrictedPublication!();
+    expect(activateProfileEgress).toHaveBeenCalledOnce();
+    expect(gate.restricted).toBe(true);
+    expect(() => gate.assertInvoke("send_chat_message", {})).toThrow(
+      new RegExp(`${D2A_EGRESS_DENIED_MARKER} old-external-ai`),
+    );
+    expect(gate.allowsBackendEvent("chat:stream-chunk")).toBe(false);
+    expect(() => gate.assertExternalUrl()).toThrow(
+      new RegExp(`${D2A_EGRESS_DENIED_MARKER} external-url`),
+    );
+
+    resolveActivation(
+      JSON.stringify({
+        ...nativeStatus,
+        profileId: "profile-activated",
+        callerEpoch: 5,
+        restricted: true,
+        handlesInvalidated: true,
+        inFlightStopped: true,
+      }),
+    );
+    await Promise.all([first, second]);
+    expect(gate.unavailable).toBe(false);
+    const newIdentity = gate.issueCallerIdentity(11);
+    expect(newIdentity.callerId).not.toBe(oldIdentity.callerId);
+    expect(newIdentity.callerEpoch).toBe(5);
+    expect(() =>
+      gate.assertInvoke("save_global_settings", {
+        callerIdentity: oldIdentity,
+      }),
+    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
+    expect(registerProfileEgressCaller).toHaveBeenCalledOnce();
+  });
+
+  it("stays fail-closed when main-only activation fails", async () => {
+    const gate = await createProfileEgressGate({
+      ...backend({ restricted: false, handlesInvalidated: false }),
+      activateProfileEgress: vi.fn(async () => {
+        throw new Error("native activation failed");
+      }),
+    });
+
+    await expect(gate.activateFirstRestrictedPublication!()).rejects.toThrow(
+      "native activation failed",
+    );
+    expect(gate.restricted).toBe(true);
+    expect(gate.unavailable).toBe(true);
+    expect(() => gate.assertInvoke("send_chat_message", {})).toThrow(
+      new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`),
+    );
+    expect(() =>
+      gate.assertInvoke("db_execute", {
+        method: "all",
+        sql: "SELECT 1",
+      }),
+    ).toThrow(new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`));
+    expect(gate.allowsBackendEvent("workspace:opened")).toBe(true);
+    expect(() => gate.assertExternalUrl()).toThrow();
+  });
+
   it("issues stable main-owned identities per sender and keeps profile scope", async () => {
     const gate = await createProfileEgressGate(backend());
     const first = gate.issueCallerIdentity(11);

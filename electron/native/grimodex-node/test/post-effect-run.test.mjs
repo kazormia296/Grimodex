@@ -255,7 +255,8 @@ test("restricted Native post-effect families reject a forged caller before local
   });
   try {
     const { backend, workspace } = makeBackend();
-    const status = JSON.parse(await backend.initializeProfileEgress());
+    await backend.initializeProfileEgress();
+    const status = JSON.parse(await backend.activateProfileEgress());
     await backend.openWorkspace(workspace);
     const forgedIdentity = {
       profileId: status.profileId,

@@ -11,13 +11,18 @@ export declare class Backend {
    */
   constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null, rerankerResourceRoot?: string | undefined | null)
   /**
-   * Main-only D2a startup barrier. The first call performs the explicit
-   * restricted-publication transition; later process starts load the same
-   * profile epoch without rotating it. In either case all native stream
-   * handles and dispatch leases are quiesced before renderer/event wiring
-   * is installed by Electron main.
+   * Main-only D2a startup status. A fresh profile remains unrestricted until
+   * the main process explicitly activates the first protected publication;
+   * a persisted restricted profile reruns its startup quiescence barrier.
    */
   initializeProfileEgress(): Promise<string>
+  /**
+   * Main-only first protected-publication activation. The caller is the
+   * Electron main process; this method is deliberately absent from the
+   * renderer IPC contract. Activation is durable and followed by the same
+   * quiescence barrier used for a restricted-profile restart.
+   */
+  activateProfileEgress(): Promise<string>
   /**
    * Main-only registration of one exact caller identity for this Backend
    * process generation. Renderer IPC never exposes this method.

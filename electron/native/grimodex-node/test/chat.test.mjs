@@ -256,7 +256,8 @@ test("restricted Native chat families reject a forged caller before local HTTP",
       }),
     );
     const backend = new Backend(isolatedAppDataDir);
-    const status = JSON.parse(await backend.initializeProfileEgress());
+    await backend.initializeProfileEgress();
+    const status = JSON.parse(await backend.activateProfileEgress());
     const workspace = join(isolatedRoot, "d2a-restricted-chat");
     await backend.openWorkspace(workspace);
     const expectedWorkspacePath = realpathSync(workspace);

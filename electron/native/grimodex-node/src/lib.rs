@@ -2868,6 +2868,55 @@ pub struct Backend {
     state: Arc<AppState>,
 }
 
+async fn settle_profile_egress_startup(state: &Arc<AppState>) -> Result<String> {
+    let initial = state.profile_egress.status();
+    if !initial.restricted {
+        let mut json =
+            serde_json::to_value(initial).map_err(|error| Error::from_reason(error.to_string()))?;
+        if let Some(object) = json.as_object_mut() {
+            object.insert("chatStreamsStopped".to_string(), serde_json::json!(0));
+            object.insert("inlineStreamsStopped".to_string(), serde_json::json!(0));
+            object.insert("postEffectRunsStopped".to_string(), serde_json::json!(0));
+        }
+        return serde_json::to_string(&json).map_err(|error| Error::from_reason(error.to_string()));
+    }
+
+    // Close the gate before awaiting cancellation. The state mutex makes
+    // this transition and every subsequent dispatch admission mutually
+    // exclusive; an already restricted profile keeps its durable epoch.
+    state
+        .profile_egress
+        .begin_startup_barrier()
+        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+    let post_effect_stopped = state.post_effect_abort.abort_all();
+    let chat_stopped = state.chat_streams.abort_all().await;
+    let inline_stopped = state.inline_ai_streams.abort_all().await;
+    state.profile_egress.wait_for_dispatches().await;
+    state.post_effect_abort.clear_abort_all();
+    let status = state
+        .profile_egress
+        .confirm_in_flight_stopped()
+        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+    debug_assert!(status.in_flight_stopped);
+    let mut json =
+        serde_json::to_value(status).map_err(|error| Error::from_reason(error.to_string()))?;
+    if let Some(object) = json.as_object_mut() {
+        object.insert(
+            "chatStreamsStopped".to_string(),
+            serde_json::json!(chat_stopped),
+        );
+        object.insert(
+            "inlineStreamsStopped".to_string(),
+            serde_json::json!(inline_stopped),
+        );
+        object.insert(
+            "postEffectRunsStopped".to_string(),
+            serde_json::json!(post_effect_stopped),
+        );
+    }
+    serde_json::to_string(&json).map_err(|error| Error::from_reason(error.to_string()))
+}
+
 #[napi]
 impl Backend {
     /// `app_data_dir` は Electron main の `app.getPath("userData")` を明示注入
@@ -2906,57 +2955,25 @@ impl Backend {
         })
     }
 
-    /// Main-only D2a startup barrier. The first call performs the explicit
-    /// restricted-publication transition; later process starts load the same
-    /// profile epoch without rotating it. In either case all native stream
-    /// handles and dispatch leases are quiesced before renderer/event wiring
-    /// is installed by Electron main.
+    /// Main-only D2a startup status. A fresh profile remains unrestricted until
+    /// the main process explicitly activates the first protected publication;
+    /// a persisted restricted profile reruns its startup quiescence barrier.
     #[napi]
     pub async fn initialize_profile_egress(&self) -> Result<String> {
-        // Load persisted state first. Only the first explicit publication
-        // transitions a fresh profile; ordinary restarts must not rotate or
-        // re-activate the restriction.
-        if !self.state.profile_egress.status().restricted {
-            self.state
-                .profile_egress
-                .activate_first_restricted_publication(false)
-                .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-        }
-        // Close the gate before awaiting cancellation. The state mutex makes
-        // this transition and every subsequent dispatch admission mutually
-        // exclusive; an already restricted profile keeps its durable epoch.
+        settle_profile_egress_startup(&self.state).await
+    }
+
+    /// Main-only first protected-publication activation. The caller is the
+    /// Electron main process; this method is deliberately absent from the
+    /// renderer IPC contract. Activation is durable and followed by the same
+    /// quiescence barrier used for a restricted-profile restart.
+    #[napi]
+    pub async fn activate_profile_egress(&self) -> Result<String> {
         self.state
             .profile_egress
-            .begin_startup_barrier()
+            .activate_first_restricted_publication(false)
             .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-        let post_effect_stopped = self.state.post_effect_abort.abort_all();
-        let chat_stopped = self.state.chat_streams.abort_all().await;
-        let inline_stopped = self.state.inline_ai_streams.abort_all().await;
-        self.state.profile_egress.wait_for_dispatches().await;
-        self.state.post_effect_abort.clear_abort_all();
-        let status = self
-            .state
-            .profile_egress
-            .confirm_in_flight_stopped()
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-        debug_assert!(status.in_flight_stopped);
-        let mut json =
-            serde_json::to_value(status).map_err(|error| Error::from_reason(error.to_string()))?;
-        if let Some(object) = json.as_object_mut() {
-            object.insert(
-                "chatStreamsStopped".to_string(),
-                serde_json::json!(chat_stopped),
-            );
-            object.insert(
-                "inlineStreamsStopped".to_string(),
-                serde_json::json!(inline_stopped),
-            );
-            object.insert(
-                "postEffectRunsStopped".to_string(),
-                serde_json::json!(post_effect_stopped),
-            );
-        }
-        serde_json::to_string(&json).map_err(|error| Error::from_reason(error.to_string()))
+        settle_profile_egress_startup(&self.state).await
     }
 
     /// Main-only registration of one exact caller identity for this Backend

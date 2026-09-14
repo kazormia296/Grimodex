@@ -33,6 +33,11 @@ interface NativeProfileEgressPolicy {
   readonly protectedColumns: ReadonlySet<string>;
 }
 
+type MainProfileEgressBackend = NapiBackendLike & {
+  /** Main-only N-API method; never part of the renderer command contract. */
+  activateProfileEgress?: () => Promise<string>;
+};
+
 type D2aRoute =
   | "old-external-ai"
   | "old-local-ai"
@@ -511,22 +516,33 @@ export interface ProfileEgressGate {
   assertInvoke(command: string, args: CommandArgs): void;
   allowsBackendEvent(channel: string): boolean;
   assertExternalUrl(): void;
+  activateFirstRestrictedPublication?(): Promise<void>;
   observeBackendEvent?(channel: string, payload: unknown): void;
 }
 
 class NativeBoundProfileEgressGate implements ProfileEgressGate {
-  readonly restricted = true;
-  readonly unavailable: boolean;
-  private readonly profileId: string;
-  private readonly callerEpoch: number;
+  private _restricted: boolean;
+  private _unavailable: boolean;
+  private profileId: string;
+  private callerEpoch: number;
   private readonly registerCaller:
     | ((identity: MainIssuedCallerIdentity) => void)
     | null;
   private readonly invalidateCallers: (() => void) | null;
-  private readonly policy: NativeProfileEgressPolicy;
+  private policy: NativeProfileEgressPolicy;
+  private readonly activateProfileEgress: (() => Promise<string>) | null;
+  private activationPromise: Promise<void> | null = null;
   private workspaceId: string | null = null;
   private readonly identities = new Map<number, MainIssuedCallerIdentity>();
   private readonly registrationErrors = new Map<number, string>();
+
+  get restricted(): boolean {
+    return this._restricted;
+  }
+
+  get unavailable(): boolean {
+    return this._unavailable;
+  }
 
   constructor(
     status: NativeProfileEgressStatus | null,
@@ -534,13 +550,16 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     policy: NativeProfileEgressPolicy,
     registerCaller?: (identity: MainIssuedCallerIdentity) => void,
     invalidateCallers?: () => void,
+    activateProfileEgress?: () => Promise<string>,
   ) {
     const profileId = status?.profileId;
     const callerEpoch = status?.callerEpoch;
-    this.unavailable = unavailable;
+    this._restricted = unavailable || status?.restricted === true;
+    this._unavailable = unavailable;
     this.policy = policy;
     this.registerCaller = registerCaller ?? null;
     this.invalidateCallers = invalidateCallers ?? null;
+    this.activateProfileEgress = activateProfileEgress ?? null;
     this.profileId =
       typeof profileId === "string" &&
       profileId.trim() === profileId &&
@@ -574,6 +593,8 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     // reopen the old workspace/session tuple before the event can rotate it.
     // Registration failures remain retryable without weakening this rule.
     if (
+      this.restricted &&
+      !this.activationPromise &&
       this.registerCaller &&
       (!existing || this.registrationErrors.has(senderId))
     ) {
@@ -591,6 +612,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   }
 
   assertInvoke(command: string, args: CommandArgs): void {
+    if (!this.restricted && !this.unavailable) return;
     if (
       this.unavailable &&
       (command === "db_execute" || command === "db_execute_batch")
@@ -603,7 +625,8 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     const route = commandRoute(command, args, this.policy);
     const callerIdentity = args.callerIdentity;
     const requiresBoundCaller =
-      command === "db_execute" || command === "db_execute_batch";
+      command === "db_execute" ||
+      command === "db_execute_batch";
     if (
       requiresBoundCaller &&
       (callerIdentity === undefined || callerIdentity === null)
@@ -669,6 +692,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   }
 
   allowsBackendEvent(channel: string): boolean {
+    if (!this.restricted && !this.unavailable) return true;
     if (
       channel.startsWith("chat:stream-") ||
       channel.startsWith("inline-ai:stream-") ||
@@ -681,7 +705,66 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   }
 
   assertExternalUrl(): void {
+    if (!this.restricted && !this.unavailable) return;
     throw denied("external-url", "external URL opening is disabled");
+  }
+
+  async activateFirstRestrictedPublication(): Promise<void> {
+    if (this.activationPromise) return this.activationPromise;
+    if (this.unavailable) {
+      throw denied(
+        "unclassified",
+        "profile egress activation is unavailable",
+      );
+    }
+    if (this.restricted) return;
+
+    // Close all egress synchronously while Native performs the durable
+    // transition and quiescence barrier. No invoke/event/url can slip through
+    // the activation window.
+    this._restricted = true;
+    const activate = this.activateProfileEgress;
+    this.activationPromise = (async () => {
+      try {
+        if (!activate) {
+          throw denied(
+            "unclassified",
+            "profile egress activation is unavailable",
+          );
+        }
+        const raw = await activate();
+        const status = JSON.parse(raw) as NativeProfileEgressStatus;
+        const policy = parseNativeProfileEgressPolicy(status);
+        if (!isValidNativeProfileEgressStatus(status, policy, true)) {
+          throw denied(
+            "unclassified",
+            "profile egress activation returned an invalid restricted status",
+          );
+        }
+        if (
+          typeof status.profileId !== "string" ||
+          typeof status.callerEpoch !== "number" ||
+          !policy
+        ) {
+          throw denied(
+            "unclassified",
+            "profile egress activation returned an invalid restricted status",
+          );
+        }
+        this.profileId = status.profileId;
+        this.callerEpoch = status.callerEpoch;
+        this.policy = policy;
+        this.identities.clear();
+        this.registrationErrors.clear();
+      } catch (error) {
+        this._unavailable = true;
+        this._restricted = true;
+        throw error;
+      } finally {
+        this.activationPromise = null;
+      }
+    })();
+    return this.activationPromise;
   }
 
   observeBackendEvent(channel: string, payload: unknown): void {
@@ -787,8 +870,28 @@ function parseNativeProfileEgressPolicy(
   return { protectedTables, protectedColumns };
 }
 
+function isValidNativeProfileEgressStatus(
+  status: NativeProfileEgressStatus,
+  policy: NativeProfileEgressPolicy | null,
+  requireRestricted: boolean,
+): boolean {
+  return (
+    (status.restricted === true || status.restricted === false) &&
+    (!requireRestricted || status.restricted === true) &&
+    status.inFlightStopped === true &&
+    status.handlesInvalidated === status.restricted &&
+    typeof status.profileId === "string" &&
+    status.profileId.trim() === status.profileId &&
+    status.profileId.length > 0 &&
+    typeof status.callerEpoch === "number" &&
+    Number.isSafeInteger(status.callerEpoch) &&
+    status.callerEpoch >= 0 &&
+    policy !== null
+  );
+}
+
 export async function createProfileEgressGate(
-  backend: NapiBackendLike | null,
+  backend: MainProfileEgressBackend | null,
 ): Promise<ProfileEgressGate> {
   if (
     !backend?.initializeProfileEgress ||
@@ -801,15 +904,16 @@ export async function createProfileEgressGate(
     });
   }
   try {
-    const raw = await backend.initializeProfileEgress();
+    const raw = await backend.initializeProfileEgress!();
     const status = JSON.parse(raw) as NativeProfileEgressStatus;
     const policy = parseNativeProfileEgressPolicy(status);
-    if (
-      status.restricted !== true ||
-      status.handlesInvalidated !== true ||
-      status.inFlightStopped !== true ||
-      !policy
-    ) {
+    if (!isValidNativeProfileEgressStatus(status, policy, false)) {
+      return new NativeBoundProfileEgressGate(null, true, {
+        protectedTables: new Set(),
+        protectedColumns: new Set(),
+      });
+    }
+    if (!policy) {
       return new NativeBoundProfileEgressGate(null, true, {
         protectedTables: new Set(),
         protectedColumns: new Set(),
@@ -823,6 +927,9 @@ export async function createProfileEgressGate(
         backend.registerProfileEgressCaller!(JSON.stringify(identity));
       },
       () => backend.invalidateProfileEgressCallers!(),
+      backend.activateProfileEgress
+        ? () => backend.activateProfileEgress!()
+        : undefined,
     );
   } catch (error) {
     console.error(

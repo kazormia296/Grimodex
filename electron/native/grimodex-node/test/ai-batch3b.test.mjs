@@ -606,7 +606,8 @@ test("restricted Native inline/agent/model/connection families reject before loc
   });
   try {
     const { backend, root } = makeBackend();
-    const status = JSON.parse(await backend.initializeProfileEgress());
+    await backend.initializeProfileEgress();
+    const status = JSON.parse(await backend.activateProfileEgress());
     const workspace = join(root, "workspace");
     await backend.openWorkspace(workspace);
     const expectedWorkspacePath = realpathSync(workspace);
