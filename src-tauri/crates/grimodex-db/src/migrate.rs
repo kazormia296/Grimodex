@@ -3712,7 +3712,8 @@ impl Database {
             ",
         )?;
 
-        // NIR-1 A1: the existing tree/project Scope authority remains the
+        // SCHEMA_VERSION 36 / NIR-1 A1: the existing tree/project Scope
+        // authority remains the
         // owner of membership and order. These narrow rows hold only the
         // typed scene-scope extension, its registry, and Native/OCC metadata;
         // no prose or material closure is copied here.
@@ -4006,11 +4007,9 @@ impl Database {
         // `user_version` remains unchanged until the checkpoint below.
         conn.execute_batch("SAVEPOINT narrative_c2_schema_32")?;
         let c2zb_result = (|| -> anyhow::Result<()> {
-            // A1 was added to the existing SCHEMA 35 physical checkpoint, so
-            // the pre-migration user_version is the only version marker that
-            // distinguishes an older workspace from a current one here.
-            // Current/post-A1 rows that go missing must remain unavailable;
-            // synthesizing a permissive legacy binding would widen scope.
+            // A1 owns the SCHEMA 36 boundary. A schema-35 user_version is the
+            // durable marker for the ordinary pre-A1 upgrade path; current /
+            // post-A1 workspaces retain fail-closed missing-row semantics.
             if current < SCHEMA_VERSION {
                 // A1 migration compatibility is Native-owned: every pre-A1
                 // scene gets one persisted legacy marker and a fresh
@@ -9791,6 +9790,8 @@ mod tests {
         })
         .expect("seed a current A1 workspace with a missing binding");
 
+        db.migrate()
+            .expect("ordinary current migration must retain the missing row");
         db.migrate_for_restore_preflight()
             .expect("current restore preflight must retain the missing row");
 
@@ -9820,7 +9821,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_backfills_scene_scope_rows_from_a_pre_a1_schema_marker() {
+    fn migration_backfills_scene_scope_rows_from_schema_35_pre_a1_workspace() {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
         db.migrate().expect("create current schema");
         db.with_conn(|conn| {
@@ -9837,7 +9838,16 @@ mod tests {
                 "DROP TABLE narrative_scene_scope_bindings;
                  DROP TABLE narrative_scope_registries;",
             )?;
-            conn.pragma_update(None, "user_version", grimodex_core::SCHEMA_VERSION - 1)?;
+            assert_eq!(
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+                35,
+                "this shadow fixture models the ordinary origin/master schema-35 base"
+            );
+            conn.pragma_update(
+                None,
+                "user_version",
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+            )?;
             Ok(())
         })
         .expect("seed a pre-A1 schema marker without A1 storage");
@@ -9852,6 +9862,8 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(marker, "legacy-absent");
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
             Ok(())
         })
         .expect("pre-A1 scenes must receive the legacy compatibility marker");

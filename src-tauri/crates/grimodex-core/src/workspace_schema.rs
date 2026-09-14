@@ -594,9 +594,11 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// adds C2A's durable stage audit metadata and the structural V2 lineage
 /// monotonicity guard. SCHEMA 34 also carries an in-version repair that
 /// atomically projects non-empty body creation baselines from the canonical
-/// Narrative Change Feed lifecycle event.
+/// Narrative Change Feed lifecycle event. Version 35 adds NIR-1's semantic
+/// index storage. Version 36 adds the NIR-1 A1 scene-scope authority storage
+/// and its pre-A1 compatibility backfill boundary.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 35
+    Ok(SCHEMA_VERSION == 36
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -637,7 +639,7 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v33_dependency_declaration_storage(conn)?
         && has_v34_c2a_stage_storage(conn)?
         && has_v35_nir1_index_storage(conn)?
-        && has_v35_scene_scope_storage(conn)?
+        && has_v36_scene_scope_storage(conn)?
         && has_current_query_indexes(conn)?
         // The durable wake outbox and the V2 pointer monotonicity guard ship
         // as an in-version repair of SCHEMA 34: their absence forces a full
@@ -646,7 +648,7 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_timelapse_creation_baseline_triggers(conn)?)
 }
 
-fn has_v35_scene_scope_storage(conn: &Connection) -> anyhow::Result<bool> {
+fn has_v36_scene_scope_storage(conn: &Connection) -> anyhow::Result<bool> {
     for table in [
         "narrative_scope_registries",
         "narrative_scene_scope_bindings",
