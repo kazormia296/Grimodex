@@ -61,7 +61,8 @@ use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::source_revision::resolve_current_source_state;
 use super::task_leases::with_immediate_transaction;
 use super::terminal_failure::{
-    project_terminal_failure_for_run_in_tx, resolve_terminal_failure_for_run_in_tx,
+    project_terminal_failure_for_run_generated_in_tx,
+    resolve_terminal_failure_for_run_generated_in_tx,
 };
 use super::verify_coverage::{self, VerifyCoverageCheck};
 use crate::Database;
@@ -776,7 +777,7 @@ fn finalize_rebuild_run(
                     MaintenanceFailureKind::Transient,
                     &error,
                 )?;
-                project_terminal_failure_for_run_in_tx(
+                project_terminal_failure_for_run_generated_in_tx(
                     conn,
                     project_id,
                     run_id,
@@ -827,7 +828,7 @@ fn finalize_rebuild_run(
                 Ok(_) => {
                     let handle = load_maintenance_run_in_tx(conn, run_id)?;
                     let finalized_at = complete_maintenance_run_in_tx(conn, &handle)?;
-                    resolve_terminal_failure_for_run_in_tx(
+                    resolve_terminal_failure_for_run_generated_in_tx(
                         conn,
                         project_id,
                         run_id,
@@ -840,7 +841,7 @@ fn finalize_rebuild_run(
                     let handle = load_maintenance_run_in_tx(conn, run_id)?;
                     let finalized_at =
                         fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
-                    project_terminal_failure_for_run_in_tx(
+                    project_terminal_failure_for_run_generated_in_tx(
                         conn,
                         project_id,
                         run_id,
@@ -2760,7 +2761,7 @@ pub fn run_dependency_verify_for_project_with_coordinates(
                         // terminal Findings. A completed-but-defective
                         // report must keep the semantic-graph-requires-
                         // repair Finding open, or the halt goes dark again.
-                        resolve_terminal_failure_for_run_in_tx(
+                        resolve_terminal_failure_for_run_generated_in_tx(
                             conn,
                             project_id,
                             &run_id,
@@ -2791,7 +2792,7 @@ pub fn run_dependency_verify_for_project_with_coordinates(
                     let handle = load_maintenance_run_in_tx(conn, &run_id)?;
                     let finalized_at =
                         fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
-                    project_terminal_failure_for_run_in_tx(
+                    project_terminal_failure_for_run_generated_in_tx(
                         conn,
                         project_id,
                         &run_id,

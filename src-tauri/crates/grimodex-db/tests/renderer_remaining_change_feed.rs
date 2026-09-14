@@ -106,25 +106,36 @@ fn temporal_scene_patch_is_atomic_idempotent_and_project_scoped() {
             [],
             |row| row.get(0),
         )?;
-        let event_count: i64 = conn.query_row(
-            "SELECT COUNT(*)
+        let (event_count, scene_event_count, scene_scope_event_count): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*),
+                    SUM(CASE WHEN json_extract(event.object_key_json, '$.kind') = 'scene'
+                             THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN json_extract(event.object_key_json, '$.kind') = 'scene-scope'
+                             THEN 1 ELSE 0 END)
                FROM narrative_change_events event
                JOIN narrative_change_transactions feed_tx
                  ON feed_tx.id = event.transaction_id
               WHERE feed_tx.project_id = 'p1'
-                AND feed_tx.request_id = 'temporal-request-1'
-                AND json_extract(event.object_key_json, '$.kind')
-                    IN ('scene', 'scene-scope')",
-            [],
-            |row| row.get(0),
-        )?;
+                AND feed_tx.request_id = 'temporal-request-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
         let origin: String = conn.query_row(
             "SELECT origin FROM narrative_change_transactions
               WHERE project_id = 'p1' AND request_id = 'temporal-request-1'",
             [],
             |row| row.get(0),
         )?;
-        assert_eq!((transaction_count, event_count), (1, 2));
+        assert_eq!(
+            (
+                transaction_count,
+                event_count,
+                scene_event_count,
+                scene_scope_event_count
+            ),
+            (1, 2, 1, 1)
+        );
         assert_eq!(origin, "human");
         Ok(())
     })
@@ -140,6 +151,18 @@ fn temporal_scene_patch_is_atomic_idempotent_and_project_scoped() {
 #[test]
 fn temporal_feed_failure_rolls_back_scene_patch() {
     let db = fixture();
+    let before_binding: (i64, String) = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT version, source_token
+                   FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'p1' AND scene_id = 'scene-p1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read pre-failure scope binding");
     db.with_conn(|conn| {
         conn.execute_batch(
             "CREATE TRIGGER fail_temporal_feed
@@ -150,7 +173,11 @@ fn temporal_feed_failure_rolls_back_scene_patch() {
     })
     .expect("install failure trigger");
 
-    assert!(temporal_scene_patch(&db, payload()).is_err());
+    let error = temporal_scene_patch(&db, payload()).expect_err("temporal feed must fail");
+    assert!(
+        error.to_string().contains("forced temporal feed failure"),
+        "unexpected temporal feed failure: {error}"
+    );
     db.with_conn(|conn| {
         let state: (i64, Option<String>, Option<i64>) = conn.query_row(
             "SELECT version, story_time_order, chronicle_start_time
@@ -163,8 +190,16 @@ fn temporal_feed_failure_rolls_back_scene_patch() {
             [],
             |row| row.get(0),
         )?;
+        let after_binding: (i64, String) = conn.query_row(
+            "SELECT version, source_token
+               FROM narrative_scene_scope_bindings
+              WHERE project_id = 'p1' AND scene_id = 'scene-p1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
         assert_eq!(state, (0, None, None));
         assert_eq!(canonical_count, 0);
+        assert_eq!(after_binding, before_binding);
         Ok(())
     })
     .expect("verify rollback");
@@ -208,10 +243,12 @@ fn scene_feed_digest_is_continuous_across_temporal_and_body_writers() {
     db.with_conn(|conn| {
         let temporal_after: String = conn.query_row(
             "SELECT event.after_digest
-               FROM narrative_change_events event
+              FROM narrative_change_events event
                JOIN narrative_change_transactions feed_tx
                  ON feed_tx.id = event.transaction_id
-              WHERE feed_tx.request_id = 'temporal-request-1'",
+              WHERE feed_tx.project_id = 'p1'
+                AND feed_tx.request_id = 'temporal-request-1'
+                AND json_extract(event.object_key_json, '$.kind') = 'scene'",
             [],
             |row| row.get(0),
         )?;
@@ -220,7 +257,9 @@ fn scene_feed_digest_is_continuous_across_temporal_and_body_writers() {
                FROM narrative_change_events event
                JOIN narrative_change_transactions feed_tx
                  ON feed_tx.id = event.transaction_id
-              WHERE feed_tx.request_id = 'scene-body-request-after-temporal'
+              WHERE feed_tx.project_id = 'p1'
+                AND feed_tx.request_id = 'scene-body-request-after-temporal'
+                AND json_extract(event.object_key_json, '$.kind') = 'scene'
                 AND json_extract(event.object_key_json, '$.sceneId') = 'scene-p1'",
             [],
             |row| row.get(0),
