@@ -5,7 +5,7 @@ import {
   D2A_EGRESS_DENIED_MARKER,
   D2A_TYPED_RESULT_POLICY,
 } from "./profileEgress.js";
-import { NAPI_COMMANDS } from "../shared/ipcContract.js";
+import { NAPI_COMMANDS, type NapiBackendLike } from "../shared/ipcContract.js";
 
 function backend(status: Record<string, unknown> = {}) {
   return {
@@ -20,7 +20,7 @@ function backend(status: Record<string, unknown> = {}) {
       }),
     registerProfileEgressCaller: () => undefined,
     invalidateProfileEgressCallers: () => undefined,
-  } as never;
+  } as unknown as NapiBackendLike;
 }
 
 describe("D2a profile egress gate", () => {
