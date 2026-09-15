@@ -21,6 +21,15 @@
 - async 処理中の設定変更と snapshot 境界
 - focused test、contract test、serialization test、representative end-to-end path
 
+## Lifecycle-owner completeness
+
+For each row that touches external egress, a subprocess, background work, or async lifecycle, add a
+compact `lifecycle note` keyed to that row. Confirm every entry/start/retry/reentrant path, admission
+closure, pending-start work, active handle owner, cancellation, bounded wait, actual termination evidence
+(close/exit/terminal receipt), error/timeout/onClosed owner, and persisted restart state. Keep this as a
+checklist beside the row; do not add lifecycle columns to the table. A kill request, error event, or
+rejected promise alone is not termination proof. Resolve every lifecycle `unknown` before implementation.
+
 ## Status values
 
 - `unknown`

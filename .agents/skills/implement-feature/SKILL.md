@@ -16,24 +16,30 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, MultiEdit
 
 ## Phase 2: TDD（コンテキスト汚染を防ぐ）
 
-3. **テストファイルを先に作成する**
+3. 高リスクな横断変更では、テストを書く前に
+   [impact matrix](../refactor-cross-boundaries/references/impact-matrix.md) を完成させ、各対象経路の
+   owner／lifecycle completeness と `unknown` を解消する。
+4. **テストファイルを先に作成する**
    - 正常系・異常系・エッジケースをカバー
    - 実装の詳細を仮定せず、公開APIの振る舞いをテストする
-4. テストが失敗することを確認してコミットする
+5. 可能なら focused test で期待する失敗またはベースラインを確認する。red commit は必須ではなく、
+   ユーザーが明示的に求めない限り作成しない。
 
 ## Phase 3: 実装
 
-5. テストを通過するよう実装する
-6. **実装中にテストファイルを変更しない**
+6. テストを通過するよう実装する
+7. 実装中にテストを変更する必要がある場合は、invalid／flaky／incorrect-assumptionである根拠を記録する。
+   実装に合わせるためにテストを弱めてはならない。
 
 ## Phase 4: 検証
 
-7. `pnpm test` で全テスト通過を確認
-8. `npx tsc --noEmit` で型チェック通過を確認
-9. `pnpm lint:fix` でLint修正
-10. Electron変更は `pnpm test:electron --run`、Rust変更は対象crateの `cargo check && cargo test`
-11. 完成commitを作る前に`pnpm ci:local:quick`を実行する。失敗、blocked、partial、dry-runを
-    成功扱いせず、原因を解消してcompleteなQuickが通るまでcommit／PRへ進まない
-12. 変更をコミットする
+8. 変更範囲とリスクに比例した focused validation（関連テスト、型、lint、Electron／Rust境界など）を選んで実行する。
+   必要性のない全テストや重い検証を一律に要求しない。
+9. 完成commitを作る前に、CIが許可されている場合だけ `pnpm ci:local:quick` を実行する。ユーザーがCIを明示的に除外した場合は
+   実行せず、除外を報告して停止し、publish／merge readinessを主張しない。失敗、blocked、partial、dry-runは成功扱いにしない。
+10. focused validationと許可されたQuickが完了したら、ユーザーが求めた場合だけcleanなcompletion commitを作成する。
+11. 高リスク変更では、その後にrequired high-effort reviewとread-only acceptanceを収束させる。review後のcontent changeは
+    acceptance／receiptを無効化し、影響したchecksとacceptanceを繰り返す。
+12. 高リスク変更で必要なgateが承認されたらcandidateをfreezeし、resource-isolation preflightを行ってからFullへ進む。
 
 各ステップの結果を簡潔に報告すること。
