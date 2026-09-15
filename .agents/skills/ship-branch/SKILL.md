@@ -44,26 +44,28 @@ description: >
    pnpm ci:local:verify -- quick --base origin/master --head HEAD
    ```
 
-4. mergeまでがゴールの場合、初回Fullの前に最新の`origin/master`が現在HEADの祖先であることを確認する。
-   branchが遅れていれば安全に更新してレビュー対象SHAを取り直し、cleanなcommit済みHEADで最初のstageからFullを実行する。
-   直後のverifyはFull receiptに記録された`resolvedBaseSha`／`resolvedHeadSha`を同じrefとして使う。通常pathのmerge直前は
-   現在の`origin/master`とcandidate HEADに対して再verifyし、upstream baseがreceipt後に進んだexception pathは記録済みの旧base／
-   headに対してだけ旧receiptを再verifyし、upstream deltaを別に分類する。
+4. mergeまでがゴールの場合、初回Fullの前提として`git fetch origin master`後のcurrent `origin/master`がcandidate HEADの
+   祖先であることを確認する。branchが遅れていれば安全に更新してレビュー対象を取り直し、cleanなcommit済みHEADで最初のstageから
+   やり直す。この前提を満たした後、shell-localの不変な`candidate_base`／`candidate_head`をそれぞれ
+   `origin/master^{commit}`／`HEAD^{commit}`から一度だけ解決し、再代入せず同じ展開済み入力文字列をFullとそのreceiptの全verifyに渡す。
+   短縮refや別の記録値へ切り替えない。
 
    ```bash
-   pnpm ci:local:full -- --base origin/master --head HEAD
-   pnpm ci:local:verify -- full --base <recorded-resolved-base> --head <recorded-resolved-head>
+   candidate_base="$(git rev-parse 'origin/master^{commit}')"
+   candidate_head="$(git rev-parse 'HEAD^{commit}')"
+   pnpm ci:local:full -- --base "$candidate_base" --head "$candidate_head"
+   pnpm ci:local:verify -- full --base "$candidate_base" --head "$candidate_head"
    ```
 
 5. candidate freeze時に、ledgerへ`resolvedBaseSha`、`resolvedHeadSha`、`currentHeadSha`、tree、clean状態、receipt directory、
    completenessのtupleを一度（once）だけ記録する。後続のFull receiptは同じtupleをbind／referenceし、pushとmergeの状態遷移では
    expected-headを使い、treeの再計測やremote merge treeとの二重比較を要求しない。
 6. candidateをfreezeしてFull receiptを得た後に`origin/master`が進んだ場合は、原則としてreceiptを無効化してやり直す。
-   ただしcandidate HEAD／PR diffが不変で、upstream deltaがeditorial docs/ADR-only、かつexecutable、build、dependency、
-   CI、policy、schema、manifest、generated-contractの内容もratified decision／acceptance meaningも変えていないことを確認できる
-   場合だけ、狭いupstream-base exceptionを適用できる。この場合はexceptionと比例したstatic／focused checksを記録し、旧receiptを
-   記録済みの旧base／headに対してだけ検証する。新baseに束縛されたreceiptとは扱わない。曖昧さまたはcandidate HEADの変更があれば
-   receiptを無効化し、Full-from-stage-1 + verifyをやり直す。`--from`によるpartial runと`--dry-run`は診断用であり、merge証跡にしない。
+   ただしcandidate HEAD／PR diffが不変で、upstream deltaがeditorial docs/ADR-only、かつexecutable、build、dependency、CI、policy、
+   schema、manifest、generated-contractの内容もratified decision／acceptance meaningも変えていないことを確認できる場合だけ、
+   狭いupstream-base exceptionを適用できる。この場合はexceptionと比例したstatic／focused checksを記録し、旧receiptを元の
+   `candidate_base`／`candidate_head`でだけ再verifyし、新baseに束縛されたreceiptとは扱わない。曖昧さまたはcandidate HEADの変更が
+   あればreceiptを無効化し、Full-from-stage-1 + verifyをやり直す。`--from`によるpartial runと`--dry-run`は診断用であり、merge証跡にしない。
 7. command、toolchain、依存、host capabilityの不足、失敗、candidate不一致はgate failureとして
    停止する。hosted PR checksが無いことや`no checks reported`をローカルFullの代替にしない。
 
@@ -107,17 +109,21 @@ GitHub connector が利用できる場合は PR mutation と状態取得に優�
 
 次を一つの snapshot として取り直す。
 
+- 最初に `git fetch origin master` を実行し、その後でbaseを比較・分類する。初回Fullで固定した`candidate_base`／`candidate_head`
+  は再解決・再代入せず、exactly oneの`approved_merge_base` commitを記録する。通常pathではcurrent fetched baseが`candidate_base`と
+  一致することを確認して`approved_merge_base`に採用し、exception pathでは狭いdocs/ADR-only exceptionを承認した後だけcurrent baseを
+  `approved_merge_base`に採用する。
 - PR が open かつ ready
 - base が意図した `master`
 - head branch が意図した branch
 - head SHA が push 前に記録してレビューした local SHA と一致
 - mergeable で競合がない
-- 通常pathでは、completeなローカルFull receiptのresolved baseが現在の`origin/master`で、candidate head SHAがPR HEADと一致し、
-  `pnpm ci:local:verify -- full --base origin/master --head HEAD`が成功している。
+- 通常pathでは、current fetched baseが`candidate_base`と一致し、candidate head SHAがPR HEADと一致し、初回Fullと同じpinを再利用した
+  `pnpm ci:local:verify -- full --base "$candidate_base" --head "$candidate_head"`が成功している。
 - upstream baseがreceipt後に動いたexception pathでは、candidate HEAD／PR diff不変・editorial docs/ADR-only・executable／build／
   dependency／CI／policy／schema／manifest／generated-contractとratified decision／acceptance meaningに変更なしを記録し、旧receiptを
-  記録済みの旧base／headに対して検証する。旧receiptを新baseに対する証跡とは扱わない。曖昧さまたはcandidate変更ならreceiptを無効化して
-  Full-from-stage-1 + verifyをやり直す。
+  同じ元の`candidate_base`／`candidate_head`に対して再verifyする。旧receiptを新baseに対する証跡とは扱わず、newer upstream deltaは別に分類する。
+  曖昧さまたはcandidate変更ならreceiptを無効化してFull-from-stage-1 + verifyをやり直す。
 - 設定されている全required checksがsuccess
 - pending／failed checks がない
 - requested changes と未解決 review thread がない
@@ -130,8 +136,10 @@ GitHub connector が利用できる場合は PR mutation と状態取得に優�
 2. 可能なら expected head SHA を指定できる GitHub mutation を使う。`gh` では `--match-head-commit <sha>` を使う。
 3. merge 成功後、PR が `merged` になったことと merge commit SHA を取得する。
 4. `git fetch origin master` を実行し、merge commit が `origin/master` に含まれることを確認する。
-5. expected headの一致とmerge commitの`origin/master`への包含を確認できない場合は成功扱いにしない。
-   routineなremote merge tree比較は行わない。
+5. 実際のsquash merge commitのfirst parent（`<merge-sha>^1`）を`approved_merge_base`と一度だけ比較する。
+   parent mismatchならdo not report verified successとし、newly added base deltaを分類して必要なexception/revalidation pathを実施する。
+   merge may have occurredだが、acceptance evidence is not valid until resolved。expected headの一致とmerge commitの`origin/master`への
+   包含を確認できない場合も成功扱いにしない。routineなremote merge tree比較は行わない。
 6. remote branch を削除した場合も、local branch や worktree を破壊的に削除しない。
 7. `master` が別 worktree で checkout 済みなら無理に switch せず、`origin/master` で反映を検証する。
 

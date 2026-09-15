@@ -42,16 +42,24 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
   `pnpm ci:local:quick` を実行する。比較範囲を固定する場合は
   `pnpm ci:local:quick -- --base origin/master --head HEAD` とし、直後に同じrefで
   `pnpm ci:local:verify -- quick --base origin/master --head HEAD` を実行する。
-- merge前の初回Fullは、最新の`origin/master`を含むcleanかつcommit済みの現在HEADで、最初のstageから
-  `pnpm ci:local:full -- --base origin/master --head HEAD` を実行する。直後のverifyは、そのFull receiptに記録された
-  `resolvedBaseSha`／`resolvedHeadSha`を同じrefとして使う。通常pathのmerge直前だけは、現在の`origin/master`とcandidate
-  HEADに対して再verifyする。初回Fullの前にbaseが変わった場合はcandidateを安全に更新してHEADを取り直し、Fullを最初から
-  やり直す。candidateをfreezeしてFull receiptを得た後のupstream baseの進行は原則として古い証跡を再利用しない。ただし、
-  candidate HEAD／PR diffが不変で、upstream deltaがeditorial docs/ADR-onlyであり、executable、build、dependency、CI、policy、
-  schema、manifest、generated-contractの内容もratified decision／acceptance meaningも変えていないことを確認できる場合に限り、
-  狭いupstream-base exceptionを適用できる。exceptionでは旧receiptを記録済みの旧base／headに対してだけ再verifyし、upstream
-  deltaは別に分類する。exceptionと比例したstatic／focused checksを記録し、旧receiptを新しいbaseに束縛されたものとは扱わない。
-  曖昧さまたはcandidate HEADの変更が一つでもあればreceiptを無効化し、Full-from-stage-1 + verifyをやり直す。
+- merge前の初回Fullは、`git fetch origin master`後のcurrent `origin/master`がcandidate HEADの祖先であることを
+  初回Fullの前提として確認する。遅れていればcandidateを安全に更新してHEADを取り直し、Fullを最初からやり直す。
+  その前提を満たしたcleanなcommit済みHEADで、shell-localの不変な`candidate_base`／`candidate_head`をそれぞれ
+  `origin/master^{commit}`／`HEAD^{commit}`から一度だけ解決し、再代入せず次を実行する。Fullとそのreceiptの全verifyには
+  同じ展開済み入力文字列を渡し、短縮refや別の記録値へ切り替えない。
+  `pnpm ci:local:full -- --base "$candidate_base" --head "$candidate_head"`、直後の
+  `pnpm ci:local:verify -- full --base "$candidate_base" --head "$candidate_head"`を使う。merge直前のprecheckでは
+  fetch済みcurrent baseが`candidate_base`と一致する通常pathだけ同じpinで再verifyする。candidateをfreezeしてFull receiptを
+  得た後のupstream baseの進行は原則として古い証跡を再利用しない。ただし、candidate HEAD／PR diffが不変で、upstream deltaが
+  editorial docs/ADR-onlyであり、executable、build、dependency、CI、policy、schema、manifest、generated-contractの内容も
+  ratified decision／acceptance meaningも変えていないことを確認できる場合に限り、狭いupstream-base exceptionを適用できる。
+  exceptionでは同じ元の`candidate_base`／`candidate_head`で旧receiptを再verifyし、upstream deltaを別に分類する。exceptionと
+  比例したstatic／focused checksを記録し、旧receiptを新しいbaseに束縛されたものとは扱わない。曖昧さまたはcandidate HEADの
+  変更が一つでもあればreceiptを無効化し、Full-from-stage-1 + verifyをやり直す。
+  merge直前のprecheckはfetch後にbaseを比較・分類し、通常pathでは検証済みcandidate base、exception pathでは承認済みのcurrent baseの
+  いずれか一つだけを`approved_merge_base`として記録する。merge後にfetchして、実際のsquash merge commitのfirst parent（`<merge-sha>^1`）を
+  `approved_merge_base`と一度だけ比較し、merge commitの`origin/master`への包含も確認する。不一致ならverified successとせず、新たな
+  upstream deltaを分類して必要なrevalidationを行う。merge may have occurredだが、acceptance evidence is not valid until resolved。
 - release tag前は、squash前のbranch証跡を再利用せず、merge後のrelease commitそのものを
   cleanなcheckout／worktreeの現在HEADとして同じFullとverifyを再実行する。
 - `--from`は失敗調査・再開用のpartial run、`--dry-run`は計画確認だけである。どちらも

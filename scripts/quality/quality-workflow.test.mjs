@@ -48,6 +48,24 @@ function normalizeSection(section) {
   return section.replace(/\s+/g, " ").trim();
 }
 
+function commandBindings(section, command, label) {
+  const lines =
+    section.match(
+      new RegExp(`${escapeRegExp(command)}[^\\n]*`, "g"),
+    ) ?? [];
+  assert.ok(lines.length > 0, `${label} command must be written`);
+  return lines.map((line) => {
+    const base = line.match(/--base\s+("[^"]+"|'[^']+'|\S+)/)?.[1];
+    const head = line.match(/--head\s+("[^"]+"|'[^']+'|\S+)/)?.[1];
+    assert.ok(base, `${label} command must bind --base`);
+    assert.ok(head, `${label} command must bind --head`);
+    return {
+      base: base.replace(/[`;,.)]+$/g, ""),
+      head: head.replace(/[`;,.)]+$/g, ""),
+    };
+  });
+}
+
 function checkIgnore(filePath) {
   const result = spawnSync(
     "git",
@@ -150,6 +168,9 @@ test("repo routing points AI behavior authoring and diff evaluation to narrow sk
 test("high-risk work keeps threat models user-confirmed and candidate evidence reproducible", async () => {
   const agents = await read("AGENTS.md");
   const policy = await read("policies/quality/iron-laws.md");
+  const agentsCiSection = normalizeSection(
+    sectionFromHeading(agents, "## ローカルCI gate"),
+  );
   const agentsSection = normalizeSection(
     sectionFromHeading(agents, "## 高リスク作業の運用規律"),
   );
@@ -160,8 +181,16 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     sectionFromHeading(policy, "## GDX-TRACE-001 — Preserve traceability and failure state"),
   );
   const ship = await read(".agents/skills/ship-branch/SKILL.md");
+  const shipCiRawSection = sectionFromHeading(
+    ship,
+    "## 2. ローカルCI gateを固定する",
+  );
   const shipCiSection = normalizeSection(
-    sectionFromHeading(ship, "## 2. ローカルCI gateを固定する"),
+    shipCiRawSection,
+  );
+  const shipMergePrecheckRawSection = sectionFromHeading(
+    ship,
+    "## 6. Merge 直前に再検証する",
   );
   const shipMergeSection = normalizeSection(
     sectionFromHeading(ship, "## 7. Merge と反映確認を行う"),
@@ -340,6 +369,57 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     shipCiSection,
     /candidate freeze.*ledger.*resolvedBaseSha.*resolvedHeadSha.*currentHeadSha.*tree.*once.*Full receipt.*同じtuple/i,
   );
+  const fullBindings = commandBindings(
+    shipCiRawSection,
+    "pnpm ci:local:full",
+    "Full",
+  );
+  assert.equal(fullBindings.length, 1, "one written Full command is required");
+  const fullVerifyBindings = commandBindings(
+    shipCiRawSection,
+    "pnpm ci:local:verify -- full",
+    "Full verify",
+  );
+  const mergeVerifyBindings = commandBindings(
+    shipMergePrecheckRawSection,
+    "pnpm ci:local:verify -- full",
+    "merge-precheck Full verify",
+  );
+  for (const binding of [...fullVerifyBindings, ...mergeVerifyBindings]) {
+    assert.deepEqual(binding, fullBindings[0]);
+  }
+  assert.equal(fullBindings[0].base, '"$candidate_base"');
+  assert.equal(fullBindings[0].head, '"$candidate_head"');
+  assert.doesNotMatch(
+    shipMergePrecheckRawSection,
+    /pnpm ci:local:verify -- full\s+--base\s+origin\/master\s+--head\s+HEAD/i,
+    "merge precheck must not substitute origin/master and HEAD",
+  );
+  const fetchBeforeApproval = shipMergePrecheckRawSection.indexOf(
+    "git fetch origin master",
+  );
+  const approvedMergeBase = shipMergePrecheckRawSection.indexOf(
+    "approved_merge_base",
+  );
+  assert.ok(fetchBeforeApproval >= 0, "merge precheck must fetch before approval");
+  assert.ok(
+    approvedMergeBase > fetchBeforeApproval,
+    "merge precheck must fetch before base approval/classification",
+  );
+  for (const section of [agentsCiSection, policySection, traceSection]) {
+    assert.match(
+      section,
+      /candidate(?:[_ ]base).*(?:candidate(?:[_ ]head)|and head).*(?:once|一度だけ).*Full.*(?:every verify|全verify)/i,
+      "candidate refs must be pinned before Full",
+    );
+    assert.match(
+      section,
+      /approved_merge_base/i,
+      "one approved merge base must be recorded",
+    );
+  }
+  assert.match(agentsCiSection, /first parent.*<merge-sha>\^1.*approved_merge_base/i);
+  assert.match(policySection, /first parent.*<merge-sha>\^1.*approved.*merge-base/i);
   assert.match(shipCiSection, /push.*merge.*expected-head/i);
   assert.doesNotMatch(shipCiSection, /patch.?digest/i);
   assert.match(
@@ -349,6 +429,14 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   assert.match(
     shipMergeSection,
     /expected head.*merge commit.*origin\/master.*包含.*成功扱いにしない/i,
+  );
+  assert.match(
+    shipMergeSection,
+    /first parent.*<merge-sha>\^1.*approved_merge_base/i,
+  );
+  assert.match(
+    shipMergeSection,
+    /parent mismatch.*not report verified success.*newly added base delta.*merge may have occurred.*acceptance evidence.*not valid/i,
   );
   assert.doesNotMatch(shipMergeSection, /git rev-parse <merge-sha>\^\{tree\}/i);
   assert.match(ship, /SHAは不一致.*ユーザーが求めた場合だけ/i);
