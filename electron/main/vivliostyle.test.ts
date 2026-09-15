@@ -873,6 +873,96 @@ describe("VivliostyleManager preview / lifecycle", () => {
     expect(quiesced).toBe(true);
   });
 
+  it("profile egressはcompletion reject後もrunnerのchild closeを待つ", async () => {
+    const h = createHarness();
+    let resolveChildClose!: () => void;
+    const childClosed = new Promise<void>((resolve) => {
+      resolveChildClose = resolve;
+    });
+    const runner = h.runner as FakeRunner & {
+      quiesceForProfileEgress: () => Promise<void>;
+    };
+    runner.quiesceForProfileEgress = vi.fn(() => childClosed);
+    const process = runner.enqueue();
+    await h.manager.handlers.vivliostyle_build(buildArgs());
+    await waitForStarts(runner, 1);
+
+    process.fail(new Error("child failed before close"));
+    await vi.waitFor(() =>
+      expect(
+        h.events.some((event) => event.channel === "vivliostyle:error"),
+      ).toBe(true),
+    );
+
+    let quiesced = false;
+    const quiesce = h.manager.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    await Promise.resolve();
+    expect(quiesced).toBe(false);
+    expect(runner.quiesceForProfileEgress).toHaveBeenCalledOnce();
+
+    resolveChildClose();
+    await quiesce;
+    expect(quiesced).toBe(true);
+  });
+
+  it("runnerのchild close未確認はprofile activationをfail-closedにする", async () => {
+    const h = createHarness();
+    const runner = h.runner as FakeRunner & {
+      quiesceForProfileEgress: () => Promise<void>;
+    };
+    runner.quiesceForProfileEgress = vi.fn(async () => {
+      throw new Error("child close was not observed");
+    });
+    const process = runner.enqueue();
+    await h.manager.handlers.vivliostyle_build(buildArgs());
+    await waitForStarts(runner, 1);
+    process.fail(new Error("child failed before close"));
+    await vi.waitFor(() =>
+      expect(
+        h.events.some((event) => event.channel === "vivliostyle:error"),
+      ).toBe(true),
+    );
+
+    const status = {
+      profileId: "profile-1",
+      callerEpoch: 1,
+      restricted: false,
+      handlesInvalidated: false,
+      inFlightStopped: true,
+      sqlPolicy: {
+        version: 1,
+        protectedTables: ["messages"],
+        protectedColumns: [],
+      },
+    };
+    const activateProfileEgress = vi.fn(async () =>
+      JSON.stringify({
+        ...status,
+        restricted: true,
+        handlesInvalidated: true,
+        callerEpoch: 2,
+      }),
+    );
+    const gate = await createProfileEgressGate({
+      initializeProfileEgress: async () => JSON.stringify(status),
+      registerProfileEgressCaller: vi.fn(),
+      invalidateProfileEgressCallers: vi.fn(),
+      activateProfileEgress,
+    } as unknown as NapiBackendLike);
+    gate.registerMainEgressParticipant("vivliostyle", () =>
+      h.manager.quiesceForProfileEgress(),
+    );
+
+    await expect(gate.activateFirstRestrictedPublication!()).rejects.toThrow(
+      "main egress participant failed to drain: vivliostyle: Vivliostyle egress transport did not quiesce",
+    );
+    expect(activateProfileEgress).not.toHaveBeenCalled();
+    expect(gate.restricted).toBe(true);
+    expect(gate.unavailable).toBe(true);
+  });
+
   it("child停止失敗時はprofile activationをfail-closedにする", async () => {
     const h = createHarness();
     const process = h.runner.enqueue();

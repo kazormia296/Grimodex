@@ -679,7 +679,7 @@ export function createVivliostyleManager(
     const stopped = await Promise.race([
       process.completion.then(
         () => true,
-        () => true,
+        () => false,
       ),
       new Promise<false>((resolve) => {
         fallback = setTimeout(() => resolve(false), forceKillAfterMs + 250);
@@ -688,6 +688,23 @@ export function createVivliostyleManager(
     ]);
     if (fallback) clearTimeout(fallback);
     return stopped;
+  };
+  const waitForRunnerQuiescence = async (
+    operation: Promise<void>,
+  ): Promise<boolean> => {
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      operation.then(
+        () => true,
+        () => false,
+      ),
+      new Promise<false>((resolve) => {
+        fallback = setTimeout(() => resolve(false), forceKillAfterMs + 250);
+        fallback.unref();
+      }),
+    ]);
+    if (fallback) clearTimeout(fallback);
+    return settled;
   };
   const waitForProcessStarted = async (
     process: RunningCliProcess,
@@ -1178,11 +1195,24 @@ export function createVivliostyleManager(
         closeError ??= error;
       }
 
+      let runnerQuiescence: Promise<boolean>;
+      try {
+        const barrier = runner.quiesceForProfileEgress?.();
+        runnerQuiescence = barrier
+          ? waitForRunnerQuiescence(barrier)
+          : Promise.resolve(true);
+      } catch {
+        runnerQuiescence = Promise.resolve(false);
+      }
+      const hasRunnerQuiescence =
+        typeof runner.quiesceForProfileEgress === "function";
+
       const [
         handlersSettled,
         buildsSettled,
         buildProcessesStopped,
         previewsStopped,
+        runnerQuiesced,
       ] = await Promise.all([
         Promise.all(
           activeHandlerOperations.map((operation) =>
@@ -1193,13 +1223,20 @@ export function createVivliostyleManager(
           activeBuildOperations.map((operation) => waitForOperation(operation)),
         ),
         Promise.all(
-          activeBuildProcesses.map((process) => waitForProcessStopped(process)),
+          hasRunnerQuiescence
+            ? []
+            : activeBuildProcesses.map((process) =>
+                waitForProcessStopped(process),
+              ),
         ),
         Promise.all(
-          [...activePreviewProcesses].map((process) =>
-            waitForProcessStopped(process),
-          ),
+          hasRunnerQuiescence
+            ? []
+            : [...activePreviewProcesses].map((process) =>
+                waitForProcessStopped(process),
+              ),
         ),
+        runnerQuiescence,
       ]);
 
       if (closeError) throw toError(closeError);
@@ -1207,7 +1244,8 @@ export function createVivliostyleManager(
         handlersSettled.some((value) => !value) ||
         buildsSettled.some((value) => !value) ||
         buildProcessesStopped.some((value) => !value) ||
-        previewsStopped.some((value) => !value)
+        previewsStopped.some((value) => !value) ||
+        !runnerQuiesced
       ) {
         throw new Error("Vivliostyle egress transport did not quiesce");
       }

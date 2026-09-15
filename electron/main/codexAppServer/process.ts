@@ -170,6 +170,8 @@ export class CodexAppServerProcess implements JsonRpcWire {
   > &
     Omit<CodexAppServerProcessOptions, "platform" | "forceKillAfterMs">;
   private closePromise: Promise<void> | null = null;
+  private childClosePromise: Promise<void> | null = null;
+  private childCloseObserved = false;
 
   constructor(options: CodexAppServerProcessOptions = {}) {
     this.options = {
@@ -284,9 +286,15 @@ export class CodexAppServerProcess implements JsonRpcWire {
       );
     }
     this.child = child;
+    this.childCloseObserved = false;
+    let resolveChildClose!: () => void;
+    this.childClosePromise = new Promise((resolve) => {
+      resolveChildClose = resolve;
+    });
     if (!child.stdin || !child.stdout || !child.stderr) {
       killProcessTree(child, this.options.platform, "SIGKILL");
       this.child = null;
+      this.childClosePromise = null;
       throw new Error("Codex app-server stdio is unavailable");
     }
     child.stdout.on("data", (chunk: Buffer | string) => {
@@ -301,6 +309,8 @@ export class CodexAppServerProcess implements JsonRpcWire {
     });
     child.once("error", (cause) => this.fail(errorFrom(cause)));
     child.once("close", (code, signal) => {
+      this.childCloseObserved = true;
+      resolveChildClose();
       if (this.closed) return;
       const status =
         code == null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
@@ -362,30 +372,54 @@ export class CodexAppServerProcess implements JsonRpcWire {
       const child = this.child;
       if (!child) {
         this.closed = true;
+        this.childClosePromise = null;
+        this.childCloseObserved = false;
         this.clearListeners();
         return;
       }
-      const alreadyExited =
-        child.exitCode !== null || child.signalCode !== null;
       this.closed = true;
-      if (alreadyExited) {
-        this.child = null;
-        this.clearListeners();
-        return;
+      const waitForClose = async (timeoutMs: number): Promise<boolean> => {
+        if (this.childCloseObserved) return true;
+        const closePromise = this.childClosePromise;
+        if (!closePromise) return false;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const closed = await Promise.race([
+          closePromise.then(() => true),
+          new Promise<false>((resolve) => {
+            timer = setTimeout(() => resolve(false), timeoutMs);
+            timer.unref?.();
+          }),
+        ]);
+        if (timer) clearTimeout(timer);
+        return closed;
+      };
+
+      if (child.exitCode === null && child.signalCode === null) {
+        try {
+          killProcessTree(child, this.options.platform, "SIGTERM");
+        } catch (cause) {
+          throw new Error(
+            `Codex app-server child termination failed: ${errorFrom(cause).message}`,
+            { cause },
+          );
+        }
       }
-      killProcessTree(child, this.options.platform, "SIGTERM");
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
+      if (!(await waitForClose(this.options.forceKillAfterMs))) {
+        try {
           killProcessTree(child, this.options.platform, "SIGKILL");
-          resolve();
-        }, this.options.forceKillAfterMs);
-        timer.unref?.();
-        child.once("close", () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
+        } catch (cause) {
+          throw new Error(
+            `Codex app-server child force termination failed: ${errorFrom(cause).message}`,
+            { cause },
+          );
+        }
+        if (!(await waitForClose(this.options.forceKillAfterMs))) {
+          throw new Error("Codex app-server child did not close");
+        }
+      }
       this.child = null;
+      this.childClosePromise = null;
+      this.childCloseObserved = false;
       for (const listener of [...this.closeListeners])
         listener(this.closeError);
       this.clearListeners();
