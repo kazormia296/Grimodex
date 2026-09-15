@@ -1702,6 +1702,43 @@ function isRecord(value: unknown): value is CommandArgs {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const NATIVE_DB_RESULT_KIND_KEY = "__grimodexDbResultKind";
+type NativeDbResultKind = "read" | "committed-mutation";
+
+function nativeDbResultKind(
+  command: string,
+  value: unknown,
+): NativeDbResultKind | "invalid" | null {
+  if (command !== "db_execute" && command !== "db_execute_batch") {
+    return null;
+  }
+  if (!isRecord(value) || !Object.hasOwn(value, NATIVE_DB_RESULT_KIND_KEY)) {
+    return null;
+  }
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 2 ||
+    !keys.includes("rows") ||
+    !Array.isArray(value.rows)
+  ) {
+    return "invalid";
+  }
+  if (
+    value[NATIVE_DB_RESULT_KIND_KEY] === "read" ||
+    value[NATIVE_DB_RESULT_KIND_KEY] === "committed-mutation"
+  ) {
+    return value[NATIVE_DB_RESULT_KIND_KEY];
+  }
+  return "invalid";
+}
+
+function stripNativeDbResultKind(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const publicValue = { ...value };
+  delete publicValue[NATIVE_DB_RESULT_KIND_KEY];
+  return publicValue;
+}
+
 function isOpaqueCommittedDbMutationReceipt(
   command: string,
   value: unknown,
@@ -2096,19 +2133,37 @@ export function registerIpcRouter(
         } catch (error) {
           envelope = { ok: false, error: toErrorString(error) };
         }
-        if (
-          envelope.ok &&
-          !isOpaqueCommittedDbMutationReceipt(cmd, envelope.value)
-        ) {
-          try {
-            // A read admitted before activation may finish after the profile
-            // gate closes. Re-check only plaintext publication routes here.
-            // Native's exact opaque committed receipt is the one recognized
-            // exception: the mutation is already durable, and its rows were
-            // deliberately discarded before crossing this boundary.
-            profileEgress?.assertPlaintextPublication(cmd, dispatchArgs);
-          } catch (error) {
-            envelope = { ok: false, error: toErrorString(error) };
+        if (envelope.ok) {
+          const resultKind = nativeDbResultKind(cmd, envelope.value);
+          if (resultKind === "invalid") {
+            envelope = {
+              ok: false,
+              error: "D2A_EGRESS_DENIED: invalid native database result kind",
+            };
+          } else if (!isOpaqueCommittedDbMutationReceipt(cmd, envelope.value)) {
+            try {
+              // A result admitted before activation may finish after the
+              // profile gate closes. Re-check only plaintext publication
+              // routes here. Native's result kind is authoritative for the
+              // distinction between a read and a mutation; never re-infer it
+              // from the SQL text in main.
+              profileEgress?.assertPlaintextPublication(cmd, dispatchArgs);
+              if (resultKind !== null) {
+                envelope = {
+                  ok: true,
+                  value: stripNativeDbResultKind(envelope.value),
+                };
+              }
+            } catch (error) {
+              if (resultKind === "committed-mutation") {
+                // The mutation is already durable. Do not report it as a
+                // rejected operation, and do not expose rows that may contain
+                // protected RETURNING/plaintext data.
+                envelope = { ok: true, value: { rows: [], committed: true } };
+              } else {
+                envelope = { ok: false, error: toErrorString(error) };
+              }
+            }
           }
         }
         if (envelope.ok && typeof boundArgs.ownerKey === "string") {

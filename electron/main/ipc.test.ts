@@ -2423,6 +2423,136 @@ describe("NIR-1 router sender binding", () => {
     expect(assertPlaintextPublication).toHaveBeenCalledOnce();
   });
 
+  it("converts successful Native mutation results to opaque receipts when main closes publication", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "session-1",
+    };
+    const assertPlaintextPublication = vi.fn(() => {
+      throw new Error("D2A_EGRESS_DENIED: plaintext-publication");
+    });
+    const nativeMutation = JSON.stringify({
+      rows: [{ secret: "D2A_PLAINTEXT_SENTINEL" }],
+      __grimodexDbResultKind: "committed-mutation",
+    });
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication,
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    const backend = {
+      dbExecute: vi.fn(async () => nativeMutation),
+      dbExecuteBatch: vi.fn(async () => nativeMutation),
+    };
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const single = await invokeHandler()(
+      { sender: { id: 42 } },
+      "db_execute",
+      {
+        sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
+        params: ["next", "session-1"],
+        method: "run",
+      },
+    );
+    const batch = await invokeHandler()(
+      { sender: { id: 42 } },
+      "db_execute_batch",
+      {
+        statements: [
+          {
+            sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
+            params: ["next", "session-1"],
+            method: "run",
+          },
+        ],
+      },
+    );
+
+    expect(single).toEqual({
+      ok: true,
+      value: { rows: [], committed: true },
+    });
+    expect(batch).toEqual({
+      ok: true,
+      value: { rows: [], committed: true },
+    });
+    expect(assertPlaintextPublication).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(single)).not.toContain("D2A_PLAINTEXT_SENTINEL");
+    expect(JSON.stringify(batch)).not.toContain("D2A_PLAINTEXT_SENTINEL");
+  });
+
+  it("strips the Native mutation marker while preserving rows when publication remains allowed", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "session-1",
+    };
+    const assertPlaintextPublication = vi.fn();
+    const backend = {
+      dbExecute: vi.fn(async () =>
+        JSON.stringify({
+          rows: [{ id: "created-1" }],
+          __grimodexDbResultKind: "committed-mutation",
+        }),
+      ),
+      dbExecuteBatch: vi.fn(async () => JSON.stringify({ rows: [] })),
+    };
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      {
+        restricted: false,
+        unavailable: false,
+        issueCallerIdentity: vi.fn(() => identity),
+        assertInvoke: vi.fn(),
+        assertPlaintextPublication,
+        allowsBackendEvent: vi.fn(() => true),
+        assertExternalUrl: vi.fn(),
+        registerMainEgressParticipant: vi.fn(),
+      },
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "db_execute",
+      {
+        sql: "INSERT INTO app_settings (key, value) VALUES (?, ?) RETURNING key",
+        params: ["new-key", "new-value"],
+        method: "all",
+      },
+    );
+
+    expect(envelope).toEqual({
+      ok: true,
+      value: { rows: [{ id: "created-1" }] },
+    });
+    expect(assertPlaintextPublication).toHaveBeenCalledOnce();
+    expect(JSON.stringify(envelope)).not.toContain("__grimodexDbResultKind");
+  });
+
   it("keeps every legacy AI family at dispatch zero, including route variants", async () => {
     const nativeTransportCalls: string[] = [];
     const nativeTransport = (method: string, result = "{}") =>
