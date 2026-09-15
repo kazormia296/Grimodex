@@ -23,6 +23,7 @@ const CODEX_APP_SERVER_ARGS = [
   "stdio://",
 ] as const;
 const FORCE_KILL_AFTER_MS = 2_000;
+const DETECTOR_BARRIER_TIMEOUT_MARGIN_MS = 100;
 const MAX_STDERR_TAIL_BYTES = 64 * 1024;
 
 export interface CodexAppServerProcessOptions {
@@ -79,7 +80,8 @@ async function defaultHashFile(candidate: string): Promise<string | null> {
 }
 
 async function defaultResolveExecutable(
-  suppliedRunner?: CliProcessRunner,
+  suppliedRunner: CliProcessRunner | undefined,
+  barrierTimeoutMs: number,
 ): Promise<string | null> {
   const platform = process.platform;
   const runner = suppliedRunner ?? createNodeCliProcessRunner(platform);
@@ -115,7 +117,27 @@ async function defaultResolveExecutable(
   let barrierFailed = false;
   let barrierFailure: unknown;
   try {
-    await runner.quiesceForProfileEgress?.();
+    const barrier = runner.quiesceForProfileEgress?.();
+    if (barrier) {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      try {
+        await Promise.race([
+          barrier,
+          new Promise<void>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              reject(
+                new Error(
+                  `Codex CLI detector close barrier timed out after ${barrierTimeoutMs}ms`,
+                ),
+              );
+            }, barrierTimeoutMs);
+            timer.unref?.();
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
   } catch (cause) {
     barrierFailed = true;
     barrierFailure = cause;
@@ -123,7 +145,7 @@ async function defaultResolveExecutable(
   const cleanupFailures: unknown[] = [];
   if (disposeFailed) cleanupFailures.push(disposeFailure);
   if (barrierFailed) cleanupFailures.push(barrierFailure);
-  if (cleanupFailures.length > 0) {
+  if (barrierFailed) {
     const failures = detectionFailed
       ? [detectionFailure, ...cleanupFailures]
       : cleanupFailures;
@@ -138,6 +160,13 @@ async function defaultResolveExecutable(
       "Codex CLI detector child termination was not confirmed",
       cause,
     );
+  }
+  if (disposeFailed) {
+    const failures = detectionFailed
+      ? [detectionFailure, disposeFailure]
+      : [disposeFailure];
+    if (failures.length === 1) throw failures[0];
+    throw new AggregateError(failures, "Codex CLI detector failed");
   }
   if (detectionFailed) throw detectionFailure;
   return detectionResult;
@@ -260,7 +289,11 @@ export class CodexAppServerProcess implements JsonRpcWire {
     this.ensureStartAllowed();
     const resolveExecutable =
       this.options.resolveExecutable ??
-      (() => defaultResolveExecutable(this.options.runner));
+      (() =>
+        defaultResolveExecutable(
+          this.options.runner,
+          this.options.forceKillAfterMs + DETECTOR_BARRIER_TIMEOUT_MARGIN_MS,
+        ));
     const candidate = configured ?? (await resolveExecutable());
     this.ensureStartAllowed();
     if (!candidate) throw new Error("Codex CLI executable was not found");

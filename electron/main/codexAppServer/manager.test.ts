@@ -217,9 +217,15 @@ class DeferredStartTerminationProcess extends FakeProcess {
 }
 
 class FailingStartProcess extends FakeProcess {
+  constructor(
+    private readonly failure = new Error("Codex CLI executable was not found"),
+  ) {
+    super();
+  }
+
   override async start(): Promise<void> {
     this.startCalls += 1;
-    throw new Error("Codex CLI executable was not found");
+    throw this.failure;
   }
 }
 
@@ -2670,6 +2676,22 @@ describe("Codex App Server manager", () => {
 
     await expect(manager.listModels()).rejects.toThrow(
       /executable was not found/,
+    );
+    await expect(manager.quiesceForProfileEgress()).resolves.toBeUndefined();
+  });
+
+  it("does not make a dispose-only detector failure sticky for profile quiescence", async () => {
+    const process = new FailingStartProcess(
+      new Error("detector dispose failed"),
+    );
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+    });
+
+    await expect(manager.listModels()).rejects.toThrow(
+      "detector dispose failed",
     );
     await expect(manager.quiesceForProfileEgress()).resolves.toBeUndefined();
   });

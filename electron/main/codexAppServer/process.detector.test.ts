@@ -128,4 +128,55 @@ describe("Codex default executable detector lifecycle", () => {
       errors: expect.arrayContaining([disposeError, barrierError]),
     });
   });
+
+  it("bounds a detector barrier that never settles", async () => {
+    const runner = createRunner(() => new Promise<void>(() => {}));
+    mocks.createNodeCliProcessRunner.mockReturnValue(runner);
+    mocks.detectCliBinaryMain.mockResolvedValue(null);
+
+    const { CodexAppServerProcess, CodexAppServerTerminationUnconfirmedError } =
+      await import("./process.js");
+    const process = new CodexAppServerProcess({
+      authorizeExecutable: async () => true,
+      codexHomeDir: "/tmp/grimodex-codex",
+      forceKillAfterMs: 1,
+    });
+    const timeout = Symbol("detector timeout");
+    const result = await Promise.race([
+      process.start().then(
+        () => null,
+        (cause: unknown) => cause,
+      ),
+      new Promise<typeof timeout>((resolve) => {
+        setTimeout(() => resolve(timeout), 250);
+      }),
+    ]);
+
+    expect(result).not.toBe(timeout);
+    expect(result).toBeInstanceOf(CodexAppServerTerminationUnconfirmedError);
+  });
+
+  it("keeps a dispose failure non-typed when the close barrier succeeds", async () => {
+    const disposeError = new Error("detector dispose failed");
+    const runner = createRunner(async () => {});
+    runner.disposeAll.mockImplementation(() => {
+      throw disposeError;
+    });
+    mocks.createNodeCliProcessRunner.mockReturnValue(runner);
+    mocks.detectCliBinaryMain.mockResolvedValue(null);
+
+    const { CodexAppServerProcess, CodexAppServerTerminationUnconfirmedError } =
+      await import("./process.js");
+    const process = new CodexAppServerProcess({
+      authorizeExecutable: async () => true,
+      codexHomeDir: "/tmp/grimodex-codex",
+    });
+
+    const failure = await process.start().catch((cause: unknown) => cause);
+    expect(failure).toBe(disposeError);
+    expect(failure).not.toBeInstanceOf(
+      CodexAppServerTerminationUnconfirmedError,
+    );
+    expect(runner.quiesceForProfileEgress).toHaveBeenCalledOnce();
+  });
 });
