@@ -233,10 +233,13 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
   },
   {
     id: "mcp-external-write-conflict",
-    domains: ["mcp", "external-write-feed", "editor", "scene-persistence"],
-    interactions: ["mcp->sqlite", "sqlite->external-write-feed"],
-    contracts: ["external-write:mcp:clean", "external-write:mcp:dirty"],
+    name: "MCP D2a egress denial",
+    domains: ["mcp"],
+    interactions: ["mcp->sqlite"],
+    contracts: ["d2a:mcp:pre-dispatch-denial"],
     capabilities: ["electron", "napi", "mcp"],
+    description:
+      "standalone MCP propose_scene_body is denied before handler dispatch, DB mutation, or external-write feed",
   },
   {
     id: "chronicle-native-roundtrip",
@@ -695,12 +698,8 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
     domains: ["editor", "project-lifecycle"],
   },
   {
-    id: "external-write:mcp:clean",
-    domains: ["mcp", "external-write-feed", "editor", "scene-persistence"],
-  },
-  {
-    id: "external-write:mcp:dirty",
-    domains: ["mcp", "external-write-feed", "editor", "scene-persistence"],
+    id: "d2a:mcp:pre-dispatch-denial",
+    domains: ["mcp", "sqlite"],
   },
   {
     id: "native-command-roundtrip:chronicle-bulk",

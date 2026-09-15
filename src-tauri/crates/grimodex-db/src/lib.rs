@@ -600,6 +600,7 @@ pub mod narrative_extraction;
 pub mod narrative_runtime_policy;
 pub mod plot_threads;
 pub mod post_effect;
+pub mod profile_egress_policy;
 pub mod project_snapshots;
 pub mod protected_writers;
 pub mod revision_restore;

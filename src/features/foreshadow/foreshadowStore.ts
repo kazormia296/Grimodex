@@ -52,7 +52,7 @@ import {
 } from "@/features/trash-bin/captureHooks";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
 import { createPendingCreateRequestRegistry } from "@/lib/pendingCreateRequestRegistry";
-import { IpcInvokeError } from "@/lib/tauri";
+import { IpcInvokeError, isD2aEgressDenied } from "@/lib/tauri";
 import { getNativeMutationMetadata } from "@/lib/nativeMutationMetadata";
 import { applyUndoJournal } from "@/features/agent-writes/undoJournal";
 import type {
@@ -238,13 +238,15 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       } catch (e) {
         if (generation === foreshadowLoadGeneration) {
           set({ isLoading: false });
-          toast.error(
-            i18next.t(
-              "foreshadow.store.loadFailed",
-              "伏線の読み込みに失敗しました",
-            ),
-          );
-          debugLog.error("ForeshadowStore", "load failed", errorDetail(e));
+          if (!isD2aEgressDenied(e)) {
+            toast.error(
+              i18next.t(
+                "foreshadow.store.loadFailed",
+                "伏線の読み込みに失敗しました",
+              ),
+            );
+            debugLog.error("ForeshadowStore", "load failed", errorDetail(e));
+          }
         }
         throw e;
       }

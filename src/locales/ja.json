@@ -270,6 +270,7 @@
     "delete": "削除",
     "copy": "コピー",
     "close": "閉じる",
+    "retry": "再試行",
     "add": "追加",
     "edit": "編集",
     "reset": "リセット",
@@ -5351,7 +5352,12 @@
     "reindexComplete": "再インデックス完了",
     "reindexing": "セマンティック再インデックス中",
     "noScenes": "対象シーンなし",
-    "progressDetail": "{{scene}} / {{total}} シーン · {{chunks}} チャンク"
+    "progressDetail": "{{scene}} / {{total}} シーン · {{chunks}} チャンク",
+    "modelDownloadFailed": "埋め込みモデルのダウンロードに失敗しました",
+    "modelDownloadComplete": "埋め込みモデルの準備が整いました",
+    "modelDownloading": "埋め込みモデルをダウンロード中…",
+    "modelDownloadFallback": "全文検索(FTS)で続行します",
+    "retryModelDownload": "再試行"
   },
   "beat": {
     "generateBeats": {

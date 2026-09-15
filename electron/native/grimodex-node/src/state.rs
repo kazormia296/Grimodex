@@ -20,6 +20,8 @@ use grimodex_db::narrative_extraction::{
 use grimodex_db::{GlobalSettingsPath, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
+use crate::profile_egress::ProfileEgressState;
+
 /// main 側 `backend.onEvent((channel, payload) => …)` へ流す TSFn。
 /// `ErrorStrategy::Fatal` = JS コールバックは (channel, payload) の 2 引数を
 /// 直接受ける (CalleeHandled の (err, …) 形は使わない)。payload は JSON 文字列。
@@ -763,6 +765,22 @@ impl StreamAbortRegistry {
         active.wait_quiesced().await;
         Ok(true)
     }
+
+    /// Abort every currently registered stream and wait for each one to
+    /// quiesce. D2a invokes this before exposing the persistent profile gate.
+    pub async fn abort_all(&self) -> usize {
+        let active: Vec<Arc<StreamCancellation>> = {
+            let state = self.lock();
+            state.active.values().cloned().collect()
+        };
+        for cancellation in &active {
+            cancellation.request_abort();
+        }
+        for cancellation in &active {
+            cancellation.wait_quiesced().await;
+        }
+        active.len()
+    }
 }
 
 /// `#[napi]` class `Backend` が Arc で保持する全状態 (設計書 §4.2)。
@@ -787,6 +805,9 @@ pub struct AppState {
     /// AI 設定ファイル `<app_data>/ai-settings.json`（Tauri の `AiSettingsPath` 相当）。
     /// キーは含まず、renderer に返して安全（keyring/safeStorage と分離）。
     pub ai_settings_path: PathBuf,
+    /// Profile-wide D2a gate. This file is independent of workspace SQLite
+    /// and is loaded before any renderer or workspace event is published.
+    pub profile_egress: ProfileEgressState,
     pub chat_streams: StreamAbortRegistry,
     pub inline_ai_streams: StreamAbortRegistry,
     /// post-effect run_id 単位の中止レジストリ。start/multi/abort が同じ Backend
@@ -887,6 +908,7 @@ impl AppState {
             events,
             codex_matcher: Mutex::new(None),
             ai_settings_path: dir.join("ai-settings.json"),
+            profile_egress: ProfileEgressState::new(dir.join("profile-egress.json"))?,
             chat_streams: StreamAbortRegistry::new(),
             inline_ai_streams: StreamAbortRegistry::new(),
             post_effect_abort: grimodex_post_effect::PostEffectAbortRegistry::new(),

@@ -30,6 +30,7 @@ import {
   _resetModelDownloadForTests,
   useModelDownloadStore,
 } from "./modelDownloadStore";
+import i18next from "@/lib/i18n";
 
 beforeEach(() => {
   ensureMock.mockClear();
@@ -38,9 +39,10 @@ beforeEach(() => {
   _resetModelDownloadForTests();
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   _resetModelDownloadForTests();
+  await i18next.changeLanguage("ja");
 });
 
 describe("ModelDownloadToast", () => {
@@ -60,5 +62,46 @@ describe("ModelDownloadToast", () => {
 
     expect(ensureMock).toHaveBeenCalledWith("p1", "/workspace/a");
     expect(useModelDownloadStore.getState().active).toBe(false);
+  });
+
+  it("renders the English model-download failure copy", async () => {
+    await i18next.changeLanguage("en");
+    useModelDownloadStore.getState().setProgress({
+      dirName: "ruri-v3-30m",
+      downloaded: 1,
+      total: 10,
+      done: true,
+      error: "network timeout",
+    });
+
+    render(<ModelDownloadToast />);
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Embedding model download failed",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Continuing with full-text search (FTS)",
+    );
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+  });
+
+  it("keeps the model-download and common retry keys in both locales", () => {
+    for (const key of [
+      "semanticSearch.modelDownloadFailed",
+      "semanticSearch.modelDownloadComplete",
+      "semanticSearch.modelDownloading",
+      "semanticSearch.modelDownloadFallback",
+      "semanticSearch.retryModelDownload",
+      "common.retry",
+    ]) {
+      expect(
+        i18next.getResource("ja", "translation", key),
+        `ja ${key}`,
+      ).toEqual(expect.any(String));
+      expect(
+        i18next.getResource("en", "translation", key),
+        `en ${key}`,
+      ).toEqual(expect.any(String));
+    }
   });
 });

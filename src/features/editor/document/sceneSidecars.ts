@@ -10,6 +10,7 @@ import {
   type ResolvedAnchorLoads,
 } from "@/features/editor/anchorLoads";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { isD2aEgressDenied } from "@/lib/tauri";
 import { markEnd, markStart } from "@/lib/perfLog";
 
 export interface SceneSidecarServices {
@@ -54,6 +55,7 @@ export function applySceneSidecars(
   if (isCancelled()) return;
 
   for (const { label, reason } of sidecars.errors) {
+    if (isD2aEgressDenied(reason)) continue;
     debugLog.error(
       "EditorPane",
       `sceneLoad.loadAnchors:${label} failed`,

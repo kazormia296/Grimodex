@@ -222,6 +222,9 @@ fn append_post_effect_scene_non_execution<R: PostEffectRuntime>(
 #[derive(Default)]
 struct PostEffectAbortState {
     aborted: HashSet<String>,
+    /// Set while the process-wide startup stop is being applied. A run that
+    /// binds after `abort_all` has taken its snapshot must still be cancelled.
+    abort_all_pending: bool,
     /// start 時の pinned DB。workspace switch 後の abort command も開始元 run を
     /// cancel できるよう run_id と一緒に保持する。
     databases: HashMap<String, PinnedWorkspaceDb>,
@@ -247,7 +250,11 @@ impl PostEffectAbortRegistry {
     }
 
     pub fn bind_database(&self, run_id: &str, db: PinnedWorkspaceDb) {
-        self.lock().databases.insert(run_id.to_string(), db);
+        let mut state = self.lock();
+        state.databases.insert(run_id.to_string(), db);
+        if state.abort_all_pending {
+            state.aborted.insert(run_id.to_string());
+        }
     }
 
     /// lock を保持したまま DB ownership/running CAS を実行し、成功したときだけ
@@ -266,6 +273,25 @@ impl PostEffectAbortRegistry {
 
     pub fn is_aborted(&self, run_id: &str) -> bool {
         self.lock().aborted.contains(run_id)
+    }
+
+    /// Request cancellation for every run still owned by this process. The
+    /// dispatch barrier waits for the corresponding Native permits to drop;
+    /// this registry only publishes the scoped cancellation flags.
+    pub fn abort_all(&self) -> usize {
+        let mut state = self.lock();
+        state.abort_all_pending = true;
+        let run_ids: Vec<String> = state.databases.keys().cloned().collect();
+        let count = run_ids.len();
+        state.aborted.extend(run_ids);
+        count
+    }
+
+    /// Finish the process-wide stop barrier after every Native dispatch lease
+    /// has drained. Admissions are already closed, so no run can bind between
+    /// this reset and the next startup publication.
+    pub fn clear_abort_all(&self) {
+        self.lock().abort_all_pending = false;
     }
 
     pub fn clear(&self, run_id: &str) {
@@ -5098,6 +5124,39 @@ mod abort_registry_tests {
         reg.clear("single");
         assert!(!reg.is_aborted("single")); // 永久残留しない（リーク防止）
         assert!(reg.is_aborted("other")); // 並走 run の要求は握り潰さない
+    }
+
+    #[test]
+    fn abort_all_marks_only_live_bound_runs() {
+        use grimodex_db::WorkspaceAuthority;
+
+        let reg = super::PostEffectAbortRegistry::new();
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-post-effect-abort-all-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("database directory");
+        let db = grimodex_db::Database::new(&root.join("grimodex.db")).expect("database");
+        let authority =
+            WorkspaceAuthority::from_database_for_test(db, root.clone()).expect("authority");
+        reg.bind_database("live-a", authority.clone());
+        reg.bind_database("live-b", authority.clone());
+        reg.request("unbound");
+
+        assert_eq!(reg.abort_all(), 2);
+        assert!(reg.is_aborted("live-a"));
+        assert!(reg.is_aborted("live-b"));
+        assert!(reg.is_aborted("unbound"));
+        reg.bind_database("late", authority.clone());
+        assert!(reg.is_aborted("late"), "late binds inherit the stop latch");
+        reg.clear_abort_all();
+        reg.bind_database("after", authority);
+        assert!(
+            !reg.is_aborted("after"),
+            "new runs resume after the barrier"
+        );
+        drop(reg);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -4152,8 +4152,12 @@ test("product runner keeps the real boundary assertions", async () => {
   assert.match(source, /project-chat-stream-drained/);
   assert.match(source, /workspace-chat-stream-drained/);
   assert.match(source, /project-pending-editor-restored/);
-  assert.match(source, /mcp-clean-external-write-reloaded/);
-  assert.match(source, /mcp-dirty-external-write-conflict/);
+  assert.match(source, /mcp-d2a-pre-dispatch-denial/);
+  assert.match(source, /D2A_EGRESS_DENIED/);
+  assert.match(source, /propose_scene_body/);
+  assert.doesNotMatch(source, /prose_staging/);
+  assert.doesNotMatch(source, /mcp-clean-external-write-reloaded/);
+  assert.doesNotMatch(source, /mcp-dirty-external-write-conflict/);
   assert.match(source, /chronicle_bulk_mutate/);
   assert.match(source, /chronicle-native-roundtrip-restored/);
   assert.match(source, /lint_term_dictionary_insert/);

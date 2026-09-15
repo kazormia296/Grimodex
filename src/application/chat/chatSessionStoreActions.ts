@@ -24,7 +24,7 @@ import type {
   ChatSummary,
 } from "@/features/chat/chatTypes";
 import { scopeSessionKeysEqual } from "@/features/chat/chatScope";
-import { isIpcLifecycleCancellation } from "@/lib/tauri";
+import { isD2aEgressDenied, isIpcLifecycleCancellation } from "@/lib/tauri";
 import { isTreeNavigationLeaseActive } from "@/lib/chatNavigationGuard";
 
 interface ChatSessionRepository {
@@ -326,7 +326,9 @@ export function createChatSessionStoreActions(
           return false;
         }
         set({ isLoadingSessions: false });
-        if (isIpcLifecycleCancellation(error)) return false;
+        if (isIpcLifecycleCancellation(error) || isD2aEgressDenied(error)) {
+          return false;
+        }
         runtime.notifyError(runtime.translate("chat.loadSessionsFailed"));
         runtime.reportError("loadSessions", error);
         return false;

@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { setPermissionRequestHandler, setPermissionCheckHandler } = vi.hoisted(
-  () => ({
-    setPermissionRequestHandler: vi.fn(),
-    setPermissionCheckHandler: vi.fn(),
-  }),
-);
+const {
+  setPermissionRequestHandler,
+  setPermissionCheckHandler,
+  openExternal,
+} = vi.hoisted(() => ({
+  setPermissionRequestHandler: vi.fn(),
+  setPermissionCheckHandler: vi.fn(),
+  openExternal: vi.fn(),
+}));
 
 vi.mock("electron", () => ({
   protocol: {
@@ -18,7 +21,7 @@ vi.mock("electron", () => ({
       setPermissionCheckHandler,
     },
   },
-  shell: { openExternal: vi.fn() },
+  shell: { openExternal },
 }));
 
 import {
@@ -26,6 +29,8 @@ import {
   isAllowedNavigation,
   isAllowedRendererPermission,
   isTrustedRendererUrl,
+  registerSecurityHandlers,
+  setExternalEgressGate,
 } from "./security.js";
 
 const savedRendererUrl = process.env.ELECTRON_RENDERER_URL;
@@ -34,9 +39,12 @@ beforeEach(() => {
   delete process.env.ELECTRON_RENDERER_URL;
   setPermissionRequestHandler.mockClear();
   setPermissionCheckHandler.mockClear();
+  openExternal.mockClear();
+  setExternalEgressGate(null);
 });
 
 afterEach(() => {
+  setExternalEgressGate(null);
   if (savedRendererUrl === undefined) {
     delete process.env.ELECTRON_RENDERER_URL;
   } else {
@@ -206,5 +214,39 @@ describe("applySessionPermissionPolicy", () => {
         { requestingUrl: "app://bundle/index.html", isMainFrame: true },
       ),
     ).toBe(false);
+  });
+});
+
+describe("external egress gate", () => {
+  it("refuses shell.openExternal while profile publication is restricted", () => {
+    type FakeContents = {
+      on: ReturnType<typeof vi.fn>;
+      setWindowOpenHandler: ReturnType<typeof vi.fn>;
+    };
+    const app = { on: vi.fn() };
+    setExternalEgressGate(() => {
+      throw new Error("D2A_EGRESS_DENIED: external URL opening is disabled");
+    });
+    registerSecurityHandlers(app as never);
+
+    const contents: FakeContents = {
+      on: vi.fn(),
+      setWindowOpenHandler: vi.fn(),
+    };
+    const createdHandler = app.on.mock.calls.find(
+      ([event]) => event === "web-contents-created",
+    )?.[1] as
+      | ((event: unknown, contents: FakeContents) => void)
+      | undefined;
+    expect(createdHandler).toBeDefined();
+    createdHandler?.({}, contents);
+    const openHandler = contents.setWindowOpenHandler.mock.calls[0]?.[0] as
+      | ((details: { url: string }) => { action: string })
+      | undefined;
+
+    expect(openHandler?.({ url: "https://example.com/" })).toEqual({
+      action: "deny",
+    });
+    expect(openExternal).not.toHaveBeenCalled();
   });
 });

@@ -11,6 +11,29 @@ export declare class Backend {
    */
   constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null, rerankerResourceRoot?: string | undefined | null)
   /**
+   * Main-only D2a startup status. A fresh profile remains unrestricted until
+   * the main process explicitly activates the first protected publication;
+   * a persisted restricted profile reruns its startup quiescence barrier.
+   */
+  initializeProfileEgress(): Promise<string>
+  /**
+   * Main-only first protected-publication activation. The caller is the
+   * Electron main process; this method is deliberately absent from the
+   * renderer IPC contract. Activation is durable and followed by the same
+   * quiescence barrier used for a restricted-profile restart.
+   */
+  activateProfileEgress(): Promise<string>
+  /**
+   * Main-only registration of one exact caller identity for this Backend
+   * process generation. Renderer IPC never exposes this method.
+   */
+  registerProfileEgressCaller(identity: string): void
+  /**
+   * Main-only invalidation when the trusted workspace binding changes.
+   * Renderer-provided identities cannot clear or retain Native registrations.
+   */
+  invalidateProfileEgressCallers(): void
+  /**
    * Main-process-only bridge used during the Electron v2 first-run
    * credential migration. This method is deliberately absent from
    * `NAPI_COMMANDS`, so renderer IPC cannot request plaintext credentials.
@@ -127,14 +150,14 @@ export declare class Backend {
    * は "run" | "get" | "all" | "values"。
    * 返り値: `QueryResult` の JSON 文字列 `{"rows":[…]}` (Tauri ワイヤと同形)。
    */
-  dbExecute(sql: string, params: any, method: string): Promise<string>
+  dbExecute(sql: string, params: any, method: string, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * 複数文を単一トランザクションで実行 (BEGIN IMMEDIATE、途中失敗で全
    * ROLLBACK — grimodex-db の `execute_batch_tx`)。オートセーブの通り道。
    * `statements` は `[{ sql, params, method }, …]`。
    * 返り値: 最終文の rows を載せた `QueryResult` の JSON 文字列。
    */
-  dbExecuteBatch(statements: any): Promise<string>
+  dbExecuteBatch(statements: any, callerIdentity?: string | undefined | null): Promise<string>
   /** Read Native-owned Narrative runtime policy (Release Gate B Foundation). */
   narrativeRuntimePolicyGet(): Promise<string>
   /** CAS update for Native-owned Narrative runtime policy. */

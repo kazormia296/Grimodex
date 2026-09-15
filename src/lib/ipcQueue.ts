@@ -59,6 +59,39 @@ function mutationCancellationError(cmd: string): Error {
   );
 }
 
+const D2A_EGRESS_DENIED_MARKER = "D2A_EGRESS_DENIED:";
+
+/**
+ * Restricted-profile denials are expected only while strict quiescence is
+ * draining optional projection work. Keep this local to the pending-task
+ * classifier so required mutation callers still observe the rejection.
+ */
+function isExpectedD2aEgressDenial(error: unknown): boolean {
+  const seen = new Set<object>();
+  let current: unknown = error;
+  while (current !== null && current !== undefined) {
+    if (typeof current === "string") {
+      return current.includes(D2A_EGRESS_DENIED_MARKER);
+    }
+    if (typeof current !== "object") return false;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    if (
+      "message" in current &&
+      String(
+        (current as { readonly message?: unknown }).message ?? "",
+      ).includes(D2A_EGRESS_DENIED_MARKER)
+    ) {
+      return true;
+    }
+    current =
+      "cause" in current
+        ? (current as { readonly cause?: unknown }).cause
+        : undefined;
+  }
+  return false;
+}
+
 const AUDIT_EXPORT_SAFE_READ_COMMANDS = new Set([
   "db_execute",
   "ai_audit_read_snapshot",
@@ -368,7 +401,12 @@ export async function awaitPendingIpcActualTasks(): Promise<void> {
 
     const results = await Promise.allSettled(snapshot);
     for (const result of results) {
-      if (result.status === "rejected") failures.push(result.reason);
+      if (
+        result.status === "rejected" &&
+        !isExpectedD2aEgressDenial(result.reason)
+      ) {
+        failures.push(result.reason);
+      }
     }
   }
 

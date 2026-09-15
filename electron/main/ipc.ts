@@ -24,6 +24,7 @@ import {
   IPC,
   IPC_BACKEND_UNAVAILABLE_MARKER,
   IPC_UNIMPLEMENTED_MARKER,
+  toErrorString,
 } from "../shared/ipcContract.js";
 import type {
   CanonicalAuthorityRoute,
@@ -47,13 +48,24 @@ import {
   scheduleNarrativeMaintenanceForegroundRelease,
 } from "./narrativeMaintenance.js";
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
+import type { LicenseValidationScheduler } from "./licenseValidation.js";
 import { createRelatedScenesSearchAuthority } from "./relatedScenesSearchAuthority.js";
 import { createRelatedScenesReconciler } from "./relatedScenesReconciler.js";
+import type {
+  MainIssuedCallerIdentity,
+  ProfileEgressGate,
+} from "./profileEgress.js";
 
 const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_create",
   "snippet_update",
   "snippet_delete",
+]);
+
+const MANUAL_LICENSE_COMMANDS = new Set([
+  "activate_license",
+  "revalidate_license",
+  "deactivate_license",
 ]);
 
 // Scan publication is an import-only canonical writer. Keep it out of the
@@ -974,12 +986,21 @@ async function policyAllowsAgentTool(
   backend: NapiBackendLike,
   projectId: string,
   policy: AgentAuthorityPolicy,
+  callerIdentity?: MainIssuedCallerIdentity,
 ): Promise<boolean> {
-  const raw = await backend.dbExecute(
-    "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
-    [projectId],
-    "get",
-  );
+  const raw =
+    callerIdentity === undefined
+      ? await backend.dbExecute(
+          "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+          [projectId],
+          "get",
+        )
+      : await backend.dbExecute(
+          "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+          [projectId],
+          "get",
+          JSON.stringify(callerIdentity),
+        );
   const parsed = JSON.parse(raw) as { rows?: unknown };
   const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
   if (rows.length === 0) return false;
@@ -1494,6 +1515,7 @@ async function issueAgentAuthorityCapabilitiesForSender(
   args: CommandArgs,
   response: unknown,
   backend: NapiBackendLike | null,
+  callerIdentity?: MainIssuedCallerIdentity,
 ): Promise<unknown> {
   if (!backend || !isRecord(args.auditContext)) return response;
   if (args.auditContext.pathId !== "chat_agent_main") return response;
@@ -1523,7 +1545,14 @@ async function issueAgentAuthorityCapabilitiesForSender(
     ) {
       continue;
     }
-    if (!(await policyAllowsAgentTool(backend, projectId, definition.policy))) {
+    if (
+      !(await policyAllowsAgentTool(
+        backend,
+        projectId,
+        definition.policy,
+        callerIdentity,
+      ))
+    ) {
       continue;
     }
     const canonicalInputDigest = canonicalAgentToolInputDigest(
@@ -1949,6 +1978,11 @@ export function registerIpcRouter(
   secrets?: SecretsResolver,
   broadcast?: (channel: string, payload: unknown) => void,
   narrativeMaintenanceCiSeam: NarrativeMaintenanceCiSeam = { active: false },
+  profileEgress?: ProfileEgressGate,
+  licenseValidation?: Pick<
+    LicenseValidationScheduler,
+    "runManualOperation"
+  >,
 ): void {
   const relatedScenesReconciler = createRelatedScenesReconciler({
     reconcile: async () => {
@@ -1999,19 +2033,50 @@ export function registerIpcRouter(
           canonicalArgs,
           event.sender,
         );
-        const envelope = await dispatchInvoke(cmd, boundArgs, {
-          backend,
-          shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
-          secrets,
-          broadcast,
-          issueAgentAuthorityCapabilities: (agentArgs, response) =>
-            issueAgentAuthorityCapabilitiesForSender(
-              event.sender.id,
-              agentArgs,
-              response,
-              backend,
-            ),
-        });
+        const callerIdentity = profileEgress?.issueCallerIdentity(
+          event.sender.id,
+        );
+        // Keep the main-issued identity available to the profile gate and the
+        // generic DB adapter without changing the enumerable wire shape of
+        // typed commands. A number of existing Native requests deliberately
+        // reject unknown fields, so an enumerable authority sidecar would
+        // make otherwise valid UI calls fail their exact-key validation.
+        const dispatchArgs = callerIdentity
+          ? Object.defineProperty({ ...boundArgs }, "callerIdentity", {
+              value: callerIdentity,
+              enumerable: false,
+              configurable: true,
+            })
+          : boundArgs;
+        try {
+          profileEgress?.assertInvoke(cmd, dispatchArgs);
+        } catch (error) {
+          return { ok: false, error: toErrorString(error) };
+        }
+        const dispatch = (): Promise<Envelope> =>
+          dispatchInvoke(cmd, dispatchArgs, {
+            backend,
+            shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
+            secrets,
+            broadcast,
+            issueAgentAuthorityCapabilities: (agentArgs, response) =>
+              issueAgentAuthorityCapabilitiesForSender(
+                event.sender.id,
+                agentArgs,
+                response,
+                backend,
+                callerIdentity,
+              ),
+          });
+        let envelope: Envelope;
+        try {
+          envelope =
+            licenseValidation && MANUAL_LICENSE_COMMANDS.has(cmd)
+              ? await licenseValidation.runManualOperation(dispatch)
+              : await dispatch();
+        } catch (error) {
+          envelope = { ok: false, error: toErrorString(error) };
+        }
         if (envelope.ok && typeof boundArgs.ownerKey === "string") {
           if (cmd === "related_scenes_begin" && isRecord(envelope.value)) {
             const ir = envelope.value.ir;
@@ -2109,9 +2174,16 @@ export function registerIpcRouter(
 
   // パネル別窓（§6.5、S7）の実体を注入する（shellCommands は windows.ts に
   // 直接依存しない — PanelWindowDelegate のコメント参照）。
-  registerShellBridgeHandlers({
+  const panelWindowDelegate = {
     open: openPanelWindow,
     focusByLabel: focusPanelWindow,
     existsByLabel: hasPanelWindow,
-  });
+  };
+  if (profileEgress) {
+    registerShellBridgeHandlers(panelWindowDelegate, undefined, () =>
+      profileEgress.assertExternalUrl(),
+    );
+  } else {
+    registerShellBridgeHandlers(panelWindowDelegate);
+  }
 }

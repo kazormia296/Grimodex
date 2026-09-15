@@ -35,6 +35,10 @@ pub const RENDERER_SQL_SECURITY_ERROR: &str = "RENDERER_SQL_SECURITY";
 /// Native-only until the explicit D2a plaintext publication gate exists.
 pub const RENDERER_TYPED_PAYLOAD_ERROR: &str = "RENDERER_SQL_TYPED_PAYLOAD";
 
+/// Stable marker returned when D2a's Native SQL publication guard rejects a
+/// protected read or a statement that would return DML result plaintext.
+pub const RENDERER_PROFILE_EGRESS_ERROR: &str = "D2A_EGRESS_DENIED";
+
 /// SQL caller classification shared by Electron, Tauri, and MCP.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SqlOrigin {
@@ -57,6 +61,10 @@ impl SqlOrigin {
 thread_local! {
     static UNTRUSTED_SQL_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static PENDING_INSERT_COLUMNS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    /// Set only while the Electron Native D2a generic-DB adapter is running.
+    /// The ordinary renderer policy remains backwards-compatible; D2a adds a
+    /// publication guard on top of the same SQLite authorizer.
+    static PROFILE_EGRESS_SQL_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
 const RENDERER_SQL_RESOURCE_ERROR: &str = "RENDERER_SQL_RESOURCE_LIMIT";
@@ -318,6 +326,90 @@ fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
     }
 }
 
+fn d2a_table_name(table_name: &str) -> &str {
+    let normalized = table_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(table_name)
+        .trim_matches(|character| matches!(character, '`' | '"' | '[' | ']'));
+    normalized
+}
+
+// The table inventory is Native-owned in profile_egress_policy and is also
+// published to Electron main. SQLite authorizer callbacks are the authority;
+// main's SQL classification is only an early, fail-closed advisory.
+fn renderer_profile_egress_sql_rejection(ctx: &AuthContext<'_>) -> Option<String> {
+    if !PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get) {
+        return None;
+    }
+    if !matches!(ctx.database_name, None | Some("main")) {
+        return Some(format!(
+            "{RENDERER_PROFILE_EGRESS_ERROR}: restricted or unknown database {:?}",
+            ctx.database_name
+        ));
+    }
+    match &ctx.action {
+        AuthAction::Read {
+            table_name,
+            column_name,
+        } if crate::profile_egress_policy::is_protected_table(d2a_table_name(table_name)) =>
+        {
+            Some(format!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: protected plaintext read from {table_name}.{column_name}"
+            ))
+        }
+        AuthAction::Read {
+            table_name,
+            column_name,
+        } if crate::profile_egress_policy::is_protected_column(
+            d2a_table_name(table_name),
+            column_name,
+        ) =>
+        {
+            Some(format!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: {table_name}.{column_name} is not published through generic SQL"
+            ))
+        }
+        AuthAction::Delete { table_name }
+        | AuthAction::Insert { table_name }
+        | AuthAction::Update { table_name, .. }
+            if crate::profile_egress_policy::is_protected_table(d2a_table_name(table_name))
+                || d2a_table_name(table_name).eq_ignore_ascii_case("change_events")
+                || d2a_table_name(table_name).eq_ignore_ascii_case("state_snapshots") =>
+        {
+            Some(format!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: protected DML target {table_name}"
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn with_profile_egress_sql<T>(operation: impl FnOnce() -> T) -> T {
+    let previous = PROFILE_EGRESS_SQL_ACTIVE.with(|active| {
+        let previous = active.get();
+        active.set(true);
+        previous
+    });
+    let result = operation();
+    PROFILE_EGRESS_SQL_ACTIVE.with(|active| active.set(previous));
+    result
+}
+
+/// SQLite itself is the parser for DML result shape. Preparing the statement
+/// and checking `readonly` plus `column_count` rejects every DML `RETURNING`
+/// form (including CTE variants) before execution without a pseudo SQL parser.
+fn reject_profile_egress_dml_result(conn: &Connection, sql: &str) -> anyhow::Result<()> {
+    if !PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get) {
+        return Ok(());
+    }
+    let statement = conn.prepare(sql)?;
+    if !statement.readonly() && statement.column_count() > 0 {
+        anyhow::bail!("{RENDERER_PROFILE_EGRESS_ERROR}: DML result plaintext is not published");
+    }
+    Ok(())
+}
+
 struct RendererSqlPolicyState {
     sql_length_limit: i32,
     vdbe_op_limit: i32,
@@ -437,7 +529,8 @@ where
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_CREATE, false)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE, false)?;
         conn.authorizer(Some(move |ctx: AuthContext<'_>| {
-            if let Some(reason) = renderer_sql_rejection(ctx) {
+            let profile_reason = renderer_profile_egress_sql_rejection(&ctx);
+            if let Some(reason) = profile_reason.or_else(|| renderer_sql_rejection(ctx)) {
                 if let Ok(mut denied) = denied_for_hook.lock() {
                     // A direct mutation of a protected parent may also trigger
                     // an indirect legacy `ai_audit_events` cascade.  Preserve
@@ -494,7 +587,9 @@ where
 
     let denied = denied_reason.lock().ok().and_then(|reason| reason.clone());
     if let Some(reason) = denied {
-        let code = if reason.starts_with(RENDERER_TYPED_PAYLOAD_ERROR) {
+        let code = if reason.starts_with(RENDERER_PROFILE_EGRESS_ERROR) {
+            RENDERER_PROFILE_EGRESS_ERROR
+        } else if reason.starts_with(RENDERER_TYPED_PAYLOAD_ERROR) {
             RENDERER_TYPED_PAYLOAD_ERROR
         } else if reason.contains("protected") {
             PROTECTED_WRITER_SQL_ERROR
@@ -708,6 +803,15 @@ impl Database {
         self.execute_batch_tx_impl(statements, SqlOrigin::Renderer)
     }
 
+    /// Execute renderer-origin statements with the Native D2a plaintext
+    /// publication guard layered onto the shared SQLite authorizer.
+    pub fn execute_batch_tx_renderer_profile_egress(
+        &self,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        with_profile_egress_sql(|| self.execute_batch_tx_impl(statements, SqlOrigin::Renderer))
+    }
+
     pub fn execute_batch_tx_untrusted(
         &self,
         origin: SqlOrigin,
@@ -727,6 +831,7 @@ impl Database {
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
         prepare_untrusted_statement_context(sql);
+        reject_profile_egress_dml_result(conn, sql)?;
         if renderer_indirect_ai_audit_cascade(conn, sql)? {
             return Err(anyhow::anyhow!(
                 "{RENDERER_SQL_SECURITY_ERROR}: denied mutation of ai_audit_events"
@@ -822,6 +927,17 @@ impl Database {
         self.execute_impl(sql, params, method, SqlOrigin::Renderer)
     }
 
+    /// Execute one renderer-origin statement with the Native D2a plaintext
+    /// publication guard layered onto the shared SQLite authorizer.
+    pub fn execute_renderer_profile_egress(
+        &self,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        with_profile_egress_sql(|| self.execute_impl(sql, params, method, SqlOrigin::Renderer))
+    }
+
     pub fn execute_with_origin(
         &self,
         origin: SqlOrigin,
@@ -886,6 +1002,7 @@ impl Database {
 mod tests {
     use super::super::narrative_extraction::maintenance_runtime::SCAN_IMPORT_STATE_KEY;
     use super::*;
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
 
     fn test_db() -> Database {
@@ -947,6 +1064,392 @@ mod tests {
         );
         db.execute("CREATE TABLE trusted (id INTEGER)", &[], "run")
             .expect("trusted backend schema operation remains available");
+    }
+
+    #[test]
+    fn profile_egress_rejects_restricted_reads_and_dml_result_plaintext() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE projects (id INTEGER PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted local schema setup");
+        db.execute(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted settings schema setup");
+        db.execute("CREATE TABLE messages (content TEXT NOT NULL)", &[], "run")
+            .expect("trusted restricted schema setup");
+        db.execute(
+            "CREATE TABLE chat_summaries (id TEXT PRIMARY KEY, summary TEXT NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted chat summary schema setup");
+        db.execute(
+            "CREATE TABLE chat_message_chunks (message_id TEXT PRIMARY KEY, text TEXT NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted chat chunk schema setup");
+        db.execute(
+            "CREATE TABLE generation_logs (id TEXT PRIMARY KEY, prompt_full TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted generation log schema setup");
+        db.execute(
+            "CREATE TABLE ab_comparisons (id TEXT PRIMARY KEY, response_a TEXT, response_b TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted A/B comparison schema setup");
+        db.execute(
+            "CREATE TABLE ab_comparison_runs (id TEXT PRIMARY KEY, slots TEXT NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted A/B run schema setup");
+        db.execute("CREATE TABLE d2a_unknown (value TEXT)", &[], "run")
+            .expect("trusted unknown schema setup");
+        db.execute(
+            "CREATE TABLE change_events (sequence INTEGER, domain TEXT, payload TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted change event schema setup");
+        db.execute(
+            "CREATE TEMP TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted temporary settings schema setup");
+        db.execute(
+            "INSERT INTO messages (content) VALUES ('private')",
+            &[],
+            "run",
+        )
+        .expect("trusted restricted seed");
+        db.execute(
+            "INSERT INTO change_events (sequence, domain, payload) VALUES (1, 'editor', '{\"text\":\"private\"}')",
+            &[],
+            "run",
+        )
+        .expect("trusted change event seed");
+
+        let rows = db
+            .execute_renderer_profile_egress("SELECT id FROM projects", &[], "all")
+            .expect("ordinary workspace reads remain available");
+        assert!(rows.is_empty());
+        let rows = db
+            .execute_renderer_profile_egress(
+                "SELECT domain, sequence FROM change_events",
+                &[],
+                "all",
+            )
+            .expect("change event metadata read remains available");
+        assert_eq!(rows.len(), 1);
+
+        let error = db
+            .execute_renderer_profile_egress("SELECT content FROM messages", &[], "all")
+            .expect_err("D2a must not publish restricted reads");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected error: {error}"
+        );
+
+        let error = db
+            .execute_renderer_profile_egress("SELECT value FROM temp.app_settings", &[], "all")
+            .expect_err("D2a must not publish temporary or attached database reads");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected error: {error}"
+        );
+
+        for sql in [
+            "SELECT content FROM \"messages\"",
+            "SELECT summary FROM chat_summaries",
+            "SELECT text FROM chat_message_chunks",
+            "SELECT prompt_full FROM generation_logs",
+            "SELECT response_a, response_b FROM ab_comparisons",
+            "SELECT slots FROM ab_comparison_runs",
+            "WITH source AS (SELECT content FROM messages) SELECT content FROM source",
+            "SELECT value FROM (SELECT content AS value FROM messages)",
+            "SELECT value FROM app_settings WHERE value IN (SELECT content FROM messages)",
+            "UPDATE app_settings SET value = (SELECT content FROM messages)",
+            "WITH source AS (SELECT content FROM messages) INSERT INTO app_settings (key, value) SELECT 'leak', value FROM source",
+            "SELECT payload FROM change_events",
+            "SELECT * FROM change_events",
+            "INSERT INTO change_events (sequence, domain, payload) VALUES (2, 'editor', 'private')",
+        ] {
+            let error = db
+                .execute_renderer_profile_egress(sql, &[], "all")
+                .expect_err("D2a must reject protected plaintext access");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected error for {sql}: {error}"
+            );
+        }
+
+        // There is intentionally no workspace-table allowlist here. Main's
+        // issued caller binding and route ledger decide whether a generic
+        // renderer query is trusted; this layer closes known plaintext
+        // surfaces and dangerous SQLite operations.
+        db.execute_renderer_profile_egress(
+            "INSERT INTO d2a_unknown (value) VALUES ('local')",
+            &[],
+            "run",
+        )
+        .expect("ordinary workspace DML remains available");
+
+        let error = db
+            .execute_renderer_profile_egress(
+                "INSERT INTO d2a_unknown (value) VALUES ('local') RETURNING value",
+                &[],
+                "all",
+            )
+            .expect_err("D2a must not publish DML RETURNING rows");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected error: {error}"
+        );
+
+        let error = db
+            .execute_renderer_profile_egress(
+                "INSERT INTO app_settings (key, value) SELECT 'leak', content FROM messages",
+                &[],
+                "run",
+            )
+            .expect_err("D2a must not read restricted sources during DML");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn profile_egress_allows_non_plaintext_local_dml() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted local schema setup");
+
+        db.execute_renderer_profile_egress(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            &[Value::from("local"), Value::from("setting")],
+            "run",
+        )
+        .expect("non-model local DML remains available");
+    }
+
+    #[test]
+    fn profile_egress_protects_every_native_inventory_table_in_a_real_database() {
+        let db = test_db();
+        for table in crate::profile_egress_policy::PROFILE_EGRESS_PROTECTED_TABLES {
+            db.execute(&format!("CREATE TABLE {table} (value TEXT)"), &[], "run")
+                .unwrap_or_else(|error| panic!("create protected table {table}: {error}"));
+        }
+
+        for table in crate::profile_egress_policy::PROFILE_EGRESS_PROTECTED_TABLES {
+            let error = db
+                .execute_renderer_profile_egress(&format!("SELECT * FROM {table}"), &[], "all")
+                .expect_err("every inventory table must be denied through generic SQL");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected error for protected table {table}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_egress_protects_denied_route_tables_and_fts_shadow_content_in_migrated_db() {
+        let db = test_db();
+        db.migrate().expect("migrate current schema");
+
+        let existing_tables = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT name FROM sqlite_master
+                     WHERE type IN ('table', 'virtual') AND name NOT LIKE 'sqlite_%'",
+                )?;
+                let names = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+                Ok(names)
+            })
+            .expect("read migrated schema");
+
+        let protected_tables = [
+            "project_snapshot_tree_nodes",
+            "project_snapshot_codex_entries",
+            "project_snapshot_snippets",
+            "project_snapshot_aux",
+            "content_versions",
+            "trash_items",
+            "foreshadows",
+            "foreshadow_setups",
+            "foreshadow_payoffs",
+            "foreshadow_setup_payoff_links",
+            "foreshadow_codex_links",
+            "plot_threads",
+            "plot_thread_scene_links",
+            "plot_thread_branches",
+            "lint_ignored_diagnostics",
+            "lint_term_dictionary",
+            "narrative_consumer_freshness",
+            "narrative_maintenance_finding_observations",
+            "narrative_maintenance_finding_lifecycle",
+            "narrative_maintenance_attention",
+            "narrative_proposal_applications",
+            "narrative_extraction_stage_model_bindings",
+            "narrative_extraction_stage_receipts",
+        ];
+        for table in protected_tables {
+            assert!(
+                existing_tables.contains(table),
+                "migrated schema is missing sentinel table {table}"
+            );
+            let error = db
+                .execute_renderer_profile_egress(
+                    &format!("SELECT * FROM \"{table}\" LIMIT 0"),
+                    &[],
+                    "all",
+                )
+                .expect_err("protected route table read must be denied");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected read error for {table}: {error}"
+            );
+
+            let error = db
+                .execute_renderer_profile_egress(
+                    &format!("DELETE FROM \"{table}\" WHERE 0"),
+                    &[],
+                    "run",
+                )
+                .expect_err("protected route table DML must be denied");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected DML error for {table}: {error}"
+            );
+        }
+
+        let fts_shadow_tables = [
+            "chat_messages_fts_config",
+            "chat_messages_fts_data",
+            "chat_messages_fts_docsize",
+            "chat_messages_fts_idx",
+            "chat_messages_fts_en_config",
+            "chat_messages_fts_en_content",
+            "chat_messages_fts_en_data",
+            "chat_messages_fts_en_docsize",
+            "chat_messages_fts_en_idx",
+            "post_effect_annotations_fts_config",
+            "post_effect_annotations_fts_data",
+            "post_effect_annotations_fts_docsize",
+            "post_effect_annotations_fts_idx",
+            "post_effect_annotations_fts_en_config",
+            "post_effect_annotations_fts_en_content",
+            "post_effect_annotations_fts_en_data",
+            "post_effect_annotations_fts_en_docsize",
+            "post_effect_annotations_fts_en_idx",
+        ];
+        for table in fts_shadow_tables {
+            assert!(
+                existing_tables.contains(table),
+                "migrated schema is missing sentinel table {table}"
+            );
+            let error = db
+                .execute_renderer_profile_egress(&format!("SELECT * FROM \"{table}\""), &[], "all")
+                .expect_err("protected route table read must be denied");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected read error for {table}: {error}"
+            );
+        }
+
+        db.execute_renderer_profile_egress(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            &[Value::from("d2a-test"), Value::from("local")],
+            "run",
+        )
+        .expect("ordinary app settings insert remains available");
+        let settings = db
+            .execute_renderer_profile_egress(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                &[Value::from("d2a-test")],
+                "all",
+            )
+            .expect("ordinary app settings read remains available");
+        assert_eq!(settings[0]["value"], Value::from("local"));
+        db.execute_renderer_profile_egress(
+            "UPDATE app_settings SET value = ?1 WHERE key = ?2",
+            &[Value::from("updated"), Value::from("d2a-test")],
+            "run",
+        )
+        .expect("ordinary app settings update remains available");
+        db.execute_renderer_profile_egress(
+            "DELETE FROM app_settings WHERE key = ?1",
+            &[Value::from("d2a-test")],
+            "run",
+        )
+        .expect("ordinary app settings delete remains available");
+        db.execute_renderer_profile_egress(
+            "SELECT id, title FROM projects ORDER BY id",
+            &[],
+            "all",
+        )
+        .expect("ordinary project read remains available");
+    }
+
+    #[test]
+    fn profile_egress_denies_snapshot_payload_but_keeps_metadata_readable() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE state_snapshots (
+                id INTEGER PRIMARY KEY,
+                domain TEXT NOT NULL,
+                anchor_sequence INTEGER NOT NULL,
+                payload TEXT NOT NULL
+            )",
+            &[],
+            "run",
+        )
+        .expect("trusted snapshot schema setup");
+        db.execute(
+            "INSERT INTO state_snapshots (id, domain, anchor_sequence, payload)
+             VALUES (1, 'editor', 1, '{\"text\":\"private\"}')",
+            &[],
+            "run",
+        )
+        .expect("trusted snapshot seed");
+        let rows = db
+            .execute_renderer_profile_egress(
+                "SELECT domain, anchor_sequence FROM state_snapshots",
+                &[],
+                "all",
+            )
+            .expect("snapshot metadata remains readable");
+        assert_eq!(rows.len(), 1);
+        let error = db
+            .execute_renderer_profile_egress("SELECT payload FROM state_snapshots", &[], "all")
+            .expect_err("snapshot payload must not be published");
+        assert!(error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR));
+        let error = db
+            .execute_renderer_profile_egress(
+                "INSERT INTO state_snapshots (id, domain, anchor_sequence, payload)
+                 VALUES (2, 'editor', 2, 'private')",
+                &[],
+                "run",
+            )
+            .expect_err("snapshot payload writes stay Native-owned");
+        assert!(error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR));
     }
 
     #[test]

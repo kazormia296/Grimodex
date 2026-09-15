@@ -23,7 +23,7 @@ function spawnedChild(): ChildProcess {
     stdout: new PassThrough(),
     stderr: new PassThrough(),
     pid: 12345,
-    exitCode: 0,
+    exitCode: null,
     signalCode: null,
     kill: vi.fn(() => true),
   }) as unknown as ChildProcess;
@@ -157,7 +157,8 @@ describe("CodexAppServerProcess", () => {
       path.join(sourceCodexHome, "config.toml"),
       '[mcp_servers.hostile]\ncommand = "/tmp/hostile"\n',
     );
-    const spawn = vi.fn((..._args: unknown[]) => spawnedChild());
+    const child = spawnedChild();
+    const spawn = vi.fn((..._args: unknown[]) => child);
     const process = new CodexAppServerProcess({
       ...trustedFileOptions(),
       codexHomeDir: isolatedCodexHome,
@@ -184,7 +185,9 @@ describe("CodexAppServerProcess", () => {
     expect(spawnOptions?.cwd).toBe(isolatedCodexHome);
     expect(spawnOptions?.env?.CODEX_HOME).toBe(isolatedCodexHome);
     expect(spawnOptions?.env?.CODEX_HOME).not.toBe(sourceCodexHome);
-    await process.dispose();
+    const disposing = process.dispose();
+    child.emit("close", null, "SIGTERM");
+    await disposing;
   });
 
   it("rejects an executable replaced after the authorization dialog", async () => {
@@ -210,5 +213,64 @@ describe("CodexAppServerProcess", () => {
       "Codex CLI executable changed after authorization",
     );
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("waits for child close after SIGKILL instead of resolving immediately", async () => {
+    const child = spawnedChild();
+    const process = new CodexAppServerProcess({
+      ...trustedFileOptions(),
+      codexHomeDir: "/tmp/grimodex-codex",
+      authorizeExecutable: async () => true,
+      forceKillAfterMs: 20,
+      spawn: vi.fn(() => child) as never,
+    });
+    await process.start();
+
+    let settled = false;
+    const disposing = process.dispose().then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(settled).toBe(false);
+
+    child.emit("close", null, "SIGKILL");
+    await disposing;
+    expect(settled).toBe(true);
+  });
+
+  it("does not treat an error event as close and rejects when close is unconfirmed", async () => {
+    const child = spawnedChild();
+    const process = new CodexAppServerProcess({
+      ...trustedFileOptions(),
+      codexHomeDir: "/tmp/grimodex-codex",
+      authorizeExecutable: async () => true,
+      forceKillAfterMs: 20,
+      spawn: vi.fn(() => child) as never,
+    });
+    await process.start();
+    child.emit("error", new Error("child failed"));
+
+    await expect(process.dispose()).rejects.toThrow(
+      /Codex app-server child did not close/,
+    );
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+  });
+
+  it("rejects immediately when child termination itself fails", async () => {
+    const child = spawnedChild();
+    child.kill = vi.fn(() => {
+      throw new Error("kill failed");
+    });
+    const process = new CodexAppServerProcess({
+      ...trustedFileOptions(),
+      codexHomeDir: "/tmp/grimodex-codex",
+      authorizeExecutable: async () => true,
+      forceKillAfterMs: 20,
+      spawn: vi.fn(() => child) as never,
+    });
+    await process.start();
+
+    await expect(process.dispose()).rejects.toThrow("kill failed");
   });
 });

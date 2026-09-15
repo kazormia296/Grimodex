@@ -8,6 +8,11 @@ import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 import { IPC } from "../shared/ipcContract.js";
 import { NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS } from "./narrativeMaintenance.js";
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
+import { createCliAiManager } from "./cliAi.js";
+import {
+  createProfileEgressGate,
+  D2A_EGRESS_DENIED_MARKER,
+} from "./profileEgress.js";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<
@@ -2107,6 +2112,326 @@ describe("registerIpcRouter workspace-open main trace", () => {
 });
 
 describe("NIR-1 router sender binding", () => {
+  it("routes every manual license mutation through the main scheduler seam", async () => {
+    const runManualOperation = vi.fn(
+      (operation: () => Promise<unknown>): Promise<unknown> => operation(),
+    );
+    const licenseValidation = {
+      runManualOperation<T>(operation: () => Promise<T>): Promise<T> {
+        return runManualOperation(operation) as Promise<T>;
+      },
+    };
+    const state = JSON.stringify({ status: "license_active" });
+    const backend = {
+      activateLicense: vi.fn(async () => state),
+      revalidateLicense: vi.fn(async () => state),
+      deactivateLicense: vi.fn(async () => state),
+      getLicenseState: vi.fn(async () => state),
+    };
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      undefined,
+      licenseValidation,
+    );
+
+    for (const [command, args] of [
+      ["activate_license", { key: "test-license-key" }],
+      ["revalidate_license", {}],
+      ["deactivate_license", {}],
+    ] as const) {
+      const envelope = await invokeHandler()(
+        { sender: { id: 42 } },
+        command,
+        args,
+      );
+      expect(envelope.ok, command).toBe(true);
+    }
+    expect(runManualOperation).toHaveBeenCalledTimes(3);
+
+    const stateEnvelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "get_license_state",
+      {},
+    );
+    expect(stateEnvelope.ok).toBe(true);
+    expect(runManualOperation).toHaveBeenCalledTimes(3);
+    expect(backend.getLicenseState).toHaveBeenCalledOnce();
+  });
+
+  it("returns a denied egress route as an envelope before Native dispatch", async () => {
+    const sendChatMessage = vi.fn();
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => ({
+        profileId: "profile-1",
+        callerId: "main-caller-1",
+        callerEpoch: 2,
+        senderId: 42,
+        workspaceId: null,
+        sessionId: "session-1",
+      })),
+      assertInvoke: vi.fn(() => {
+        throw new Error("D2A_EGRESS_DENIED: old-external-ai");
+      }),
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    registerIpcRouter(
+      { sendChatMessage } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "send_chat_message",
+      {},
+    );
+
+    expect(envelope).toEqual({
+      ok: false,
+      error: "D2A_EGRESS_DENIED: old-external-ai",
+    });
+    expect(sendChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("replaces renderer identity with the main-issued caller before Native dispatch", async () => {
+    const saveAiSettings = vi.fn(async () => undefined);
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "session-1",
+    };
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    registerIpcRouter(
+      { saveAiSettings } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "save_ai_settings",
+      { settings: {}, callerIdentity: { callerId: "renderer-forged" } },
+    );
+
+    expect(envelope.ok).toBe(true);
+    expect(profileEgress.issueCallerIdentity).toHaveBeenCalledWith(42);
+    expect(profileEgress.assertInvoke).toHaveBeenCalledWith(
+      "save_ai_settings",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(saveAiSettings).toHaveBeenCalledWith({});
+  });
+
+  it("keeps every legacy AI family at dispatch zero, including route variants", async () => {
+    const nativeTransportCalls: string[] = [];
+    const nativeTransport = (method: string, result = "{}") =>
+      vi.fn(async () => {
+        nativeTransportCalls.push(method);
+        return result;
+      });
+    const nativeCalls = {
+      initializeProfileEgress: async () =>
+        JSON.stringify({
+          profileId: "profile-1",
+          callerEpoch: 2,
+          restricted: true,
+          handlesInvalidated: true,
+          inFlightStopped: true,
+          sqlPolicy: {
+            version: 1,
+            protectedTables: [
+              "ab_comparison_runs",
+              "ab_comparisons",
+              "ai_audit_events",
+              "chat_message_chunks",
+              "chat_messages_fts",
+              "chat_messages_fts_en",
+              "chat_message_prompts",
+              "chat_messages",
+              "chat_runtime_threads",
+              "chat_sessions",
+              "chat_summaries",
+              "generation_logs",
+              "messages",
+              "narrative_apply_commits",
+              "narrative_apply_operations",
+              "narrative_commit_journals",
+              "narrative_extraction_artifacts",
+              "narrative_extraction_attempts",
+              "narrative_extraction_runs",
+              "narrative_extraction_tasks",
+              "narrative_proposal_decisions",
+              "narrative_proposal_revisions",
+              "narrative_proposal_sets",
+              "narrative_proposals",
+              "post_effect_annotation_relations",
+              "post_effect_annotations",
+              "post_effect_annotations_fts",
+              "post_effect_annotations_fts_en",
+              "post_effect_runs",
+              "impact_review_baselines",
+              "scene_lens_data",
+              "scene_chunks",
+              "codex_chunks",
+              "event_chunks",
+              "undo_journal",
+              "prose_staging",
+            ],
+            protectedColumns: [
+              { table: "change_events", column: "payload" },
+              { table: "state_snapshots", column: "payload" },
+            ],
+          },
+        }),
+      registerProfileEgressCaller: vi.fn(),
+      invalidateProfileEgressCallers: vi.fn(),
+      sendChatMessage: nativeTransport("sendChatMessage"),
+      sendChatMessageStream: nativeTransport("sendChatMessageStream"),
+      sendInlineAiStream: nativeTransport("sendInlineAiStream"),
+      sendAgentMessage: nativeTransport("sendAgentMessage"),
+      listAiModels: nativeTransport("listAiModels"),
+      testAiConnection: nativeTransport("testAiConnection"),
+      startPostEffectRun: nativeTransport("startPostEffectRun"),
+      startPostEffectRunMulti: nativeTransport("startPostEffectRunMulti"),
+      narrativeExtractionGetRunReviewBundle: nativeTransport(
+        "narrativeExtractionGetRunReviewBundle",
+      ),
+      saveGlobalSettings: nativeTransport("saveGlobalSettings"),
+    };
+    const childDispatches: string[] = [];
+    const vivliostyleBuild = vi.fn(async () => "run-id");
+    const vivliostylePreviewStart = vi.fn(async () => null);
+    const cliManager = createCliAiManager(() => undefined, {
+      runner: {
+        run: async () => {
+          childDispatches.push("run");
+          return { exitCode: 0, signal: null, stdout: "", stderr: "" };
+        },
+        start: () => {
+          childDispatches.push("start");
+          throw new Error("unexpected CLI child dispatch");
+        },
+      } as never,
+      detectBinary: async () => null,
+    });
+    const profileEgress = await createProfileEgressGate(
+      nativeCalls as unknown as NapiBackendLike,
+    );
+    registerIpcRouter(
+      nativeCalls as unknown as NapiBackendLike,
+      {
+        ...cliManager.handlers,
+        vivliostyle_build: vivliostyleBuild,
+        vivliostyle_preview_start: vivliostylePreviewStart,
+      },
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const legacyRoutes: Array<[string, Record<string, unknown>]> = [
+      ["send_chat_message", { messages: ["old"], apiVariant: "loopback" }],
+      [
+        "send_chat_message_stream",
+        { messages: ["old"], endpointId: "proxy", retry: true },
+      ],
+      ["send_inline_ai_stream", { messages: ["old"], apiVariant: "redirect" }],
+      ["send_agent_message", { messages: ["old"], sessionId: "other" }],
+      ["list_ai_models", { provider: "ollama", endpointId: "proxy" }],
+      ["test_ai_connection", { provider: "ollama", endpointId: "redirect" }],
+      ["start_post_effect_run", { retry: true, sessionId: "old" }],
+      ["start_post_effect_run_multi", { retry: true, workspaceId: "other" }],
+      ["send_cli_chat_stream", { sessionId: undefined }],
+      ["detect_cli_binary", { cli: "codex" }],
+      ["test_cli_connection", { endpointId: "proxy" }],
+      ["list_cli_models", { retry: true }],
+      ["codex_app_start_turn", { sessionId: "old", workspaceId: "other" }],
+      ["codex_app_respond_to_request", { requestId: "old" }],
+      ["codex_app_get_status", { sessionId: undefined }],
+      ["codex_app_list_models", { workspaceId: "other", retry: true }],
+      ["codex_app_test_connection", { redirect: true }],
+      ["activate_license", { key: "arbitrary-plaintext-license-key" }],
+      ["revalidate_license", {}],
+      ["deactivate_license", {}],
+      [
+        "vivliostyle_build",
+        { files: [{ path: "sentinel.md", content: "sentinel" }] },
+      ],
+      ["vivliostyle_preview_start", { url: "https://sentinel.invalid" }],
+      ["narrative_extraction_get_run_review_bundle", { messages: ["old"] }],
+      ["project_snapshot_restore_context", { workspaceId: "other" }],
+      ["lint_ignore_list", { projectId: "other" }],
+      ["lint_ignore_list_scene", { projectId: "other", sessionId: "old" }],
+      ["lint_term_dictionary_list", { projectId: "other" }],
+    ];
+
+    for (const [command, args] of legacyRoutes) {
+      const envelope = await invokeHandler()(
+        { sender: { id: 42 } },
+        command,
+        args,
+      );
+      expect(envelope.ok, command).toBe(false);
+      if (!envelope.ok) {
+        expect(envelope.error, command).toMatch(
+          new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`),
+        );
+      }
+    }
+    for (const call of [
+      nativeCalls.sendChatMessage,
+      nativeCalls.sendChatMessageStream,
+      nativeCalls.sendInlineAiStream,
+      nativeCalls.sendAgentMessage,
+      nativeCalls.listAiModels,
+      nativeCalls.testAiConnection,
+      nativeCalls.startPostEffectRun,
+      nativeCalls.startPostEffectRunMulti,
+      nativeCalls.narrativeExtractionGetRunReviewBundle,
+    ]) {
+      expect(call).not.toHaveBeenCalled();
+    }
+    expect(nativeTransportCalls).toEqual([]);
+    expect(childDispatches).toEqual([]);
+    expect(vivliostyleBuild).not.toHaveBeenCalled();
+    expect(vivliostylePreviewStart).not.toHaveBeenCalled();
+
+    const save = await invokeHandler()(
+      { sender: { id: 42 } },
+      "save_global_settings",
+      { settings: { theme: "dark" } },
+    );
+    expect(save.ok).toBe(true);
+    expect(nativeTransportCalls).toEqual(["saveGlobalSettings"]);
+    cliManager.disposeAll();
+  });
+
   it("passes a main owner to Native and prevents a second WebContents from copying it", async () => {
     const calls: Array<Record<string, unknown>> = [];
     const relatedScenesBegin = vi.fn(async (request: Record<string, unknown>) => {

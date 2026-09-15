@@ -1685,13 +1685,15 @@ pub(crate) fn remove_db_sidecars(db_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Replace `destination` with a same-directory staged file using the
+/// platform's atomic replacement primitive.
 #[cfg(not(windows))]
-pub(crate) fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
+pub fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
     std::fs::rename(staged, destination)
 }
 
 #[cfg(windows)]
-pub(crate) fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
+pub fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
 
