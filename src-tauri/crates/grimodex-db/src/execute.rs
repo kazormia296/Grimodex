@@ -52,6 +52,16 @@ pub enum SqlOrigin {
     TrustedMigration,
 }
 
+/// Result metadata used by the Native profile-egress adapter.  SQLite's
+/// prepared statement is the authority for whether the executed statement can
+/// mutate the database; callers must not infer this from the SQL spelling or
+/// the Drizzle method name.
+#[derive(Debug)]
+pub struct SqlExecutionResult {
+    pub rows: Vec<serde_json::Map<String, Value>>,
+    pub statement_may_mutate: bool,
+}
+
 impl SqlOrigin {
     pub fn is_untrusted(self) -> bool {
         matches!(self, Self::Renderer | Self::McpGeneric)
@@ -449,20 +459,6 @@ fn reject_untrusted_transaction_after<T>(
     }
 }
 
-/// SQLite itself is the parser for DML result shape. Preparing the statement
-/// and checking `readonly` plus `column_count` rejects every DML `RETURNING`
-/// form (including CTE variants) before execution without a pseudo SQL parser.
-fn reject_profile_egress_dml_result(conn: &Connection, sql: &str) -> anyhow::Result<()> {
-    if !PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get) {
-        return Ok(());
-    }
-    let statement = conn.prepare(sql)?;
-    if !statement.readonly() && statement.column_count() > 0 {
-        anyhow::bail!("{RENDERER_PROFILE_EGRESS_ERROR}: DML result plaintext is not published");
-    }
-    Ok(())
-}
-
 struct RendererSqlPolicyState {
     sql_length_limit: i32,
     vdbe_op_limit: i32,
@@ -758,18 +754,24 @@ impl Database {
     fn execute_batch_tx_with_conn(
         conn: &Connection,
         statements: &[BatchStatement],
-    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+    ) -> anyhow::Result<SqlExecutionResult> {
         // BEGIN IMMEDIATE acquires the write lock up front. A plain (deferred)
         // BEGIN only takes it on the first write, so a writer on the same DB
         // file (e.g. the MCP process) could slip in between and turn a later
         // statement into SQLITE_BUSY_SNAPSHOT — which busy_timeout cannot retry.
         with_runner_transaction_controls(|| conn.execute_batch("BEGIN IMMEDIATE"))?;
-        let mut last_rows = Vec::new();
+        let mut last_result = SqlExecutionResult {
+            rows: Vec::new(),
+            statement_may_mutate: false,
+        };
         let result = (|| -> anyhow::Result<_> {
             for stmt in statements {
-                last_rows = Self::execute_with_conn(conn, &stmt.sql, &stmt.params, &stmt.method)?;
+                let execution =
+                    Self::execute_with_conn_result(conn, &stmt.sql, &stmt.params, &stmt.method)?;
+                last_result.statement_may_mutate |= execution.statement_may_mutate;
+                last_result.rows = execution.rows;
             }
-            Ok(last_rows)
+            Ok(last_result)
         })();
         match result {
             Ok(rows) => match with_runner_transaction_controls(|| conn.execute_batch("COMMIT")) {
@@ -794,7 +796,7 @@ impl Database {
         &self,
         statements: &[BatchStatement],
         origin: SqlOrigin,
-    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+    ) -> anyhow::Result<SqlExecutionResult> {
         let lock_started = Instant::now();
         let conn = self.lock_conn()?;
         let lock_wait_ms = lock_started.elapsed().as_millis();
@@ -844,7 +846,9 @@ impl Database {
         &self,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_batch_tx_impl(statements, SqlOrigin::TrustedDomainWriter)
+        Ok(self
+            .execute_batch_tx_impl(statements, SqlOrigin::TrustedDomainWriter)?
+            .rows)
     }
 
     pub fn execute_batch_tx_with_origin(
@@ -852,7 +856,7 @@ impl Database {
         origin: SqlOrigin,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_batch_tx_impl(statements, origin)
+        Ok(self.execute_batch_tx_impl(statements, origin)?.rows)
     }
 
     /// Execute renderer-origin statements under the connection-local
@@ -861,6 +865,15 @@ impl Database {
         &self,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(self
+            .execute_batch_tx_renderer_with_result(statements)?
+            .rows)
+    }
+
+    pub fn execute_batch_tx_renderer_with_result(
+        &self,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<SqlExecutionResult> {
         self.execute_batch_tx_impl(statements, SqlOrigin::Renderer)
     }
 
@@ -870,6 +883,15 @@ impl Database {
         &self,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(self
+            .execute_batch_tx_renderer_profile_egress_with_result(statements)?
+            .rows)
+    }
+
+    pub fn execute_batch_tx_renderer_profile_egress_with_result(
+        &self,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<SqlExecutionResult> {
         with_profile_egress_sql(|| self.execute_batch_tx_impl(statements, SqlOrigin::Renderer))
     }
 
@@ -882,7 +904,7 @@ impl Database {
             origin.is_untrusted(),
             "execute_batch_tx_untrusted requires an untrusted SqlOrigin"
         );
-        self.execute_batch_tx_impl(statements, origin)
+        Ok(self.execute_batch_tx_impl(statements, origin)?.rows)
     }
 
     pub fn execute_with_conn(
@@ -891,12 +913,33 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(Self::execute_with_conn_result(conn, sql, params, method)?.rows)
+    }
+
+    fn execute_with_conn_result(
+        conn: &Connection,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<SqlExecutionResult> {
         prepare_untrusted_statement_context(sql);
-        reject_profile_egress_dml_result(conn, sql)?;
         if renderer_indirect_ai_audit_cascade(conn, sql)? {
             return Err(anyhow::anyhow!(
                 "{RENDERER_SQL_SECURITY_ERROR}: denied mutation of ai_audit_events"
             ));
+        }
+        let mut stmt = conn.prepare(sql)?;
+        let statement_may_mutate = !stmt.readonly();
+        // SQLite itself is the parser for DML result shape. Checking
+        // `readonly` plus `column_count` rejects every DML `RETURNING` form
+        // (including CTE variants) before execution without a pseudo parser.
+        if PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get)
+            && statement_may_mutate
+            && stmt.column_count() > 0
+        {
+            anyhow::bail!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: DML result plaintext is not published"
+            );
         }
         let native_params: Vec<Box<dyn rusqlite::types::ToSql>> = params
             .iter()
@@ -920,11 +963,13 @@ impl Database {
             native_params.iter().map(|p| p.as_ref()).collect();
 
         if method == "run" {
-            conn.execute(sql, params_from_iter(param_refs.iter()))?;
-            return Ok(vec![]);
+            stmt.execute(params_from_iter(param_refs.iter()))?;
+            return Ok(SqlExecutionResult {
+                rows: vec![],
+                statement_may_mutate,
+            });
         }
 
-        let mut stmt = conn.prepare(sql)?;
         let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
         let rows = stmt.query_map(params_from_iter(param_refs.iter()), |row| {
             let mut map = serde_json::Map::new();
@@ -964,9 +1009,15 @@ impl Database {
             result.push(row?);
         }
         if method == "get" {
-            return Ok(result.into_iter().take(1).collect());
+            return Ok(SqlExecutionResult {
+                rows: result.into_iter().take(1).collect(),
+                statement_may_mutate,
+            });
         }
-        Ok(result)
+        Ok(SqlExecutionResult {
+            rows: result,
+            statement_may_mutate,
+        })
     }
 
     pub fn execute(
@@ -975,7 +1026,9 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_impl(sql, params, method, SqlOrigin::TrustedDomainWriter)
+        Ok(self
+            .execute_impl(sql, params, method, SqlOrigin::TrustedDomainWriter)?
+            .rows)
     }
 
     /// Execute one renderer-origin statement under the restricted policy.
@@ -985,6 +1038,15 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(self.execute_renderer_with_result(sql, params, method)?.rows)
+    }
+
+    pub fn execute_renderer_with_result(
+        &self,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<SqlExecutionResult> {
         self.execute_impl(sql, params, method, SqlOrigin::Renderer)
     }
 
@@ -996,6 +1058,17 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(self
+            .execute_renderer_profile_egress_with_result(sql, params, method)?
+            .rows)
+    }
+
+    pub fn execute_renderer_profile_egress_with_result(
+        &self,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<SqlExecutionResult> {
         with_profile_egress_sql(|| self.execute_impl(sql, params, method, SqlOrigin::Renderer))
     }
 
@@ -1006,7 +1079,7 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_impl(sql, params, method, origin)
+        Ok(self.execute_impl(sql, params, method, origin)?.rows)
     }
 
     pub fn execute_untrusted(
@@ -1020,7 +1093,7 @@ impl Database {
             origin.is_untrusted(),
             "execute_untrusted requires an untrusted SqlOrigin"
         );
-        self.execute_impl(sql, params, method, origin)
+        Ok(self.execute_impl(sql, params, method, origin)?.rows)
     }
 
     fn execute_impl(
@@ -1029,7 +1102,7 @@ impl Database {
         params: &[Value],
         method: &str,
         origin: SqlOrigin,
-    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+    ) -> anyhow::Result<SqlExecutionResult> {
         let lock_started = Instant::now();
         let conn = self.lock_conn()?;
         let lock_wait_ms = lock_started.elapsed().as_millis();
@@ -1043,14 +1116,14 @@ impl Database {
                     let result = with_untrusted_sql_policy(
                         &conn,
                         reserved_project_setting_guard_requested,
-                        |conn| Self::execute_with_conn(conn, sql, params, method),
+                        |conn| Self::execute_with_conn_result(conn, sql, params, method),
                     );
                     reject_untrusted_transaction_after(&conn, result)
                 }
                 Err(error) => Err(error),
             }
         } else {
-            Self::execute_with_conn(&conn, sql, params, method)
+            Self::execute_with_conn_result(&conn, sql, params, method)
         };
         let sql_ms = sql_started.elapsed().as_millis();
         if lock_wait_ms + sql_ms >= SLOW_DB_CALL_MS {
@@ -1494,6 +1567,66 @@ mod tests {
             "run",
         )
         .expect("non-model local DML remains available");
+    }
+
+    #[test]
+    fn sqlite_prepared_statement_classifies_comments_and_ctes() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE renderer_statement_kind (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted local schema setup");
+        db.execute(
+            "INSERT INTO renderer_statement_kind (id, value) VALUES (1, 1)",
+            &[],
+            "run",
+        )
+        .expect("trusted local seed");
+
+        for sql in [
+            "SELECT value FROM renderer_statement_kind WHERE id = 1",
+            "/* leading comment */ SELECT value FROM renderer_statement_kind WHERE id = 1",
+            "-- leading comment\nSELECT value FROM renderer_statement_kind WHERE id = 1",
+            "WITH source AS (SELECT value FROM renderer_statement_kind) SELECT value FROM source",
+        ] {
+            let result = db
+                .execute_renderer_profile_egress_with_result(sql, &[], "all")
+                .expect("read-only statement should execute");
+            assert!(
+                !result.statement_may_mutate,
+                "SQLite marked a read-only statement as mutable: {sql}"
+            );
+            assert_eq!(result.rows.len(), 1, "unexpected rows for {sql}");
+        }
+
+        let result = db
+            .execute_renderer_profile_egress_with_result(
+                "WITH next(value) AS (SELECT 2)
+                 UPDATE renderer_statement_kind
+                    SET value = (SELECT value FROM next)
+                  WHERE id = 1",
+                &[],
+                "all",
+            )
+            .expect("CTE update should execute");
+        assert!(result.statement_may_mutate);
+        assert!(result.rows.is_empty());
+
+        let batch = db
+            .execute_batch_tx_renderer_profile_egress_with_result(&[
+                BatchStatement {
+                    sql: "WITH source AS (SELECT value FROM renderer_statement_kind)
+                           SELECT value FROM source"
+                        .into(),
+                    params: vec![],
+                    method: "all".into(),
+                },
+            ])
+            .expect("read-only CTE batch should execute");
+        assert!(!batch.statement_may_mutate);
+        assert_eq!(batch.rows.len(), 1);
     }
 
     #[test]

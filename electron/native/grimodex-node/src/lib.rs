@@ -2621,15 +2621,17 @@ fn reauthorize_profile_egress_workspace(
 /// observes that D2a has revoked the dispatch.  Preserve the distinction
 /// between a committed mutation and a read whose rows can no longer be
 /// published: mutations receive an opaque committed receipt, while reads keep
-/// the denial so no plaintext crosses the boundary.
+/// the denial so no plaintext crosses the boundary.  `statement_may_mutate` is
+/// supplied by SQLite's prepared statement metadata in grimodex-db; it is not
+/// inferred from SQL text or the Drizzle method name.
 fn finish_profile_egress_db_dispatch(
     reauthorization: anyhow::Result<()>,
     rows: Vec<serde_json::Map<String, serde_json::Value>>,
-    may_mutate: bool,
+    statement_may_mutate: bool,
 ) -> anyhow::Result<String> {
     match reauthorization {
         Ok(()) => serde_json::to_string(&QueryResult { rows }).map_err(anyhow::Error::from),
-        Err(_error) if may_mutate => {
+        Err(_error) if statement_may_mutate => {
             // The caller must not retry as if the write definitely did not
             // happen.  `rows` is deliberately discarded because a mutation
             // result may contain plaintext (for example RETURNING output).
@@ -2637,21 +2639,6 @@ fn finish_profile_egress_db_dispatch(
         }
         Err(error) => Err(error),
     }
-}
-
-/// `method === "run"` is the Drizzle write path.  For read-shaped methods,
-/// only an explicitly read-only first keyword is treated as non-mutating;
-/// WITH/PRAGMA/unknown forms stay conservative because SQLite can hide writes
-/// behind them.  This helper is a post-commit result policy, not an SQL
-/// authorizer; SQLite remains the execution authority.
-fn profile_egress_statement_may_mutate(method: &str, sql: &str) -> bool {
-    if method.eq_ignore_ascii_case("run") {
-        return true;
-    }
-    let keyword = sql.split_whitespace().next().unwrap_or_default();
-    !["select", "values", "explain"]
-        .iter()
-        .any(|read| keyword.eq_ignore_ascii_case(read))
 }
 
 #[cfg(test)]
@@ -2709,18 +2696,43 @@ mod profile_egress_db_result_tests {
     }
 
     #[test]
-    fn mutation_classifier_is_conservative_for_batch_statements() {
-        assert!(profile_egress_statement_may_mutate("run", "SELECT 1"));
-        assert!(!profile_egress_statement_may_mutate("all", "SELECT 1"));
-        assert!(!profile_egress_statement_may_mutate("get", "VALUES (1)"));
-        assert!(profile_egress_statement_may_mutate(
-            "all",
-            "WITH x AS (SELECT 1) SELECT * FROM x"
-        ));
-        assert!(profile_egress_statement_may_mutate(
-            "all",
-            "PRAGMA user_version = 1"
-        ));
+    fn sqlite_readonly_results_are_not_promoted_to_committed_receipts() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("database");
+        db.execute(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("schema");
+        db.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('sentinel', 'value')",
+            &[],
+            "run",
+        )
+        .expect("seed");
+
+        for sql in [
+            "SELECT value FROM app_settings WHERE key = 'sentinel'",
+            "/* leading comment */ SELECT value FROM app_settings WHERE key = 'sentinel'",
+            "-- leading comment\nSELECT value FROM app_settings WHERE key = 'sentinel'",
+            "WITH source AS (SELECT value FROM app_settings) SELECT value FROM source",
+        ] {
+            let execution = db
+                .execute_renderer_profile_egress_with_result(sql, &[], "all")
+                .expect("read-only SQL should execute");
+            assert!(
+                !execution.statement_may_mutate,
+                "unexpected mutation: {sql}"
+            );
+            let error = finish_profile_egress_db_dispatch(
+                Err(anyhow::anyhow!("D2A_EGRESS_DENIED: caller revoked")),
+                execution.rows,
+                execution.statement_may_mutate,
+            )
+            .expect_err("expired reads must remain errors");
+            assert!(error.to_string().contains("caller revoked"));
+            assert!(!error.to_string().contains("committed"));
+        }
     }
 }
 
@@ -4322,25 +4334,24 @@ impl Backend {
                 pin_profile_egress_workspace(&state, &dispatch, caller_identity.as_ref())?;
             let params = params_array(params)?;
             let restricted = state.profile_egress.status().restricted;
-            let may_mutate = profile_egress_statement_may_mutate(&method, &sql);
             reauthorize_profile_egress_workspace(
                 &state,
                 &dispatch,
                 caller_identity.as_ref(),
                 &workspace,
             )?;
-            let rows = if restricted {
+            let execution = if restricted {
                 workspace
                     .authority
                     .db()
-                    .execute_renderer_profile_egress(&sql, &params, &method)?
+                    .execute_renderer_profile_egress_with_result(&sql, &params, &method)?
             } else {
                 // Keep direct standalone Backend use compatible before the
                 // explicit first-restricted-publication transition.
                 workspace
                     .authority
                     .db()
-                    .execute_renderer(&sql, &params, &method)?
+                    .execute_renderer_with_result(&sql, &params, &method)?
             };
             let reauthorization = reauthorize_profile_egress_workspace(
                 &state,
@@ -4350,8 +4361,8 @@ impl Backend {
             );
             Ok(finish_profile_egress_db_dispatch(
                 reauthorization,
-                rows,
-                may_mutate,
+                execution.rows,
+                execution.statement_may_mutate,
             )?)
         })
         .await
@@ -4378,27 +4389,24 @@ impl Backend {
                 pin_profile_egress_workspace(&state, &dispatch, caller_identity.as_ref())?;
             let statements: Vec<BatchStatement> = from_wire("statements", statements)?;
             let restricted = state.profile_egress.status().restricted;
-            let may_mutate = statements.iter().any(|statement| {
-                profile_egress_statement_may_mutate(&statement.method, &statement.sql)
-            });
             reauthorize_profile_egress_workspace(
                 &state,
                 &dispatch,
                 caller_identity.as_ref(),
                 &workspace,
             )?;
-            let rows = if restricted {
+            let execution = if restricted {
                 workspace
                     .authority
                     .db()
-                    .execute_batch_tx_renderer_profile_egress(&statements)?
+                    .execute_batch_tx_renderer_profile_egress_with_result(&statements)?
             } else {
                 // Keep direct standalone Backend use compatible before the
                 // explicit first-restricted-publication transition.
                 workspace
                     .authority
                     .db()
-                    .execute_batch_tx_renderer(&statements)?
+                    .execute_batch_tx_renderer_with_result(&statements)?
             };
             let reauthorization = reauthorize_profile_egress_workspace(
                 &state,
@@ -4408,8 +4416,8 @@ impl Backend {
             );
             Ok(finish_profile_egress_db_dispatch(
                 reauthorization,
-                rows,
-                may_mutate,
+                execution.rows,
+                execution.statement_may_mutate,
             )?)
         })
         .await

@@ -1702,6 +1702,25 @@ function isRecord(value: unknown): value is CommandArgs {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isOpaqueCommittedDbMutationReceipt(
+  command: string,
+  value: unknown,
+): boolean {
+  if (command !== "db_execute" && command !== "db_execute_batch") {
+    return false;
+  }
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  return (
+    keys.length === 2 &&
+    keys.includes("rows") &&
+    keys.includes("committed") &&
+    value.committed === true &&
+    Array.isArray(value.rows) &&
+    value.rows.length === 0
+  );
+}
+
 function isHistoryReplayCommand(cmd: string, payload: CommandArgs): boolean {
   return (
     HISTORY_REPLAY_COMMANDS.has(cmd) ||
@@ -2077,11 +2096,16 @@ export function registerIpcRouter(
         } catch (error) {
           envelope = { ok: false, error: toErrorString(error) };
         }
-        if (envelope.ok) {
+        if (
+          envelope.ok &&
+          !isOpaqueCommittedDbMutationReceipt(cmd, envelope.value)
+        ) {
           try {
             // A read admitted before activation may finish after the profile
-            // gate closes. Re-check only plaintext publication routes here;
-            // committed native mutations keep their success semantics.
+            // gate closes. Re-check only plaintext publication routes here.
+            // Native's exact opaque committed receipt is the one recognized
+            // exception: the mutation is already durable, and its rows were
+            // deliberately discarded before crossing this boundary.
             profileEgress?.assertPlaintextPublication(cmd, dispatchArgs);
           } catch (error) {
             envelope = { ok: false, error: toErrorString(error) };

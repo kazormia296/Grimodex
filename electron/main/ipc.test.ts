@@ -2332,6 +2332,97 @@ describe("NIR-1 router sender binding", () => {
     await activation;
   });
 
+  it("preserves Native opaque committed receipts for single and batch DB writes", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "session-1",
+    };
+    const assertPlaintextPublication = vi.fn(() => {
+      throw new Error("D2A_EGRESS_DENIED: plaintext-publication");
+    });
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication,
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    const backend = {
+      dbExecute: vi.fn(async () =>
+        JSON.stringify({ rows: [], committed: true }),
+      ),
+      dbExecuteBatch: vi.fn(async () =>
+        JSON.stringify({ rows: [], committed: true }),
+      ),
+    };
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const single = await invokeHandler()(
+      { sender: { id: 42 } },
+      "db_execute",
+      {
+        sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
+        params: ["next", "session-1"],
+        method: "run",
+      },
+    );
+    const batch = await invokeHandler()(
+      { sender: { id: 42 } },
+      "db_execute_batch",
+      {
+        statements: [
+          {
+            sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
+            params: ["next", "session-1"],
+            method: "run",
+          },
+        ],
+      },
+    );
+
+    expect(single).toEqual({
+      ok: true,
+      value: { rows: [], committed: true },
+    });
+    expect(batch).toEqual({
+      ok: true,
+      value: { rows: [], committed: true },
+    });
+    expect(assertPlaintextPublication).not.toHaveBeenCalled();
+
+    backend.dbExecute.mockResolvedValueOnce(
+      JSON.stringify({ rows: [], committed: true, unexpected: true }),
+    );
+    const malformedReceipt = await invokeHandler()(
+      { sender: { id: 42 } },
+      "db_execute",
+      {
+        sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
+        params: ["next", "session-1"],
+        method: "run",
+      },
+    );
+    expect(malformedReceipt).toEqual({
+      ok: false,
+      error: "D2A_EGRESS_DENIED: plaintext-publication",
+    });
+    expect(assertPlaintextPublication).toHaveBeenCalledOnce();
+  });
+
   it("keeps every legacy AI family at dispatch zero, including route variants", async () => {
     const nativeTransportCalls: string[] = [];
     const nativeTransport = (method: string, result = "{}") =>
