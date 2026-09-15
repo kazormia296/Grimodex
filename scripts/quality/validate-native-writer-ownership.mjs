@@ -179,6 +179,12 @@ const WRITER_TO_MODULES = {
   // row would force every open to discard C2 derived state. Only the
   // migration engine writes it.
   "schema.migration": ["src-tauri/crates/grimodex-db/src/migrate.rs"],
+  // Idempotency receipts may contain a replayable response, so their ledger
+  // rows have a dedicated protected writer. Keep the ownership map narrow to
+  // the typed receipt implementation rather than allowing generic DB callers.
+  "idempotency.receipt": [
+    "src-tauri/crates/grimodex-db/src/idempotency.rs",
+  ],
   "chronicle.event": [
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/chronicle.rs",

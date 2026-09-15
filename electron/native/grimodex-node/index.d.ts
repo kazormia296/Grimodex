@@ -148,14 +148,15 @@ export declare class Backend {
    * drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
    * CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
    * は "run" | "get" | "all" | "values"。
-   * 返り値: `QueryResult` の JSON 文字列 `{"rows":[…]}` (Tauri ワイヤと同形)。
+   * 返り値: mainが消費する内部種別marker付きのJSON文字列。mainはrendererへ
+   * 渡す前に `__grimodexDbResultKind` を除去する。
    */
   dbExecute(sql: string, params: any, method: string, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * 複数文を単一トランザクションで実行 (BEGIN IMMEDIATE、途中失敗で全
    * ROLLBACK — grimodex-db の `execute_batch_tx`)。オートセーブの通り道。
    * `statements` は `[{ sql, params, method }, …]`。
-   * 返り値: 最終文の rows を載せた `QueryResult` の JSON 文字列。
+   * 返り値: 最終文のrowsと、mainが消費する内部種別markerを載せたJSON文字列。
    */
   dbExecuteBatch(statements: any, callerIdentity?: string | undefined | null): Promise<string>
   /** Read Native-owned Narrative runtime policy (Release Gate B Foundation). */

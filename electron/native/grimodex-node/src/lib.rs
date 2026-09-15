@@ -110,9 +110,7 @@ use grimodex_db::timelapse::{TimelapseBodySnapshotTarget, TimelapseGenesisBaseli
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload, TrashBinRestorePayload};
 use grimodex_db::web_editor_handoff;
 use grimodex_db::workspace::{self, GlobalSettings};
-use grimodex_db::{
-    with_db_state, AppError, BatchStatement, Database, QueryResult, RepairIntegrityPayload,
-};
+use grimodex_db::{with_db_state, AppError, BatchStatement, Database, RepairIntegrityPayload};
 
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
@@ -2617,6 +2615,179 @@ fn reauthorize_profile_egress_workspace(
         .reauthorize_dispatch(dispatch, identity, Some(&workspace_id))
 }
 
+const PROFILE_EGRESS_DB_RESULT_KIND_KEY: &str = "__grimodexDbResultKind";
+const PROFILE_EGRESS_DB_READ_KIND: &str = "read";
+const PROFILE_EGRESS_DB_MUTATION_KIND: &str = "committed-mutation";
+
+fn serialize_profile_egress_db_result(
+    rows: Vec<serde_json::Map<String, serde_json::Value>>,
+    statement_may_mutate: bool,
+) -> anyhow::Result<String> {
+    let mut result = serde_json::Map::new();
+    result.insert("rows".to_string(), serde_json::to_value(rows)?);
+    result.insert(
+        PROFILE_EGRESS_DB_RESULT_KIND_KEY.to_string(),
+        serde_json::Value::String(
+            if statement_may_mutate {
+                PROFILE_EGRESS_DB_MUTATION_KIND
+            } else {
+                PROFILE_EGRESS_DB_READ_KIND
+            }
+            .to_string(),
+        ),
+    );
+    serde_json::to_string(&result).map_err(anyhow::Error::from)
+}
+
+/// A database operation can commit before the final profile reauthorization
+/// observes that D2a has revoked the dispatch.  Successful results retain an
+/// internal kind marker so Electron main can distinguish a committed mutation
+/// from a read without re-parsing SQL.  Main strips that marker before the
+/// renderer boundary and converts a committed mutation to an opaque receipt if
+/// its own publication gate has closed.  `statement_may_mutate` is supplied by
+/// SQLite's prepared statement metadata in grimodex-db; it is not inferred from
+/// SQL text or the Drizzle method name.
+fn finish_profile_egress_db_dispatch(
+    reauthorization: anyhow::Result<()>,
+    rows: Vec<serde_json::Map<String, serde_json::Value>>,
+    statement_may_mutate: bool,
+) -> anyhow::Result<String> {
+    match reauthorization {
+        Ok(()) => serialize_profile_egress_db_result(rows, statement_may_mutate),
+        Err(_error) if statement_may_mutate => {
+            // The caller must not retry as if the write definitely did not
+            // happen.  `rows` is deliberately discarded because a mutation
+            // result may contain plaintext (for example RETURNING output).
+            Ok(r#"{"rows":[],"committed":true}"#.to_string())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod profile_egress_db_result_tests {
+    use super::*;
+
+    #[test]
+    fn post_commit_reauthorization_denial_returns_an_opaque_committed_receipt() {
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-db-reauth-race-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let state = profile_egress::ProfileEgressState::new(path.clone()).expect("state");
+        let status = state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        let identity = profile_egress::CallerIdentity {
+            profile_id: status.profile_id,
+            caller_id: "race-caller".to_string(),
+            caller_epoch: status.caller_epoch,
+            sender_id: 7,
+            workspace_id: None,
+            session_id: "race-session".to_string(),
+        };
+        state.register_caller(&identity).expect("register caller");
+        let permit = state.begin_dispatch(Some(&identity)).expect("dispatch");
+
+        // Model the restriction/restore transition after SQLite has committed
+        // but before the caller reaches the publication reauthorization.
+        state.invalidate_callers();
+        let reauthorization = state.reauthorize_dispatch(&permit, Some(&identity), None);
+        let mut row = serde_json::Map::new();
+        row.insert(
+            "secret".to_string(),
+            serde_json::Value::String("PRIVATE_SENTINEL".to_string()),
+        );
+        let wire = finish_profile_egress_db_dispatch(reauthorization, vec![row], true)
+            .expect("committed mutation must not be reported as not executed");
+        let value: serde_json::Value = serde_json::from_str(&wire).expect("receipt JSON");
+        assert_eq!(value, serde_json::json!({ "rows": [], "committed": true }));
+
+        drop(permit);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn successful_results_carry_the_native_statement_kind_for_main() {
+        let mut mutation_row = serde_json::Map::new();
+        mutation_row.insert(
+            "secret".to_string(),
+            serde_json::Value::String("PRIVATE_SENTINEL".to_string()),
+        );
+        let mutation_wire = finish_profile_egress_db_dispatch(Ok(()), vec![mutation_row], true)
+            .expect("successful mutation result");
+        let mutation_value: serde_json::Value =
+            serde_json::from_str(&mutation_wire).expect("mutation result JSON");
+        assert_eq!(
+            mutation_value,
+            serde_json::json!({
+                "rows": [{ "secret": "PRIVATE_SENTINEL" }],
+                "__grimodexDbResultKind": "committed-mutation"
+            })
+        );
+
+        let read_wire = finish_profile_egress_db_dispatch(Ok(()), vec![], false)
+            .expect("successful read result");
+        let read_value: serde_json::Value =
+            serde_json::from_str(&read_wire).expect("read result JSON");
+        assert_eq!(
+            read_value,
+            serde_json::json!({ "rows": [], "__grimodexDbResultKind": "read" })
+        );
+    }
+
+    #[test]
+    fn read_result_is_denied_when_post_commit_reauthorization_fails() {
+        let error = finish_profile_egress_db_dispatch(
+            Err(anyhow::anyhow!("D2A_EGRESS_DENIED: caller revoked")),
+            vec![],
+            false,
+        )
+        .expect_err("read rows must not be published after reauthorization failure");
+        assert!(error.to_string().contains("caller revoked"));
+    }
+
+    #[test]
+    fn sqlite_readonly_results_are_not_promoted_to_committed_receipts() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("database");
+        db.execute(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("schema");
+        db.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('sentinel', 'value')",
+            &[],
+            "run",
+        )
+        .expect("seed");
+
+        for sql in [
+            "SELECT value FROM app_settings WHERE key = 'sentinel'",
+            "/* leading comment */ SELECT value FROM app_settings WHERE key = 'sentinel'",
+            "-- leading comment\nSELECT value FROM app_settings WHERE key = 'sentinel'",
+            "WITH source AS (SELECT value FROM app_settings) SELECT value FROM source",
+        ] {
+            let execution = db
+                .execute_renderer_profile_egress_with_result(sql, &[], "all")
+                .expect("read-only SQL should execute");
+            assert!(
+                !execution.statement_may_mutate,
+                "unexpected mutation: {sql}"
+            );
+            let error = finish_profile_egress_db_dispatch(
+                Err(anyhow::anyhow!("D2A_EGRESS_DENIED: caller revoked")),
+                execution.rows,
+                execution.statement_may_mutate,
+            )
+            .expect_err("expired reads must remain errors");
+            assert!(error.to_string().contains("caller revoked"));
+            assert!(!error.to_string().contains("committed"));
+        }
+    }
+}
+
 fn caller_identity_from_args(
     args: &serde_json::Value,
 ) -> Result<Option<profile_egress::CallerIdentity>> {
@@ -4195,7 +4366,8 @@ impl Backend {
     /// drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
     /// CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
     /// は "run" | "get" | "all" | "values"。
-    /// 返り値: `QueryResult` の JSON 文字列 `{"rows":[…]}` (Tauri ワイヤと同形)。
+    /// 返り値: mainが消費する内部種別marker付きのJSON文字列。mainはrendererへ
+    /// 渡す前に `__grimodexDbResultKind` を除去する。
     #[napi]
     pub async fn db_execute(
         &self,
@@ -4221,28 +4393,30 @@ impl Backend {
                 caller_identity.as_ref(),
                 &workspace,
             )?;
-            let rows = if restricted {
+            let execution = if restricted {
                 workspace
                     .authority
                     .db()
-                    .execute_renderer_profile_egress(&sql, &params, &method)?
+                    .execute_renderer_profile_egress_with_result(&sql, &params, &method)?
             } else {
                 // Keep direct standalone Backend use compatible before the
                 // explicit first-restricted-publication transition.
                 workspace
                     .authority
                     .db()
-                    .execute_renderer(&sql, &params, &method)?
+                    .execute_renderer_with_result(&sql, &params, &method)?
             };
-            let serialized =
-                serde_json::to_string(&QueryResult { rows }).map_err(anyhow::Error::from)?;
-            reauthorize_profile_egress_workspace(
+            let reauthorization = reauthorize_profile_egress_workspace(
                 &state,
                 &dispatch,
                 caller_identity.as_ref(),
                 &workspace,
-            )?;
-            Ok(serialized)
+            );
+            Ok(finish_profile_egress_db_dispatch(
+                reauthorization,
+                execution.rows,
+                execution.statement_may_mutate,
+            )?)
         })
         .await
     }
@@ -4250,7 +4424,7 @@ impl Backend {
     /// 複数文を単一トランザクションで実行 (BEGIN IMMEDIATE、途中失敗で全
     /// ROLLBACK — grimodex-db の `execute_batch_tx`)。オートセーブの通り道。
     /// `statements` は `[{ sql, params, method }, …]`。
-    /// 返り値: 最終文の rows を載せた `QueryResult` の JSON 文字列。
+    /// 返り値: 最終文のrowsと、mainが消費する内部種別markerを載せたJSON文字列。
     #[napi]
     pub async fn db_execute_batch(
         &self,
@@ -4274,28 +4448,30 @@ impl Backend {
                 caller_identity.as_ref(),
                 &workspace,
             )?;
-            let rows = if restricted {
+            let execution = if restricted {
                 workspace
                     .authority
                     .db()
-                    .execute_batch_tx_renderer_profile_egress(&statements)?
+                    .execute_batch_tx_renderer_profile_egress_with_result(&statements)?
             } else {
                 // Keep direct standalone Backend use compatible before the
                 // explicit first-restricted-publication transition.
                 workspace
                     .authority
                     .db()
-                    .execute_batch_tx_renderer(&statements)?
+                    .execute_batch_tx_renderer_with_result(&statements)?
             };
-            let serialized =
-                serde_json::to_string(&QueryResult { rows }).map_err(anyhow::Error::from)?;
-            reauthorize_profile_egress_workspace(
+            let reauthorization = reauthorize_profile_egress_workspace(
                 &state,
                 &dispatch,
                 caller_identity.as_ref(),
                 &workspace,
-            )?;
-            Ok(serialized)
+            );
+            Ok(finish_profile_egress_db_dispatch(
+                reauthorization,
+                execution.rows,
+                execution.statement_may_mutate,
+            )?)
         })
         .await
     }
@@ -4994,11 +5170,26 @@ impl Backend {
                 &mut on_swapped,
             ) {
                 Ok(opened) => {
+                    // Safe Mode / RecoveryRequired return before the shared
+                    // authority-swap hook by design. Bind that restore target
+                    // explicitly before emitting the event, otherwise main
+                    // would issue identities for this path while Native still
+                    // retained the previous workspace (or None).
+                    let restore_only = opened.is_restore_only();
+                    if restore_only {
+                        state
+                            .profile_egress
+                            .bind_recovery_workspace(Some(path.clone()));
+                    }
                     let serialize_span =
                         trace.begin_span(NativeWorkspaceOpenSpanName::SerializeEvent);
-                    state
-                        .events
-                        .emit("workspace:opened", serde_json::json!({ "path": path }));
+                    state.events.emit(
+                        "workspace:opened",
+                        serde_json::json!({
+                            "path": path,
+                            "restoreOnly": restore_only,
+                        }),
+                    );
                     match serde_json::to_string(&opened) {
                         Ok(json) => {
                             trace.finish_span(serialize_span);

@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import nodeProcess from "node:process";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,6 +9,7 @@ import type { ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CodexAppServerProcess } from "./process.js";
+import { JsonRpcConnection } from "./jsonRpcConnection.js";
 
 const temporaryRoots: string[] = [];
 
@@ -239,6 +241,33 @@ describe("CodexAppServerProcess", () => {
     expect(settled).toBe(true);
   });
 
+  it("does not treat a closed direct child as a stopped process tree", async () => {
+    const child = spawnedChild();
+    let descendantAlive = true;
+    const isProcessTreeAlive = vi.fn(() => descendantAlive);
+    child.kill = vi.fn((signal?: NodeJS.Signals) => {
+      if (signal === "SIGKILL") descendantAlive = false;
+      return true;
+    });
+    const server = new CodexAppServerProcess({
+      ...trustedFileOptions(),
+      codexHomeDir: "/tmp/grimodex-codex",
+      authorizeExecutable: async () => true,
+      forceKillAfterMs: 20,
+      isProcessTreeAlive,
+      spawn: vi.fn(() => child) as never,
+    });
+    await server.start();
+
+    const disposing = server.dispose();
+    child.emit("close", null, "SIGTERM");
+    await vi.waitFor(() =>
+      expect(child.kill).toHaveBeenCalledWith("SIGKILL"),
+    );
+    expect(isProcessTreeAlive).toHaveBeenCalled();
+    await disposing;
+  });
+
   it("does not treat an error event as close and rejects when close is unconfirmed", async () => {
     const child = spawnedChild();
     const process = new CodexAppServerProcess({
@@ -272,5 +301,33 @@ describe("CodexAppServerProcess", () => {
     await process.start();
 
     await expect(process.dispose()).rejects.toThrow("kill failed");
+  });
+
+  it("observes a wire-close rejection while preserving the manager rejection", async () => {
+    const child = spawnedChild();
+    child.kill = vi.fn(() => {
+      throw new Error("kill failed");
+    });
+    const server = new CodexAppServerProcess({
+      ...trustedFileOptions(),
+      codexHomeDir: "/tmp/grimodex-codex",
+      authorizeExecutable: async () => true,
+      forceKillAfterMs: 20,
+      spawn: vi.fn(() => child) as never,
+    });
+    await server.start();
+    const connection = new JsonRpcConnection(server);
+    const unhandled = vi.fn();
+    nodeProcess.on("unhandledRejection", unhandled);
+
+    try {
+      const managerTeardown = server.dispose();
+      connection.dispose();
+      await expect(managerTeardown).rejects.toThrow("kill failed");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      nodeProcess.off("unhandledRejection", unhandled);
+    }
   });
 });

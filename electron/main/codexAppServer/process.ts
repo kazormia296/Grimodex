@@ -45,6 +45,8 @@ export interface CodexAppServerProcessOptions {
   runner?: CliProcessRunner;
   spawn?: typeof crossSpawn;
   forceKillAfterMs?: number;
+  /** Test seam and platform-specific process-tree liveness probe. */
+  isProcessTreeAlive?: (pid: number) => boolean;
   onStderr?: (text: string) => void;
 }
 
@@ -240,6 +242,26 @@ function killProcessTree(
   }
 }
 
+function defaultProcessTreeAlive(
+  platform: NodeJS.Platform,
+  pid: number,
+): boolean {
+  // On Unix the detached child is the process-group leader. A successful
+  // signal 0 against the negative pgid proves that at least one member of the
+  // managed group is still present, including a descendant whose stdio was
+  // detached before the leader exited.
+  if (platform === "win32") return false;
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (cause) {
+    // EPERM means the group exists but is not signalable by this process. Any
+    // other unexpected error is treated as alive so disposal cannot claim a
+    // clean shutdown without a positive absence proof.
+    return (cause as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
 /** Main-only stdio process for `codex app-server --listen stdio://`. */
 export class CodexAppServerProcess implements JsonRpcWire {
   private child: ChildProcess | null = null;
@@ -273,6 +295,7 @@ export class CodexAppServerProcess implements JsonRpcWire {
       runner: options.runner,
       spawn: options.spawn,
       onStderr: options.onStderr,
+      isProcessTreeAlive: options.isProcessTreeAlive,
     };
   }
 
@@ -452,7 +475,11 @@ export class CodexAppServerProcess implements JsonRpcWire {
   }
 
   close(): void {
-    void this.dispose();
+    // `close()` is the synchronous JsonRpcWire contract. Keep the shared
+    // closePromise rejecting for an awaiting manager teardown, but observe the
+    // fire-and-forget branch so a second close path cannot create an
+    // unhandledRejection.
+    void this.dispose().catch(() => undefined);
   }
 
   async dispose(): Promise<void> {
@@ -468,6 +495,7 @@ export class CodexAppServerProcess implements JsonRpcWire {
         return;
       }
       this.closed = true;
+      const pid = child.pid;
       const waitForClose = async (timeoutMs: number): Promise<boolean> => {
         if (this.childCloseObserved) return true;
         const closePromise = this.childClosePromise;
@@ -482,6 +510,27 @@ export class CodexAppServerProcess implements JsonRpcWire {
         ]);
         if (timer) clearTimeout(timer);
         return closed;
+      };
+      const isProcessTreeAlive = (): boolean => {
+        if (pid == null) return false;
+        return (
+          this.options.isProcessTreeAlive?.(pid) ??
+          defaultProcessTreeAlive(this.options.platform, pid)
+        );
+      };
+      const waitForProcessTreeExit = async (
+        timeoutMs: number,
+      ): Promise<boolean> => {
+        const deadline = Date.now() + timeoutMs;
+        while (isProcessTreeAlive()) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) return false;
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, Math.min(25, remaining));
+            timer.unref?.();
+          });
+        }
+        return true;
       };
 
       if (child.exitCode === null && child.signalCode === null) {
@@ -504,7 +553,29 @@ export class CodexAppServerProcess implements JsonRpcWire {
           );
         }
         if (!(await waitForClose(this.options.forceKillAfterMs))) {
-          throw new Error("Codex app-server child did not close");
+          throw new CodexAppServerTerminationUnconfirmedError(
+            "Codex app-server child did not close",
+          );
+        }
+      }
+
+      // The direct child may have emitted `close` while a detached descendant
+      // remains in the process group. Child stdio closure is not a process-tree
+      // termination proof, so force the group and wait for a positive absence
+      // result before reporting teardown success.
+      if (isProcessTreeAlive()) {
+        try {
+          killProcessTree(child, this.options.platform, "SIGKILL");
+        } catch (cause) {
+          throw new Error(
+            `Codex app-server process-tree termination failed: ${errorFrom(cause).message}`,
+            { cause },
+          );
+        }
+        if (!(await waitForProcessTreeExit(this.options.forceKillAfterMs))) {
+          throw new CodexAppServerTerminationUnconfirmedError(
+            "Codex app-server process tree did not terminate",
+          );
         }
       }
       this.child = null;

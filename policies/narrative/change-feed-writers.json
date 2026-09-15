@@ -659,7 +659,8 @@
         "narrative.revision-envelope",
         "narrative.freshness",
         "narrative.field-authority",
-        "narrative.maintenance-feed"
+        "narrative.maintenance-feed",
+        "idempotency.receipt"
       ],
       "scope": "project",
       "requiredIdentities": ["projectId"],

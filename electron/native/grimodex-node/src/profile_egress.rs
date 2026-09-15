@@ -7,9 +7,9 @@
 //! migration lifecycle.
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -188,7 +188,15 @@ impl ProfileEgressState {
         state.in_flight_stopped = in_flight_stopped;
         state.registered_callers.clear();
         self.revoke_permits();
-        self.persist_locked(&state)?;
+        if let Err(error) = self.persist_locked(&state) {
+            // A failed durability barrier must never leave the in-memory gate
+            // admitting calls merely because the requested stop bit was true.
+            // Keep the profile restricted, but fail closed until a later
+            // process can establish a fresh startup barrier.
+            state.in_flight_stopped = false;
+            self.admissions_open.store(false, Ordering::Release);
+            return Err(error);
+        }
         self.admissions_open
             .store(in_flight_stopped, Ordering::Release);
         Ok(status_locked(&state))
@@ -247,7 +255,13 @@ impl ProfileEgressState {
             "cannot publish profile egress state while dispatches are active"
         );
         state.in_flight_stopped = true;
-        self.persist_locked(&state)?;
+        if let Err(error) = self.persist_locked(&state) {
+            // Do not expose the completed barrier if its durable marker was not
+            // persisted. The next startup must repeat the stop barrier.
+            state.in_flight_stopped = false;
+            self.admissions_open.store(false, Ordering::Release);
+            return Err(error);
+        }
         self.admissions_open.store(true, Ordering::Release);
         Ok(status_locked(&state))
     }
@@ -312,6 +326,15 @@ impl ProfileEgressState {
         state.workspace_id = workspace_id;
         state.registered_callers.clear();
         self.revoke_permits();
+    }
+
+    /// Bind a restore-only workspace before the corresponding `workspace:opened`
+    /// event is emitted. Safe Mode has no active Database authority, but its
+    /// recovery commands still need the same trusted workspace tuple as main;
+    /// keeping this transition explicit prevents the restore-only early return
+    /// from silently skipping the Native binding update.
+    pub fn bind_recovery_workspace(&self, workspace_id: Option<String>) {
+        self.bind_workspace(workspace_id);
     }
 
     /// Wait until all leases acquired before the transition have dropped.
@@ -384,6 +407,26 @@ impl ProfileEgressState {
     }
 
     fn persist_locked(&self, state: &State) -> anyhow::Result<()> {
+        self.persist_locked_with(
+            state,
+            |staged, destination| {
+                grimodex_db::backup_restore::atomic_replace(staged, destination)
+                    .map_err(anyhow::Error::from)
+            },
+            sync_parent_directory,
+        )
+    }
+
+    fn persist_locked_with<Replace, SyncDirectory>(
+        &self,
+        state: &State,
+        replace: Replace,
+        sync_directory: SyncDirectory,
+    ) -> anyhow::Result<()>
+    where
+        Replace: FnOnce(&Path, &Path) -> anyhow::Result<()>,
+        SyncDirectory: FnOnce(&Path) -> anyhow::Result<()>,
+    {
         let saved = PersistedProfileEgress {
             schema_version: STATE_VERSION,
             profile_id: state.profile_id.clone(),
@@ -393,9 +436,12 @@ impl ProfileEgressState {
             in_flight_stopped: Some(state.in_flight_stopped),
         };
         let raw = serde_json::to_vec_pretty(&saved)?;
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-        }
+        let parent = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
         let mut temporary_os = self.path.as_os_str().to_owned();
         temporary_os.push(format!(".tmp-{}", Uuid::new_v4()));
         let temporary = PathBuf::from(temporary_os);
@@ -410,8 +456,10 @@ impl ProfileEgressState {
             file.sync_all()
                 .with_context(|| format!("sync {}", temporary.display()))?;
             drop(file);
-            grimodex_db::backup_restore::atomic_replace(&temporary, &self.path)
+            replace(&temporary, &self.path)
                 .with_context(|| format!("replace {}", self.path.display()))?;
+            sync_directory(parent)
+                .with_context(|| format!("sync directory {}", parent.display()))?;
             Ok(())
         })();
         if result.is_err() {
@@ -419,6 +467,27 @@ impl ProfileEgressState {
         }
         result
     }
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> anyhow::Result<()> {
+    // `Path::parent()` for a relative filename is an empty path.  The
+    // profile path is normally absolute, but syncing `.` keeps the durability
+    // contract intact for tests and direct embedders as well.
+    let directory = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    File::open(directory)
+        .with_context(|| format!("open directory {}", directory.display()))?
+        .sync_all()
+        .with_context(|| format!("sync directory {}", directory.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> anyhow::Result<()> {
+    Ok(())
 }
 
 impl ProfileDispatchPermit {
@@ -507,6 +576,47 @@ mod tests {
         assert!(restored.handles_invalidated);
         assert!(restored.in_flight_stopped);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn directory_sync_failure_after_replace_is_not_reported_as_persist_success() {
+        let path = temp_path("directory-sync-failure");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let locked = state.lock();
+        let result = state.persist_locked_with(
+            &locked,
+            |staged, destination| fs::rename(staged, destination).map_err(anyhow::Error::from),
+            |_parent| Err(anyhow!("injected directory sync failure")),
+        );
+        drop(locked);
+
+        let error = result.expect_err("directory sync failure must fail persistence");
+        assert!(
+            format!("{error:#}").contains("injected directory sync failure"),
+            "unexpected persistence error: {error:#}"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn activation_stays_closed_when_profile_persistence_fails() {
+        let parent = temp_path("persistence-failure-parent");
+        let path = parent.join("profile-egress.json");
+        let state = ProfileEgressState::new(path).expect("state before parent exists");
+        fs::write(&parent, b"blocking file").expect("create blocking parent file");
+
+        let error = state
+            .activate_first_restricted_publication(true)
+            .expect_err("activation must fail when its profile path cannot be persisted");
+        assert!(format!("{error:#}").contains("create"));
+        let status = state.status();
+        assert!(status.restricted);
+        assert!(!status.in_flight_stopped);
+        assert!(
+            state.begin_dispatch(None).is_err(),
+            "failed persistence must not leave admissions open"
+        );
+        let _ = fs::remove_file(parent);
     }
 
     #[test]
@@ -719,6 +829,51 @@ mod tests {
         let permit = state
             .begin_dispatch(Some(&replacement))
             .expect("replacement caller");
+        drop(permit);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn restore_only_workspace_binding_reauthorizes_recovery_then_requires_rebind() {
+        let path = temp_path("recovery-binding");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let status = state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        state.bind_workspace(Some("workspace-a".to_string()));
+        let identity_a = CallerIdentity {
+            profile_id: status.profile_id,
+            caller_id: "main-issued-a".to_string(),
+            caller_epoch: status.caller_epoch,
+            sender_id: 33,
+            workspace_id: Some("workspace-a".to_string()),
+            session_id: "session-a".to_string(),
+        };
+        state
+            .register_caller(&identity_a)
+            .expect("register workspace A caller");
+        let permit = state.begin_dispatch(Some(&identity_a)).expect("dispatch A");
+
+        // Safe Mode has no published DB authority, but Native must still
+        // rotate the trusted recovery target before main can issue identity B.
+        state.bind_recovery_workspace(Some("workspace-b".to_string()));
+        assert!(permit.ensure_open().is_err());
+        assert!(state.begin_dispatch(Some(&identity_a)).is_err());
+
+        let identity_b = CallerIdentity {
+            workspace_id: Some("workspace-b".to_string()),
+            caller_id: "main-issued-b".to_string(),
+            session_id: "session-b".to_string(),
+            ..identity_a
+        };
+        state
+            .register_caller(&identity_b)
+            .expect("register restore-only target caller");
+        state
+            .begin_dispatch(Some(&identity_b))
+            .map(drop)
+            .expect("recovery-bound caller can dispatch");
+
         drop(permit);
         let _ = fs::remove_file(path);
     }

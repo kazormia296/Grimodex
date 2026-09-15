@@ -630,7 +630,8 @@ pub mod workspace_lease;
 // フラットに import できるように)。
 pub use error::{AppError, AppResult, QueryResult};
 pub use execute::{
-    SqlOrigin, RENDERER_SQL_SECURITY_ERROR, RENDERER_TYPED_PAYLOAD_ERROR,
+    SqlExecutionResult, SqlOrigin, RENDERER_SQL_SECURITY_ERROR,
+    RENDERER_TYPED_PAYLOAD_ERROR,
 };
 pub use integrity::{RepairIntegrityPayload, RepairIntegrityReport};
 pub use narrative_runtime_policy::{

@@ -52,6 +52,16 @@ pub enum SqlOrigin {
     TrustedMigration,
 }
 
+/// Result metadata used by the Native profile-egress adapter.  SQLite's
+/// prepared statement is the authority for whether the executed statement can
+/// mutate the database; callers must not infer this from the SQL spelling or
+/// the Drizzle method name.
+#[derive(Debug)]
+pub struct SqlExecutionResult {
+    pub rows: Vec<serde_json::Map<String, Value>>,
+    pub statement_may_mutate: bool,
+}
+
 impl SqlOrigin {
     pub fn is_untrusted(self) -> bool {
         matches!(self, Self::Renderer | Self::McpGeneric)
@@ -65,6 +75,10 @@ thread_local! {
     /// The ordinary renderer policy remains backwards-compatible; D2a adds a
     /// publication guard on top of the same SQLite authorizer.
     static PROFILE_EGRESS_SQL_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    /// Only the batch runner may issue transaction controls. Payload SQL is
+    /// always evaluated with this disabled, even while the runner-owned
+    /// BEGIN/COMMIT/ROLLBACK is executing under the same authorizer.
+    static RUNNER_TRANSACTION_CONTROL_ALLOWED: Cell<bool> = const { Cell::new(false) };
 }
 
 const RENDERER_SQL_RESOURCE_ERROR: &str = "RENDERER_SQL_RESOURCE_LIMIT";
@@ -299,6 +313,11 @@ fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
         AuthAction::Function { function_name } if renderer_function_denied(function_name) => {
             Some(format!("function {function_name}"))
         }
+        AuthAction::Transaction { .. } | AuthAction::Savepoint { .. }
+            if !RUNNER_TRANSACTION_CONTROL_ALLOWED.with(Cell::get) =>
+        {
+            Some("transaction control".to_string())
+        }
         AuthAction::Delete { .. }
         | AuthAction::Insert { .. }
         | AuthAction::Pragma { .. }
@@ -396,18 +415,48 @@ fn with_profile_egress_sql<T>(operation: impl FnOnce() -> T) -> T {
     result
 }
 
-/// SQLite itself is the parser for DML result shape. Preparing the statement
-/// and checking `readonly` plus `column_count` rejects every DML `RETURNING`
-/// form (including CTE variants) before execution without a pseudo SQL parser.
-fn reject_profile_egress_dml_result(conn: &Connection, sql: &str) -> anyhow::Result<()> {
-    if !PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get) {
+fn with_runner_transaction_controls<T>(operation: impl FnOnce() -> T) -> T {
+    let previous = RUNNER_TRANSACTION_CONTROL_ALLOWED.with(|allowed| {
+        let previous = allowed.get();
+        allowed.set(true);
+        previous
+    });
+    let result = operation();
+    RUNNER_TRANSACTION_CONTROL_ALLOWED.with(|allowed| allowed.set(previous));
+    result
+}
+
+fn reject_stale_untrusted_transaction(conn: &Connection) -> anyhow::Result<()> {
+    if conn.is_autocommit() {
         return Ok(());
     }
-    let statement = conn.prepare(sql)?;
-    if !statement.readonly() && statement.column_count() > 0 {
-        anyhow::bail!("{RENDERER_PROFILE_EGRESS_ERROR}: DML result plaintext is not published");
+    let rollback = conn.execute_batch("ROLLBACK");
+    match rollback {
+        Ok(()) => anyhow::bail!(
+            "{RENDERER_SQL_SECURITY_ERROR}: untrusted SQL connection had an open transaction; it was rolled back"
+        ),
+        Err(error) => anyhow::bail!(
+            "{RENDERER_SQL_SECURITY_ERROR}: untrusted SQL connection had an open transaction and rollback failed: {error}"
+        ),
     }
-    Ok(())
+}
+
+fn reject_untrusted_transaction_after<T>(
+    conn: &Connection,
+    result: anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    if conn.is_autocommit() {
+        return result;
+    }
+    let rollback = conn.execute_batch("ROLLBACK");
+    match rollback {
+        Ok(()) => anyhow::bail!(
+            "{RENDERER_SQL_SECURITY_ERROR}: untrusted SQL left a transaction open; it was rolled back"
+        ),
+        Err(error) => anyhow::bail!(
+            "{RENDERER_SQL_SECURITY_ERROR}: untrusted SQL left a transaction open and rollback failed: {error}"
+        ),
+    }
 }
 
 struct RendererSqlPolicyState {
@@ -705,33 +754,39 @@ impl Database {
     fn execute_batch_tx_with_conn(
         conn: &Connection,
         statements: &[BatchStatement],
-    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+    ) -> anyhow::Result<SqlExecutionResult> {
         // BEGIN IMMEDIATE acquires the write lock up front. A plain (deferred)
         // BEGIN only takes it on the first write, so a writer on the same DB
         // file (e.g. the MCP process) could slip in between and turn a later
         // statement into SQLITE_BUSY_SNAPSHOT — which busy_timeout cannot retry.
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let mut last_rows = Vec::new();
+        with_runner_transaction_controls(|| conn.execute_batch("BEGIN IMMEDIATE"))?;
+        let mut last_result = SqlExecutionResult {
+            rows: Vec::new(),
+            statement_may_mutate: false,
+        };
         let result = (|| -> anyhow::Result<_> {
             for stmt in statements {
-                last_rows = Self::execute_with_conn(conn, &stmt.sql, &stmt.params, &stmt.method)?;
+                let execution =
+                    Self::execute_with_conn_result(conn, &stmt.sql, &stmt.params, &stmt.method)?;
+                last_result.statement_may_mutate |= execution.statement_may_mutate;
+                last_result.rows = execution.rows;
             }
-            Ok(last_rows)
+            Ok(last_result)
         })();
         match result {
-            Ok(rows) => match conn.execute_batch("COMMIT") {
+            Ok(rows) => match with_runner_transaction_controls(|| conn.execute_batch("COMMIT")) {
                 Ok(()) => Ok(rows),
                 // A failed COMMIT (deferred FK check, busy, disk-full, ...) leaves
                 // the transaction open on this shared single connection. Without
                 // an explicit ROLLBACK the next caller inherits a zombie tx and
                 // its writes silently ride on / get rolled back with it.
                 Err(error) => {
-                    let _ = conn.execute_batch("ROLLBACK");
+                    let _ = with_runner_transaction_controls(|| conn.execute_batch("ROLLBACK"));
                     Err(error.into())
                 }
             },
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                let _ = with_runner_transaction_controls(|| conn.execute_batch("ROLLBACK"));
                 Err(error)
             }
         }
@@ -741,19 +796,27 @@ impl Database {
         &self,
         statements: &[BatchStatement],
         origin: SqlOrigin,
-    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+    ) -> anyhow::Result<SqlExecutionResult> {
         let lock_started = Instant::now();
         let conn = self.lock_conn()?;
         let lock_wait_ms = lock_started.elapsed().as_millis();
 
         let sql_started = Instant::now();
         let result = if origin.is_untrusted() {
-            let reserved_project_setting_guard_requested = statements.iter().any(|statement| {
-                untrusted_sql_needs_reserved_project_setting_guard(&statement.sql)
-            });
-            with_untrusted_sql_policy(&conn, reserved_project_setting_guard_requested, |conn| {
-                Self::execute_batch_tx_with_conn(conn, statements)
-            })
+            match reject_stale_untrusted_transaction(&conn) {
+                Ok(()) => {
+                    let reserved_project_setting_guard_requested = statements.iter().any(|statement| {
+                        untrusted_sql_needs_reserved_project_setting_guard(&statement.sql)
+                    });
+                    let result = with_untrusted_sql_policy(
+                        &conn,
+                        reserved_project_setting_guard_requested,
+                        |conn| Self::execute_batch_tx_with_conn(conn, statements),
+                    );
+                    reject_untrusted_transaction_after(&conn, result)
+                }
+                Err(error) => Err(error),
+            }
         } else {
             Self::execute_batch_tx_with_conn(&conn, statements)
         };
@@ -783,7 +846,9 @@ impl Database {
         &self,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_batch_tx_impl(statements, SqlOrigin::TrustedDomainWriter)
+        Ok(self
+            .execute_batch_tx_impl(statements, SqlOrigin::TrustedDomainWriter)?
+            .rows)
     }
 
     pub fn execute_batch_tx_with_origin(
@@ -791,7 +856,7 @@ impl Database {
         origin: SqlOrigin,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_batch_tx_impl(statements, origin)
+        Ok(self.execute_batch_tx_impl(statements, origin)?.rows)
     }
 
     /// Execute renderer-origin statements under the connection-local
@@ -800,6 +865,15 @@ impl Database {
         &self,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(self
+            .execute_batch_tx_renderer_with_result(statements)?
+            .rows)
+    }
+
+    pub fn execute_batch_tx_renderer_with_result(
+        &self,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<SqlExecutionResult> {
         self.execute_batch_tx_impl(statements, SqlOrigin::Renderer)
     }
 
@@ -809,6 +883,15 @@ impl Database {
         &self,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(self
+            .execute_batch_tx_renderer_profile_egress_with_result(statements)?
+            .rows)
+    }
+
+    pub fn execute_batch_tx_renderer_profile_egress_with_result(
+        &self,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<SqlExecutionResult> {
         with_profile_egress_sql(|| self.execute_batch_tx_impl(statements, SqlOrigin::Renderer))
     }
 
@@ -821,7 +904,7 @@ impl Database {
             origin.is_untrusted(),
             "execute_batch_tx_untrusted requires an untrusted SqlOrigin"
         );
-        self.execute_batch_tx_impl(statements, origin)
+        Ok(self.execute_batch_tx_impl(statements, origin)?.rows)
     }
 
     pub fn execute_with_conn(
@@ -830,12 +913,33 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(Self::execute_with_conn_result(conn, sql, params, method)?.rows)
+    }
+
+    fn execute_with_conn_result(
+        conn: &Connection,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<SqlExecutionResult> {
         prepare_untrusted_statement_context(sql);
-        reject_profile_egress_dml_result(conn, sql)?;
         if renderer_indirect_ai_audit_cascade(conn, sql)? {
             return Err(anyhow::anyhow!(
                 "{RENDERER_SQL_SECURITY_ERROR}: denied mutation of ai_audit_events"
             ));
+        }
+        let mut stmt = conn.prepare(sql)?;
+        let statement_may_mutate = !stmt.readonly();
+        // SQLite itself is the parser for DML result shape. Checking
+        // `readonly` plus `column_count` rejects every DML `RETURNING` form
+        // (including CTE variants) before execution without a pseudo parser.
+        if PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get)
+            && statement_may_mutate
+            && stmt.column_count() > 0
+        {
+            anyhow::bail!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: DML result plaintext is not published"
+            );
         }
         let native_params: Vec<Box<dyn rusqlite::types::ToSql>> = params
             .iter()
@@ -859,11 +963,13 @@ impl Database {
             native_params.iter().map(|p| p.as_ref()).collect();
 
         if method == "run" {
-            conn.execute(sql, params_from_iter(param_refs.iter()))?;
-            return Ok(vec![]);
+            stmt.execute(params_from_iter(param_refs.iter()))?;
+            return Ok(SqlExecutionResult {
+                rows: vec![],
+                statement_may_mutate,
+            });
         }
 
-        let mut stmt = conn.prepare(sql)?;
         let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
         let rows = stmt.query_map(params_from_iter(param_refs.iter()), |row| {
             let mut map = serde_json::Map::new();
@@ -903,9 +1009,15 @@ impl Database {
             result.push(row?);
         }
         if method == "get" {
-            return Ok(result.into_iter().take(1).collect());
+            return Ok(SqlExecutionResult {
+                rows: result.into_iter().take(1).collect(),
+                statement_may_mutate,
+            });
         }
-        Ok(result)
+        Ok(SqlExecutionResult {
+            rows: result,
+            statement_may_mutate,
+        })
     }
 
     pub fn execute(
@@ -914,7 +1026,9 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_impl(sql, params, method, SqlOrigin::TrustedDomainWriter)
+        Ok(self
+            .execute_impl(sql, params, method, SqlOrigin::TrustedDomainWriter)?
+            .rows)
     }
 
     /// Execute one renderer-origin statement under the restricted policy.
@@ -924,6 +1038,15 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(self.execute_renderer_with_result(sql, params, method)?.rows)
+    }
+
+    pub fn execute_renderer_with_result(
+        &self,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<SqlExecutionResult> {
         self.execute_impl(sql, params, method, SqlOrigin::Renderer)
     }
 
@@ -935,6 +1058,17 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(self
+            .execute_renderer_profile_egress_with_result(sql, params, method)?
+            .rows)
+    }
+
+    pub fn execute_renderer_profile_egress_with_result(
+        &self,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<SqlExecutionResult> {
         with_profile_egress_sql(|| self.execute_impl(sql, params, method, SqlOrigin::Renderer))
     }
 
@@ -945,7 +1079,7 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_impl(sql, params, method, origin)
+        Ok(self.execute_impl(sql, params, method, origin)?.rows)
     }
 
     pub fn execute_untrusted(
@@ -959,7 +1093,7 @@ impl Database {
             origin.is_untrusted(),
             "execute_untrusted requires an untrusted SqlOrigin"
         );
-        self.execute_impl(sql, params, method, origin)
+        Ok(self.execute_impl(sql, params, method, origin)?.rows)
     }
 
     fn execute_impl(
@@ -968,20 +1102,28 @@ impl Database {
         params: &[Value],
         method: &str,
         origin: SqlOrigin,
-    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+    ) -> anyhow::Result<SqlExecutionResult> {
         let lock_started = Instant::now();
         let conn = self.lock_conn()?;
         let lock_wait_ms = lock_started.elapsed().as_millis();
 
         let sql_started = Instant::now();
         let result = if origin.is_untrusted() {
-            let reserved_project_setting_guard_requested =
-                untrusted_sql_needs_reserved_project_setting_guard(sql);
-            with_untrusted_sql_policy(&conn, reserved_project_setting_guard_requested, |conn| {
-                Self::execute_with_conn(conn, sql, params, method)
-            })
+            match reject_stale_untrusted_transaction(&conn) {
+                Ok(()) => {
+                    let reserved_project_setting_guard_requested =
+                        untrusted_sql_needs_reserved_project_setting_guard(sql);
+                    let result = with_untrusted_sql_policy(
+                        &conn,
+                        reserved_project_setting_guard_requested,
+                        |conn| Self::execute_with_conn_result(conn, sql, params, method),
+                    );
+                    reject_untrusted_transaction_after(&conn, result)
+                }
+                Err(error) => Err(error),
+            }
         } else {
-            Self::execute_with_conn(&conn, sql, params, method)
+            Self::execute_with_conn_result(&conn, sql, params, method)
         };
         let sql_ms = sql_started.elapsed().as_millis();
         if lock_wait_ms + sql_ms >= SLOW_DB_CALL_MS {
@@ -1000,6 +1142,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use super::super::foreshadow;
     use super::super::narrative_extraction::maintenance_runtime::SCAN_IMPORT_STATE_KEY;
     use super::*;
     use std::collections::BTreeSet;
@@ -1064,6 +1207,184 @@ mod tests {
         );
         db.execute("CREATE TABLE trusted (id INTEGER)", &[], "run")
             .expect("trusted backend schema operation remains available");
+    }
+
+    #[test]
+    fn renderer_sql_cannot_control_the_runner_transaction_or_leave_one_open() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE renderer_transaction_guard (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted schema setup");
+        db.execute(
+            "INSERT INTO renderer_transaction_guard (id, value) VALUES (1, 0)",
+            &[],
+            "run",
+        )
+        .expect("trusted seed");
+
+        for sql in [
+            "BEGIN",
+            "COMMIT",
+            "END",
+            "ROLLBACK",
+            "SAVEPOINT renderer_savepoint",
+            "RELEASE renderer_savepoint",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("renderer transaction control must be rejected");
+            assert!(
+                error.to_string().contains("transaction control"),
+                "unexpected {sql} error: {error}"
+            );
+            db.with_conn(|conn| {
+                anyhow::ensure!(
+                    conn.is_autocommit(),
+                    "renderer control left the shared connection in a transaction: {sql}"
+                );
+                Ok(())
+            })
+            .expect("inspect autocommit state");
+        }
+
+        db.with_conn(|conn| {
+            conn.execute_batch("BEGIN")?;
+            Ok(())
+        })
+        .expect("trusted fixture transaction");
+        let error = db
+            .execute_renderer("SELECT 1", &[], "get")
+            .expect_err("an inherited transaction must not cross the renderer boundary");
+        assert!(error.to_string().contains("open transaction"));
+        db.with_conn(|conn| {
+            anyhow::ensure!(conn.is_autocommit(), "stale transaction was not cleaned up");
+            Ok(())
+        })
+        .expect("stale transaction cleanup");
+
+        let error = db
+            .execute_batch_tx_renderer(&[
+                BatchStatement {
+                    sql: "UPDATE renderer_transaction_guard SET value = 1 WHERE id = 1".into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+                BatchStatement {
+                    sql: "COMMIT".into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+            ])
+            .expect_err("payload COMMIT must not escape the runner rollback");
+        assert!(error.to_string().contains("transaction control"));
+        let rows = db
+            .execute(
+                "SELECT value FROM renderer_transaction_guard WHERE id = 1",
+                &[],
+                "get",
+            )
+            .expect("inspect rolled back value");
+        assert_eq!(rows[0]["value"], Value::from(0));
+        db.with_conn(|conn| {
+            anyhow::ensure!(conn.is_autocommit(), "failed batch left a transaction open");
+            Ok(())
+        })
+        .expect("failed batch cleanup");
+    }
+
+    #[test]
+    fn profile_egress_protects_plaintext_replicas_in_the_idempotency_ledger() {
+        let db = crate::test_support::current_schema_memory().expect("current schema fixture");
+        let project_id = "idempotency-protected-project";
+        let foreshadow_id = "idempotency-protected-foreshadow";
+        db.execute(
+            "INSERT INTO projects (id, title) VALUES (?, ?)",
+            &[
+                Value::String(project_id.to_string()),
+                Value::String("Protected ledger test".to_string()),
+            ],
+            "run",
+        )
+        .expect("seed project");
+        db.execute(
+            "INSERT INTO foreshadows
+                (id, project_id, title, notes, payoff_confirmed, abandoned, secret,
+                 created_at, updated_at)
+             VALUES (?, ?, ?, ?, 0, 0, 1, ?, ?)",
+            &[
+                Value::String(foreshadow_id.to_string()),
+                Value::String(project_id.to_string()),
+                Value::String("SECRET_FORESHADOW_TITLE".to_string()),
+                Value::String("SECRET_FORESHADOW_NOTES".to_string()),
+                Value::Number(1_i64.into()),
+                Value::Number(1_i64.into()),
+            ],
+            "run",
+        )
+        .expect("seed foreshadow");
+
+        // The no-op typed update intentionally stores the complete historical
+        // row in the non-create idempotency receipt, reproducing the legacy
+        // plaintext replica that D2a must cover independently of foreshadows.
+        let patch: foreshadow::ForeshadowPatch = serde_json::from_value(serde_json::json!({
+            "requestId": "idempotency-protected-request",
+            "sessionId": "idempotency-protected-session",
+            "eventUid": "idempotency-protected-event",
+            "origin": "human",
+            "projectId": project_id,
+            "baseVersion": 0
+        }))
+        .expect("typed no-op update payload");
+        let response = foreshadow::update(&db, foreshadow_id.to_string(), patch)
+            .expect("typed update");
+        assert_eq!(response["notes"], Value::String("SECRET_FORESHADOW_NOTES".to_string()));
+
+        let ledger = db
+            .execute(
+                "SELECT tombstone_json FROM idempotency_requests
+                  WHERE domain = 'foreshadow_update'
+                    AND request_id = 'idempotency-protected-request'",
+                &[],
+                "get",
+            )
+            .expect("read ledger through trusted Native path");
+        assert!(ledger[0]["tombstone_json"]
+            .as_str()
+            .expect("ledger response")
+            .contains("SECRET_FORESHADOW_NOTES"));
+
+        let error = db
+            .execute_renderer_profile_egress(
+                "SELECT json_extract(tombstone_json, '$.notes')
+                   FROM idempotency_requests
+                  WHERE domain = 'foreshadow_update'",
+                &[],
+                "all",
+            )
+            .expect_err("D2a must deny the replicated plaintext read");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected ledger read error: {error}"
+        );
+
+        for sql in [
+            "UPDATE idempotency_requests SET tombstone_json = '{}'",
+            "DELETE FROM idempotency_requests",
+            "INSERT INTO idempotency_requests
+                (domain, request_id, project_id, payload_hash, tombstone_json)
+             VALUES ('tamper', 'tamper', 'idempotency-protected-project', 'hash', '{}')",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("renderer must not mutate the Native idempotency ledger");
+            assert!(
+                error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                "unexpected ledger mutation error for {sql}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -1246,6 +1567,66 @@ mod tests {
             "run",
         )
         .expect("non-model local DML remains available");
+    }
+
+    #[test]
+    fn sqlite_prepared_statement_classifies_comments_and_ctes() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE renderer_statement_kind (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted local schema setup");
+        db.execute(
+            "INSERT INTO renderer_statement_kind (id, value) VALUES (1, 1)",
+            &[],
+            "run",
+        )
+        .expect("trusted local seed");
+
+        for sql in [
+            "SELECT value FROM renderer_statement_kind WHERE id = 1",
+            "/* leading comment */ SELECT value FROM renderer_statement_kind WHERE id = 1",
+            "-- leading comment\nSELECT value FROM renderer_statement_kind WHERE id = 1",
+            "WITH source AS (SELECT value FROM renderer_statement_kind) SELECT value FROM source",
+        ] {
+            let result = db
+                .execute_renderer_profile_egress_with_result(sql, &[], "all")
+                .expect("read-only statement should execute");
+            assert!(
+                !result.statement_may_mutate,
+                "SQLite marked a read-only statement as mutable: {sql}"
+            );
+            assert_eq!(result.rows.len(), 1, "unexpected rows for {sql}");
+        }
+
+        let result = db
+            .execute_renderer_profile_egress_with_result(
+                "WITH next(value) AS (SELECT 2)
+                 UPDATE renderer_statement_kind
+                    SET value = (SELECT value FROM next)
+                  WHERE id = 1",
+                &[],
+                "all",
+            )
+            .expect("CTE update should execute");
+        assert!(result.statement_may_mutate);
+        assert!(result.rows.is_empty());
+
+        let batch = db
+            .execute_batch_tx_renderer_profile_egress_with_result(&[
+                BatchStatement {
+                    sql: "WITH source AS (SELECT value FROM renderer_statement_kind)
+                           SELECT value FROM source"
+                        .into(),
+                    params: vec![],
+                    method: "all".into(),
+                },
+            ])
+            .expect("read-only CTE batch should execute");
+        assert!(!batch.statement_may_mutate);
+        assert_eq!(batch.rows.len(), 1);
     }
 
     #[test]

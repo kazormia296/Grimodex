@@ -2178,6 +2178,7 @@ describe("NIR-1 router sender binding", () => {
       assertInvoke: vi.fn(() => {
         throw new Error("D2A_EGRESS_DENIED: old-external-ai");
       }),
+      assertPlaintextPublication: vi.fn(),
       allowsBackendEvent: vi.fn(() => true),
       assertExternalUrl: vi.fn(),
       registerMainEgressParticipant: vi.fn(),
@@ -2219,6 +2220,7 @@ describe("NIR-1 router sender binding", () => {
       unavailable: false,
       issueCallerIdentity: vi.fn(() => identity),
       assertInvoke: vi.fn(),
+      assertPlaintextPublication: vi.fn(),
       allowsBackendEvent: vi.fn(() => true),
       assertExternalUrl: vi.fn(),
       registerMainEgressParticipant: vi.fn(),
@@ -2245,6 +2247,310 @@ describe("NIR-1 router sender binding", () => {
       expect.objectContaining({ callerIdentity: identity }),
     );
     expect(saveAiSettings).toHaveBeenCalledWith({});
+  });
+
+  it("does not return an admitted plaintext read while profile activation drains", async () => {
+    const initialStatus = {
+      profileId: "profile-1",
+      callerEpoch: 4,
+      restricted: false,
+      handlesInvalidated: false,
+      inFlightStopped: true,
+      sqlPolicy: {
+        version: 1,
+        protectedTables: ["narrative_extraction_runs"],
+        protectedColumns: [],
+      },
+    };
+    const activatedStatus = {
+      ...initialStatus,
+      profileId: "profile-activated",
+      callerEpoch: 5,
+      restricted: true,
+      handlesInvalidated: true,
+    };
+    let resolveReader!: (value: string | PromiseLike<string>) => void;
+    const readerResponse = new Promise<string>((resolve) => {
+      resolveReader = resolve;
+    });
+    const narrativeExtractionGetRun = vi.fn(() => readerResponse);
+    const activateProfileEgress = vi.fn(async () =>
+      JSON.stringify(activatedStatus),
+    );
+    const backend = {
+      initializeProfileEgress: vi.fn(async () => JSON.stringify(initialStatus)),
+      activateProfileEgress,
+      registerProfileEgressCaller: vi.fn(),
+      invalidateProfileEgressCallers: vi.fn(),
+      narrativeExtractionGetRun,
+    };
+    const profileEgress = await createProfileEgressGate(
+      backend as unknown as NapiBackendLike,
+    );
+    let releaseDrain!: () => void;
+    const drain = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseDrain = resolve;
+        }),
+    );
+    profileEgress.registerMainEgressParticipant("reader-drain", drain);
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const pendingReader = invokeHandler()(
+      { sender: { id: 42 } },
+      "narrative_extraction_get_run",
+      { payload: { runId: "run-1", projectId: "project-1" } },
+    );
+    await vi.waitFor(() =>
+      expect(narrativeExtractionGetRun).toHaveBeenCalledOnce(),
+    );
+
+    const activation = profileEgress.activateFirstRestrictedPublication!();
+    await vi.waitFor(() => expect(drain).toHaveBeenCalledOnce());
+    expect(profileEgress.restricted).toBe(true);
+    expect(activateProfileEgress).not.toHaveBeenCalled();
+
+    resolveReader(JSON.stringify({ secret: "D2A_PLAINTEXT_SENTINEL" }));
+    const envelope = await pendingReader;
+    expect(envelope.ok).toBe(false);
+    if (!envelope.ok) {
+      expect(envelope.error).toMatch(
+        /^D2A_EGRESS_DENIED: plaintext-publication/u,
+      );
+      expect(envelope.error).not.toContain("D2A_PLAINTEXT_SENTINEL");
+    }
+
+    releaseDrain();
+    await activation;
+  });
+
+  it("preserves Native opaque committed receipts for single and batch DB writes", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "session-1",
+    };
+    const assertPlaintextPublication = vi.fn(() => {
+      throw new Error("D2A_EGRESS_DENIED: plaintext-publication");
+    });
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication,
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    const backend = {
+      dbExecute: vi.fn(async () =>
+        JSON.stringify({ rows: [], committed: true }),
+      ),
+      dbExecuteBatch: vi.fn(async () =>
+        JSON.stringify({ rows: [], committed: true }),
+      ),
+    };
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const single = await invokeHandler()(
+      { sender: { id: 42 } },
+      "db_execute",
+      {
+        sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
+        params: ["next", "session-1"],
+        method: "run",
+      },
+    );
+    const batch = await invokeHandler()(
+      { sender: { id: 42 } },
+      "db_execute_batch",
+      {
+        statements: [
+          {
+            sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
+            params: ["next", "session-1"],
+            method: "run",
+          },
+        ],
+      },
+    );
+
+    expect(single).toEqual({
+      ok: true,
+      value: { rows: [], committed: true },
+    });
+    expect(batch).toEqual({
+      ok: true,
+      value: { rows: [], committed: true },
+    });
+    expect(assertPlaintextPublication).not.toHaveBeenCalled();
+
+    backend.dbExecute.mockResolvedValueOnce(
+      JSON.stringify({ rows: [], committed: true, unexpected: true }),
+    );
+    const malformedReceipt = await invokeHandler()(
+      { sender: { id: 42 } },
+      "db_execute",
+      {
+        sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
+        params: ["next", "session-1"],
+        method: "run",
+      },
+    );
+    expect(malformedReceipt).toEqual({
+      ok: false,
+      error: "D2A_EGRESS_DENIED: plaintext-publication",
+    });
+    expect(assertPlaintextPublication).toHaveBeenCalledOnce();
+  });
+
+  it("converts successful Native mutation results to opaque receipts when main closes publication", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "session-1",
+    };
+    const assertPlaintextPublication = vi.fn(() => {
+      throw new Error("D2A_EGRESS_DENIED: plaintext-publication");
+    });
+    const nativeMutation = JSON.stringify({
+      rows: [{ secret: "D2A_PLAINTEXT_SENTINEL" }],
+      __grimodexDbResultKind: "committed-mutation",
+    });
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication,
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    const backend = {
+      dbExecute: vi.fn(async () => nativeMutation),
+      dbExecuteBatch: vi.fn(async () => nativeMutation),
+    };
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const single = await invokeHandler()(
+      { sender: { id: 42 } },
+      "db_execute",
+      {
+        sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
+        params: ["next", "session-1"],
+        method: "run",
+      },
+    );
+    const batch = await invokeHandler()(
+      { sender: { id: 42 } },
+      "db_execute_batch",
+      {
+        statements: [
+          {
+            sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
+            params: ["next", "session-1"],
+            method: "run",
+          },
+        ],
+      },
+    );
+
+    expect(single).toEqual({
+      ok: true,
+      value: { rows: [], committed: true },
+    });
+    expect(batch).toEqual({
+      ok: true,
+      value: { rows: [], committed: true },
+    });
+    expect(assertPlaintextPublication).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(single)).not.toContain("D2A_PLAINTEXT_SENTINEL");
+    expect(JSON.stringify(batch)).not.toContain("D2A_PLAINTEXT_SENTINEL");
+  });
+
+  it("strips the Native mutation marker while preserving rows when publication remains allowed", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "session-1",
+    };
+    const assertPlaintextPublication = vi.fn();
+    const backend = {
+      dbExecute: vi.fn(async () =>
+        JSON.stringify({
+          rows: [{ id: "created-1" }],
+          __grimodexDbResultKind: "committed-mutation",
+        }),
+      ),
+      dbExecuteBatch: vi.fn(async () => JSON.stringify({ rows: [] })),
+    };
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      {
+        restricted: false,
+        unavailable: false,
+        issueCallerIdentity: vi.fn(() => identity),
+        assertInvoke: vi.fn(),
+        assertPlaintextPublication,
+        allowsBackendEvent: vi.fn(() => true),
+        assertExternalUrl: vi.fn(),
+        registerMainEgressParticipant: vi.fn(),
+      },
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "db_execute",
+      {
+        sql: "INSERT INTO app_settings (key, value) VALUES (?, ?) RETURNING key",
+        params: ["new-key", "new-value"],
+        method: "all",
+      },
+    );
+
+    expect(envelope).toEqual({
+      ok: true,
+      value: { rows: [{ id: "created-1" }] },
+    });
+    expect(assertPlaintextPublication).toHaveBeenCalledOnce();
+    expect(JSON.stringify(envelope)).not.toContain("__grimodexDbResultKind");
   });
 
   it("keeps every legacy AI family at dispatch zero, including route variants", async () => {
@@ -2321,6 +2627,13 @@ describe("NIR-1 router sender binding", () => {
       narrativeExtractionGetRunReviewBundle: nativeTransport(
         "narrativeExtractionGetRunReviewBundle",
       ),
+      narrativeExtractionClaimTask: nativeTransport(
+        "narrativeExtractionClaimTask",
+        JSON.stringify({
+          claimed: true,
+          task: { inputJson: "D2A_TASK_PLAINTEXT_SENTINEL" },
+        }),
+      ),
       saveGlobalSettings: nativeTransport("saveGlobalSettings"),
     };
     const childDispatches: string[] = [];
@@ -2384,6 +2697,13 @@ describe("NIR-1 router sender binding", () => {
         { files: [{ path: "sentinel.md", content: "sentinel" }] },
       ],
       ["vivliostyle_preview_start", { url: "https://sentinel.invalid" }],
+      [
+        "narrative_extraction_claim_task",
+        {
+          payload: { runId: "run-1", projectId: "project-1" },
+          workspaceBinding: { authorityId: "authority-1" },
+        },
+      ],
       ["narrative_extraction_get_run_review_bundle", { messages: ["old"] }],
       ["project_snapshot_restore_context", { workspaceId: "other" }],
       ["lint_ignore_list", { projectId: "other" }],
@@ -2413,6 +2733,7 @@ describe("NIR-1 router sender binding", () => {
       nativeCalls.testAiConnection,
       nativeCalls.startPostEffectRun,
       nativeCalls.startPostEffectRunMulti,
+      nativeCalls.narrativeExtractionClaimTask,
       nativeCalls.narrativeExtractionGetRunReviewBundle,
     ]) {
       expect(call).not.toHaveBeenCalled();

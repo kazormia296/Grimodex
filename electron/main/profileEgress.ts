@@ -90,6 +90,7 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["vivliostyle_build", "external-url"],
   ["vivliostyle_preview_start", "external-url"],
   ["get_mcp_config", "old-external-ai"],
+  ["narrative_extraction_claim_task", "plaintext-publication"],
   ["narrative_extraction_get_run_review_bundle", "plaintext-publication"],
   ["ai_audit_read_snapshot", "plaintext-publication"],
   ["ai_audit_verify", "plaintext-publication"],
@@ -125,7 +126,6 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["foreshadow_get_setup", "plaintext-publication"],
   ["foreshadow_get", "plaintext-publication"],
   ["foreshadow_list_linked_codex", "plaintext-publication"],
-  ["foreshadow_load_anchors_for_scene", "plaintext-publication"],
   ["narrative_extraction_get_run", "plaintext-publication"],
   ["narrative_extraction_list_resumable_runs", "plaintext-publication"],
   ["narrative_extraction_is_run_resumable_for_review", "plaintext-publication"],
@@ -225,6 +225,10 @@ const INTERNAL_COMMANDS = new Set([
   "foreshadow_link_codex",
   "foreshadow_resolve_orphan",
   "foreshadow_save_anchors_for_scene",
+  // This typed reader returns only opaque anchor ids, document positions, and
+  // aggregate OCC versions. It is the minimal projection needed to keep
+  // ordinary scene saves valid while protected foreshadow prose stays closed.
+  "foreshadow_load_anchors_for_scene",
   "foreshadow_set_setup_strength",
   "foreshadow_setup_create_ai",
   "foreshadow_unlink_codex",
@@ -265,7 +269,6 @@ const INTERNAL_COMMANDS = new Set([
   "narrative_extraction_apply_commit",
   "narrative_extraction_cancel_run",
   "narrative_extraction_capture_workspace_binding",
-  "narrative_extraction_claim_task",
   "narrative_extraction_create_human_derived_revision",
   "narrative_extraction_create_run",
   "narrative_extraction_fail_task",
@@ -519,6 +522,8 @@ export interface ProfileEgressGate {
   readonly unavailable: boolean;
   issueCallerIdentity(senderId: number): MainIssuedCallerIdentity;
   assertInvoke(command: string, args: CommandArgs): void;
+  /** Re-authorize a result admitted before profile restriction began. */
+  assertPlaintextPublication(command: string, args: CommandArgs): void;
   allowsBackendEvent(channel: string): boolean;
   assertExternalUrl(): void;
   /** Main-only lifecycle participants; never exposed through renderer IPC. */
@@ -652,47 +657,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
         `route ${command} requires a main-issued caller identity`,
       );
     }
-    if (callerIdentity !== undefined && callerIdentity !== null) {
-      if (
-        typeof callerIdentity !== "object" ||
-        Array.isArray(callerIdentity) ||
-        typeof (callerIdentity as Record<string, unknown>).senderId !== "number"
-      ) {
-        throw denied("unclassified", "caller identity is malformed");
-      }
-      const senderId = (callerIdentity as Record<string, number>).senderId;
-      const issued = this.identities.get(senderId);
-      const candidate = callerIdentity as Partial<MainIssuedCallerIdentity>;
-      if (
-        !issued ||
-        issued.profileId !== candidate.profileId ||
-        issued.callerId !== candidate.callerId ||
-        issued.callerEpoch !== candidate.callerEpoch ||
-        issued.senderId !== candidate.senderId ||
-        issued.workspaceId !== candidate.workspaceId ||
-        issued.sessionId !== candidate.sessionId
-      ) {
-        throw denied(
-          "unclassified",
-          `caller identity is not issued for sender ${senderId}`,
-        );
-      }
-    }
-    if (
-      callerIdentity !== null &&
-      typeof callerIdentity === "object" &&
-      !Array.isArray(callerIdentity) &&
-      typeof (callerIdentity as Record<string, unknown>).senderId === "number"
-    ) {
-      const senderId = (callerIdentity as Record<string, number>).senderId;
-      const registrationError = this.registrationErrors.get(senderId);
-      if (registrationError && !ALLOWED_STOP_COMMANDS.has(command)) {
-        throw denied(
-          "unclassified",
-          `caller registration failed for sender ${senderId}: ${registrationError}`,
-        );
-      }
-    }
+    this.assertIssuedCallerIdentity(callerIdentity, command);
     if (
       route === "old-external-ai" ||
       route === "old-local-ai" ||
@@ -703,6 +668,60 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       throw denied(
         route,
         `route ${command} is unavailable in profile local-only mode`,
+      );
+    }
+  }
+
+  assertPlaintextPublication(command: string, args: CommandArgs): void {
+    if (commandRoute(command, args, this.policy) !== "plaintext-publication") {
+      return;
+    }
+
+    // Reuse the exact identity captured before dispatch. In particular, do not
+    // call issueCallerIdentity here: an old request must not be rebound to the
+    // post-activation epoch just because its Native read completed later.
+    this.assertIssuedCallerIdentity(args.callerIdentity, command);
+    if (!this.restricted && !this.unavailable) return;
+    throw denied(
+      "plaintext-publication",
+      `route ${command} completed after profile restriction began`,
+    );
+  }
+
+  private assertIssuedCallerIdentity(
+    callerIdentity: unknown,
+    command: string,
+  ): void {
+    if (callerIdentity === undefined || callerIdentity === null) return;
+    if (
+      typeof callerIdentity !== "object" ||
+      Array.isArray(callerIdentity) ||
+      typeof (callerIdentity as Record<string, unknown>).senderId !== "number"
+    ) {
+      throw denied("unclassified", "caller identity is malformed");
+    }
+    const senderId = (callerIdentity as Record<string, number>).senderId;
+    const issued = this.identities.get(senderId);
+    const candidate = callerIdentity as Partial<MainIssuedCallerIdentity>;
+    if (
+      !issued ||
+      issued.profileId !== candidate.profileId ||
+      issued.callerId !== candidate.callerId ||
+      issued.callerEpoch !== candidate.callerEpoch ||
+      issued.senderId !== candidate.senderId ||
+      issued.workspaceId !== candidate.workspaceId ||
+      issued.sessionId !== candidate.sessionId
+    ) {
+      throw denied(
+        "unclassified",
+        `caller identity is not issued for sender ${senderId}`,
+      );
+    }
+    const registrationError = this.registrationErrors.get(senderId);
+    if (registrationError && !ALLOWED_STOP_COMMANDS.has(command)) {
+      throw denied(
+        "unclassified",
+        `caller registration failed for sender ${senderId}: ${registrationError}`,
       );
     }
   }
