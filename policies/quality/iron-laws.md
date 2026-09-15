@@ -73,7 +73,22 @@ version/ref. Large cross-boundary changes are split into reviewable lanes, while
 candidate stays minimal. Focused gates must pass before the candidate freezes. After freeze, no edits
 are allowed: a finding reopens the candidate and invalidates its receipts.
 
-Before an expensive Full, use a focused preflight for risk-derived applicable late stages only.
+Changes involving external egress, subprocesses, background work, or async lifecycle require a
+finite owner/lifecycle matrix before mutation. It covers every entry/start/retry/reentrant path,
+admission closure, pending-start work, active handle ownership, cancellation, bounded wait, actual
+termination evidence (close/exit/terminal receipt), error/timeout/onClosed ownership, and persisted
+restart state. A kill request, error event, or rejected promise alone is not termination proof.
+High-effort review and candidate-untouched independent acceptance must resolve P2+ findings before
+freeze and the expensive Full; after Full, acceptance confirms the unchanged candidate and does not
+reopen semantics without a candidate change.
+
+Before an expensive Full, require generic resource isolation: no competing heavy run, enough writable
+capacity on the actual workspace, build-cache, and temp filesystems, and separate checks for root/home
+pressure and temp quota. Do not use any fixed capacity/quota threshold (including GB, percentage, inode,
+or other numeric thresholds), a host-specific cache deletion list, or deletion automation. Derive any
+thresholds from risk, workload, and filesystem state rather than hardcoding them. This preflight is read-only and must not auto-delete artifacts, kill other jobs, or
+rewrite temp paths. A competing job is a coordination stop, not kill authority. Also use a focused
+preflight for risk-derived applicable late stages only.
 Runtime performance/fresh Xvfb, migration/recovery, and real product journeys are examples, not
 blanket requirements. Do not require or block on an inapplicable host capability. These checks are
 diagnostic only and never replace a clean Full-from-stage-1 + verify. An unexplained runtime failure remains
@@ -234,16 +249,29 @@ Dirty Quick receipts additionally bind the tracked diff and untracked file-conte
 Partial `--from` runs, dry runs, stale receipts, missing prerequisites, and release-only coverage are
 never converted into merge or release passes.
 
+Before an expensive Full, record generic resource isolation: no competing heavy run, enough writable
+capacity on the actual workspace, build-cache, and temp filesystems, and separate checks for root/home
+pressure and temp quota. Do not use any fixed capacity/quota threshold (including GB, percentage, inode,
+or other numeric thresholds), a host-specific cache deletion list, or deletion automation. Derive any
+thresholds from risk, workload, and filesystem state rather than hardcoding them. This preflight is read-only and must not auto-delete artifacts, kill other jobs, or
+rewrite temp paths. A competing job is a coordination stop, not kill authority.
+
+At candidate freeze, bind the exact candidate once in the receipt/ledger, including base, head, tree,
+clean state, receipt directory, and completeness. Use an expected-head check at push and merge state
+transitions, and after merge verify that the merge commit is included in `origin/master`. Do not require
+repeated tree equality checks or user-facing SHA recitation except on mismatch or request. An upstream-base
+change is exempt from a Full rerun only when candidate HEAD and PR diff are unchanged and the upstream delta
+is editorial docs/ADR-only: it must change no executable, build, dependency, CI, policy, schema, manifest,
+or generated-contract content and no ratified decision or acceptance meaning. Record the exception and
+proportionate static/focused checks; the old receipt remains bound to its old base, not the new one. Any
+ambiguity or candidate HEAD change invalidates the receipt and requires a clean Full-from-stage-1 + verify.
+
 Decisive acceptance evidence is either directly candidate-bound, or transitively bound through a
 verified parent receipt that is itself candidate-bound. When metrics or artifacts are quoted or adopted
 independently of that parent receipt, bind them directly to candidate identity, commit/tree/run, and
 artifact digest; without that direct binding, the standalone evidence is diagnostic-only. Missing direct
 binding is tracked hardening debt and does not by itself retroactively invalidate a complete parent
-receipt. For merge verification, record `acceptedTreeSha` from the Full receipt's existing
-`candidate.resolvedHeadTreeSha` after confirming it belongs to the current accepted HEAD. After merge,
-separately verify that the merge commit is included in `origin/master`, then compare that recorded
-accepted tree SHA directly with the remote merge tree; if they differ, invalidate the receipts and
-rerun a clean Full-from-stage-1 + verify.
+receipt.
 
 ## Evaluation evidence boundaries
 

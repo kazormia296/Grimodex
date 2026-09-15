@@ -236,6 +236,10 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   for (const phrase of [
     /focused preflight/i,
     /risk-derived applicable late stages only/i,
+    /resource.?isolation/i,
+    /no competing heavy run/i,
+    /writable capacity.*workspace.*build-cache.*temp/i,
+    /root\/home.*pressure.*temp quota/i,
     /runtime performance.*fresh Xvfb/i,
     /migration\/recovery/i,
     /real product journeys/i,
@@ -252,6 +256,40 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   );
   assert.match(policySection, /examples, not blanket requirements/i);
   assert.match(policySection, /inapplicable host capability/i);
+
+  for (const phrase of [
+    /external.?egress.*subprocess.*background.*async.?lifecycle/i,
+    /finite owner\/lifecycle matrix/i,
+    /entry\/start\/retry\/reentrant/i,
+    /admission closure.*pending-start.*active handle ownership.*cancellation.*bounded wait/i,
+    /close\/exit\/terminal receipt.*error\/timeout\/onClosed.*persisted restart state/i,
+    /kill request.*error event.*rejected promise.*termination proof/i,
+    /high.?effort review.*candidate-untouched independent acceptance.*P2\+/i,
+  ]) {
+    assertBothSections("lifecycle-owner precheck contract", phrase);
+  }
+  assert.match(
+    agentsSection,
+    /編集前に.*finite owner\/lifecycle matrix.*全ての.*entry\/start\/retry\/reentrant/i,
+  );
+  assert.match(
+    policySection,
+    /before mutation.*every entry\/start\/retry\/reentrant path/i,
+  );
+  assert.match(
+    agentsSection,
+    /any fixed capacity\/quota threshold.*percentage.*inode.*numeric.*host-specific cache deletion list.*deletion automation/i,
+  );
+  assert.match(
+    policySection,
+    /any fixed capacity\/quota threshold.*percentage.*inode.*numeric.*host-specific cache deletion list.*deletion automation/i,
+  );
+  assert.match(agentsSection, /thresholds.*risk\/workload\/filesystem state.*hardcode/i);
+  assert.match(policySection, /thresholds.*risk, workload, and filesystem state.*hardcoding/i);
+  assert.match(
+    shipCiSection,
+    /any fixed capacity\/quota threshold.*percentage.*inode.*numeric.*host-specific cache deletion list.*deletion automation/i,
+  );
 
   for (const phrase of [
     /unattributed runtime blocker/i,
@@ -289,38 +327,31 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     /metrics or artifacts.*independently.*parent receipt.*direct.*candidate identity.*commit\/tree\/run.*artifact digest/i,
     /standalone evidence.*diagnostic-only/i,
     /Missing direct binding.*tracked hardening debt.*retroactively invalidate.*complete parent receipt/i,
-    /acceptedTreeSha.*Full receipt.*candidate\.resolvedHeadTreeSha.*current accepted HEAD/i,
-    /separately.*merge commit.*included.*origin\/master.*accepted tree SHA.*remote merge tree/i,
-    /invalidate the receipts.*rerun.*Full-from-stage-1 \+ verify/i,
+    /candidate freeze.*exact candidate.*once.*receipt\/ledger/i,
+    /expected-head.*push.*merge.*state/i,
+    /merge commit.*included.*origin\/master/i,
+    /upstream-base.*candidate HEAD.*PR diff.*editorial docs\/ADR-only/i,
+    /exception.*proportionate.*static\/focused checks.*old receipt.*old base/i,
+    /ambiguity.*candidate HEAD.*invalidates?.*Full-from-stage-1 \+ verify/i,
   ]) {
     assert.match(traceSection, phrase);
   }
   assert.match(
     shipCiSection,
-    /candidate\.resolvedHeadSha.*current accepted HEAD.*acceptedHeadSha.*candidate\.resolvedHeadSha.*acceptedTreeSha.*candidate\.resolvedHeadTreeSha/i,
+    /candidate freeze.*ledger.*resolvedBaseSha.*resolvedHeadSha.*currentHeadSha.*tree.*once.*Full receipt.*同じtuple/i,
   );
-  assert.doesNotMatch(
-    shipCiSection,
-    /git rev-parse <accepted-head>\^\{tree\}/i,
-    "acceptedTreeSha must come from the existing Full receipt field",
+  assert.match(shipCiSection, /push.*merge.*expected-head/i);
+  assert.doesNotMatch(shipCiSection, /patch.?digest/i);
+  assert.match(
+    shipMergeSection,
+    /git fetch origin master.*merge commit.*origin\/master.*含まれる/i,
   );
   assert.match(
     shipMergeSection,
-    /git fetch origin master.*merge commit.*origin\/master.*含まれる.*別条件/i,
+    /expected head.*merge commit.*origin\/master.*包含.*成功扱いにしない/i,
   );
-  assert.match(
-    shipMergeSection,
-    /Full receipt.*current accepted HEAD.*acceptedTreeSha.*merge.*remote merge tree.*acceptedTreeSha.*git rev-parse <merge-sha>\^\{tree\}/i,
-  );
-  assert.doesNotMatch(
-    shipMergeSection,
-    /git rev-parse origin\/master\^\{tree\}/i,
-    "origin/master inclusion must not replace accepted-tree comparison",
-  );
-  assert.match(
-    shipMergeSection,
-    /不一致.*receipt.*無効化.*Full-from-stage-1 \+ verify/i,
-  );
+  assert.doesNotMatch(shipMergeSection, /git rev-parse <merge-sha>\^\{tree\}/i);
+  assert.match(ship, /SHAは不一致.*ユーザーが求めた場合だけ/i);
 
   assert.ok(precheck, "GDX-PRECHECK-001 must exist");
   const trace = manifest.requirements.find(
@@ -331,6 +362,18 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     precheck.implementedBy.includes("AGENTS.md"),
     "AGENTS.md must be traced under GDX-PRECHECK-001",
   );
+  for (const implementationPath of [
+    ".agents/skills/implement-feature/SKILL.md",
+    ".agents/skills/review-code/SKILL.md",
+    ".agents/skills/refactor-cross-boundaries/SKILL.md",
+    ".agents/skills/refactor-cross-boundaries/references/impact-matrix.md",
+    ".agents/skills/ship-branch/SKILL.md",
+  ]) {
+    assert.ok(
+      precheck.implementedBy.includes(implementationPath),
+      `${implementationPath} must be traced under GDX-PRECHECK-001`,
+    );
+  }
   assert.ok(
     precheck.lightTests.includes("scripts/quality/quality-workflow.test.mjs"),
     "the contract test must remain in the precheck light suite",
@@ -343,6 +386,17 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     trace.implementedBy.includes(".agents/skills/ship-branch/SKILL.md"),
     "ship-branch must be traced under GDX-TRACE-001",
   );
+  for (const implementationPath of [
+    ".agents/skills/implement-feature/SKILL.md",
+    ".agents/skills/review-code/SKILL.md",
+    ".agents/skills/refactor-cross-boundaries/SKILL.md",
+    ".agents/skills/refactor-cross-boundaries/references/impact-matrix.md",
+  ]) {
+    assert.ok(
+      trace.implementedBy.includes(implementationPath),
+      `${implementationPath} must be traced under GDX-TRACE-001`,
+    );
+  }
 });
 
 test("NIR-1 preserves R0 history, records effective typed ratification, and keeps runtime gated", async () => {

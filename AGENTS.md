@@ -42,10 +42,16 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
   `pnpm ci:local:quick` を実行する。比較範囲を固定する場合は
   `pnpm ci:local:quick -- --base origin/master --head HEAD` とし、直後に同じrefで
   `pnpm ci:local:verify -- quick --base origin/master --head HEAD` を実行する。
-- merge前は、最新の`origin/master`を含むcleanかつcommit済みの現在HEADで、最初のstageから
-  `pnpm ci:local:full -- --base origin/master --head HEAD` を実行し、直後とmerge直前に
-  `pnpm ci:local:verify -- full --base origin/master --head HEAD` を実行する。baseまたはHEADが
-  変わった場合は古い証跡を再利用せず、Fullを最初からやり直す。
+- merge前の初回Fullは、最新の`origin/master`を含むcleanかつcommit済みの現在HEADで、最初のstageから
+  `pnpm ci:local:full -- --base origin/master --head HEAD` を実行する。直後のverifyは、そのFull receiptに記録された
+  `resolvedBaseSha`／`resolvedHeadSha`を同じrefとして使う。通常pathのmerge直前だけは、現在の`origin/master`とcandidate
+  HEADに対して再verifyする。初回Fullの前にbaseが変わった場合はcandidateを安全に更新してHEADを取り直し、Fullを最初から
+  やり直す。candidateをfreezeしてFull receiptを得た後のupstream baseの進行は原則として古い証跡を再利用しない。ただし、
+  candidate HEAD／PR diffが不変で、upstream deltaがeditorial docs/ADR-onlyであり、executable、build、dependency、CI、policy、
+  schema、manifest、generated-contractの内容もratified decision／acceptance meaningも変えていないことを確認できる場合に限り、
+  狭いupstream-base exceptionを適用できる。exceptionでは旧receiptを記録済みの旧base／headに対してだけ再verifyし、upstream
+  deltaは別に分類する。exceptionと比例したstatic／focused checksを記録し、旧receiptを新しいbaseに束縛されたものとは扱わない。
+  曖昧さまたはcandidate HEADの変更が一つでもあればreceiptを無効化し、Full-from-stage-1 + verifyをやり直す。
 - release tag前は、squash前のbranch証跡を再利用せず、merge後のrelease commitそのものを
   cleanなcheckout／worktreeの現在HEADとして同じFullとverifyを再実行する。
 - `--from`は失敗調査・再開用のpartial run、`--dry-run`は計画確認だけである。どちらも
@@ -69,11 +75,21 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
   `threat-model version/ref` を記録し、`focused gates` を通過してから `freeze` する。大規模な横断変更は
   `reviewable lanes` に分割し、`critical candidate` は必要最小限に保つ。`freeze` 後は編集せず、finding があれば
   候補を再開して receipt を無効化する。
-- 高コストな Full の前には、リスク評価で適用対象となった late stage に限り focused preflight を実施する
-  （`risk-derived applicable late stages only`）。runtime performance／fresh Xvfb、migration/recovery、real product
-  journeys は例示（examples）であり、一律要件（blanket requirements）ではない。該当しない host capability は
-  要求せず、block条件にも使わない。各 preflight は診断専用（diagnostic only）で、clean Full-from-stage-1 + verify
-  を置き換えない。
+- external-egress／subprocess／background／async-lifecycle の変更は、編集前に有限（`finite owner/lifecycle
+  matrix`）の行列を作る。全ての `entry/start/retry/reentrant` 経路を対象に、admission closure、pending-start work、
+  active handle ownership、cancellation、bounded wait、実際の終了証拠（`close/exit/terminal receipt`）、
+  `error/timeout/onClosed` の所有者、persisted restart stateを各行へ割り当てる。kill request、error event、
+  rejected promiseだけではtermination proofにならない。high-effort reviewとcandidate-untouched independent
+  acceptance reviewはP2+をfreezeと高コストなFullの前に解消し、Full後はcandidateが不変であることを確認するだけとする。
+  candidateに変更がなければ意味のレビューを開き直さない。
+- 高コストな Full の前には、generic resource-isolation preflightと、リスク評価で適用対象となった late stage に限る
+  focused preflight（`risk-derived applicable late stages only`）を実施する。resource-isolationはno competing heavy run、
+  enough writable capacity on actual workspace/build-cache/temp filesystemsを確認し、root/home pressureとtemp quotaを
+  separateに確認する。any fixed capacity/quota threshold（GB、percentage、inode、その他numericを含む）、host-specific cache deletion list、
+  deletion automationは要求・実施しない。thresholdsはrisk/workload/filesystem stateから導出し、hardcodeしない。このpreflightはread-onlyであり、must not auto-delete artifacts, kill other jobs, or rewrite temp paths。
+  competing jobはcoordination stopであり、kill authorityではない。runtime performance／fresh Xvfb、migration/recovery、real product journeys は例示（examples）であり、
+  一律要件（blanket requirements）ではない。該当しない host capability は要求せず、block条件にも使わない。各
+  preflight は診断専用（diagnostic only）で、clean Full-from-stage-1 + verifyを置き換えない。
 - 原因不明の runtime failure は、因果関係を示す causal evidence が得られるまで `unattributed runtime blocker`
   として扱う。変更したパスだけから環境または製品の状態を推定しない。rAF、event-loop、wake/discovery counts、
   memory-sampler duration、process CPU/I/O、device/PSI を相関させ、exact failed receipt を保存する。
