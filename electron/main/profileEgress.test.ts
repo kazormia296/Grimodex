@@ -40,6 +40,7 @@ function backend(status: Record<string, unknown> = {}) {
             "chat_sessions",
             "chat_summaries",
             "generation_logs",
+            "idempotency_requests",
             "messages",
             "narrative_apply_commits",
             "narrative_apply_operations",
@@ -516,10 +517,29 @@ describe("D2a profile egress gate", () => {
     );
   });
 
+  it("allows the typed foreshadow anchor projection while denying prose reads", async () => {
+    const gate = await createProfileEgressGate(backend());
+    const callerIdentity = gate.issueCallerIdentity(11);
+
+    expect(() =>
+      gate.assertInvoke("foreshadow_load_anchors_for_scene", {
+        callerIdentity,
+        sceneId: "scene-1",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      gate.assertInvoke("foreshadow_get", {
+        callerIdentity,
+        payload: { id: "foreshadow-1" },
+      }),
+    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`));
+  });
+
   it.each([
     ["chat_summaries", "summary"],
     ["chat_message_chunks", "text"],
     ["generation_logs", "prompt_full"],
+    ["idempotency_requests", "tombstone_json"],
     ["ab_comparisons", "response_a"],
     ["ab_comparison_runs", "slots"],
   ])("consumes the Native inventory for %s", async (table, column) => {
@@ -592,6 +612,7 @@ describe("D2a profile egress gate", () => {
       "narrative_scene_scope_read",
       "narrative_scene_scope_update",
       "narrative_scene_scope_registry_update",
+      "foreshadow_load_anchors_for_scene",
     ]) {
       expect(() => gate.assertInvoke(command, {})).not.toThrow();
     }

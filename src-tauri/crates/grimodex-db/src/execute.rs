@@ -65,6 +65,10 @@ thread_local! {
     /// The ordinary renderer policy remains backwards-compatible; D2a adds a
     /// publication guard on top of the same SQLite authorizer.
     static PROFILE_EGRESS_SQL_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    /// Only the batch runner may issue transaction controls. Payload SQL is
+    /// always evaluated with this disabled, even while the runner-owned
+    /// BEGIN/COMMIT/ROLLBACK is executing under the same authorizer.
+    static RUNNER_TRANSACTION_CONTROL_ALLOWED: Cell<bool> = const { Cell::new(false) };
 }
 
 const RENDERER_SQL_RESOURCE_ERROR: &str = "RENDERER_SQL_RESOURCE_LIMIT";
@@ -299,6 +303,11 @@ fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
         AuthAction::Function { function_name } if renderer_function_denied(function_name) => {
             Some(format!("function {function_name}"))
         }
+        AuthAction::Transaction { .. } | AuthAction::Savepoint { .. }
+            if !RUNNER_TRANSACTION_CONTROL_ALLOWED.with(Cell::get) =>
+        {
+            Some("transaction control".to_string())
+        }
         AuthAction::Delete { .. }
         | AuthAction::Insert { .. }
         | AuthAction::Pragma { .. }
@@ -394,6 +403,50 @@ fn with_profile_egress_sql<T>(operation: impl FnOnce() -> T) -> T {
     let result = operation();
     PROFILE_EGRESS_SQL_ACTIVE.with(|active| active.set(previous));
     result
+}
+
+fn with_runner_transaction_controls<T>(operation: impl FnOnce() -> T) -> T {
+    let previous = RUNNER_TRANSACTION_CONTROL_ALLOWED.with(|allowed| {
+        let previous = allowed.get();
+        allowed.set(true);
+        previous
+    });
+    let result = operation();
+    RUNNER_TRANSACTION_CONTROL_ALLOWED.with(|allowed| allowed.set(previous));
+    result
+}
+
+fn reject_stale_untrusted_transaction(conn: &Connection) -> anyhow::Result<()> {
+    if conn.is_autocommit() {
+        return Ok(());
+    }
+    let rollback = conn.execute_batch("ROLLBACK");
+    match rollback {
+        Ok(()) => anyhow::bail!(
+            "{RENDERER_SQL_SECURITY_ERROR}: untrusted SQL connection had an open transaction; it was rolled back"
+        ),
+        Err(error) => anyhow::bail!(
+            "{RENDERER_SQL_SECURITY_ERROR}: untrusted SQL connection had an open transaction and rollback failed: {error}"
+        ),
+    }
+}
+
+fn reject_untrusted_transaction_after<T>(
+    conn: &Connection,
+    result: anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    if conn.is_autocommit() {
+        return result;
+    }
+    let rollback = conn.execute_batch("ROLLBACK");
+    match rollback {
+        Ok(()) => anyhow::bail!(
+            "{RENDERER_SQL_SECURITY_ERROR}: untrusted SQL left a transaction open; it was rolled back"
+        ),
+        Err(error) => anyhow::bail!(
+            "{RENDERER_SQL_SECURITY_ERROR}: untrusted SQL left a transaction open and rollback failed: {error}"
+        ),
+    }
 }
 
 /// SQLite itself is the parser for DML result shape. Preparing the statement
@@ -710,7 +763,7 @@ impl Database {
         // BEGIN only takes it on the first write, so a writer on the same DB
         // file (e.g. the MCP process) could slip in between and turn a later
         // statement into SQLITE_BUSY_SNAPSHOT — which busy_timeout cannot retry.
-        conn.execute_batch("BEGIN IMMEDIATE")?;
+        with_runner_transaction_controls(|| conn.execute_batch("BEGIN IMMEDIATE"))?;
         let mut last_rows = Vec::new();
         let result = (|| -> anyhow::Result<_> {
             for stmt in statements {
@@ -719,19 +772,19 @@ impl Database {
             Ok(last_rows)
         })();
         match result {
-            Ok(rows) => match conn.execute_batch("COMMIT") {
+            Ok(rows) => match with_runner_transaction_controls(|| conn.execute_batch("COMMIT")) {
                 Ok(()) => Ok(rows),
                 // A failed COMMIT (deferred FK check, busy, disk-full, ...) leaves
                 // the transaction open on this shared single connection. Without
                 // an explicit ROLLBACK the next caller inherits a zombie tx and
                 // its writes silently ride on / get rolled back with it.
                 Err(error) => {
-                    let _ = conn.execute_batch("ROLLBACK");
+                    let _ = with_runner_transaction_controls(|| conn.execute_batch("ROLLBACK"));
                     Err(error.into())
                 }
             },
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                let _ = with_runner_transaction_controls(|| conn.execute_batch("ROLLBACK"));
                 Err(error)
             }
         }
@@ -748,12 +801,20 @@ impl Database {
 
         let sql_started = Instant::now();
         let result = if origin.is_untrusted() {
-            let reserved_project_setting_guard_requested = statements.iter().any(|statement| {
-                untrusted_sql_needs_reserved_project_setting_guard(&statement.sql)
-            });
-            with_untrusted_sql_policy(&conn, reserved_project_setting_guard_requested, |conn| {
-                Self::execute_batch_tx_with_conn(conn, statements)
-            })
+            match reject_stale_untrusted_transaction(&conn) {
+                Ok(()) => {
+                    let reserved_project_setting_guard_requested = statements.iter().any(|statement| {
+                        untrusted_sql_needs_reserved_project_setting_guard(&statement.sql)
+                    });
+                    let result = with_untrusted_sql_policy(
+                        &conn,
+                        reserved_project_setting_guard_requested,
+                        |conn| Self::execute_batch_tx_with_conn(conn, statements),
+                    );
+                    reject_untrusted_transaction_after(&conn, result)
+                }
+                Err(error) => Err(error),
+            }
         } else {
             Self::execute_batch_tx_with_conn(&conn, statements)
         };
@@ -975,11 +1036,19 @@ impl Database {
 
         let sql_started = Instant::now();
         let result = if origin.is_untrusted() {
-            let reserved_project_setting_guard_requested =
-                untrusted_sql_needs_reserved_project_setting_guard(sql);
-            with_untrusted_sql_policy(&conn, reserved_project_setting_guard_requested, |conn| {
-                Self::execute_with_conn(conn, sql, params, method)
-            })
+            match reject_stale_untrusted_transaction(&conn) {
+                Ok(()) => {
+                    let reserved_project_setting_guard_requested =
+                        untrusted_sql_needs_reserved_project_setting_guard(sql);
+                    let result = with_untrusted_sql_policy(
+                        &conn,
+                        reserved_project_setting_guard_requested,
+                        |conn| Self::execute_with_conn(conn, sql, params, method),
+                    );
+                    reject_untrusted_transaction_after(&conn, result)
+                }
+                Err(error) => Err(error),
+            }
         } else {
             Self::execute_with_conn(&conn, sql, params, method)
         };
@@ -1000,6 +1069,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use super::super::foreshadow;
     use super::super::narrative_extraction::maintenance_runtime::SCAN_IMPORT_STATE_KEY;
     use super::*;
     use std::collections::BTreeSet;
@@ -1064,6 +1134,184 @@ mod tests {
         );
         db.execute("CREATE TABLE trusted (id INTEGER)", &[], "run")
             .expect("trusted backend schema operation remains available");
+    }
+
+    #[test]
+    fn renderer_sql_cannot_control_the_runner_transaction_or_leave_one_open() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE renderer_transaction_guard (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted schema setup");
+        db.execute(
+            "INSERT INTO renderer_transaction_guard (id, value) VALUES (1, 0)",
+            &[],
+            "run",
+        )
+        .expect("trusted seed");
+
+        for sql in [
+            "BEGIN",
+            "COMMIT",
+            "END",
+            "ROLLBACK",
+            "SAVEPOINT renderer_savepoint",
+            "RELEASE renderer_savepoint",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("renderer transaction control must be rejected");
+            assert!(
+                error.to_string().contains("transaction control"),
+                "unexpected {sql} error: {error}"
+            );
+            db.with_conn(|conn| {
+                anyhow::ensure!(
+                    conn.is_autocommit(),
+                    "renderer control left the shared connection in a transaction: {sql}"
+                );
+                Ok(())
+            })
+            .expect("inspect autocommit state");
+        }
+
+        db.with_conn(|conn| {
+            conn.execute_batch("BEGIN")?;
+            Ok(())
+        })
+        .expect("trusted fixture transaction");
+        let error = db
+            .execute_renderer("SELECT 1", &[], "get")
+            .expect_err("an inherited transaction must not cross the renderer boundary");
+        assert!(error.to_string().contains("open transaction"));
+        db.with_conn(|conn| {
+            anyhow::ensure!(conn.is_autocommit(), "stale transaction was not cleaned up");
+            Ok(())
+        })
+        .expect("stale transaction cleanup");
+
+        let error = db
+            .execute_batch_tx_renderer(&[
+                BatchStatement {
+                    sql: "UPDATE renderer_transaction_guard SET value = 1 WHERE id = 1".into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+                BatchStatement {
+                    sql: "COMMIT".into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+            ])
+            .expect_err("payload COMMIT must not escape the runner rollback");
+        assert!(error.to_string().contains("transaction control"));
+        let rows = db
+            .execute(
+                "SELECT value FROM renderer_transaction_guard WHERE id = 1",
+                &[],
+                "get",
+            )
+            .expect("inspect rolled back value");
+        assert_eq!(rows[0]["value"], Value::from(0));
+        db.with_conn(|conn| {
+            anyhow::ensure!(conn.is_autocommit(), "failed batch left a transaction open");
+            Ok(())
+        })
+        .expect("failed batch cleanup");
+    }
+
+    #[test]
+    fn profile_egress_protects_plaintext_replicas_in_the_idempotency_ledger() {
+        let db = crate::test_support::current_schema_memory().expect("current schema fixture");
+        let project_id = "idempotency-protected-project";
+        let foreshadow_id = "idempotency-protected-foreshadow";
+        db.execute(
+            "INSERT INTO projects (id, title) VALUES (?, ?)",
+            &[
+                Value::String(project_id.to_string()),
+                Value::String("Protected ledger test".to_string()),
+            ],
+            "run",
+        )
+        .expect("seed project");
+        db.execute(
+            "INSERT INTO foreshadows
+                (id, project_id, title, notes, payoff_confirmed, abandoned, secret,
+                 created_at, updated_at)
+             VALUES (?, ?, ?, ?, 0, 0, 1, ?, ?)",
+            &[
+                Value::String(foreshadow_id.to_string()),
+                Value::String(project_id.to_string()),
+                Value::String("SECRET_FORESHADOW_TITLE".to_string()),
+                Value::String("SECRET_FORESHADOW_NOTES".to_string()),
+                Value::Number(1_i64.into()),
+                Value::Number(1_i64.into()),
+            ],
+            "run",
+        )
+        .expect("seed foreshadow");
+
+        // The no-op typed update intentionally stores the complete historical
+        // row in the non-create idempotency receipt, reproducing the legacy
+        // plaintext replica that D2a must cover independently of foreshadows.
+        let patch: foreshadow::ForeshadowPatch = serde_json::from_value(serde_json::json!({
+            "requestId": "idempotency-protected-request",
+            "sessionId": "idempotency-protected-session",
+            "eventUid": "idempotency-protected-event",
+            "origin": "human",
+            "projectId": project_id,
+            "baseVersion": 0
+        }))
+        .expect("typed no-op update payload");
+        let response = foreshadow::update(&db, foreshadow_id.to_string(), patch)
+            .expect("typed update");
+        assert_eq!(response["notes"], Value::String("SECRET_FORESHADOW_NOTES".to_string()));
+
+        let ledger = db
+            .execute(
+                "SELECT tombstone_json FROM idempotency_requests
+                  WHERE domain = 'foreshadow_update'
+                    AND request_id = 'idempotency-protected-request'",
+                &[],
+                "get",
+            )
+            .expect("read ledger through trusted Native path");
+        assert!(ledger[0]["tombstone_json"]
+            .as_str()
+            .expect("ledger response")
+            .contains("SECRET_FORESHADOW_NOTES"));
+
+        let error = db
+            .execute_renderer_profile_egress(
+                "SELECT json_extract(tombstone_json, '$.notes')
+                   FROM idempotency_requests
+                  WHERE domain = 'foreshadow_update'",
+                &[],
+                "all",
+            )
+            .expect_err("D2a must deny the replicated plaintext read");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected ledger read error: {error}"
+        );
+
+        for sql in [
+            "UPDATE idempotency_requests SET tombstone_json = '{}'",
+            "DELETE FROM idempotency_requests",
+            "INSERT INTO idempotency_requests
+                (domain, request_id, project_id, payload_hash, tombstone_json)
+             VALUES ('tamper', 'tamper', 'idempotency-protected-project', 'hash', '{}')",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("renderer must not mutate the Native idempotency ledger");
+            assert!(
+                error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                "unexpected ledger mutation error for {sql}: {error}"
+            );
+        }
     }
 
     #[test]

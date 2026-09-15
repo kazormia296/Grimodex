@@ -8,6 +8,13 @@
     "enforcement": "active"
   },
   {
+    "aggregate": "idempotency",
+    "table": "idempotency_requests",
+    "protection": "table",
+    "writer": "idempotency.receipt",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "foreshadow",
     "table": "foreshadow_setups",
     "protection": "table",

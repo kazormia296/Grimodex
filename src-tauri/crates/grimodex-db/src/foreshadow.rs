@@ -6129,12 +6129,26 @@ mod tests {
         let fid = insert_foreshadow(&db, &proj);
         let scene = insert_scene(&db, &proj);
         insert_setup(&db, &fid, &scene, 10, 20, false);
+        db.execute(
+            "UPDATE foreshadows SET title = ?, notes = ? WHERE id = ?",
+            &[
+                Value::String("PRIVATE_FORESHADOW_TITLE".to_string()),
+                Value::String("PRIVATE_FORESHADOW_NOTES".to_string()),
+                Value::String(fid),
+            ],
+            "run",
+        )
+        .unwrap();
 
         let result = load_anchors_for_scene(&db, scene.clone()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].from, 10);
         assert_eq!(result[0].to, 20);
         assert_eq!(result[0].mark_name, "foreshadowSetup");
+        let wire = serde_json::to_string(&result).unwrap();
+        assert!(!wire.contains("PRIVATE_FORESHADOW_TITLE"));
+        assert!(!wire.contains("PRIVATE_FORESHADOW_NOTES"));
+        assert!(wire.contains("baseVersion"));
     }
 
     #[test]

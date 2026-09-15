@@ -126,7 +126,6 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["foreshadow_get_setup", "plaintext-publication"],
   ["foreshadow_get", "plaintext-publication"],
   ["foreshadow_list_linked_codex", "plaintext-publication"],
-  ["foreshadow_load_anchors_for_scene", "plaintext-publication"],
   ["narrative_extraction_get_run", "plaintext-publication"],
   ["narrative_extraction_list_resumable_runs", "plaintext-publication"],
   ["narrative_extraction_is_run_resumable_for_review", "plaintext-publication"],
@@ -226,6 +225,10 @@ const INTERNAL_COMMANDS = new Set([
   "foreshadow_link_codex",
   "foreshadow_resolve_orphan",
   "foreshadow_save_anchors_for_scene",
+  // This typed reader returns only opaque anchor ids, document positions, and
+  // aggregate OCC versions. It is the minimal projection needed to keep
+  // ordinary scene saves valid while protected foreshadow prose stays closed.
+  "foreshadow_load_anchors_for_scene",
   "foreshadow_set_setup_strength",
   "foreshadow_setup_create_ai",
   "foreshadow_unlink_codex",

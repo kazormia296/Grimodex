@@ -269,6 +269,11 @@ mod tests {
         let registry = bundled_protected_writer_registry();
         let foreshadow = registry.get("foreshadows").expect("foreshadows");
         assert_eq!(foreshadow.enforcement, WriterEnforcement::Active);
+        let idempotency = registry
+            .get("idempotency_requests")
+            .expect("idempotency_requests");
+        assert_eq!(idempotency.enforcement, WriterEnforcement::Active);
+        assert_eq!(idempotency.protection, WriterProtection::Table);
         let events = registry.get("events").expect("events");
         assert_eq!(events.enforcement, WriterEnforcement::Active);
         let tree_nodes = registry.get("tree_nodes").expect("tree_nodes");

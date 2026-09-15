@@ -148,14 +148,19 @@ export declare class Backend {
    * drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
    * CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
    * は "run" | "get" | "all" | "values"。
-   * 返り値: `QueryResult` の JSON 文字列 `{"rows":[…]}` (Tauri ワイヤと同形)。
+   * 返り値: 通常は `QueryResult` の JSON 文字列 `{"rows":[…]}` (Tauri
+   * ワイヤと同形)。実行後の再認可でprofile bindingが失効した場合も、既に確定した
+   * mutationを再実行させないため、平文rowsを含まない `{"rows":[],"committed":true}`
+   * のopaque receiptを返す。
    */
   dbExecute(sql: string, params: any, method: string, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * 複数文を単一トランザクションで実行 (BEGIN IMMEDIATE、途中失敗で全
    * ROLLBACK — grimodex-db の `execute_batch_tx`)。オートセーブの通り道。
    * `statements` は `[{ sql, params, method }, …]`。
-   * 返り値: 最終文の rows を載せた `QueryResult` の JSON 文字列。
+   * 返り値: 最終文の rows を載せた `QueryResult` の JSON 文字列。実行後の再認可で
+   * profile bindingが失効した場合は、`{"rows":[],"committed":true}` のopaque receipt
+   * を返す。
    */
   dbExecuteBatch(statements: any, callerIdentity?: string | undefined | null): Promise<string>
   /** Read Native-owned Narrative runtime policy (Release Gate B Foundation). */
