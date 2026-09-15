@@ -105,6 +105,8 @@ export interface CliProcessRunner {
   start(spec: CliCommandSpec): RunningCliProcess;
   /** Electron終了時に、このrunnerが起動した全childを同期的に停止する。 */
   disposeAll?(): void;
+  /** Main-only D2a barrier: await close for every spawned child. */
+  quiesceForProfileEgress?(): Promise<void>;
 }
 
 export interface CliExecutableIdentity {
@@ -479,14 +481,21 @@ export function createNodeCliProcessRunner(
   platform: NodeJS.Platform = process.platform,
 ): CliProcessRunner {
   const children = new Set<ChildProcess>();
+  const childLifetimes = new Set<Promise<void>>();
+  let quiescenceFlight: Promise<void> | null = null;
   let disposed = false;
   const track = (child: ChildProcess): void => {
     children.add(child);
-    const forget = (): void => {
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
+    });
+    childLifetimes.add(closed);
+    child.once("close", () => {
       children.delete(child);
-    };
-    child.once("close", forget);
-    child.once("error", forget);
+      resolveClosed();
+      childLifetimes.delete(closed);
+    });
   };
 
   return {
@@ -640,6 +649,24 @@ export function createNodeCliProcessRunner(
         forceTerminateChildTree(child, platform);
       }
       children.clear();
+    },
+
+    quiesceForProfileEgress() {
+      if (quiescenceFlight) return quiescenceFlight;
+      // The manager closes admission before calling this method. Keep the
+      // runner-side lifetime independent from capture Promise settlement:
+      // output overflow/timeout may reject while the OS child is still alive.
+      quiescenceFlight = Promise.allSettled([...childLifetimes])
+        .then((results) => {
+          const failure = results.find(
+            (result) => result.status === "rejected",
+          );
+          if (failure) throw failure.reason;
+        })
+        .finally(() => {
+          quiescenceFlight = null;
+        });
+      return quiescenceFlight;
     },
   };
 }
@@ -1366,6 +1393,8 @@ export function createCliAiManager(
     },
     start: (spec) => runner.start(spec),
     disposeAll: () => runner.disposeAll?.(),
+    quiesceForProfileEgress: () =>
+      runner.quiesceForProfileEgress?.() ?? Promise.resolve(),
   };
   const detectBinary =
     supplied.detectBinary ??
@@ -1755,6 +1784,23 @@ export function createCliAiManager(
     if (fallback) clearTimeout(fallback);
     return settled;
   };
+  const waitForRunnerQuiescence = async (
+    operation: Promise<void>,
+  ): Promise<boolean> => {
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      operation.then(
+        () => true,
+        () => false,
+      ),
+      new Promise<false>((resolve) => {
+        fallback = setTimeout(() => resolve(false), forceKillAfterMs + 250);
+        fallback.unref();
+      }),
+    ]);
+    if (fallback) clearTimeout(fallback);
+    return settled;
+  };
 
   const sendCliStream = async (args: CommandArgs): Promise<null> => {
     const streamId = requireTrimmedNonEmptyString(args.streamId, "streamId");
@@ -2095,7 +2141,22 @@ export function createCliAiManager(
       } catch (error) {
         disposeError = error;
       }
-      const [stopped, commandsSettled, handlersSettled] = await Promise.all([
+      let runnerQuiescence: Promise<boolean>;
+      try {
+        runnerQuiescence = trackedRunner.quiesceForProfileEgress
+          ? waitForRunnerQuiescence(
+              trackedRunner.quiesceForProfileEgress(),
+            )
+          : Promise.resolve(true);
+      } catch {
+        runnerQuiescence = Promise.resolve(false);
+      }
+      const [
+        stopped,
+        commandsSettled,
+        handlersSettled,
+        runnerQuiesced,
+      ] = await Promise.all([
         Promise.all(
           activeLifecycles.map((lifecycle) => waitForLifecycle(lifecycle)),
         ),
@@ -2109,12 +2170,14 @@ export function createCliAiManager(
             waitForRunnerOperation(operation),
           ),
         ),
+        runnerQuiescence,
       ]);
       if (disposeError) throw toError(disposeError);
       if (
         stopped.some((value) => !value) ||
         commandsSettled.some((value) => !value) ||
-        handlersSettled.some((value) => !value)
+        handlersSettled.some((value) => !value) ||
+        !runnerQuiesced
       ) {
         throw new Error("CLI egress transport did not quiesce");
       }
