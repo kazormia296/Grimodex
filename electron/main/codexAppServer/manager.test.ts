@@ -173,6 +173,27 @@ class FakeProcess {
   }
 }
 
+class DeferredDisposeProcess extends FakeProcess {
+  private readonly disposeCompletion: Promise<void>;
+  private rejectDispose!: (cause: Error) => void;
+
+  constructor() {
+    super();
+    this.disposeCompletion = new Promise((_resolve, reject) => {
+      this.rejectDispose = reject;
+    });
+  }
+
+  override async dispose(): Promise<void> {
+    this.disposeCalls += 1;
+    await this.disposeCompletion;
+  }
+
+  failDispose(cause: Error): void {
+    this.rejectDispose(cause);
+  }
+}
+
 function createBindings(): RuntimeThreadBindingStore & {
   rows: Map<string, CodexRuntimeThreadBinding>;
 } {
@@ -2553,5 +2574,29 @@ describe("Codex App Server manager", () => {
     await vi.waitFor(() => expect(process.disposeCalls).toBeGreaterThan(0));
     expect(manager.getStatus()).toMatchObject({ state: "failed" });
     await manager.dispose();
+  });
+
+  it("awaits an unexpected process teardown and propagates an unconfirmed close", async () => {
+    const process = new DeferredDisposeProcess();
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+    });
+    await manager.listModels();
+
+    process.emitClose(new Error("app-server closed unexpectedly"));
+    await vi.waitFor(() => expect(process.disposeCalls).toBe(1));
+
+    let quiesced = false;
+    const quiescing = manager.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    await Promise.resolve();
+    expect(quiesced).toBe(false);
+
+    process.failDispose(new Error("termination unconfirmed"));
+    await expect(quiescing).rejects.toThrow("termination unconfirmed");
+    expect(quiesced).toBe(false);
   });
 });

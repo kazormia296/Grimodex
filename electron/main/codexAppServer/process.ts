@@ -65,9 +65,11 @@ async function defaultHashFile(candidate: string): Promise<string | null> {
   });
 }
 
-async function defaultResolveExecutable(): Promise<string | null> {
+async function defaultResolveExecutable(
+  suppliedRunner?: CliProcessRunner,
+): Promise<string | null> {
   const platform = process.platform;
-  const runner = createNodeCliProcessRunner(platform);
+  const runner = suppliedRunner ?? createNodeCliProcessRunner(platform);
   try {
     return await detectCliBinaryMain("codex", {
       runner,
@@ -84,6 +86,7 @@ async function defaultResolveExecutable(): Promise<string | null> {
     });
   } finally {
     runner.disposeAll?.();
+    await runner.quiesceForProfileEgress?.();
   }
 }
 
@@ -203,7 +206,8 @@ export class CodexAppServerProcess implements JsonRpcWire {
     );
     this.ensureStartAllowed();
     const resolveExecutable =
-      this.options.resolveExecutable ?? defaultResolveExecutable;
+      this.options.resolveExecutable ??
+      (() => defaultResolveExecutable(this.options.runner));
     const candidate = configured ?? (await resolveExecutable());
     this.ensureStartAllowed();
     if (!candidate) throw new Error("Codex CLI executable was not found");
