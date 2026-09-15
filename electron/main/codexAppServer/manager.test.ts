@@ -14,6 +14,7 @@ import type {
   AdvanceHistoryRevisionRequest,
   RuntimeThreadBindingStore,
 } from "./threadBindingStore.js";
+import { CodexAppServerTerminationUnconfirmedError } from "./process.js";
 
 const TEST_WORKSPACE = process.cwd();
 
@@ -191,6 +192,34 @@ class DeferredDisposeProcess extends FakeProcess {
 
   failDispose(cause: Error): void {
     this.rejectDispose(cause);
+  }
+}
+
+class DeferredStartTerminationProcess extends FakeProcess {
+  private readonly startCompletion: Promise<void>;
+  private rejectStart!: (cause: Error) => void;
+
+  constructor() {
+    super();
+    this.startCompletion = new Promise((_resolve, reject) => {
+      this.rejectStart = reject;
+    });
+  }
+
+  override async start(): Promise<void> {
+    this.startCalls += 1;
+    await this.startCompletion;
+  }
+
+  failStart(cause: Error): void {
+    this.rejectStart(cause);
+  }
+}
+
+class FailingStartProcess extends FakeProcess {
+  override async start(): Promise<void> {
+    this.startCalls += 1;
+    throw new Error("Codex CLI executable was not found");
   }
 }
 
@@ -2598,5 +2627,50 @@ describe("Codex App Server manager", () => {
     process.failDispose(new Error("termination unconfirmed"));
     await expect(quiescing).rejects.toThrow("termination unconfirmed");
     expect(quiesced).toBe(false);
+  });
+
+  it("does not resolve profile quiescence after a detector termination failure", async () => {
+    const process = new DeferredStartTerminationProcess();
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+    });
+    const listing = manager.listModels();
+    await vi.waitFor(() => expect(process.startCalls).toBe(1));
+
+    let quiesced = false;
+    const quiescing = manager.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    await Promise.resolve();
+    expect(quiesced).toBe(false);
+
+    process.failStart(
+      new CodexAppServerTerminationUnconfirmedError(
+        "Codex CLI detector child termination was not confirmed",
+      ),
+    );
+    await expect(listing).rejects.toThrow(
+      "Codex CLI detector child termination was not confirmed",
+    );
+    await expect(quiescing).rejects.toThrow(
+      "Codex CLI detector child termination was not confirmed",
+    );
+    expect(quiesced).toBe(false);
+  });
+
+  it("does not make an ordinary start failure sticky for profile quiescence", async () => {
+    const process = new FailingStartProcess();
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+    });
+
+    await expect(manager.listModels()).rejects.toThrow(
+      /executable was not found/,
+    );
+    await expect(manager.quiesceForProfileEgress()).resolves.toBeUndefined();
   });
 });

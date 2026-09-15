@@ -55,6 +55,19 @@ function errorFrom(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
 }
 
+export class CodexAppServerTerminationUnconfirmedError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "CodexAppServerTerminationUnconfirmedError";
+  }
+}
+
+export function isCodexAppServerTerminationUnconfirmedError(
+  value: unknown,
+): value is CodexAppServerTerminationUnconfirmedError {
+  return value instanceof CodexAppServerTerminationUnconfirmedError;
+}
+
 async function defaultHashFile(candidate: string): Promise<string | null> {
   return new Promise((resolve) => {
     const hash = createHash("sha256");
@@ -70,8 +83,11 @@ async function defaultResolveExecutable(
 ): Promise<string | null> {
   const platform = process.platform;
   const runner = suppliedRunner ?? createNodeCliProcessRunner(platform);
+  let detectionFailed = false;
+  let detectionFailure: unknown;
+  let detectionResult: string | null = null;
   try {
-    return await detectCliBinaryMain("codex", {
+    detectionResult = await detectCliBinaryMain("codex", {
       runner,
       platform,
       env: process.env,
@@ -84,10 +100,47 @@ async function defaultResolveExecutable(
         }
       },
     });
-  } finally {
-    runner.disposeAll?.();
-    await runner.quiesceForProfileEgress?.();
+  } catch (cause) {
+    detectionFailed = true;
+    detectionFailure = cause;
   }
+  let disposeFailed = false;
+  let disposeFailure: unknown;
+  try {
+    runner.disposeAll?.();
+  } catch (cause) {
+    disposeFailed = true;
+    disposeFailure = cause;
+  }
+  let barrierFailed = false;
+  let barrierFailure: unknown;
+  try {
+    await runner.quiesceForProfileEgress?.();
+  } catch (cause) {
+    barrierFailed = true;
+    barrierFailure = cause;
+  }
+  const cleanupFailures: unknown[] = [];
+  if (disposeFailed) cleanupFailures.push(disposeFailure);
+  if (barrierFailed) cleanupFailures.push(barrierFailure);
+  if (cleanupFailures.length > 0) {
+    const failures = detectionFailed
+      ? [detectionFailure, ...cleanupFailures]
+      : cleanupFailures;
+    const cause =
+      failures.length === 1
+        ? failures[0]
+        : new AggregateError(
+            failures,
+            "Codex CLI detector cleanup did not complete",
+          );
+    throw new CodexAppServerTerminationUnconfirmedError(
+      "Codex CLI detector child termination was not confirmed",
+      cause,
+    );
+  }
+  if (detectionFailed) throw detectionFailure;
+  return detectionResult;
 }
 
 function normalizeConfiguredExecutable(

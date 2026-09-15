@@ -28,6 +28,7 @@ import path from "node:path";
 import { JsonRpcConnection, JsonRpcRemoteError } from "./jsonRpcConnection.js";
 import {
   CodexAppServerProcess,
+  isCodexAppServerTerminationUnconfirmedError,
   type CodexAppServerProcessOptions,
 } from "./process.js";
 import {
@@ -726,6 +727,12 @@ export function createCodexAppServerManager(
   const sessionOperationTails = new Map<string, Promise<void>>();
   const teardownFlights = new Set<Promise<void>>();
   let teardownFailure: Error | null = null;
+  let startFlightTerminationFailure: Error | null = null;
+
+  const rememberStartFlightTerminationFailure = (cause: unknown): void => {
+    if (!isCodexAppServerTerminationUnconfirmedError(cause)) return;
+    startFlightTerminationFailure ??= cause;
+  };
 
   const trackTeardown = (operation: Promise<void>): Promise<void> => {
     const tracked = operation.catch((cause) => {
@@ -751,7 +758,13 @@ export function createCodexAppServerManager(
     while (teardownFlights.size > 0) {
       await Promise.allSettled([...teardownFlights]);
     }
-    if (teardownFailure) throw teardownFailure;
+    const failures = [teardownFailure, startFlightTerminationFailure].filter(
+      (failure): failure is Error => failure !== null,
+    );
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Codex App Server teardown failed");
+    }
   };
 
   const withSessionOperation = async <T>(
@@ -1265,6 +1278,7 @@ export function createCodexAppServerManager(
         try {
           child = await createProcess();
         } catch (cause) {
+          rememberStartFlightTerminationFailure(cause);
           if (disposed) throw cause;
           throw setFailure(cause);
         }
@@ -1329,6 +1343,7 @@ export function createCodexAppServerManager(
             startedAt: nowIso(now),
           };
         } catch (cause) {
+          rememberStartFlightTerminationFailure(cause);
           connection?.dispose();
           connection = null;
           await beginTeardown(child);

@@ -72,16 +72,60 @@ describe("Codex default executable detector lifecycle", () => {
     mocks.createNodeCliProcessRunner.mockReturnValue(runner);
     mocks.detectCliBinaryMain.mockResolvedValue(null);
 
-    const { CodexAppServerProcess } = await import("./process.js");
+    const { CodexAppServerProcess, CodexAppServerTerminationUnconfirmedError } =
+      await import("./process.js");
     const process = new CodexAppServerProcess({
       authorizeExecutable: async () => true,
       codexHomeDir: "/tmp/grimodex-codex",
     });
 
-    await expect(process.start()).rejects.toThrow(
-      "detector child close was not observed",
+    await expect(process.start()).rejects.toBeInstanceOf(
+      CodexAppServerTerminationUnconfirmedError,
     );
     expect(runner.disposeAll).toHaveBeenCalledOnce();
     expect(runner.quiesceForProfileEgress).toHaveBeenCalledOnce();
+  });
+
+  it("awaits the close barrier when disposeAll throws and preserves both causes", async () => {
+    let rejectChildClose!: (cause: Error) => void;
+    const childClose = new Promise<void>((_resolve, reject) => {
+      rejectChildClose = reject;
+    });
+    const disposeError = new Error("detector dispose failed");
+    const barrierError = new Error("detector child close was not observed");
+    const runner = createRunner(() => childClose);
+    runner.disposeAll.mockImplementation(() => {
+      throw disposeError;
+    });
+    mocks.createNodeCliProcessRunner.mockReturnValue(runner);
+    mocks.detectCliBinaryMain.mockResolvedValue(null);
+
+    const { CodexAppServerProcess } = await import("./process.js");
+    const process = new CodexAppServerProcess({
+      authorizeExecutable: async () => true,
+      codexHomeDir: "/tmp/grimodex-codex",
+    });
+    let settled = false;
+    const starting = process.start().catch((cause: unknown) => {
+      settled = true;
+      return cause;
+    });
+
+    await vi.waitFor(() =>
+      expect(runner.quiesceForProfileEgress).toHaveBeenCalledOnce(),
+    );
+    expect(settled).toBe(false);
+
+    rejectChildClose(barrierError);
+    const failure = await starting;
+    expect(failure).toMatchObject({
+      name: "CodexAppServerTerminationUnconfirmedError",
+      message: "Codex CLI detector child termination was not confirmed",
+    });
+    expect(failure).toHaveProperty("cause");
+    expect((failure as Error & { cause: unknown }).cause).toMatchObject({
+      name: "AggregateError",
+      errors: expect.arrayContaining([disposeError, barrierError]),
+    });
   });
 });
