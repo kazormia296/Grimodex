@@ -27,6 +27,7 @@ use super::dependency_edges::{
 use super::execution_state::{next_run_lifecycle_timestamp_in_tx, parse_run_lifecycle_instant};
 use super::human_material_basis::{project_d1_declaration_set, D1ParentAuthority, MaterialBasis};
 use super::nir1_entity_relation::{
+    NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_PROPOSAL_KIND,
     NIR1_ENTITY_RELATION_REVISION_ORIGIN, NIR1_ENTITY_RELATION_SET_KIND,
 };
 use super::publish_runtime::publish_complete_runless_freshness_in_tx;
@@ -5246,8 +5247,9 @@ fn append_decision_on_conn(
     payload: &AppendDecisionPayload,
     actor: &TrustedDecisionActor,
 ) -> anyhow::Result<Value> {
-    ensure_proposal_not_applied(conn, &payload.proposal_id)?;
     let proposal_status = map_decision_to_status(&payload.decision)?;
+    ensure_nir1_entity_relation_decision_is_appendable(conn, payload)?;
+    ensure_proposal_not_applied(conn, &payload.proposal_id)?;
     if proposal_status != "rejected" {
         ensure_current_chronicle_proposal_set_unconsumed(conn, &payload.proposal_id)?;
     }
@@ -5348,6 +5350,61 @@ fn append_decision_on_conn(
         "decision": payload.decision,
         "status": proposal_status,
     }))
+}
+
+/// A typed Entity/Relation Revision is an immutable human-review decision
+/// point. Generic Proposal decision replay must not turn a rejected/deferred
+/// Revision back into an approved one. The one intentional transition kept
+/// for the existing UI is the single approved -> rejected cancellation; once
+/// that revocation is recorded, the Revision is terminal and only a new
+/// immutable Revision may be decided.
+fn ensure_nir1_entity_relation_decision_is_appendable(
+    conn: &Connection,
+    payload: &AppendDecisionPayload,
+) -> anyhow::Result<()> {
+    let typed_binding: Option<(String, String)> = conn
+        .query_row(
+            "SELECT s.set_kind, p.kind
+               FROM narrative_proposals p
+               INNER JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+              WHERE p.id = ?1
+                AND s.run_id = ?2
+                AND s.project_id = ?3",
+            params![payload.proposal_id, payload.run_id, payload.project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if typed_binding.as_ref()
+        != Some(&(
+            NIR1_ENTITY_RELATION_SET_KIND.to_owned(),
+            NIR1_ENTITY_RELATION_PROPOSAL_KIND.to_owned(),
+        ))
+    {
+        return Ok(());
+    }
+
+    let decisions: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT decision, actor_kind
+               FROM narrative_proposal_decisions
+              WHERE proposal_id = ?1 AND revision_id = ?2
+              ORDER BY created_at ASC, id ASC",
+        )?
+        .query_map(params![payload.proposal_id, payload.revision_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let Some((first_decision, _first_actor_kind)) = decisions.first() else {
+        return Ok(());
+    };
+    let is_single_human_cancellation =
+        decisions.len() == 1 && first_decision == "approved" && payload.decision == "rejected";
+    if !is_single_human_cancellation {
+        anyhow::bail!(
+            "{NIR1_ENTITY_RELATION_DECISION_LOCKED}: typed revision decisions are terminal; create a new immutable revision"
+        );
+    }
+    Ok(())
 }
 
 /// A fully rejected ProposalSet never enters Commit Prepare, so probable

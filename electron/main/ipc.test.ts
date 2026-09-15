@@ -2249,6 +2249,201 @@ describe("NIR-1 router sender binding", () => {
     expect(saveAiSettings).toHaveBeenCalledWith({});
   });
 
+  it("runs the dedicated typed cold reader through D2a at entry and return", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: "/workspace-1",
+      sessionId: "session-1",
+    };
+    const typedRead = vi.fn(async () =>
+      JSON.stringify({
+        status: "available",
+        result: {
+          projectId: "project-1",
+          revisionId: "revision-1",
+          bundle: { entities: [], relations: [] },
+        },
+      }),
+    );
+    const assertPlaintextPublication = vi.fn(() => {
+      throw new Error("D2A_EGRESS_DENIED: plaintext-publication");
+    });
+    const profileEgress = {
+      restricted: false,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication,
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    registerIpcRouter(
+      { nir1EntityRelationRevisionRead: typedRead } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "nir1_entity_relation_revision_read",
+      {
+        expectedWorkspacePath: "/workspace-1",
+        projectId: "project-1",
+        revisionId: "revision-1",
+        callerIdentity: { callerId: "renderer-forged" },
+      },
+    );
+
+    expect(envelope).toEqual({
+      ok: false,
+      error: "D2A_EGRESS_DENIED: plaintext-publication",
+    });
+    expect(typedRead).toHaveBeenCalledExactlyOnceWith({
+      expectedWorkspacePath: "/workspace-1",
+      projectId: "project-1",
+      revisionId: "revision-1",
+    });
+    expect(profileEgress.assertInvoke).toHaveBeenCalledWith(
+      "nir1_entity_relation_revision_read",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(assertPlaintextPublication).toHaveBeenCalledWith(
+      "nir1_entity_relation_revision_read",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+  });
+
+  it("runs typed prepare and current-by-run read through D2a at both boundaries", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: "/workspace-1",
+      sessionId: "session-1",
+    };
+    const prepare = vi.fn(async () =>
+      JSON.stringify({
+        runId: "run-1",
+        status: "draft",
+        receipt: {
+          proposalSetId: "set-1",
+          proposalId: "proposal-1",
+          revisionId: "revision-1",
+          status: "unreviewed",
+        },
+      }),
+    );
+    const readCurrent = vi.fn(async () =>
+      JSON.stringify({ status: "draft", result: {} }),
+    );
+    const assertPlaintextPublication = vi.fn((command: string) => {
+      if (command === "nir1_entity_relation_revision_prepare") return;
+      throw new Error("D2A_EGRESS_DENIED: plaintext-publication");
+    });
+    const profileEgress = {
+      restricted: false,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication,
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    registerIpcRouter(
+      {
+        nir1EntityRelationRevisionPrepare: prepare,
+        nir1EntityRelationRevisionReadCurrent: readCurrent,
+      } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const workspaceBinding = {
+      authorityId: "authority-1",
+      generation: 1,
+      authorityInstanceId: "1",
+    };
+    const prepareArgs = {
+      payload: {
+        projectId: "project-1",
+        sceneId: "scene-1",
+        entityIds: ["entity-1"],
+        relationIds: [],
+      },
+      workspaceBinding,
+    };
+    const prepareEnvelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "nir1_entity_relation_revision_prepare",
+      prepareArgs,
+    );
+    expect(prepareEnvelope).toEqual({
+      ok: true,
+      value: {
+        runId: "run-1",
+        status: "draft",
+        receipt: {
+          proposalSetId: "set-1",
+          proposalId: "proposal-1",
+          revisionId: "revision-1",
+          status: "unreviewed",
+        },
+      },
+    });
+    expect(prepare).toHaveBeenCalledExactlyOnceWith(
+      prepareArgs.payload,
+      workspaceBinding,
+    );
+
+    const currentArgs = {
+      expectedWorkspacePath: "/workspace-1",
+      projectId: "project-1",
+      runId: "run-1",
+    };
+    const currentEnvelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "nir1_entity_relation_revision_read_current",
+      currentArgs,
+    );
+    expect(currentEnvelope).toEqual({
+      ok: false,
+      error: "D2A_EGRESS_DENIED: plaintext-publication",
+    });
+    expect(readCurrent).toHaveBeenCalledExactlyOnceWith(currentArgs);
+    expect(profileEgress.assertInvoke).toHaveBeenNthCalledWith(
+      1,
+      "nir1_entity_relation_revision_prepare",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(profileEgress.assertInvoke).toHaveBeenNthCalledWith(
+      2,
+      "nir1_entity_relation_revision_read_current",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(assertPlaintextPublication).toHaveBeenNthCalledWith(
+      1,
+      "nir1_entity_relation_revision_prepare",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(assertPlaintextPublication).toHaveBeenNthCalledWith(
+      2,
+      "nir1_entity_relation_revision_read_current",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+  });
+
   it("does not return an admitted plaintext read while profile activation drains", async () => {
     const initialStatus = {
       profileId: "profile-1",

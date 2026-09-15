@@ -3652,17 +3652,20 @@ fn resolve_edge_consumer_scope<'a>(
     // Run-independent project Scope authority, its resolver must receive the
     // validated owner; passing the NotRequired sentinel would mark a healthy
     // Source missing and permanently block canonical cutover/rebuild.
-    if edge.source_object_identity.starts_with(
-        grimodex_core::narrative_scope_dependency_projection::SOURCE_PREFIX,
-    ) {
+    if edge
+        .source_object_identity
+        .starts_with(grimodex_core::narrative_scope_dependency_projection::SOURCE_PREFIX)
+    {
         let Ok(identity) = grimodex_core::narrative_scope_dependency_projection::ScopeDependencyIdentity::from_source_key(
             &edge.source_object_identity,
         ) else {
             return Ok(EdgeConsumerScope::Unresolvable);
         };
-        let Some(owner) = edge.owning_run_id.as_deref().or_else(|| {
-            owning_run_id_for_consumer(consumer_kind, consumer_key)
-        }) else {
+        let Some(owner) = edge
+            .owning_run_id
+            .as_deref()
+            .or_else(|| owning_run_id_for_consumer(consumer_kind, consumer_key))
+        else {
             return Ok(EdgeConsumerScope::Unresolvable);
         };
         if owner.trim().is_empty()

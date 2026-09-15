@@ -55,7 +55,7 @@ const REPORT_FIELDS = [
 ];
 
 if (
-  IDS.length !== 27 ||
+  IDS.length !== 28 ||
   PRODUCT_JOURNEY_CATALOG.some(
     (entry) =>
       entry.required === false || entry.acceptanceRole === "diagnostic",
@@ -69,6 +69,7 @@ export const FIXED_PRODUCT_JOURNEY_SHARDS = Object.freeze([
     "lint-native-roundtrip",
     "snapshot-native-roundtrip",
     "chronicle-extract-review-apply-reopen",
+    "codex-entity-relation-review-apply-reopen",
     "c2-5b-producer-generation-no-skip",
     "c2-5b-interrupted-run-recovery",
     "c2-5b-foreground-write-workspace-wake",
@@ -112,8 +113,8 @@ const acceptanceShardNumbers = FIXED_PRODUCT_JOURNEY_SHARDS.flatMap(
 if (
   FIXED_PRODUCT_JOURNEY_SHARDS.length !== 3 ||
   FIXED_PRODUCT_JOURNEY_SHARDS.some(
-    (ids) =>
-      ids.length !== 9 ||
+    (ids, index) =>
+      (index === 0 ? ids.length !== 10 : ids.length !== 9) ||
       !isDeepStrictEqual(
         ids,
         IDS.filter((id) => ids.includes(id)),

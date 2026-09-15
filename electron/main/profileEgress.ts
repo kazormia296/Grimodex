@@ -59,6 +59,8 @@ export const D2A_TYPED_RESULT_POLICY = {
   lint_ignore_list: "plaintext-publication",
   lint_ignore_list_scene: "plaintext-publication",
   lint_term_dictionary_list: "plaintext-publication",
+  nir1_entity_relation_revision_read: "plaintext-publication",
+  nir1_entity_relation_revision_read_current: "plaintext-publication",
 } as const satisfies Partial<
   Record<keyof typeof NAPI_COMMANDS, D2aTypedResultPolicy>
 >;
@@ -288,6 +290,10 @@ const INTERNAL_COMMANDS = new Set([
   "narrative_scene_scope_registry_update",
   "narrative_scene_scope_update",
   "nir1_entity_relation_revision_create",
+  // Prepare resolves live identities and persists only a typed draft. The
+  // renderer receives an opaque metadata receipt; qualified material is read
+  // through the separately gated current-reader command.
+  "nir1_entity_relation_revision_prepare",
   "open_log_dir",
   "open_workspace",
   "plot_thread_branch_create",

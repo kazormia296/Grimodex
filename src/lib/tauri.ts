@@ -222,6 +222,8 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["fts_search", IPC_TIMEOUT_MS],
   ["nir1_evidence_qualify", IPC_TIMEOUT_MS],
   ["nir1_pack_context", IPC_TIMEOUT_MS],
+  ["nir1_entity_relation_revision_read", IPC_TIMEOUT_MS],
+  ["nir1_entity_relation_revision_read_current", IPC_TIMEOUT_MS],
   // These reads can legitimately include process/network startup or a model
   // cold-load, so retain the existing five-minute caller budget.
   ["detect_cli_binary", AI_IPC_TIMEOUT_MS],

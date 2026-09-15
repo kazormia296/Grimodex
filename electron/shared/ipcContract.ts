@@ -680,8 +680,15 @@ export interface NapiBackendLike {
     payload: unknown,
     workspaceBinding: unknown,
   ): Promise<string>;
+  /** Native-owned live source resolver plus typed draft writer. */
+  nir1EntityRelationRevisionPrepare?(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
   /** Cold reader for an explicitly human-approved typed Revision. */
   nir1EntityRelationRevisionRead?(payload: unknown): Promise<string>;
+  /** Dedicated typed current-by-review-Run reader for cold reopen. */
+  nir1EntityRelationRevisionReadCurrent?(payload: unknown): Promise<string>;
   narrativeSceneScopeRead?(payload: unknown): Promise<string>;
   narrativeSceneScopeUpdate?(payload: unknown): Promise<string>;
   narrativeSceneScopeRegistryUpdate?(payload: unknown): Promise<string>;
@@ -6414,6 +6421,137 @@ function requireNir1EntityRelationRevisionCreateRequest(
   return [payload, workspaceBinding];
 }
 
+function requireNir1EntityRelationRevisionReadRequest(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "nir1_entity_relation_revision_read";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "revisionId",
+  ]);
+  for (const key of Object.keys(args)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of [
+    "expectedWorkspacePath",
+    "projectId",
+    "revisionId",
+  ] as const) {
+    const value = requireNonEmptyString(args, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact string`,
+      );
+    }
+  }
+  return {
+    expectedWorkspacePath: args.expectedWorkspacePath,
+    projectId: args.projectId,
+    revisionId: args.revisionId,
+  };
+}
+
+function requireNir1EntityRelationRevisionPrepareRequest(
+  args: CommandArgs,
+): readonly [CommandArgs, CommandArgs] {
+  const command = "nir1_entity_relation_revision_prepare";
+  const [rawPayload, workspaceBinding] = requireNarrativeExtractionBoundMutation(
+    args,
+    command,
+  );
+  const payload = requireRecord({ payload: rawPayload }, "payload", command);
+  const allowedKeys = new Set([
+    "projectId",
+    "sceneId",
+    "entityIds",
+    "relationIds",
+    "proposalKey",
+  ]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of ["projectId", "sceneId"] as const) {
+    const value = requireNonEmptyString(payload, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact string`,
+      );
+    }
+  }
+  if (Object.hasOwn(payload, "proposalKey") && payload.proposalKey !== null) {
+    const proposalKey = requireNonEmptyString(payload, "proposalKey", command);
+    if (proposalKey.trim() !== proposalKey || proposalKey.length > 256) {
+      throw new Error(
+        `invalid args \`proposalKey\` for command \`${command}\`: expected an exact string of at most 256 characters`,
+      );
+    }
+  }
+  const identityLists = [
+    ["entityIds", requireArray(payload, "entityIds", command)],
+    ["relationIds", requireArray(payload, "relationIds", command)],
+  ] as const;
+  let total = 0;
+  for (const [key, values] of identityLists) {
+    const seen = new Set<string>();
+    for (const [index, value] of values.entries()) {
+      if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
+        throw new Error(
+          `invalid args \`${key}[${index}]\` for command \`${command}\`: expected an exact non-empty string`,
+        );
+      }
+      if (seen.has(value)) {
+        throw new Error(
+          `invalid args \`${key}[${index}]\` for command \`${command}\`: duplicate identity`,
+        );
+      }
+      seen.add(value);
+      total += 1;
+    }
+  }
+  if (total === 0 || total > 512) {
+    throw new Error(
+      `invalid args \`entityIds/relationIds\` for command \`${command}\`: expected between 1 and 512 identities`,
+    );
+  }
+  return [payload, workspaceBinding];
+}
+
+function requireNir1EntityRelationRevisionCurrentReadRequest(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "nir1_entity_relation_revision_read_current";
+  const allowedKeys = new Set(["expectedWorkspacePath", "projectId", "runId"]);
+  for (const key of Object.keys(args)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of ["expectedWorkspacePath", "projectId", "runId"] as const) {
+    const value = requireNonEmptyString(args, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact string`,
+      );
+    }
+  }
+  return {
+    expectedWorkspacePath: args.expectedWorkspacePath,
+    projectId: args.projectId,
+    runId: args.runId,
+  };
+}
+
 function requireNir1PackingRequest(args: CommandArgs): CommandArgs {
   const command = "nir1_pack_context";
   const payload = requireRecord(args, "payload", command);
@@ -7634,6 +7772,39 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       );
     },
   },
+  nir1_entity_relation_revision_prepare: {
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNir1EntityRelationRevisionPrepareRequest(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EntityRelationRevisionPrepare,
+          "nir1EntityRelationRevisionPrepare",
+        )(payload, workspaceBinding),
+      );
+    },
+  },
+  nir1_entity_relation_revision_read: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EntityRelationRevisionRead,
+          "nir1EntityRelationRevisionRead",
+        )(requireNir1EntityRelationRevisionReadRequest(a)),
+      ),
+  },
+  nir1_entity_relation_revision_read_current: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EntityRelationRevisionReadCurrent,
+          "nir1EntityRelationRevisionReadCurrent",
+        )(requireNir1EntityRelationRevisionCurrentReadRequest(a)),
+      ),
+  },
   narrative_scene_scope_read: {
     run: async (b, a) =>
       parseWire(
@@ -7669,8 +7840,6 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
-  // The typed Revision reader returns Evidence plaintext and therefore stays
-  // out of renderer IPC until the Native-owned D2a publication gate exists.
   semantic_reranker_shadow_score: {
     run: async (b, a) =>
       parseWire(

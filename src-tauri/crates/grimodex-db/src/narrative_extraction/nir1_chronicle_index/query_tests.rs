@@ -88,9 +88,8 @@ fn held_query(
     scene: &str,
 ) -> (NirQuerySnapshot, NirQualifiedBatch, NirEvidenceHandle) {
     let snapshot = captured(f, scene);
-    let batch = f
-        .db
-        .with_read_transaction(|conn| {
+    let batch =
+        f.db.with_read_transaction(|conn| {
             let NirQualifiedRead::Qualified(batch) =
                 qualify_chronicle_index_snapshot(conn, &f.runtime, &snapshot)?
             else {
@@ -272,22 +271,30 @@ fn nir1_scene_scope_mutation_rejects_held_snapshot_batch_result_and_evidence_bef
     publish(&f);
     let (snapshot, batch, handle) = held_query(&f, s2);
 
-    let initial_scope = f
-        .db
-        .with_read_transaction(|conn| read_narrative_scene_scope(conn, f.project(), s1))
-        .expect("read scope registry before alternate worldline");
+    let initial_scope =
+        f.db.with_read_transaction(|conn| read_narrative_scene_scope(conn, f.project(), s1))
+            .expect("read scope registry before alternate worldline");
     let mut registry = initial_scope.registry.clone();
-    registry.worldline_refs.push("worldline:alternate".to_owned());
-    update_narrative_scene_scope_registry(&f.db, NarrativeSceneScopeRegistryUpdatePayload {
-        project_id: f.project().to_owned(), request_id: "nir1-query-alternate-registry".into(),
-        session_id: "nir1-query-test".into(), event_uid: "nir1-query-alternate-registry-event".into(),
-        base_version: initial_scope.registry_revision, updated_at: "2026-09-14T00:00:00.000Z".into(), registry,
-    }).expect("register alternate worldline");
+    registry
+        .worldline_refs
+        .push("worldline:alternate".to_owned());
+    update_narrative_scene_scope_registry(
+        &f.db,
+        NarrativeSceneScopeRegistryUpdatePayload {
+            project_id: f.project().to_owned(),
+            request_id: "nir1-query-alternate-registry".into(),
+            session_id: "nir1-query-test".into(),
+            event_uid: "nir1-query-alternate-registry-event".into(),
+            base_version: initial_scope.registry_revision,
+            updated_at: "2026-09-14T00:00:00.000Z".into(),
+            registry,
+        },
+    )
+    .expect("register alternate worldline");
 
-    let current = f
-        .db
-        .with_read_transaction(|conn| read_narrative_scene_scope(conn, f.project(), s1))
-        .expect("read Native scene scope before mutation");
+    let current =
+        f.db.with_read_transaction(|conn| read_narrative_scene_scope(conn, f.project(), s1))
+            .expect("read Native scene scope before mutation");
     let mut scope = super::super::scene_scope::NarrativeSceneScopeUpdateV1 {
         schema_version: current.binding.schema_version,
         compatibility_marker: current.binding.compatibility_marker,
@@ -314,47 +321,63 @@ fn nir1_scene_scope_mutation_rejects_held_snapshot_batch_result_and_evidence_bef
     )
     .expect("Native material scope mutation");
 
-    f.db
-        .with_read_transaction(|conn| {
-            assert!(matches!(
-                qualify_chronicle_index_snapshot(conn, &f.runtime, &snapshot)?,
-                NirQualifiedRead::Unavailable {
-                    reason: NirIndexUnavailableReason::QueryUnavailable
-                }
-            ));
-            assert!(!validate_chronicle_query_status_snapshot(
-                conn, &f.runtime, &snapshot
-            )?);
-            assert!(!validate_chronicle_query_snapshot(conn, &f.runtime, &batch)?);
-            assert!(!validate_chronicle_bound_batch(
-                conn, &f.runtime, &snapshot, &batch
-            )?);
-            assert!(matches!(
-                read_chronicle_evidence_navigation(conn, &f.runtime, &handle)?,
-                NirEvidenceNavigationRead::Unavailable {
-                    reason: NirIndexUnavailableReason::EvidenceUnavailable
-                }
-            ));
-            Ok(())
-        })
-        .expect("held scope capability is rejected before rebuild");
+    f.db.with_read_transaction(|conn| {
+        assert!(matches!(
+            qualify_chronicle_index_snapshot(conn, &f.runtime, &snapshot)?,
+            NirQualifiedRead::Unavailable {
+                reason: NirIndexUnavailableReason::QueryUnavailable
+            }
+        ));
+        assert!(!validate_chronicle_query_status_snapshot(
+            conn, &f.runtime, &snapshot
+        )?);
+        assert!(!validate_chronicle_query_snapshot(
+            conn, &f.runtime, &batch
+        )?);
+        assert!(!validate_chronicle_bound_batch(
+            conn, &f.runtime, &snapshot, &batch
+        )?);
+        assert!(matches!(
+            read_chronicle_evidence_navigation(conn, &f.runtime, &handle)?,
+            NirEvidenceNavigationRead::Unavailable {
+                reason: NirIndexUnavailableReason::EvidenceUnavailable
+            }
+        ));
+        Ok(())
+    })
+    .expect("held scope capability is rejected before rebuild");
 
     for _ in 0..4 {
         run_incremental_freshness_cycle(&f.db).expect("ordinary canonical Feed processing");
     }
     publish(&f);
-    assert!(matches!(query(&f, s2), NirQualifiedRead::Qualified(batch) if batch.documents().is_empty()));
+    assert!(
+        matches!(query(&f, s2), NirQualifiedRead::Qualified(batch) if batch.documents().is_empty())
+    );
     f.db.with_read_transaction(|conn| {
-        assert!(matches!(read_chronicle_evidence_navigation(conn, &f.runtime, &handle)?, NirEvidenceNavigationRead::Unavailable { .. }));
+        assert!(matches!(
+            read_chronicle_evidence_navigation(conn, &f.runtime, &handle)?,
+            NirEvidenceNavigationRead::Unavailable { .. }
+        ));
         Ok(())
-    }).expect("rebuilt old Evidence remains denied");
+    })
+    .expect("rebuilt old Evidence remains denied");
 
     let cold = NirChronicleIndexRuntime::new(&f.db, 1);
     f.db.with_read_transaction(|conn| {
-        assert!(matches!(qualify_chronicle_index_query(conn, &cold, f.project(), s2)?, NirQualifiedRead::Unavailable { reason: NirIndexUnavailableReason::ColdIndex }));
-        assert!(matches!(read_chronicle_evidence_navigation(conn, &cold, &handle)?, NirEvidenceNavigationRead::Unavailable { .. }));
+        assert!(matches!(
+            qualify_chronicle_index_query(conn, &cold, f.project(), s2)?,
+            NirQualifiedRead::Unavailable {
+                reason: NirIndexUnavailableReason::ColdIndex
+            }
+        ));
+        assert!(matches!(
+            read_chronicle_evidence_navigation(conn, &cold, &handle)?,
+            NirEvidenceNavigationRead::Unavailable { .. }
+        ));
         Ok(())
-    }).expect("cold runtime cannot restore old query or Evidence");
+    })
+    .expect("cold runtime cannot restore old query or Evidence");
 }
 
 #[test]
@@ -362,36 +385,37 @@ fn nir1_missing_legacy_material_binding_invalidates_held_snapshot_batch_and_evid
     let f = Fixture::new();
     let s1 = f.manifest["s1"].as_str().expect("S1");
     let s2 = f.manifest["s2"].as_str().expect("S2");
-    f.db
-        .with_conn(|conn| {
-            conn.execute(
-                "DELETE FROM narrative_scene_scope_bindings
+    f.db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM narrative_scene_scope_bindings
                   WHERE project_id = ?1 AND scene_id = ?2",
-                rusqlite::params![f.project(), s1],
-            )?;
-            crate::narrative_extraction::scene_scope::backfill_scene_scope_storage_in_tx(conn)
-        })
-        .expect("migrated material scope binding");
+            rusqlite::params![f.project(), s1],
+        )?;
+        crate::narrative_extraction::scene_scope::backfill_scene_scope_storage_in_tx(conn)
+    })
+    .expect("migrated material scope binding");
     publish(&f);
     let (snapshot, batch, handle) = held_query(&f, s2);
     let before_token = batch.query_context().scope_authority_revision_token.clone();
-    assert_eq!(handle.scene_id(), s1, "deleted binding is a material source");
-    f.db
-        .with_conn(|conn| {
-            anyhow::ensure!(
-                conn.execute(
-                    "DELETE FROM narrative_scene_scope_bindings
+    assert_eq!(
+        handle.scene_id(),
+        s1,
+        "deleted binding is a material source"
+    );
+    f.db.with_conn(|conn| {
+        anyhow::ensure!(
+            conn.execute(
+                "DELETE FROM narrative_scene_scope_bindings
                       WHERE project_id = ?1 AND scene_id = ?2",
-                    rusqlite::params![f.project(), s1],
-                )? == 1,
-                "migrated material binding must be removed"
-            );
-            Ok(())
-        })
-        .expect("simulate missing migrated material binding");
-    let after_token = f
-        .db
-        .with_read_transaction(|conn| {
+                rusqlite::params![f.project(), s1],
+            )? == 1,
+            "migrated material binding must be removed"
+        );
+        Ok(())
+    })
+    .expect("simulate missing migrated material binding");
+    let after_token =
+        f.db.with_read_transaction(|conn| {
             Ok(
                 super::super::project_scope_authority::load_live_project_scope_authority(
                     conn,
@@ -404,20 +428,19 @@ fn nir1_missing_legacy_material_binding_invalidates_held_snapshot_batch_and_evid
         })
         .expect("recompute scope authority token");
     assert_ne!(before_token, after_token);
-    f.db
-        .with_read_transaction(|conn| {
-            assert!(!validate_chronicle_bound_batch(
-                conn, &f.runtime, &snapshot, &batch
-            )?);
-            assert!(matches!(
-                read_chronicle_evidence_navigation(conn, &f.runtime, &handle)?,
-                NirEvidenceNavigationRead::Unavailable {
-                    reason: NirIndexUnavailableReason::EvidenceUnavailable
-                }
-            ));
-            Ok(())
-        })
-        .expect("missing migrated scope invalidates held artifacts");
+    f.db.with_read_transaction(|conn| {
+        assert!(!validate_chronicle_bound_batch(
+            conn, &f.runtime, &snapshot, &batch
+        )?);
+        assert!(matches!(
+            read_chronicle_evidence_navigation(conn, &f.runtime, &handle)?,
+            NirEvidenceNavigationRead::Unavailable {
+                reason: NirIndexUnavailableReason::EvidenceUnavailable
+            }
+        ));
+        Ok(())
+    })
+    .expect("missing migrated scope invalidates held artifacts");
 }
 
 #[test]

@@ -36,10 +36,7 @@ pub(in crate::narrative_extraction) struct BuildCandidate {
 }
 
 impl BuildCandidate {
-    pub(in crate::narrative_extraction) fn admits(
-        &self,
-        query: &RetrievalQueryContext,
-    ) -> bool {
+    pub(in crate::narrative_extraction) fn admits(&self, query: &RetrievalQueryContext) -> bool {
         if self.disclosure.check_query(query).is_some() {
             return false;
         }
@@ -153,7 +150,8 @@ pub(in crate::narrative_extraction) fn finalize_build_candidate(
         &preflight.revision_id,
         &preflight.envelope_digest,
         &preflight.envelope,
-    )? else {
+    )?
+    else {
         return Ok(Err(Reason::BindingInvalid));
     };
     let evidence_artifacts = preflight

@@ -256,10 +256,11 @@ fn load_live_project_scope_authority_in_snapshot(
     if let Some(extension_digest) =
         super::scope_extension_digest(conn, project_id, &tree_source_generation)?
     {
-        authority.source.revision_token = grimodex_core::canonical_json_digest(&serde_json::json!({
-            "baseRevisionToken": authority.source.revision_token,
-            "sceneScopeExtensionDigest": extension_digest,
-        }))?;
+        authority.source.revision_token =
+            grimodex_core::canonical_json_digest(&serde_json::json!({
+                "baseRevisionToken": authority.source.revision_token,
+                "sceneScopeExtensionDigest": extension_digest,
+            }))?;
     }
     Ok(authority)
 }

@@ -284,6 +284,15 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     description:
       "fixed provider response -> production extraction and quote display -> human review -> Native V2 Prepare/Apply -> restart without duplicate Events",
   },
+  {
+    id: "codex-entity-relation-review-apply-reopen",
+    domains: ["codex", "scene-persistence", "workspace-lifecycle"],
+    interactions: ["codex->sqlite", "sqlite->codex"],
+    contracts: ["codex:entity-relation-review-apply-reopen"],
+    capabilities: ["electron", "napi"],
+    description:
+      "production Codex Structure Extract evidence review -> Apply -> dedicated Entity/Relation typed approval -> cold reopen",
+  },
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
   ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
 ]);
@@ -643,6 +652,10 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
     domains: ["chronicle-extraction"],
   },
   {
+    id: "codex:entity-relation-review-apply-reopen",
+    domains: ["codex", "sqlite", "scene-persistence", "workspace-lifecycle"],
+  },
+  {
     id: "roundtrip:editor",
     domains: ["editor", "scene-persistence"],
   },
@@ -829,6 +842,8 @@ export const PRODUCT_INTERACTION_REQUIREMENTS = freezeEntries([
     domains: ["external-write-feed", "history"],
   },
   { id: "codex->chat", domains: ["codex", "chat"] },
+  { id: "codex->sqlite", domains: ["codex", "sqlite"] },
+  { id: "sqlite->codex", domains: ["sqlite", "codex"] },
   { id: "chat->editor", domains: ["chat", "editor"] },
   { id: "editor->history", domains: ["editor", "history"] },
   {

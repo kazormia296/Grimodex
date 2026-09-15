@@ -6465,6 +6465,31 @@ impl Backend {
         .await
     }
 
+    /// Resolve live Entity/Relation identities and atomically persist the
+    /// dedicated typed review Run plus its unreviewed Revision.  The Native
+    /// workspace binding covers the whole transaction; a failed preparation
+    /// cannot leave a resumable Run without a typed Revision.
+    #[napi]
+    pub async fn nir1_entity_relation_revision_prepare(
+        &self,
+        payload: serde_json::Value,
+        workspace_binding: serde_json::Value,
+    ) -> Result<String> {
+        let raw = narrative_extraction_bound_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            workspace_binding,
+            narrative_extraction::narrative_extraction_prepare_nir1_entity_relation_revision,
+        )
+        .await?;
+        let value =
+            serde_json::from_str(&raw).map_err(|error| Error::from_reason(error.to_string()))?;
+        let receipt = narrative_extraction::nir1_entity_relation_revision_prepare_receipt(value)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        serde_json::to_string(&receipt).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
     /// Re-open one typed NIR-1 Revision from the currently pinned workspace.
     /// The workspace path is an authority check only; the project and
     /// Revision identities are rechecked inside the same read transaction.
@@ -6493,6 +6518,45 @@ impl Backend {
                     &request.revision_id,
                 )
             })?;
+            let response =
+                narrative_extraction::nir1_entity_relation_revision_read_for_renderer(response)?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Read the current draft or explicitly human-approved typed Revision for
+    /// one dedicated review Run after a cold reopen.  Generic review bundle
+    /// storage is intentionally not consulted.
+    #[napi]
+    pub async fn nir1_entity_relation_revision_read_current(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            project_id: String,
+            run_id: String,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let response = workspace.authority.db().with_read_transaction(|conn| {
+                narrative_extraction::read_nir1_entity_relation_revision_current(
+                    conn,
+                    &request.project_id,
+                    &request.run_id,
+                )
+            })?;
+            let response =
+                narrative_extraction::nir1_entity_relation_revision_current_read_for_renderer(
+                    response,
+                )?;
             Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
         })
         .await
@@ -6556,7 +6620,10 @@ impl Backend {
     /// Atomically update the project Scope vocabulary registry. Scene bindings
     /// are revalidated against the new registry inside the same transaction.
     #[napi]
-    pub async fn narrative_scene_scope_registry_update(&self, payload: serde_json::Value) -> Result<String> {
+    pub async fn narrative_scene_scope_registry_update(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Request {

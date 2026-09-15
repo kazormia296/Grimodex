@@ -54,29 +54,34 @@ pub use maintenance_skip_evidence::{
     CompletedRunSkipReason, COMPLETED_RUN_SKIP_EVIDENCE_FIELD, REBUILD_RUN_KIND_CONTRACT_VERSION,
     VERIFY_RUN_KIND_CONTRACT_VERSION,
 };
+#[cfg(test)]
+pub(crate) use material_membership::MATERIAL_MEMBERSHIP_READ_COUNT;
 pub use nir1_entity_relation::{
-    read_nir1_entity_relation_revision, Nir1EntityRelationRevision,
+    nir1_entity_relation_revision_current_read_for_renderer,
+    nir1_entity_relation_revision_prepare_receipt, nir1_entity_relation_revision_read_for_renderer,
+    prepare_nir1_entity_relation_revision, read_nir1_entity_relation_revision,
+    read_nir1_entity_relation_revision_current, Nir1EntityRelationRevision,
+    Nir1EntityRelationRevisionCurrentRead, Nir1EntityRelationRevisionPrepareRequest,
     Nir1EntityRelationRevisionRead, Nir1EntityRelationRevisionRequest,
+    NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
 };
 pub use nir1_graph::{read_nir1_graph, Nir1GraphRequest, Nir1GraphResponse};
 pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 pub(crate) use scene_scope::backfill_scene_scope_storage_in_tx;
 pub(crate) use scene_scope::ensure_scene_scope_binding_in_tx;
-pub(crate) use scene_scope::{
-    ensure_character_reference_mutation_allowed_in_tx,
-    ensure_character_snapshot_restore_allowed_in_tx,
-    invalidate_character_references_with_events_in_tx,
-};
 pub(crate) use scene_scope::ensure_scope_registry_in_tx;
 pub(crate) use scene_scope::refresh_scene_scope_source_token_for_scene_in_tx;
 pub(crate) use scene_scope::refresh_scene_scope_source_token_in_tx;
 #[cfg(test)]
 pub(crate) use scene_scope::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT;
-#[cfg(test)]
-pub(crate) use material_membership::MATERIAL_MEMBERSHIP_READ_COUNT;
 pub(crate) use scene_scope::{
     canonical_scene_scope_snapshot, canonical_scope_registry_snapshot, scope_extension_digest,
+};
+pub(crate) use scene_scope::{
+    ensure_character_reference_mutation_allowed_in_tx,
+    ensure_character_snapshot_restore_allowed_in_tx,
+    invalidate_character_references_with_events_in_tx,
 };
 pub use scene_scope::{
     read_narrative_scene_scope, update_narrative_scene_scope,
@@ -103,12 +108,12 @@ mod phase_undo;
 mod plot_thread_operations;
 mod plot_thread_undo;
 mod project_scope_authority;
-mod scene_scope;
-mod scope_dependency_projection;
 mod publish_runtime;
 mod reconciliation_envelope;
 mod repair;
 mod retrieval_admission;
+mod scene_scope;
+mod scope_dependency_projection;
 pub use retrieval_admission::{
     read_retrieval_query_context, read_retrieval_scene_source, read_revision_retrieval_eligibility,
     ChronicleRetrievalDocument, QueryIdentityState, RetrievalQueryContext,
@@ -522,6 +527,13 @@ pub fn narrative_extraction_create_nir1_entity_relation_revision(
     request: Nir1EntityRelationRevisionRequest,
 ) -> anyhow::Result<Value> {
     nir1_entity_relation::create_nir1_entity_relation_revision(db, request)
+}
+
+pub fn narrative_extraction_prepare_nir1_entity_relation_revision(
+    db: &Database,
+    request: Nir1EntityRelationRevisionPrepareRequest,
+) -> anyhow::Result<Value> {
+    nir1_entity_relation::prepare_nir1_entity_relation_revision(db, request)
 }
 
 pub fn narrative_extraction_get_run_review_bundle(

@@ -9,11 +9,22 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
+
+use crate::narrative_ir::{
+    validate_narrative_revision_envelope_v2_with_contract, NarrativeIrValidationError,
+};
 
 pub const ENTITY_RELATION_PRODUCER: &str = "nir1-reviewed-entity-relation-v1";
 pub const ENTITY_RELATION_INDEX_KEY: &str = "nir1-reviewed-entity-relation:v1";
 pub const ENTITY_RELATION_SOURCE_KIND: &str = "nir1-entity-relation-eligibility-set";
+pub const ENTITY_RELATION_ASSERTION_KIND: &str = "nir1.entity-relation@1";
+pub const ENTITY_RELATION_ADAPTER_ID: &str = "nir1.entity-relation";
+pub const ENTITY_RELATION_ADAPTER_VERSION: &str = "1";
+pub const ENTITY_RELATION_ASSERTION_SCHEMA_ID: &str = "narrative.nir1.entity-relation";
+pub const ENTITY_RELATION_ASSERTION_SCHEMA_VERSION: &str = "1";
+pub const ENTITY_RELATION_MATERIAL_CONTRACT_ID: &str = "nir1.entity-relation.material";
 
 pub const MAX_GRAPH_HOPS: u8 = 2;
 pub const MAX_GRAPH_NODES: usize = 12;
@@ -253,6 +264,169 @@ pub enum Nir1ContractError {
     GraphLimit(String),
     #[error("NIR1_PACKING:{0}")]
     Packing(String),
+}
+
+fn envelope_validation_error(path: impl Into<String>) -> NarrativeIrValidationError {
+    NarrativeIrValidationError::Validation {
+        reason: "invalid-entity-relation-envelope",
+        path: path.into(),
+    }
+}
+
+fn is_envelope_digest(value: &Value) -> bool {
+    value.as_str().is_some_and(|digest| {
+        let Some(hex) = digest.strip_prefix("sha256:") else {
+            return false;
+        };
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
+
+/// Structural Envelope V2 adapter for the only supported NIR-1 typed family.
+/// The generic Envelope validator supplies the shared fields, dependency
+/// selector grammar, and material/context consistency; this adapter pins the
+/// family, proposal binding, producer, and component contract without
+/// remapping the payload to Chronicle's `scene-event@1` assertion kind.
+pub fn validate_entity_relation_revision_envelope_v2(
+    value: &Value,
+) -> Result<(), NarrativeIrValidationError> {
+    validate_narrative_revision_envelope_v2_with_contract(
+        value,
+        ENTITY_RELATION_ASSERTION_KIND,
+        ENTITY_RELATION_ADAPTER_ID,
+        ENTITY_RELATION_ADAPTER_VERSION,
+    )?;
+    let envelope = value
+        .as_object()
+        .ok_or_else(|| envelope_validation_error("envelope"))?;
+    let assertion = envelope
+        .get("assertion")
+        .and_then(Value::as_object)
+        .ok_or_else(|| envelope_validation_error("assertion"))?;
+    let schema = assertion
+        .get("payloadSchemaRef")
+        .and_then(Value::as_object)
+        .ok_or_else(|| envelope_validation_error("assertion.payloadSchemaRef"))?;
+    if schema.get("id").and_then(Value::as_str) != Some(ENTITY_RELATION_ASSERTION_SCHEMA_ID)
+        || schema.get("version").and_then(Value::as_str)
+            != Some(ENTITY_RELATION_ASSERTION_SCHEMA_VERSION)
+    {
+        return Err(envelope_validation_error("assertion.payloadSchemaRef"));
+    }
+
+    let payload = assertion
+        .get("payload")
+        .and_then(Value::as_object)
+        .ok_or_else(|| envelope_validation_error("assertion.payload"))?;
+    if payload.len() != 2
+        || !payload.contains_key("bundleDigest")
+        || !payload.contains_key("revisionId")
+        || !is_envelope_digest(
+            payload
+                .get("bundleDigest")
+                .ok_or_else(|| envelope_validation_error("assertion.payload.bundleDigest"))?,
+        )
+        || payload
+            .get("revisionId")
+            .and_then(Value::as_str)
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(envelope_validation_error("assertion.payload"));
+    }
+
+    let assertion_producer = assertion
+        .get("producer")
+        .and_then(Value::as_object)
+        .ok_or_else(|| envelope_validation_error("assertion.producer"))?;
+    if assertion_producer.get("kind").and_then(Value::as_str) != Some("reconciler-proposal")
+        || assertion_producer.get("id").and_then(Value::as_str) != Some(ENTITY_RELATION_PRODUCER)
+        || assertion_producer.get("version").and_then(Value::as_str) != Some("1")
+    {
+        return Err(envelope_validation_error("assertion.producer"));
+    }
+
+    let basis = envelope
+        .get("revisionBasis")
+        .and_then(Value::as_object)
+        .ok_or_else(|| envelope_validation_error("revisionBasis"))?;
+    if basis.get("producer") != Some(&Value::Object(assertion_producer.clone())) {
+        return Err(envelope_validation_error("revisionBasis.producer"));
+    }
+    let material = envelope
+        .get("effectiveMaterialBasis")
+        .and_then(Value::as_object)
+        .ok_or_else(|| envelope_validation_error("effectiveMaterialBasis"))?;
+    let dependencies = material
+        .get("dependencySet")
+        .and_then(Value::as_array)
+        .ok_or_else(|| envelope_validation_error("effectiveMaterialBasis.dependencySet"))?;
+    let components = dependencies
+        .iter()
+        .filter(|dependency| {
+            dependency.get("role").and_then(Value::as_str) == Some("component-contract")
+        })
+        .collect::<Vec<_>>();
+    if components.len() != 1 {
+        return Err(envelope_validation_error(
+            "effectiveMaterialBasis.dependencySet.component-contract",
+        ));
+    }
+    let component = components[0].as_object().ok_or_else(|| {
+        envelope_validation_error("effectiveMaterialBasis.dependencySet.component-contract")
+    })?;
+    let selector = component
+        .get("selector")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            envelope_validation_error(
+                "effectiveMaterialBasis.dependencySet.component-contract.selector",
+            )
+        })?;
+    if selector.get("kind").and_then(Value::as_str) != Some("component-contract")
+        || selector.get("contractId").and_then(Value::as_str)
+            != Some(ENTITY_RELATION_MATERIAL_CONTRACT_ID)
+        || !is_envelope_digest(selector.get("contractDigest").ok_or_else(|| {
+            envelope_validation_error(
+                "effectiveMaterialBasis.dependencySet.component-contract.selector.contractDigest",
+            )
+        })?)
+        || basis.get("componentContractDigest") != selector.get("contractDigest")
+    {
+        return Err(envelope_validation_error(
+            "effectiveMaterialBasis.dependencySet.component-contract.selector",
+        ));
+    }
+
+    let change = envelope
+        .get("changeIntent")
+        .and_then(Value::as_object)
+        .ok_or_else(|| envelope_validation_error("changeIntent"))?;
+    if change.get("changeKind").and_then(Value::as_str) != Some("add")
+        || change.contains_key("targetProjectionRef")
+    {
+        return Err(envelope_validation_error("changeIntent.changeKind"));
+    }
+
+    let binding = envelope
+        .get("projectionBinding")
+        .and_then(Value::as_object)
+        .ok_or_else(|| envelope_validation_error("projectionBinding"))?;
+    let proposal_schema = binding
+        .get("proposalSchemaRef")
+        .and_then(Value::as_object)
+        .ok_or_else(|| envelope_validation_error("projectionBinding.proposalSchemaRef"))?;
+    if binding.get("proposalKind").and_then(Value::as_str) != Some(ENTITY_RELATION_ASSERTION_KIND)
+        || proposal_schema.get("id").and_then(Value::as_str)
+            != Some(ENTITY_RELATION_ASSERTION_SCHEMA_ID)
+        || proposal_schema.get("version").and_then(Value::as_str)
+            != Some(ENTITY_RELATION_ASSERTION_SCHEMA_VERSION)
+    {
+        return Err(envelope_validation_error("projectionBinding"));
+    }
+    Ok(())
 }
 
 pub fn validate_entity_relation_bundle(
