@@ -496,6 +496,7 @@ describe("D2a profile egress gate", () => {
     ["vivliostyle_preview_start", {}],
     ["nir1_pack_context", {}],
     ["fts_search", {}],
+    ["narrative_extraction_claim_task", { payload: {} }],
     ["narrative_extraction_get_run_review_bundle", { payload: {} }],
     ["project_snapshot_restore_context", {}],
     ["lint_ignore_list", {}],

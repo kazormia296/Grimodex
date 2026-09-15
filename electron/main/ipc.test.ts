@@ -2178,6 +2178,7 @@ describe("NIR-1 router sender binding", () => {
       assertInvoke: vi.fn(() => {
         throw new Error("D2A_EGRESS_DENIED: old-external-ai");
       }),
+      assertPlaintextPublication: vi.fn(),
       allowsBackendEvent: vi.fn(() => true),
       assertExternalUrl: vi.fn(),
       registerMainEgressParticipant: vi.fn(),
@@ -2219,6 +2220,7 @@ describe("NIR-1 router sender binding", () => {
       unavailable: false,
       issueCallerIdentity: vi.fn(() => identity),
       assertInvoke: vi.fn(),
+      assertPlaintextPublication: vi.fn(),
       allowsBackendEvent: vi.fn(() => true),
       assertExternalUrl: vi.fn(),
       registerMainEgressParticipant: vi.fn(),
@@ -2245,6 +2247,89 @@ describe("NIR-1 router sender binding", () => {
       expect.objectContaining({ callerIdentity: identity }),
     );
     expect(saveAiSettings).toHaveBeenCalledWith({});
+  });
+
+  it("does not return an admitted plaintext read while profile activation drains", async () => {
+    const initialStatus = {
+      profileId: "profile-1",
+      callerEpoch: 4,
+      restricted: false,
+      handlesInvalidated: false,
+      inFlightStopped: true,
+      sqlPolicy: {
+        version: 1,
+        protectedTables: ["narrative_extraction_runs"],
+        protectedColumns: [],
+      },
+    };
+    const activatedStatus = {
+      ...initialStatus,
+      profileId: "profile-activated",
+      callerEpoch: 5,
+      restricted: true,
+      handlesInvalidated: true,
+    };
+    let resolveReader!: (value: string | PromiseLike<string>) => void;
+    const readerResponse = new Promise<string>((resolve) => {
+      resolveReader = resolve;
+    });
+    const narrativeExtractionGetRun = vi.fn(() => readerResponse);
+    const activateProfileEgress = vi.fn(async () =>
+      JSON.stringify(activatedStatus),
+    );
+    const backend = {
+      initializeProfileEgress: vi.fn(async () => JSON.stringify(initialStatus)),
+      activateProfileEgress,
+      registerProfileEgressCaller: vi.fn(),
+      invalidateProfileEgressCallers: vi.fn(),
+      narrativeExtractionGetRun,
+    };
+    const profileEgress = await createProfileEgressGate(
+      backend as unknown as NapiBackendLike,
+    );
+    let releaseDrain!: () => void;
+    const drain = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseDrain = resolve;
+        }),
+    );
+    profileEgress.registerMainEgressParticipant("reader-drain", drain);
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const pendingReader = invokeHandler()(
+      { sender: { id: 42 } },
+      "narrative_extraction_get_run",
+      { payload: { runId: "run-1", projectId: "project-1" } },
+    );
+    await vi.waitFor(() =>
+      expect(narrativeExtractionGetRun).toHaveBeenCalledOnce(),
+    );
+
+    const activation = profileEgress.activateFirstRestrictedPublication!();
+    await vi.waitFor(() => expect(drain).toHaveBeenCalledOnce());
+    expect(profileEgress.restricted).toBe(true);
+    expect(activateProfileEgress).not.toHaveBeenCalled();
+
+    resolveReader(JSON.stringify({ secret: "D2A_PLAINTEXT_SENTINEL" }));
+    const envelope = await pendingReader;
+    expect(envelope.ok).toBe(false);
+    if (!envelope.ok) {
+      expect(envelope.error).toMatch(
+        /^D2A_EGRESS_DENIED: plaintext-publication/u,
+      );
+      expect(envelope.error).not.toContain("D2A_PLAINTEXT_SENTINEL");
+    }
+
+    releaseDrain();
+    await activation;
   });
 
   it("keeps every legacy AI family at dispatch zero, including route variants", async () => {
@@ -2321,6 +2406,13 @@ describe("NIR-1 router sender binding", () => {
       narrativeExtractionGetRunReviewBundle: nativeTransport(
         "narrativeExtractionGetRunReviewBundle",
       ),
+      narrativeExtractionClaimTask: nativeTransport(
+        "narrativeExtractionClaimTask",
+        JSON.stringify({
+          claimed: true,
+          task: { inputJson: "D2A_TASK_PLAINTEXT_SENTINEL" },
+        }),
+      ),
       saveGlobalSettings: nativeTransport("saveGlobalSettings"),
     };
     const childDispatches: string[] = [];
@@ -2384,6 +2476,13 @@ describe("NIR-1 router sender binding", () => {
         { files: [{ path: "sentinel.md", content: "sentinel" }] },
       ],
       ["vivliostyle_preview_start", { url: "https://sentinel.invalid" }],
+      [
+        "narrative_extraction_claim_task",
+        {
+          payload: { runId: "run-1", projectId: "project-1" },
+          workspaceBinding: { authorityId: "authority-1" },
+        },
+      ],
       ["narrative_extraction_get_run_review_bundle", { messages: ["old"] }],
       ["project_snapshot_restore_context", { workspaceId: "other" }],
       ["lint_ignore_list", { projectId: "other" }],
@@ -2413,6 +2512,7 @@ describe("NIR-1 router sender binding", () => {
       nativeCalls.testAiConnection,
       nativeCalls.startPostEffectRun,
       nativeCalls.startPostEffectRunMulti,
+      nativeCalls.narrativeExtractionClaimTask,
       nativeCalls.narrativeExtractionGetRunReviewBundle,
     ]) {
       expect(call).not.toHaveBeenCalled();

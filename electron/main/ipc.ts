@@ -2077,6 +2077,16 @@ export function registerIpcRouter(
         } catch (error) {
           envelope = { ok: false, error: toErrorString(error) };
         }
+        if (envelope.ok) {
+          try {
+            // A read admitted before activation may finish after the profile
+            // gate closes. Re-check only plaintext publication routes here;
+            // committed native mutations keep their success semantics.
+            profileEgress?.assertPlaintextPublication(cmd, dispatchArgs);
+          } catch (error) {
+            envelope = { ok: false, error: toErrorString(error) };
+          }
+        }
         if (envelope.ok && typeof boundArgs.ownerKey === "string") {
           if (cmd === "related_scenes_begin" && isRecord(envelope.value)) {
             const ir = envelope.value.ir;
