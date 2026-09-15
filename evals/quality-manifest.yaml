@@ -127,6 +127,7 @@ requirements:
     implementedBy:
       - AGENTS.md
       - .agents/skills/adversarial-review/SKILL.md
+      - .agents/skills/create-branch/SKILL.md
       - .agents/skills/rerun-sandbox-eperm/SKILL.md
       - src/features/chat/turn/resolveTurnRoute.ts
       - src/features/chat/context/chatContextPlanner.ts
@@ -902,6 +903,7 @@ requirements:
       - scripts/quality/validate-semantic-core-boundary.mjs
       - AGENTS.md
       - .agents/skills/adversarial-review/SKILL.md
+      - .agents/skills/create-branch/SKILL.md
       - .agents/skills/grimodex-impact-gate/SKILL.md
       - .agents/skills/rerun-sandbox-eperm/SKILL.md
       - .agents/skills/ship-branch/SKILL.md
