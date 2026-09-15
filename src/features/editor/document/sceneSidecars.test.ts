@@ -38,7 +38,9 @@ describe("loadSceneSidecars", () => {
       loadAuthorshipSpans: vi.fn().mockResolvedValue([]),
       loadForeshadowAnchors: vi
         .fn()
-        .mockRejectedValue(new Error("D2A_EGRESS_DENIED: plaintext-publication")),
+        .mockRejectedValue(
+          new Error("D2A_EGRESS_DENIED: plaintext-publication"),
+        ),
       listAnnotationsForScene: vi.fn().mockResolvedValue({ annotations: [] }),
     });
 
