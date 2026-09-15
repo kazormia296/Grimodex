@@ -126,6 +126,11 @@ requirements:
     definedIn: policies/quality/iron-laws.md#GDX-PRECHECK-001
     implementedBy:
       - AGENTS.md
+      - .agents/skills/implement-feature/SKILL.md
+      - .agents/skills/review-code/SKILL.md
+      - .agents/skills/refactor-cross-boundaries/SKILL.md
+      - .agents/skills/refactor-cross-boundaries/references/impact-matrix.md
+      - .agents/skills/ship-branch/SKILL.md
       - .agents/skills/adversarial-review/SKILL.md
       - .agents/skills/create-branch/SKILL.md
       - .agents/skills/rerun-sandbox-eperm/SKILL.md
@@ -902,6 +907,10 @@ requirements:
       - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
       - AGENTS.md
+      - .agents/skills/implement-feature/SKILL.md
+      - .agents/skills/review-code/SKILL.md
+      - .agents/skills/refactor-cross-boundaries/SKILL.md
+      - .agents/skills/refactor-cross-boundaries/references/impact-matrix.md
       - .agents/skills/adversarial-review/SKILL.md
       - .agents/skills/create-branch/SKILL.md
       - .agents/skills/grimodex-impact-gate/SKILL.md

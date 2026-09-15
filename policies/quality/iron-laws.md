@@ -73,7 +73,32 @@ version/ref. Large cross-boundary changes are split into reviewable lanes, while
 candidate stays minimal. Focused gates must pass before the candidate freezes. After freeze, no edits
 are allowed: a finding reopens the candidate and invalidates its receipts.
 
-Before an expensive Full, use a focused preflight for risk-derived applicable late stages only.
+Changes involving external egress, subprocesses, background work, or async lifecycle require a
+finite owner/lifecycle matrix before mutation. It covers every entry/start/retry/reentrant path,
+admission closure, pending-start work, active handle ownership, cancellation, bounded wait, actual
+termination evidence (close/exit/terminal receipt), error/timeout/onClosed ownership, and persisted
+restart state. A kill request, error event, or rejected promise alone is not termination proof.
+High-effort review and candidate-untouched independent acceptance must resolve P2+ findings before
+freeze and the expensive Full; after Full, acceptance confirms the unchanged candidate and does not
+reopen semantics without a candidate change.
+
+Before an expensive Full, require generic resource isolation: no competing heavy run, enough writable
+capacity on the actual workspace, build-cache, and temp filesystems, and separate checks for root/home
+pressure and temp quota. Do not use any fixed capacity/quota threshold (including GB, percentage, inode,
+or other numeric thresholds), a host-specific cache deletion list, or deletion automation. Derive any
+thresholds from risk, workload, and filesystem state rather than hardcoding them. This preflight is read-only and must not auto-delete artifacts, kill other jobs, or
+rewrite temp paths. A competing job is a coordination stop, not kill authority. Also use a focused
+preflight for risk-derived applicable late stages only.
+Resolve the immutable candidate base and head once as expanded shell-local values before Full, and pass
+those exact same values to Full and every verify of that receipt. A merge precheck fetches before comparing
+or classifying the base; it records exactly one `approved_merge_base` commit, either the verified candidate
+base on the normal path or the current fetched base only after the narrow exception is approved.
+For a squash merge only, after merge compare the squash merge commit's first parent (`<merge-sha>^1`)
+once with that approved merge-base and verify inclusion in `origin/master`; a mismatch is not verified
+success and requires classifying the new upstream delta and the necessary revalidation. An explicitly
+requested non-squash method must, before merge, have a method-specific actual-base/post-merge verification
+procedure defined and approved; if absent, stop before merge. Do not reuse the squash first-parent rule or
+add general non-squash verification logic.
 Runtime performance/fresh Xvfb, migration/recovery, and real product journeys are examples, not
 blanket requirements. Do not require or block on an inapplicable host capability. These checks are
 diagnostic only and never replace a clean Full-from-stage-1 + verify. An unexplained runtime failure remains
@@ -227,23 +252,48 @@ and failure class remain linked. Failures use `[routing]`, `[precheck]`, `[tool]
 runners or prerequisites are `blocked`. Neither state is ever reported as `passed`.
 
 When hosted PR checks are absent, a completed change runs local Quick before its completion commit
-or PR. Merge requires a complete Full run from the first stage on the clean, committed, current HEAD;
-a release tag requires a new complete Full run on the merged release commit itself. Receipts bind
-the requested and resolved base and head, current HEAD and tree, worktree state, and completeness.
-Dirty Quick receipts additionally bind the tracked diff and untracked file-content fingerprint.
-Partial `--from` runs, dry runs, stale receipts, missing prerequisites, and release-only coverage are
-never converted into merge or release passes.
+or PR. The initial merge Full first confirms the fetched current `origin/master` is an ancestor of the
+candidate HEAD, then resolves immutable `candidate_base` and `candidate_head` values once and passes the
+same expanded strings to Full and every verify of that receipt. A merge precheck fetches `origin/master`
+before base comparison or classification and records exactly one `approved_merge_base`: the verified
+candidate base on the normal path, or the current base only after the narrow editorial docs/ADR-only
+exception is approved. A release tag requires a new complete Full run on the merged release commit itself.
+Receipts bind the requested and resolved base and head, current HEAD and tree, worktree state, and
+completeness. Dirty Quick receipts additionally bind the tracked diff and untracked file-content fingerprint.
+Partial `--from` runs, dry runs, stale receipts, missing prerequisites, and release-only coverage are never
+converted into merge or release passes.
+
+Before an expensive Full, record generic resource isolation: no competing heavy run, enough writable
+capacity on the actual workspace, build-cache, and temp filesystems, and separate checks for root/home
+pressure and temp quota. Do not use any fixed capacity/quota threshold (including GB, percentage, inode,
+or other numeric thresholds), a host-specific cache deletion list, or deletion automation. Derive any
+thresholds from risk, workload, and filesystem state rather than hardcoding them. This preflight is read-only and must not auto-delete artifacts, kill other jobs, or
+rewrite temp paths. A competing job is a coordination stop, not kill authority.
+
+At candidate freeze, bind the exact candidate once in the receipt/ledger, including base, head, tree,
+clean state, receipt directory, and completeness. Use an expected-head check at push and merge state
+transitions. For a squash merge only, after merge and fetch, compare the actual squash merge commit's first
+parent (`<merge-sha>^1`) once with the recorded `approved_merge_base`, and verify that the merge commit is
+included in `origin/master`.
+An explicitly requested non-squash method must, before merge, have a method-specific actual-base/post-merge
+verification procedure defined and approved; if absent, stop before merge. Do not reuse the squash
+first-parent rule or add general non-squash verification logic.
+Do not require repeated tree equality checks or user-facing SHA recitation except on mismatch or request. An
+upstream-base change is exempt from a Full rerun only when candidate HEAD and PR diff are unchanged and the
+upstream delta is editorial docs/ADR-only: it must change no executable, build, dependency, CI, policy,
+schema, manifest, or generated-contract content and no ratified decision or acceptance meaning. Record the
+exception and proportionate static/focused checks; the old receipt remains bound to its old base, not the new
+one, and is reverified with the same original candidate values. Any ambiguity or candidate HEAD change
+invalidates the receipt and requires a clean Full-from-stage-1 + verify. If the first-parent comparison
+mismatches, do not report verified success: classify the newly added base delta and perform the necessary
+exception/revalidation path; the merge may have occurred, but acceptance evidence is not valid until resolved.
 
 Decisive acceptance evidence is either directly candidate-bound, or transitively bound through a
 verified parent receipt that is itself candidate-bound. When metrics or artifacts are quoted or adopted
 independently of that parent receipt, bind them directly to candidate identity, commit/tree/run, and
 artifact digest; without that direct binding, the standalone evidence is diagnostic-only. Missing direct
 binding is tracked hardening debt and does not by itself retroactively invalidate a complete parent
-receipt. For merge verification, record `acceptedTreeSha` from the Full receipt's existing
-`candidate.resolvedHeadTreeSha` after confirming it belongs to the current accepted HEAD. After merge,
-separately verify that the merge commit is included in `origin/master`, then compare that recorded
-accepted tree SHA directly with the remote merge tree; if they differ, invalidate the receipts and
-rerun a clean Full-from-stage-1 + verify.
+receipt.
 
 ## Evaluation evidence boundaries
 

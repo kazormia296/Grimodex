@@ -32,6 +32,10 @@ description: >
 - 正本となる型・契約・domain ownership を特定する。
 - 対象外の経路には理由を記録する。
 - 推測は `unknown` とし、対象経路の `unknown` を解消してから実装する。
+- external egress、subprocess、background、async lifecycle に関係する各行は、reference の compact lifecycle-owner
+  checklist（全 entry/start/retry/reentrant、admission closure、pending-start、active handle ownership、
+  cancellation、bounded wait、close/exit/terminal receipt の実終了証拠、error/timeout/onClosed ownership、
+  persisted restart state）を満たす。tableへ列を増やさず、各行の lifecycle note として記録する。
 
 可能なら独立した担当に、不変条件、行漏れ、fallback、互換性方針をレビューさせる。
 
