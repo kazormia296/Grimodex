@@ -420,6 +420,23 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   }
   assert.match(agentsCiSection, /first parent.*<merge-sha>\^1.*approved_merge_base/i);
   assert.match(policySection, /first parent.*<merge-sha>\^1.*approved.*merge-base/i);
+  for (const section of [agentsCiSection, policySection, traceSection, shipMergeSection]) {
+    assert.match(
+      section,
+      /non.?squash.*before merge.*method.?specific.*actual.?base.*post.?merge.*defined.*approved.*stop/i,
+      "non-squash merges require an approved method-specific procedure before execution",
+    );
+    assert.match(
+      section,
+      /non.?squash.*(?:do not reuse|not reuse|流用しない).*squash.*first.?parent/i,
+      "non-squash merges must not reuse the squash first-parent rule",
+    );
+    assert.match(
+      section,
+      /squash merge.*first parent/i,
+      "first-parent verification must be scoped to squash merges",
+    );
+  }
   assert.match(shipCiSection, /push.*merge.*expected-head/i);
   assert.doesNotMatch(shipCiSection, /patch.?digest/i);
   assert.match(
@@ -433,6 +450,19 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   assert.match(
     shipMergeSection,
     /first parent.*<merge-sha>\^1.*approved_merge_base/i,
+  );
+  assert.match(
+    shipMergeSection,
+    /non.?squash.*before merge.*method.?specific.*actual.?base.*post.?merge.*defined.*approved.*stop/i,
+  );
+  assert.match(
+    shipMergeSection,
+    /non.?squash.*(?:do not reuse|not reuse|流用しない).*squash.*first.?parent/i,
+  );
+  assert.doesNotMatch(
+    shipMergeSection,
+    /(?:all|every|全)(?: merge methods|方式).*first.?parent/i,
+    "the squash first-parent rule must not be universal",
   );
   assert.match(
     shipMergeSection,

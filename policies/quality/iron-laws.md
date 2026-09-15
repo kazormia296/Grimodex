@@ -93,9 +93,12 @@ Resolve the immutable candidate base and head once as expanded shell-local value
 those exact same values to Full and every verify of that receipt. A merge precheck fetches before comparing
 or classifying the base; it records exactly one `approved_merge_base` commit, either the verified candidate
 base on the normal path or the current fetched base only after the narrow exception is approved.
-After merge, compare the squash merge commit's first parent (`<merge-sha>^1`) once with that approved
-merge-base and verify inclusion in `origin/master`; a mismatch is not verified success and requires
-classifying the new upstream delta and the necessary revalidation.
+For a squash merge only, after merge compare the squash merge commit's first parent (`<merge-sha>^1`)
+once with that approved merge-base and verify inclusion in `origin/master`; a mismatch is not verified
+success and requires classifying the new upstream delta and the necessary revalidation. An explicitly
+requested non-squash method must, before merge, have a method-specific actual-base/post-merge verification
+procedure defined and approved; if absent, stop before merge. Do not reuse the squash first-parent rule or
+add general non-squash verification logic.
 Runtime performance/fresh Xvfb, migration/recovery, and real product journeys are examples, not
 blanket requirements. Do not require or block on an inapplicable host capability. These checks are
 diagnostic only and never replace a clean Full-from-stage-1 + verify. An unexplained runtime failure remains
@@ -269,8 +272,12 @@ rewrite temp paths. A competing job is a coordination stop, not kill authority.
 
 At candidate freeze, bind the exact candidate once in the receipt/ledger, including base, head, tree,
 clean state, receipt directory, and completeness. Use an expected-head check at push and merge state
-transitions. After merge and fetch, compare the actual squash merge commit's first parent (`<merge-sha>^1`)
-once with the recorded `approved_merge_base`, and verify that the merge commit is included in `origin/master`.
+transitions. For a squash merge only, after merge and fetch, compare the actual squash merge commit's first
+parent (`<merge-sha>^1`) once with the recorded `approved_merge_base`, and verify that the merge commit is
+included in `origin/master`.
+An explicitly requested non-squash method must, before merge, have a method-specific actual-base/post-merge
+verification procedure defined and approved; if absent, stop before merge. Do not reuse the squash
+first-parent rule or add general non-squash verification logic.
 Do not require repeated tree equality checks or user-facing SHA recitation except on mismatch or request. An
 upstream-base change is exempt from a Full rerun only when candidate HEAD and PR diff are unchanged and the
 upstream delta is editorial docs/ADR-only: it must change no executable, build, dependency, CI, policy,

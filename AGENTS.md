@@ -57,9 +57,11 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
   比例したstatic／focused checksを記録し、旧receiptを新しいbaseに束縛されたものとは扱わない。曖昧さまたはcandidate HEADの
   変更が一つでもあればreceiptを無効化し、Full-from-stage-1 + verifyをやり直す。
   merge直前のprecheckはfetch後にbaseを比較・分類し、通常pathでは検証済みcandidate base、exception pathでは承認済みのcurrent baseの
-  いずれか一つだけを`approved_merge_base`として記録する。merge後にfetchして、実際のsquash merge commitのfirst parent（`<merge-sha>^1`）を
-  `approved_merge_base`と一度だけ比較し、merge commitの`origin/master`への包含も確認する。不一致ならverified successとせず、新たな
-  upstream deltaを分類して必要なrevalidationを行う。merge may have occurredだが、acceptance evidence is not valid until resolved。
+  いずれか一つだけを`approved_merge_base`として記録する。squash mergeの場合だけ、merge後にfetchして実際のsquash merge commitのfirst parent
+  （`<merge-sha>^1`）を`approved_merge_base`と一度だけ比較し、merge commitの`origin/master`への包含も確認する。明示されたnon-squash方式は
+  before mergeにmethod-specific actual-base/post-merge verification procedureがdefined and approvedであることを確認し、未定義・未承認ならstopする。
+  non-squash方式ではdo not reuse the squash first-parent rule（squash用first-parent ruleを流用せず）、一般的なnon-squash verification logicも追加しない。不一致ならverified successとせず、
+  新たなupstream deltaを分類して必要なrevalidationを行う。merge may have occurredだが、acceptance evidence is not valid until resolved。
 - release tag前は、squash前のbranch証跡を再利用せず、merge後のrelease commitそのものを
   cleanなcheckout／worktreeの現在HEADとして同じFullとverifyを再実行する。
 - `--from`は失敗調査・再開用のpartial run、`--dry-run`は計画確認だけである。どちらも

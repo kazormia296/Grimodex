@@ -132,14 +132,17 @@ GitHub connector が利用できる場合は PR mutation と状態取得に優�
 
 ## 7. Merge と反映確認を行う
 
-1. マージまでがゴールなら、既定で squash merge する。別方式が明示されている場合だけ変更する。
+1. マージまでがゴールなら、既定で squash merge する。明示されたnon-squash方式は、before mergeにmethod-specific
+   actual-base/post-merge verification procedureがdefined and approvedであることを確認する。未定義・未承認ならstopし、
+   squash用first-parent ruleを流用しない。このスキルは一般のnon-squash verification logicを追加しない。
 2. 可能なら expected head SHA を指定できる GitHub mutation を使う。`gh` では `--match-head-commit <sha>` を使う。
 3. merge 成功後、PR が `merged` になったことと merge commit SHA を取得する。
 4. `git fetch origin master` を実行し、merge commit が `origin/master` に含まれることを確認する。
-5. 実際のsquash merge commitのfirst parent（`<merge-sha>^1`）を`approved_merge_base`と一度だけ比較する。
+5. squash mergeの場合だけ、実際のsquash merge commitのfirst parent（`<merge-sha>^1`）を`approved_merge_base`と一度だけ比較する。
    parent mismatchならdo not report verified successとし、newly added base deltaを分類して必要なexception/revalidation pathを実施する。
    merge may have occurredだが、acceptance evidence is not valid until resolved。expected headの一致とmerge commitの`origin/master`への
-   包含を確認できない場合も成功扱いにしない。routineなremote merge tree比較は行わない。
+   包含を確認できない場合も成功扱いにしない。non-squash方式ではdo not reuse the squash first-parent rule（squash用first-parent
+   ruleを流用しない）。1で承認した方式固有手順以外の一般的なnon-squash verification logicは追加しない。routineなremote merge tree比較は行わない。
 6. remote branch を削除した場合も、local branch や worktree を破壊的に削除しない。
 7. `master` が別 worktree で checkout 済みなら無理に switch せず、`origin/master` で反映を検証する。
 
