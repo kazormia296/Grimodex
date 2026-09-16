@@ -76,6 +76,7 @@ electron-builder、`app.getVersion()`、v2 release workflow の tag gate は、�
    - release commit後のcleanなHEADで`candidate_base`／`candidate_head`を一度だけ解決し、同じ値をQuickと直後のverifyへ渡すのは、PR／releaseの証跡が依頼範囲に含まれ、CIが許可されている場合だけとする。
    - commit-onlyまたはCI明示除外の依頼では候補commitを保持してQuickを開始せず、merge／release readinessを主張しない。ユーザーがcommit／PRを依頼していない場合はQuickのためだけにcommitを作らず、CIも開始しない。
    - 失敗、blocked、partial、dry-runを成功扱いせず、候補変更後は旧receiptを再利用しない。
+   - 上記のPR／release条件を満たす場合だけ、次の固定値でQuickと直後のverifyを実行する。
 
    ```bash
    candidate_base="$(git rev-parse 'origin/master^{commit}')"

@@ -258,6 +258,7 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     bump,
     /commit／PRを依頼していない場合はQuickのためだけにcommitを作らず.*CIも開始しない/is,
   );
+  assert.match(bump, /上記のPR／release条件を満たす場合だけ.*Quickと直後のverifyを実行/is);
   assert.match(createBranch, /git worktree add -b/);
   assert.match(createBranch, /保存先とbranch名の衝突/);
   assert.match(createBranch, /明示された新worktreeでは元checkoutのdirty状態は停止条件にせず/);
