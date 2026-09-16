@@ -38,10 +38,21 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 
 - 通常のPR／branch pushではGitHub Actionsのrunnerを起動しない。hosted PR checkが無いことを
   greenの根拠にせず、次のローカル証跡を必須gateとして扱う。
-- 関連する実装・修正・AI behavior assetの変更を終えた後、完成commitまたはPRを作る前に
-  `pnpm ci:local:quick` を実行する。比較範囲を固定する場合は
-  `pnpm ci:local:quick -- --base origin/master --head HEAD` とし、直後に同じrefで
-  `pnpm ci:local:verify -- quick --base origin/master --head HEAD` を実行する。
+- 関連する実装・修正・AI behavior assetは、まずfocused検証を完了する。commitが依頼範囲に
+  含まれる場合はCI許可の有無にかかわらず候補commitを作り、PR／releaseの証跡が依頼範囲に含まれ、
+  CIが許可されている場合だけ、cleanな候補HEADでQuickを実行し、base／headはshell-localに一度だけ
+  解決した固定値をQuickと直後のverifyへ同じ展開文字列で渡す。commit-onlyまたはCI明示除外の作業では
+  Quickを開始せず候補commitを保持し、merge／release readinessを主張しない。候補変更後は旧receiptを
+  再利用しない。commit／PRを依頼されていない調査・レビューではQuickのためだけにcommitを作らず、CIも開始しない。
+  明示的にdirtyなworking-treeのQuickを求められた場合でも診断専用の証拠として扱う。
+  PR用の例は次の通りである。
+
+  ```bash
+  candidate_base="$(git rev-parse 'origin/master^{commit}')"
+  candidate_head="$(git rev-parse 'HEAD^{commit}')"
+  pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
+  pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
+  ```
 - merge前の初回Fullは、`git fetch origin master`後のcurrent `origin/master`がcandidate HEADの祖先であることを
   初回Fullの前提として確認する。遅れていればcandidateを安全に更新してHEADを取り直し、Fullを最初からやり直す。
   その前提を満たしたcleanなcommit済みHEADで、shell-localの不変な`candidate_base`／`candidate_head`をそれぞれ
@@ -69,6 +80,12 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 - 必須command、toolchain、依存、host capabilityが不足した場合は`blocked`として停止する。
   skipped、deferred、古いreceipt、Windows以外で実行不能なrelease-only項目をpassedへ
   読み替えない。Windows NSISの最終compileは手動Full CI／tag releaseで別途検証する。
+
+- immutable child／revisionを扱う変更では、復元、Decision書込、再読取、表示、receiptを同じ
+  child／revision IDへ固定し、親`runId`だけで再選択しない。bounded lookupは全体一覧をlimit後に
+  絞って不存在と判断せず、mockでもlimit・順序・cursorとN/N+1境界を再現する。操作対象外の
+  Decisionが不変であることを確認する。Journeyは作成後にdurable IDと対応するUI投影が確定するまで
+  編集せず、selectorの表示だけをready判定にしない。
 
 ## 高リスク作業の運用規律
 

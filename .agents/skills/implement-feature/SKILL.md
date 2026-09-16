@@ -35,9 +35,21 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, MultiEdit
 
 8. 変更範囲とリスクに比例した focused validation（関連テスト、型、lint、Electron／Rust境界など）を選んで実行する。
    必要性のない全テストや重い検証を一律に要求しない。
-9. 完成commitを作る前に、CIが許可されている場合だけ `pnpm ci:local:quick` を実行する。ユーザーがCIを明示的に除外した場合は
-   実行せず、除外を報告して停止し、publish／merge readinessを主張しない。失敗、blocked、partial、dry-runは成功扱いにしない。
-10. focused validationと許可されたQuickが完了したら、ユーザーが求めた場合だけcleanなcompletion commitを作成する。
+9. focused validation後、commitが依頼範囲に含まれる場合はCI許可の有無にかかわらず候補commitを作成する。
+   PR／releaseが依頼範囲に含まれ、CIが許可されている場合は、cleanな候補HEADで`candidate_base`／`candidate_head`を一度だけ解決し、同じ値をQuickと直後のverifyへ渡す。
+   CIが明示的に除外されたcommit-only作業ではQuickを実行せず、commitだけを保持してmerge readinessを主張しない。ユーザーがcommit／PRを依頼していない場合はQuickのためだけにcommitを作らず、CIも開始せず、working-tree評価は診断専用とする。
+   失敗、blocked、partial、dry-runは成功扱いにしない。候補変更後は旧receiptを再利用しない。
+
+   ```bash
+   candidate_base="$(git rev-parse 'origin/master^{commit}')"
+   candidate_head="$(git rev-parse 'HEAD^{commit}')"
+   pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
+   pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
+   ```
+
+10. 許可されたPR／release候補のQuick＋verifyが完了したら、候補commitをcompletion commitとして保持する。
+    commit-onlyまたはCI明示除外ではQuickなしで候補commitを保持し、merge／release readinessを主張しない。commitが依頼されていない場合は
+    作業ツリーをcommitせず、検証結果を診断専用として報告する。
 11. 高リスク変更では、その後にrequired high-effort reviewとread-only acceptanceを収束させる。review後のcontent changeは
     acceptance／receiptを無効化し、影響したchecksとacceptanceを繰り返す。
 12. 高リスク変更で必要なgateが承認されたらcandidateをfreezeし、resource-isolation preflightを行ってからFullへ進む。

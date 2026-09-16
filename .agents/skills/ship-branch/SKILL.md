@@ -37,11 +37,14 @@ description: >
    any fixed capacity/quota threshold（GB、percentage、inode、その他numericを含む）、host-specific cache deletion list、deletion automationは使わない。
    thresholdsはrisk/workload/filesystem stateから導出し、hardcodeしない。このpreflightはread-onlyであり、must not
    auto-delete artifacts, kill other jobs, or rewrite temp paths。competing jobはcoordination stopであり、kill authorityではない。
-3. PR作成だけがゴールの場合も、cleanなcommit済みHEADで次を実行し、completeなQuick receiptを確認する。
+3. PR作成だけがゴールの場合も、focused検証後のcleanなcommit済みHEADで候補base／headを一度だけ解決し、
+   同じ値で次を実行してcompleteなQuick receiptを直後に確認する。候補変更後は旧receiptを再利用しない。
 
    ```bash
-   pnpm ci:local:quick -- --base origin/master --head HEAD
-   pnpm ci:local:verify -- quick --base origin/master --head HEAD
+   candidate_base="$(git rev-parse 'origin/master^{commit}')"
+   candidate_head="$(git rev-parse 'HEAD^{commit}')"
+   pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
+   pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
    ```
 
 4. mergeまでがゴールの場合、初回Fullの前提として`git fetch origin master`後のcurrent `origin/master`がcandidate HEADの

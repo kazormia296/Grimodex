@@ -22,3 +22,7 @@ argument-hint: [feature-or-file-path]
 - 主要な分岐がすべてテストされているか
 - エラーハンドリングが検証されているか
 - Electron IPC境界のallowlist・引数変換・Envelope型安全性
+- immutable child／revisionを扱う場合は、復元・Decision・再読取・表示・receiptのID一致、親`runId`だけによる再選択の
+  防止、操作対象外Decisionの不変性を検証する。
+- bounded lookupは全体一覧をlimit後に絞って不存在と判定しないことを確認し、mockでもlimit・順序・cursorとN/N+1境界を
+  再現する。

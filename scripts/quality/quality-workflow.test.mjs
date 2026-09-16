@@ -165,6 +165,94 @@ test("repo routing points AI behavior authoring and diff evaluation to narrow sk
   assert.match(agents, /差分評価|impact gate|品質ゲート/);
 });
 
+test("agent operation contracts keep candidate evidence and bounded identity checks aligned", async () => {
+  const agents = await read("AGENTS.md");
+  const ironLaws = await read("policies/quality/iron-laws.md");
+  const debug = await read(".agents/skills/debug-issue/SKILL.md");
+  const implement = await read(".agents/skills/implement-feature/SKILL.md");
+  const impactGate = await read(".agents/skills/grimodex-impact-gate/SKILL.md");
+  const review = await read(".agents/skills/review-code/SKILL.md");
+  const testFeature = await read(".agents/skills/test-feature/SKILL.md");
+  const matrix = await read(
+    ".agents/skills/refactor-cross-boundaries/references/impact-matrix.md",
+  );
+  const createBranch = await read(".agents/skills/create-branch/SKILL.md");
+  const ship = await read(".agents/skills/ship-branch/SKILL.md");
+  const bump = await read(".agents/skills/bump-version/SKILL.md");
+  const runbook = await read("docs/local-ci-runner.md");
+
+  const assertOrder = (text, labels) => {
+    let previous = -1;
+    for (const [label, pattern] of labels) {
+      const index = text.search(pattern);
+      assert.ok(index >= 0, `${label} must be present`);
+      assert.ok(index > previous, `${label} must follow the preceding operation`);
+      previous = index;
+    }
+  };
+
+  assertOrder(agents, [
+    ["focused validation", /まずfocused検証を完了/],
+    ["candidate commit", /候補commitを作り/],
+    ["clean candidate", /cleanな候補HEAD/],
+    ["Quick", /Quickを実行/],
+    ["immediate verify", /直後のverify/],
+  ]);
+  assert.match(agents, /commit／PRを依頼されていない調査・レビューではQuickの\s*ためだけにcommitを作らず/);
+  assert.match(agents, /commitを作らず、CIも開始しない/);
+  assert.match(
+    ironLaws,
+    /candidate commit.*candidate must be clean.*Quick is immediately verified.*same fixed base\/head/is,
+  );
+  assert.match(ironLaws, /Quick is immediately verified with the same fixed base\/head\s+values/is);
+
+  for (const [name, skill] of [
+    ["debug-issue", debug],
+    ["implement-feature", implement],
+  ]) {
+    const focusedPattern =
+      name === "implement-feature" ? /focused validation/ : /focused検証/;
+    assertOrder(skill, [
+      [`${name} focused validation`, focusedPattern],
+      [`${name} candidate commit`, /候補commit/],
+      [`${name} Quick`, /Quick/],
+      [`${name} verify`, /直後のverify|verifyを実行/],
+    ]);
+    assert.match(
+      skill,
+      /(?:commitが依頼されていない場合|ユーザーがcommit／PRを依頼していない場合)はQuickのためだけにcommitを作らず/,
+    );
+  }
+  assert.match(debug, /依頼済みの範囲内の修正は再承認を求めず継続/);
+  assert.match(debug, /commitが依頼されている場合だけ/);
+  assert.match(
+    implement,
+    /commitが依頼範囲に含まれる場合はCI許可の有無にかかわらず候補commitを作成する/,
+  );
+  assert.match(
+    implement,
+    /CIが明示的に除外されたcommit-only作業ではQuickを実行せず/,
+  );
+  assert.match(impactGate, /PR／releaseの証跡が依頼範囲に含まれ.*cleanな候補commit/is);
+  assert.match(impactGate, /commit／PRが依頼されていない調査・レビューではcommitを作らず/);
+  assert.match(impactGate, /commitを作らず、\s*CIも開始せず/);
+
+  for (const skill of [review, testFeature, matrix]) {
+    assert.match(skill, /immutable child.*revision|immutable.*child.*revision/i);
+    assert.match(skill, /親`runId`だけ.*再選択|parent.*runId.*reselect/is);
+    assert.match(skill, /limit.*順序.*cursor.*N\/N\+1|limit.*order.*cursor.*N\/N\+1/i);
+    assert.match(skill, /(?:操作対象外|対象外)Decision.*不変|non-target.*Decision.*unchanged/i);
+  }
+  assert.match(runbook, /durable ID.*corresponding UI\s*projection before editing/is);
+  assert.match(runbook, /selector.*ready signal/);
+  assert.match(createBranch, /git worktree add -b/);
+  assert.match(createBranch, /保存先とbranch名の衝突/);
+  assert.match(createBranch, /明示された新worktreeでは元checkoutのdirty状態は停止条件にせず/);
+  assert.match(ship, /candidate_base.*candidate_head.*Quick.*verify/is);
+  assert.match(bump, /release commit後.*cleanなHEAD.*Quick.*verify/is);
+  assert.match(bump, /release_base.*release_head.*ci:local:full.*ci:local:verify/is);
+});
+
 test("high-risk work keeps threat models user-confirmed and candidate evidence reproducible", async () => {
   const agents = await read("AGENTS.md");
   const policy = await read("policies/quality/iron-laws.md");

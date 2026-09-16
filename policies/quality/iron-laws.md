@@ -251,8 +251,13 @@ and failure class remain linked. Failures use `[routing]`, `[precheck]`, `[tool]
 `[quality]`, or `[artifact]`. Runnable Heavy evaluations are `deferred` until executed; missing
 runners or prerequisites are `blocked`. Neither state is ever reported as `passed`.
 
-When hosted PR checks are absent, a completed change runs local Quick before its completion commit
-or PR. The initial merge Full first confirms the fetched current `origin/master` is an ancestor of the
+When hosted PR checks are absent, focused validation finishes first. If a completion commit is in scope,
+the candidate commit is created before any PR/release evidence; the candidate must be clean. Only when PR/release evidence is requested
+and CI is allowed does the clean candidate run local Quick; the Quick is immediately verified with the same fixed base/head
+values. Commit-only or CI-excluded work keeps the candidate commit without starting Quick and does not claim
+merge/release readiness. A change without a requested commit or PR does not create a commit or start PR-bound CI
+solely for Quick; any explicitly requested dirty working-tree Quick is diagnostic-only.
+After a candidate change, older receipts are invalid and are not reused. The initial merge Full first confirms the fetched current `origin/master` is an ancestor of the
 candidate HEAD, then resolves immutable `candidate_base` and `candidate_head` values once and passes the
 same expanded strings to Full and every verify of that receipt. A merge precheck fetches `origin/master`
 before base comparison or classification and records exactly one `approved_merge_base`: the verified

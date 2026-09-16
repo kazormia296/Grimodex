@@ -17,6 +17,20 @@ overlapping, `slots` reserves part of the global twelve-slot limit, and
 `timeoutMs` optionally shortens the task timeout. The runner validates IDs,
 dependencies, slot bounds, and cycles before starting a command.
 
+PR-bound Quick evidence is collected only after focused validation and the
+requested candidate commit. Confirm the candidate worktree is clean, resolve
+`candidate_base` and `candidate_head` once, and pass those same expanded values
+to Quick and its immediate verify. A later candidate change invalidates the old
+receipt. Commit-only or CI-excluded work keeps its candidate commit without
+starting Quick or claiming merge readiness. Investigation, review, or a change
+without a requested commit/PR does not create a commit or start PR-bound CI
+solely for Quick; an explicitly requested dirty working-tree run remains
+diagnostic evidence and cannot establish merge readiness.
+
+Product journeys wait for the created durable ID and its corresponding UI
+projection before editing. A visible selector alone is not a ready signal.
+
+
 The shared-Rust test obligation stays Cargo-native. Three two-slot tasks run the
 DB library, the DB integration targets plus `schema-contract`, and the rest of
 the workspace. The non-DB shard retains its doctests; a fourth Cargo task runs
