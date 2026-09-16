@@ -1653,7 +1653,9 @@ pub fn find_nir1_entity_relation_revision_run(
            AND {REVIEW_RESUMABLE_RUN_PREDICATE_SQL}
          ORDER BY julianday(COALESCE(r.completed_at, r.started_at, r.created_at)) DESC,
                   COALESCE(r.completed_at, r.started_at, r.created_at) DESC,
-                  r.id DESC
+                  r.id DESC,
+                  ps.created_at DESC,
+                  ps.id DESC
          LIMIT 1
         "#,
     );
@@ -3060,6 +3062,75 @@ mod tests {
             }
             other => anyhow::bail!("A target typed revision was not available: {other:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn target_lookup_prefers_newest_matching_set_within_one_run() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let old = create_nir1_entity_relation_revision(
+            &db,
+            request_for_run(&db, "nir1-run", "nir1:lookup:same-target-old"),
+        )?;
+        let old_revision_id = old["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("old target typed revision id missing"))?
+            .to_owned();
+        append_typed_decision(&db, "nir1-run", &old, "rejected")?;
+
+        let new = create_nir1_entity_relation_revision(
+            &db,
+            request_for_run(&db, "nir1-run", "nir1:lookup:same-target-new"),
+        )?;
+        let new_revision_id = new["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("new target typed revision id missing"))?
+            .to_owned();
+        approve_typed_revision(&db, "nir1-run", &new)?;
+
+        let old_set_id = old["proposalSetId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("old target proposal set id missing"))?;
+        let new_set_id = new["proposalSetId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("new target proposal set id missing"))?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposal_sets
+                    SET created_at = '2026-09-15T00:00:00.001Z'
+                  WHERE id = ?1",
+                [old_set_id],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposal_sets
+                    SET created_at = '2026-09-15T00:00:00.002Z'
+                  WHERE id = ?1",
+                [new_set_id],
+            )?;
+            Ok(())
+        })?;
+
+        let found = db.with_read_transaction(|conn| {
+            find_nir1_entity_relation_revision_run(conn, "default-project", "nir1-alice", None)
+        })?;
+        let found = found.ok_or_else(|| anyhow::anyhow!("new target typed revision not found"))?;
+        assert_eq!(found.run_id, "nir1-run");
+        assert_eq!(found.revision_id, new_revision_id);
+        assert_ne!(found.revision_id, old_revision_id);
+
+        let exact = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision_current_for_revision(
+                conn,
+                "default-project",
+                &found.revision_id,
+            )
+        })?;
+        assert!(matches!(
+            exact,
+            Nir1EntityRelationRevisionCurrentRead::Available(ref revision)
+                if revision.revision_id == new_revision_id
+        ));
         Ok(())
     }
 
