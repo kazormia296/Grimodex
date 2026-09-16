@@ -425,6 +425,12 @@ pub(crate) struct RebuildVerifyReport {
 fn infer_source_kind(source_object_identity: &str) -> Option<&'static str> {
     if source_object_identity.starts_with("project:nir1-chronicle-eligibility:") {
         Some(super::nir1_chronicle_index::SOURCE_KIND)
+    } else if source_object_identity.starts_with("project:nir1-entity-relation-eligibility:") {
+        Some(super::nir1_entity_relation_index::SOURCE_KIND)
+    } else if source_object_identity.starts_with("codex-relation:") {
+        Some("codex-relation")
+    } else if source_object_identity.starts_with("codex:") {
+        Some("codex-entry")
     } else if source_object_identity.starts_with("scope-dependency:v1:") {
         Some("scope-dependency-projection-v1")
     } else if source_object_identity.starts_with("project:scope-authority:") {
@@ -3337,6 +3343,12 @@ pub fn verify_narrative_dependency_graph_for_project(
         let kind_is_declared = is_declared_consumer_kind(consumer_kind)
             || (is_reserved_semantic_index_consumer_kind(consumer_kind)
                 && super::nir1_chronicle_index::is_complete_registered_chronicle_index(
+                    conn,
+                    project_id,
+                    consumer_key,
+                )?)
+            || (is_reserved_semantic_index_consumer_kind(consumer_kind)
+                && super::nir1_entity_relation_index::is_registered(
                     conn,
                     project_id,
                     consumer_key,

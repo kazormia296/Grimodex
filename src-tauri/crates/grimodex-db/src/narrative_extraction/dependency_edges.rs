@@ -102,7 +102,10 @@ pub(crate) fn source_identity_prefix_for(source_kind: &str) -> anyhow::Result<&'
     // too or a legitimate envelope would fail canonicalization.
     Ok(match source_kind {
         "nir1-chronicle-eligibility-set" => "project:nir1-chronicle-eligibility:",
+        "nir1-entity-relation-eligibility-set" => "project:nir1-entity-relation-eligibility:",
         "project-scope-authority" => "project:scope-authority:",
+        "codex-entry" => "codex:",
+        "codex-relation" => "codex-relation:",
         "scope-dependency-projection-v1" => "scope-dependency:v1:",
         "scene-body" => "project:scene:",
         "snapshot-document" => "snapshot:",
@@ -139,7 +142,10 @@ const LEGACY_SOURCE_IDENTITY_PREFIXES: &[&str] = &[
 pub(crate) const SOURCE_IDENTITY_PREFIXES: &[&str] = &[
     "scope-dependency:v1:",
     "project:nir1-chronicle-eligibility:",
+    "project:nir1-entity-relation-eligibility:",
     "project:scope-authority:",
+    "codex-relation:",
+    "codex:",
     "project:codex-catalog:",
     "project:scene:",
     "projection:",
@@ -301,6 +307,12 @@ pub(crate) fn validate_stored_source_object_identity(
 ) -> anyhow::Result<()> {
     let source_kind = if source_object_identity.starts_with("project:nir1-chronicle-eligibility:") {
         "nir1-chronicle-eligibility-set"
+    } else if source_object_identity.starts_with("project:nir1-entity-relation-eligibility:") {
+        "nir1-entity-relation-eligibility-set"
+    } else if source_object_identity.starts_with("codex-relation:") {
+        "codex-relation"
+    } else if source_object_identity.starts_with("codex:") {
+        "codex-entry"
     } else if source_object_identity.starts_with("scope-dependency:v1:") {
         "scope-dependency-projection-v1"
     } else if source_object_identity.starts_with("project:scope-authority:") {

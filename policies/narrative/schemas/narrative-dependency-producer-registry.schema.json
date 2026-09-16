@@ -137,7 +137,10 @@
               {
                 "properties": {
                   "id": {
-                    "const": "nir1-reviewed-chronicle-v1"
+                    "enum": [
+                      "nir1-reviewed-chronicle-v1",
+                      "nir1-reviewed-entity-relation-v1"
+                    ]
                   }
                 },
                 "required": [
@@ -157,18 +160,36 @@
             ]
           },
           "then": {
-            "const": {
-              "id": "nir1-reviewed-chronicle-v1",
-              "writer": {
-                "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
-                "symbol": "publish_chronicle_index_build_in_tx"
+            "oneOf": [
+              {
+                "const": {
+                  "id": "nir1-reviewed-chronicle-v1",
+                  "writer": {
+                    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+                    "symbol": "publish_chronicle_index_build_in_tx"
+                  },
+                  "generation": "nir1-reviewed-chronicle/v1",
+                  "consumerKind": "semantic-index",
+                  "consumerKey": "nir1-reviewed-chronicle:v1",
+                  "producerVersion": "nir1-reviewed-chronicle/v1",
+                  "declaration": "NIR-1 reviewed Chronicle current eligibility Source and complete admitted Scene Source dependencies"
+                }
               },
-              "generation": "nir1-reviewed-chronicle/v1",
-              "consumerKind": "semantic-index",
-              "consumerKey": "nir1-reviewed-chronicle:v1",
-              "producerVersion": "nir1-reviewed-chronicle/v1",
-              "declaration": "NIR-1 reviewed Chronicle current eligibility Source and complete admitted Scene Source dependencies"
-            }
+              {
+                "const": {
+                  "id": "nir1-reviewed-entity-relation-v1",
+                  "writer": {
+                    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+                    "symbol": "publish_nir1_entity_relation_index_in_tx"
+                  },
+                  "generation": "nir1-reviewed-entity-relation/v1",
+                  "consumerKind": "semantic-index",
+                  "consumerKey": "nir1-reviewed-entity-relation:v1",
+                  "producerVersion": "nir1-reviewed-entity-relation/v1",
+                  "declaration": "NIR-1 reviewed Entity/Relation qualified current revision roster and object-token dependencies"
+                }
+              }
+            ]
           },
           "else": {
             "not": {

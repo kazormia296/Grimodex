@@ -263,6 +263,33 @@
               "recognizedUnavailable": "rebuildable-not-query-usable",
               "queryUsability": "canonical-fresh-and-clean-current-native-proof",
               "unknownOrIncoherentBinding": "manual-terminal"
+            },
+            {
+              "consumerKey": "nir1-reviewed-entity-relation:v1",
+              "producerId": "nir1-reviewed-entity-relation-v1",
+              "producerVersion": "nir1-reviewed-entity-relation/v1",
+              "registryGeneration": "nir1-reviewed-entity-relation/v1",
+              "declarationSetGeneration": "positive-monotonic-per-project",
+              "metadataBinding": {
+                "indexKey": "equals-consumer-key",
+                "producerId": "explicit-exact-producer-id",
+                "producerVersion": "explicit-exact-producer-version",
+                "generation": "equals-active-sealed-D1-head-consumer-scoped-generation",
+                "dependencySetDigest": "equals-active-sealed-D1-set-digest"
+              },
+              "eligibilitySource": {
+                "kind": "nir1-entity-relation-eligibility-set",
+                "keyFormat": "project:nir1-entity-relation-eligibility:{projectId}",
+                "digestBasis": "sorted-qualified-current-revision-object-revision-decision-source-token-roster",
+                "freshnessInDigest": "forbidden"
+              },
+              "writer": {
+                "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+                "symbol": "publish_nir1_entity_relation_index_in_tx"
+              },
+              "recognizedUnavailable": "rebuildable-not-query-usable",
+              "queryUsability": "canonical-fresh-and-clean-current-native-proof",
+              "unknownOrIncoherentBinding": "manual-terminal"
             }
           ]
         }

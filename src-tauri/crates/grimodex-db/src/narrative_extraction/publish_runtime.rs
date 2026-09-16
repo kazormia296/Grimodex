@@ -119,7 +119,7 @@ fn ensure_edge_belongs_to_project(
         .optional()?;
     match edge_identity {
         Some((owner, consumer_kind, consumer_key)) if owner == project_id => {
-            ensure_generic_freshness_target(conn, project_id, &consumer_kind, &consumer_key)
+            ensure_generic_freshness_target(conn, project_id, &consumer_kind, &consumer_key, false)
         }
         Some((_, _, _)) => anyhow::bail!(
             "NEX_PUBLISH_RUNTIME_EDGE_PROJECT_MISMATCH: dependency edge '{edge_id}' does not \
@@ -136,10 +136,26 @@ fn ensure_generic_freshness_target(
     project_id: &str,
     consumer_kind: &str,
     consumer_key: &str,
+    allow_unmaterialized_graph: bool,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         !is_reserved_semantic_index_consumer_kind(consumer_kind)
-            || super::nir1_chronicle_index::is_registered_chronicle_index(conn, project_id, consumer_key)?,
+            || super::nir1_chronicle_index::is_registered_chronicle_index(
+                conn,
+                project_id,
+                consumer_key,
+            )?
+            || super::nir1_entity_relation_index::is_registered(
+                conn,
+                project_id,
+                consumer_key,
+            )?
+            || (allow_unmaterialized_graph
+                && super::nir1_entity_relation_index::is_publish_target(
+                    conn,
+                    project_id,
+                    consumer_key,
+                )?),
         "NEX_PUBLISH_RUNTIME_RESERVED_CONSUMER: '{consumer_kind}' is not a Generic Freshness target"
     );
     Ok(())
@@ -263,9 +279,42 @@ pub(crate) fn write_consumer_freshness_in_tx(
     dependency_set_digest: Option<&str>,
     updated_at: &str,
 ) -> anyhow::Result<()> {
+    write_consumer_freshness_in_tx_inner(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        observation,
+        semantic_epoch_id,
+        last_evaluated_run_id,
+        dependency_set_digest,
+        updated_at,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_consumer_freshness_in_tx_inner(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    observation: &EdgeObservation,
+    semantic_epoch_id: &str,
+    last_evaluated_run_id: Option<&str>,
+    dependency_set_digest: Option<&str>,
+    updated_at: &str,
+    allow_unmaterialized_graph: bool,
+) -> anyhow::Result<()> {
     anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
     validate_consumer_identity(consumer_kind, consumer_key)?;
-    ensure_generic_freshness_target(conn, project_id, consumer_kind, consumer_key)?;
+    ensure_generic_freshness_target(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        allow_unmaterialized_graph,
+    )?;
     anyhow::ensure!(
         !semantic_epoch_id.trim().is_empty(),
         "semanticEpochId is required"
@@ -342,7 +391,7 @@ pub(crate) fn seed_consumer_freshness_unknown_in_tx(
         !edge_ids.is_empty(),
         "NEX_PUBLISH_RUNTIME_NO_EDGES: at least one declared Edge is required to seed Generic Freshness"
     );
-    ensure_generic_freshness_target(conn, project_id, consumer_kind, consumer_key)?;
+    ensure_generic_freshness_target(conn, project_id, consumer_kind, consumer_key, false)?;
     let observation = unknown_edge_observation();
     for edge_id in edge_ids {
         write_edge_state_in_tx(
@@ -384,13 +433,68 @@ pub(crate) fn publish_complete_runless_freshness_in_tx(
     semantic_epoch_id: &str,
     now: &str,
 ) -> anyhow::Result<()> {
+    publish_complete_runless_freshness_in_tx_inner(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        edges_and_observations,
+        semantic_epoch_id,
+        now,
+        false,
+    )
+}
+
+/// Graph's sealed publisher is the only caller allowed to materialise its
+/// first canonical Freshness row after the exact metadata/D1/V1 surfaces have
+/// been written in the same transaction. The ordinary runless writer remains
+/// strict about registration.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn publish_complete_runless_graph_freshness_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    edges_and_observations: &[(String, EdgeObservation)],
+    semantic_epoch_id: &str,
+    now: &str,
+) -> anyhow::Result<()> {
+    publish_complete_runless_freshness_in_tx_inner(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        edges_and_observations,
+        semantic_epoch_id,
+        now,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_complete_runless_freshness_in_tx_inner(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    edges_and_observations: &[(String, EdgeObservation)],
+    semantic_epoch_id: &str,
+    now: &str,
+    allow_unmaterialized_graph: bool,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         !conn.is_autocommit(),
         "Narrative Publish Runtime requires a caller-owned transaction"
     );
     anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
     validate_consumer_identity(consumer_kind, consumer_key)?;
-    ensure_generic_freshness_target(conn, project_id, consumer_kind, consumer_key)?;
+    ensure_generic_freshness_target(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        allow_unmaterialized_graph,
+    )?;
     anyhow::ensure!(
         !semantic_epoch_id.trim().is_empty(),
         "semanticEpochId is required"
@@ -474,7 +578,7 @@ pub(crate) fn publish_complete_runless_freshness_in_tx(
     })?;
     let dependency_set_digest =
         consumer_dependency_set_digest(conn, project_id, consumer_kind, consumer_key)?;
-    write_consumer_freshness_in_tx(
+    write_consumer_freshness_in_tx_inner(
         conn,
         project_id,
         consumer_kind,
@@ -484,6 +588,7 @@ pub(crate) fn publish_complete_runless_freshness_in_tx(
         None,
         Some(&dependency_set_digest),
         now,
+        allow_unmaterialized_graph,
     )?;
 
     Ok(())
@@ -882,7 +987,7 @@ pub(crate) fn publish_freshness_evaluation_edges_only_in_tx(
     anyhow::ensure!(!run_id.trim().is_empty(), "runId is required");
     anyhow::ensure!(!consumer_kind.trim().is_empty(), "consumerKind is required");
     anyhow::ensure!(!consumer_key.trim().is_empty(), "consumerKey is required");
-    ensure_generic_freshness_target(conn, project_id, consumer_kind, consumer_key)?;
+    ensure_generic_freshness_target(conn, project_id, consumer_kind, consumer_key, false)?;
     anyhow::ensure!(
         !semantic_epoch_id.trim().is_empty(),
         "semanticEpochId is required"

@@ -36,6 +36,7 @@ pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
 pub mod nir1_chronicle_index;
 mod nir1_entity_relation;
+pub mod nir1_entity_relation_index;
 pub mod nir1_graph;
 pub use declaration_storage::{
     read_active_dependency_declaration_set, verify_dependency_declaration_storage,

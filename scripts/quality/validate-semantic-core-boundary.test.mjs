@@ -51,12 +51,16 @@ describe("NIR-1 declared index binding", () => {
     const errors = [];
     validateSemanticIndexDeclaredBindings(matrix, consumer, producer, errors);
     assert.deepEqual(errors, []);
-    const [binding] = matrix.semanticIndexReservation.declaredBindings;
-    assert.equal(binding.consumerKey, "nir1-reviewed-chronicle:v1");
-    assert.equal(binding.producerId, "nir1-reviewed-chronicle-v1");
-    assert.equal(binding.producerVersion, "nir1-reviewed-chronicle/v1");
-    assert.equal(binding.declarationSetGeneration, "positive-monotonic-per-project");
-    assert.equal(binding.recognizedUnavailable, "rebuildable-not-query-usable");
+    const bindings = matrix.semanticIndexReservation.declaredBindings;
+    assert.deepEqual(
+      bindings.map((binding) => binding.producerId),
+      ["nir1-reviewed-chronicle-v1", "nir1-reviewed-entity-relation-v1"],
+    );
+    assert.equal(bindings[0].consumerKey, "nir1-reviewed-chronicle:v1");
+    assert.equal(bindings[1].consumerKey, "nir1-reviewed-entity-relation:v1");
+    assert.equal(bindings[1].producerVersion, "nir1-reviewed-entity-relation/v1");
+    assert.equal(bindings[1].declarationSetGeneration, "positive-monotonic-per-project");
+    assert.equal(bindings[1].recognizedUnavailable, "rebuildable-not-query-usable");
     assert.equal(matrix.semanticIndexReservation.status, "reserved");
     assert.equal(matrix.semanticIndexReservation.authorityFootprint.classification, "exclude-only-validated-declared-bindings");
     assert.equal(matrix.semanticIndexReservation.authorityFootprint.nonZeroDisposition, "manual-terminal");
@@ -64,21 +68,28 @@ describe("NIR-1 declared index binding", () => {
     assert.deepEqual(matrix.semanticIndexAllowedFields, ["generation", "builtAt", "sourceDigest", "dependencySetDigest", "dirtyCacheFlag", "producerId", "producerVersion"]);
   });
 
-  for (const [name, mutate] of [
-    ["unknown index key", (binding) => { binding.consumerKey = "other-index:v1"; }],
-    ["known key with another producer", (binding) => { binding.producerId = "other-producer"; }],
-    ["known key with another producer version", (binding) => { binding.producerVersion = "nir1-reviewed-chronicle/v2"; }],
-    ["static generation substituted for numeric D1 generation", (binding) => { binding.declarationSetGeneration = 1; }],
-    ["dirty or pending treated as query usable", (binding) => { binding.recognizedUnavailable = "query-usable"; }],
-    ["NULL producer identity inferred from index key", (binding) => { binding.metadataBinding.producerId = "infer-from-index-key"; }],
-    ["index metadata made Freshness authority", (binding) => { binding.queryUsability = "metadata-fresh-flag"; }],
+  for (const [name, targetProducerId, mutate] of [
+    ["unknown index key", "nir1-reviewed-chronicle-v1", (binding) => { binding.consumerKey = "other-index:v1"; }],
+    ["known key with another producer", "nir1-reviewed-chronicle-v1", (binding) => { binding.producerId = "other-producer"; }],
+    ["known key with another producer version", "nir1-reviewed-entity-relation-v1", (binding) => { binding.producerVersion = "nir1-reviewed-entity-relation/v2"; }],
+    ["static generation substituted for numeric D1 generation", "nir1-reviewed-entity-relation-v1", (binding) => { binding.declarationSetGeneration = 1; }],
+    ["dirty or pending treated as query usable", "nir1-reviewed-chronicle-v1", (binding) => { binding.recognizedUnavailable = "query-usable"; }],
+    ["NULL producer identity inferred from index key", "nir1-reviewed-chronicle-v1", (binding) => { binding.metadataBinding.producerId = "infer-from-index-key"; }],
+    ["index metadata made Freshness authority", "nir1-reviewed-entity-relation-v1", (binding) => { binding.queryUsability = "metadata-fresh-flag"; }],
   ]) {
     it(`rejects ${name}`, () => {
       const { matrix, consumer, producer } = readNir1PolicyDocuments();
-      mutate(matrix.semanticIndexReservation.declaredBindings[0]);
+      const targetBinding = matrix.semanticIndexReservation.declaredBindings.find(
+        (binding) => binding.producerId === targetProducerId,
+      );
+      assert.ok(targetBinding, `approved binding ${targetProducerId} must exist`);
+      mutate(targetBinding);
       const errors = [];
       validateSemanticIndexDeclaredBindings(matrix, consumer, producer, errors);
-      assert.ok(errors.some((error) => /exact approved NIR-1 binding/i.test(error)), JSON.stringify(errors));
+      assert.ok(
+        errors.some((error) => /exact approved NIR-1 Chronicle and Entity\/Relation bindings/i.test(error)),
+        JSON.stringify(errors),
+      );
     });
   }
 
@@ -86,9 +97,9 @@ describe("NIR-1 declared index binding", () => {
     for (const mutate of [
       ({ matrix }) => matrix.semanticIndexReservation.declaredBindings.push(structuredClone(matrix.semanticIndexReservation.declaredBindings[0])),
       ({ consumer }) => { consumer.consumerKinds.find((entry) => entry.kind === "semantic-index").declaredBindings[0].consumerKey = "other:v1"; },
-      ({ producer }) => { producer.entries.find((entry) => entry.id === "nir1-reviewed-chronicle-v1").generation = "other/v1"; },
-      ({ producer }) => { producer.entries.find((entry) => entry.id === "nir1-reviewed-chronicle-v1").declarationSetGeneration = 1; },
-      ({ producer }) => producer.entries.push({ ...producer.entries.find((entry) => entry.id === "nir1-reviewed-chronicle-v1"), id: "another-semantic-index-producer" }),
+      ({ producer }) => { producer.entries.find((entry) => entry.id === "nir1-reviewed-entity-relation-v1").generation = "other/v1"; },
+      ({ producer }) => { producer.entries.find((entry) => entry.id === "nir1-reviewed-entity-relation-v1").declarationSetGeneration = 1; },
+      ({ producer }) => producer.entries.push({ ...producer.entries.find((entry) => entry.id === "nir1-reviewed-entity-relation-v1"), id: "another-semantic-index-producer" }),
     ]) {
       const documents = readNir1PolicyDocuments();
       mutate(documents);
@@ -103,7 +114,7 @@ describe("NIR-1 declared index binding", () => {
       ["matrix", "semantic-core-authorities", (value) => { value.semanticIndexReservation.declaredBindings[0].producerVersion = "other"; }],
       ["matrix", "semantic-core-authorities", (value) => { value.semanticIndexAllowedFields.push("isAuthoritativeFresh"); }],
       ["consumer", "narrative-consumer-contract", (value) => { value.consumerKinds.find((entry) => entry.kind === "semantic-index").declaredBindings[0].consumerKey = "other"; }],
-      ["producer", "narrative-dependency-producer-registry", (value) => { value.entries.find((entry) => entry.id === "nir1-reviewed-chronicle-v1").consumerKey = "other"; }],
+      ["producer", "narrative-dependency-producer-registry", (value) => { value.entries.find((entry) => entry.id === "nir1-reviewed-entity-relation-v1").consumerKey = "other"; }],
     ]) {
       const value = readNir1PolicyDocuments()[documentName];
       const schema = JSON.parse(readFileSync(path.join(REPO_ROOT, `policies/narrative/schemas/${schemaName}.schema.json`), "utf8"));
@@ -570,8 +581,16 @@ describe("validate-semantic-core-boundary", () => {
     const legacy = policy.entries.find(
       (entry) => entry.id === "legacy-application-projection-dependency",
     );
+    const chronicle = policy.entries.find(
+      (entry) => entry.id === "nir1-reviewed-chronicle-v1",
+    );
+    const graph = policy.entries.find(
+      (entry) => entry.id === "nir1-reviewed-entity-relation-v1",
+    );
     assert.ok(proposal);
     assert.ok(legacy);
+    assert.ok(chronicle);
+    assert.ok(graph);
 
     assert.equal(validate(policy), true, validate.errorsText?.());
 
@@ -604,6 +623,8 @@ describe("validate-semantic-core-boundary", () => {
         id: "future-experimental-producer",
         declarationSetGeneration: 1,
       },
+      { ...chronicle, declarationSetGeneration: 1 },
+      { ...graph, declarationSetGeneration: 1 },
     ]) {
       assert.equal(
         validate({ ...policy, entries: [proposal, entry] }),
