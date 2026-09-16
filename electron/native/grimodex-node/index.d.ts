@@ -562,11 +562,31 @@ export declare class Backend {
    */
   nir1EntityRelationRevisionCreate(payload: any, workspaceBinding: any): Promise<string>
   /**
+   * Resolve live Entity/Relation identities and atomically persist the
+   * dedicated typed review Run plus its unreviewed Revision.  The Native
+   * workspace binding covers the whole transaction; a failed preparation
+   * cannot leave a resumable Run without a typed Revision.
+   */
+  nir1EntityRelationRevisionPrepare(payload: any, workspaceBinding: any): Promise<string>
+  /**
    * Re-open one typed NIR-1 Revision from the currently pinned workspace.
    * The workspace path is an authority check only; the project and
    * Revision identities are rechecked inside the same read transaction.
    */
   nir1EntityRelationRevisionRead(payload: any): Promise<string>
+  /**
+   * Read the current draft or explicitly human-approved typed Revision for
+   * one dedicated review Run after a cold reopen.  Generic review bundle
+   * storage is intentionally not consulted.
+   */
+  nir1EntityRelationRevisionReadCurrent(payload: any): Promise<string>
+  /**
+   * Find and reopen the current typed review Run for a launcher target.
+   * Native filters the sealed typed Revision metadata before any ordering
+   * limit, then publishes only the dedicated renderer projection (or the
+   * target Run's unavailable reason).
+   */
+  nir1EntityRelationRevisionRestore(payload: any): Promise<string>
   /**
    * Read the Native-owned A1 scene Scope binding and registry from the
    * workspace selected at IPC arrival. The renderer supplies identity only;

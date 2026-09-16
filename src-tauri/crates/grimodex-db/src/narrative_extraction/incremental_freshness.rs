@@ -206,6 +206,7 @@ struct EvaluationPlan {
     affected_edge_count: usize,
     edge_declaration_guards: Vec<DependencyEdge>,
     source_state_guards: Vec<SourceStateGuard>,
+    typed_source_state_guards: Vec<TypedSourceStateGuard>,
     producer_epoch_guards: Vec<ProducerEpochGuard>,
     v2_declaration_guards: Vec<ActiveDependencyDeclarationSet>,
     v2_declaration_head_keys: Vec<(String, String)>,
@@ -221,6 +222,7 @@ impl EvaluationPlan {
             affected_edge_count: 0,
             edge_declaration_guards: Vec::new(),
             source_state_guards: Vec::new(),
+            typed_source_state_guards: Vec::new(),
             producer_epoch_guards: Vec::new(),
             v2_declaration_guards: Vec::new(),
             v2_declaration_head_keys: Vec::new(),
@@ -236,6 +238,12 @@ struct SourceStateGuard {
     edge: DependencyEdge,
     resolving_run_id: String,
     state: ResolvedEdgeSourceState,
+}
+
+#[derive(Debug)]
+struct TypedSourceStateGuard {
+    source_object_identity: String,
+    revision_token: Option<String>,
 }
 
 #[derive(Debug)]
@@ -2085,6 +2093,7 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
     let mut source_states = BTreeMap::<(String, String), ResolvedEdgeSourceState>::new();
     let mut edge_declaration_guards = Vec::new();
     let mut source_state_guards = Vec::new();
+    let mut typed_source_state_guards = Vec::new();
     let mut producer_epoch_guards = Vec::new();
     // V2 evidence starts from Feed/source facts only. A V1 Edge's private
     // read-set, anchor, or epoch state must not classify a different sealed
@@ -2123,6 +2132,56 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
                 .entry((edge.consumer_kind.clone(), edge.consumer_key.clone()))
                 .or_default()
                 .push((edge.id.clone(), unknown_edge_observation()));
+            continue;
+        }
+        // Entity/Relation revisions are evaluated by their typed adapter. Do
+        // not send these edges through the generic Source resolver: the
+        // codex identities are intentionally outside that authority. The
+        // typed token is still guarded at publication so a Feed event that
+        // arrives while this batch is evaluating cannot publish Freshness
+        // for an obsolete Source observation.
+        let typed_state = db.with_conn(|conn| {
+            if super::nir1_entity_relation::is_typed_revision_edge(conn, &batch.project_id, edge)? {
+                Ok::<_, anyhow::Error>(Some((
+                    super::nir1_entity_relation::evaluate_typed_edge_for_incremental(
+                        conn,
+                        &batch.project_id,
+                        edge,
+                    )?,
+                    super::nir1_entity_relation::typed_source_token_for_incremental(
+                        conn,
+                        &batch.project_id,
+                        &edge.source_object_identity,
+                    )?,
+                )))
+            } else {
+                Ok(None)
+            }
+        })?;
+        if let Some((observation, revision_token)) = typed_state {
+            let producer_epoch_matched = db.with_conn(|conn| {
+                edge_producer_epoch_matches(conn, edge, &batch.semantic_epoch_id)
+            })?;
+            producer_epoch_guards.push(ProducerEpochGuard {
+                edge: edge.clone(),
+                matched: producer_epoch_matched,
+            });
+            typed_source_state_guards.push(TypedSourceStateGuard {
+                source_object_identity: edge.source_object_identity.clone(),
+                revision_token,
+            });
+            affected_edge_count += 1;
+            by_consumer
+                .entry((edge.consumer_kind.clone(), edge.consumer_key.clone()))
+                .or_default()
+                .push((
+                    edge.id.clone(),
+                    if producer_epoch_matched {
+                        observation
+                    } else {
+                        unknown_edge_observation()
+                    },
+                ));
             continue;
         }
         let resolving_run_id = edge.owning_run_id.as_deref().unwrap_or(&batch.run_id);
@@ -2186,6 +2245,7 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
         by_consumer,
         edge_declaration_guards,
         source_state_guards,
+        typed_source_state_guards,
         producer_epoch_guards,
         v2_declaration_guards,
         v2_declaration_head_keys,
@@ -2874,6 +2934,18 @@ fn publish_batch_in_tx(
             guard.edge.source_object_identity
         );
     }
+    for guard in &plan.typed_source_state_guards {
+        let current = super::nir1_entity_relation::typed_source_token_for_incremental(
+            conn,
+            &batch.project_id,
+            &guard.source_object_identity,
+        )?;
+        anyhow::ensure!(
+            current == guard.revision_token,
+            "NEX_INCREMENTAL_FRESHNESS_TYPED_SOURCE_CHANGED: '{}' changed after evaluation",
+            guard.source_object_identity
+        );
+    }
     for guard in &plan.producer_epoch_guards {
         let current = edge_producer_epoch_matches(conn, &guard.edge, &batch.semantic_epoch_id)?;
         anyhow::ensure!(
@@ -3317,6 +3389,39 @@ pub(crate) fn affected_source_identities(
 ) -> anyhow::Result<Vec<String>> {
     let mut identities = BTreeSet::new();
     for event in events {
+        // Keep the historical catalog projection for generic consumers, and
+        // additionally project the exact identities used by the typed
+        // Entity/Relation adapter. The typed resolver remains private to its
+        // reader; this function only selects affected edges from the Feed.
+        match event.object_key.get("kind").and_then(Value::as_str) {
+            Some("codex-entry") => {
+                let entry_id = event
+                    .object_key
+                    .get("entryId")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "NEX_CHANGE_FEED_OBJECT_KEY_INVALID: codex-entry.entryId is missing"
+                        )
+                    })?;
+                identities.insert(format!("codex:{entry_id}"));
+            }
+            Some("codex-relation") => {
+                let relation_id = event
+                    .object_key
+                    .get("relationId")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "NEX_CHANGE_FEED_OBJECT_KEY_INVALID: codex-relation.relationId is missing"
+                        )
+                    })?;
+                identities.insert(format!("codex-relation:{relation_id}"));
+            }
+            _ => {}
+        }
         if let Some(identity) = source_identity_for_event(project_id, event)? {
             identities.insert(identity);
         }
@@ -5836,6 +5941,77 @@ mod tests {
             "update",
             &["/storyTimeOrder"],
         )));
+    }
+
+    #[test]
+    fn codex_change_feed_selects_typed_sources_and_keeps_catalog_projection() {
+        let entry_event = NarrativeChangeEventRecord {
+            event_id: "codex-entry-feed-event".into(),
+            project_id: PROJECT_ID.into(),
+            transaction_id: "codex-feed-transaction".into(),
+            canonical_change_event_uid: "codex-entry-feed-canonical".into(),
+            canonical_sequence: 1,
+            event_ordinal: 0,
+            object_key: serde_json::json!({
+                "kind": "codex-entry",
+                "entryId": "entry-feed-1",
+            }),
+            change_kind: "content".into(),
+            mutation_kind: "update".into(),
+            before_version: Some(1),
+            before_digest: Some("sha256:before".into()),
+            after_version: Some(2),
+            after_digest: Some("sha256:after".into()),
+            changed_paths: vec!["/summary".into()],
+            text_impact: None,
+            structural_impact: None,
+            cause_kind: super::super::change_feed::NarrativeChangeCauseKind::Forward,
+            origin: super::super::change_feed::NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            commit_id: None,
+            journal_id: None,
+            undo_journal_id: None,
+            application_ids: Vec::new(),
+            occurred_at: OCCURRED_AT.into(),
+        };
+        let relation_event = NarrativeChangeEventRecord {
+            event_id: "codex-relation-feed-event".into(),
+            project_id: PROJECT_ID.into(),
+            transaction_id: "codex-feed-transaction".into(),
+            canonical_change_event_uid: "codex-relation-feed-canonical".into(),
+            canonical_sequence: 2,
+            event_ordinal: 0,
+            object_key: serde_json::json!({
+                "kind": "codex-relation",
+                "relationId": "relation-feed-1",
+            }),
+            change_kind: "structure".into(),
+            mutation_kind: "update".into(),
+            before_version: Some(1),
+            before_digest: Some("sha256:before-relation".into()),
+            after_version: Some(2),
+            after_digest: Some("sha256:after-relation".into()),
+            changed_paths: vec!["/fromCodexId".into()],
+            text_impact: None,
+            structural_impact: None,
+            cause_kind: super::super::change_feed::NarrativeChangeCauseKind::Forward,
+            origin: super::super::change_feed::NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            commit_id: None,
+            journal_id: None,
+            undo_journal_id: None,
+            application_ids: Vec::new(),
+            occurred_at: OCCURRED_AT.into(),
+        };
+
+        let identities = affected_source_identities(PROJECT_ID, &[entry_event, relation_event])
+            .expect("codex feed keys are valid");
+        assert!(identities.contains(&"codex:entry-feed-1".to_owned()));
+        assert!(identities.contains(&"codex-relation:relation-feed-1".to_owned()));
+        assert!(
+            identities.contains(&format!("project:codex-catalog:{PROJECT_ID}")),
+            "the existing catalog projection remains selected"
+        );
     }
 
     #[test]

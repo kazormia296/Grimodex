@@ -232,9 +232,7 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     ) as never,
     timelapseHistoryPurge: record(
       "timelapseHistoryPurge",
-      Promise.resolve(
-        '{"deletedEventCount":3,"deletedSnapshotCount":2}',
-      ),
+      Promise.resolve('{"deletedEventCount":3,"deletedSnapshotCount":2}'),
     ) as never,
     timelapseEnabledSet: record(
       "timelapseEnabledSet",
@@ -1236,6 +1234,63 @@ describe("dispatchInvoke", () => {
     });
   });
 
+  it("target-aware typed restore keeps workspace and launcher identities exact", async () => {
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"runId":"run-a","response":{"status":"unavailable","result":{"reason":"source-revision-changed"}}}',
+      );
+    const { backend, calls } = fakeBackend();
+    backend.nir1EntityRelationRevisionRestore = (...args) => {
+      calls.push({ method: "nir1EntityRelationRevisionRestore", args });
+      return method(...args);
+    };
+    const args = {
+      expectedWorkspacePath: "/workspace/project-1",
+      projectId: "project-1",
+      entityId: "entity-a",
+      relationId: "relation-a",
+    };
+
+    const result = await dispatchInvoke(
+      "nir1_entity_relation_revision_restore",
+      args,
+      { backend, shell: noShell },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        runId: "run-a",
+        response: {
+          status: "unavailable",
+          result: { reason: "source-revision-changed" },
+        },
+      },
+    });
+    expect(calls).toEqual([
+      {
+        method: "nir1EntityRelationRevisionRestore",
+        args: [args],
+      },
+    ]);
+
+    for (const invalid of [
+      { ...args, entityId: " entity-a" },
+      { ...args, relationId: " relation-a" },
+      { ...args, projectId: "" },
+      { ...args, unexpected: true },
+    ]) {
+      const rejected = await dispatchInvoke(
+        "nir1_entity_relation_revision_restore",
+        invalid,
+        { backend, shell: noShell },
+      );
+      expect(rejected.ok).toBe(false);
+    }
+    expect(method).toHaveBeenCalledOnce();
+  });
+
   it("Chronicle task resume candidate discovery rejects malformed scope and backend skew", async () => {
     const { backend, calls } = fakeBackend();
     for (const payload of [
@@ -1713,9 +1768,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
   });
 
   it("A1 scene scope read は workspace/project/scene authority を Native へ渡す", async () => {
-    const method = vi.fn().mockResolvedValue(
-      '{"registry":{"registryVersion":"narrative-scene-scope-registry/1","timelineRefs":[],"worldlineRefs":[],"narrativeLayerRefs":[]},"registryRevision":1,"registrySourceToken":"sha256:0000000000000000000000000000000000000000000000000000000000000000","registryUpdatedAt":"2026-09-13T00:00:00.000Z","binding":{"projectId":"project-1","sceneId":"scene-1"}}',
-    );
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"registry":{"registryVersion":"narrative-scene-scope-registry/1","timelineRefs":[],"worldlineRefs":[],"narrativeLayerRefs":[]},"registryRevision":1,"registrySourceToken":"sha256:0000000000000000000000000000000000000000000000000000000000000000","registryUpdatedAt":"2026-09-13T00:00:00.000Z","binding":{"projectId":"project-1","sceneId":"scene-1"}}',
+      );
     const { backend } = fakeBackend({
       narrativeSceneScopeRead: method,
     });
@@ -1750,9 +1807,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
   });
 
   it("A1 scene scope read strips the main-only D2a caller identity before Native", async () => {
-    const method = vi.fn().mockResolvedValue(
-      '{"registry":{"registryVersion":"narrative-scene-scope-registry/1","timelineRefs":[],"worldlineRefs":[],"narrativeLayerRefs":[]},"registryRevision":1,"registrySourceToken":"sha256:0000000000000000000000000000000000000000000000000000000000000000","registryUpdatedAt":"2026-09-13T00:00:00.000Z","binding":{"projectId":"project-1","sceneId":"scene-1"}}',
-    );
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"registry":{"registryVersion":"narrative-scene-scope-registry/1","timelineRefs":[],"worldlineRefs":[],"narrativeLayerRefs":[]},"registryRevision":1,"registrySourceToken":"sha256:0000000000000000000000000000000000000000000000000000000000000000","registryUpdatedAt":"2026-09-13T00:00:00.000Z","binding":{"projectId":"project-1","sceneId":"scene-1"}}',
+      );
     const { backend } = fakeBackend({
       narrativeSceneScopeRead: method,
     });
@@ -1784,9 +1843,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
   });
 
   it("A1 scene scope mutation は未知の引数を拒否し、typed payloadを一度だけ渡す", async () => {
-    const method = vi.fn().mockResolvedValue(
-      '{"binding":{"projectId":"project-1","sceneId":"scene-1","version":2}}',
-    );
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"binding":{"projectId":"project-1","sceneId":"scene-1","version":2}}',
+      );
     const { backend } = fakeBackend({
       narrativeSceneScopeUpdate: method,
     });
@@ -1838,7 +1899,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
     expect(env).toEqual({
       ok: true,
-      value: { binding: { projectId: "project-1", sceneId: "scene-1", version: 2 } },
+      value: {
+        binding: { projectId: "project-1", sceneId: "scene-1", version: 2 },
+      },
     });
     expect(method).toHaveBeenCalledExactlyOnceWith(nativeArgs);
 
@@ -4790,28 +4853,34 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       expectedAnchorSequence: null,
     },
     {
-      targets: [{ kind: "scene", id: "s1" }, { kind: "scene", id: "s1" }],
+      targets: [
+        { kind: "scene", id: "s1" },
+        { kind: "scene", id: "s1" },
+      ],
       expectedAnchorSequence: null,
     },
     {
       targets: [{ kind: "scene", id: "s1" }],
       expectedAnchorSequence: -1,
     },
-  ])("timelapse body rejects forged target shape before Native: %j", async (input) => {
-    const method = vi.fn();
-    const { backend } = fakeBackend({ timelapseBodyBaselinesAppend: method });
-    const env = await dispatchInvoke(
-      "timelapse_body_baselines_append",
-      {
-        expectedWorkspacePath: "/workspace/novel.gdx",
-        projectId: "p1",
-        ...input,
-      },
-      { backend, shell: noShell },
-    );
-    expect(env.ok).toBe(false);
-    expect(method).not.toHaveBeenCalled();
-  });
+  ])(
+    "timelapse body rejects forged target shape before Native: %j",
+    async (input) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({ timelapseBodyBaselinesAppend: method });
+      const env = await dispatchInvoke(
+        "timelapse_body_baselines_append",
+        {
+          expectedWorkspacePath: "/workspace/novel.gdx",
+          projectId: "p1",
+          ...input,
+        },
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    },
+  );
 
   it("timelapse_history_purge: exact workspace/project maps to atomic Native command", async () => {
     const { backend, calls } = fakeBackend();
@@ -5739,6 +5808,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_scene_scope_registry_update",
       "narrative_scene_scope_update",
       "nir1_entity_relation_revision_create",
+      "nir1_entity_relation_revision_prepare",
+      "nir1_entity_relation_revision_read",
+      "nir1_entity_relation_revision_read_current",
+      "nir1_entity_relation_revision_restore",
       "nir1_evidence_qualify",
       "nir1_pack_context",
       "open_workspace",
@@ -10517,24 +10590,70 @@ describe("NIR-1 two-result command boundary", () => {
   };
 
   it("maps only validated begin fields and keeps operation ownership on follow-ups", async () => {
-    const relatedScenesBegin = vi.fn().mockResolvedValue('{"status":"raw-ready"}');
-    const relatedScenesContinue = vi.fn().mockResolvedValue('{"status":"available","scenes":[]}');
-    const relatedScenesRelease = vi.fn().mockResolvedValue('{"status":"released"}');
-    const nir1EvidenceQualify = vi.fn().mockResolvedValue('{"status":"unavailable","reason":"invalidated"}');
-    const deps = { backend: { relatedScenesBegin, relatedScenesContinue, relatedScenesRelease, nir1EvidenceQualify } as unknown as NapiBackendLike, shell: {} };
-    expect(await dispatchInvoke("related_scenes_begin", { ...begin, arbitraryDb: "/other" }, deps)).toMatchObject({ ok: true });
+    const relatedScenesBegin = vi
+      .fn()
+      .mockResolvedValue('{"status":"raw-ready"}');
+    const relatedScenesContinue = vi
+      .fn()
+      .mockResolvedValue('{"status":"available","scenes":[]}');
+    const relatedScenesRelease = vi
+      .fn()
+      .mockResolvedValue('{"status":"released"}');
+    const nir1EvidenceQualify = vi
+      .fn()
+      .mockResolvedValue('{"status":"unavailable","reason":"invalidated"}');
+    const deps = {
+      backend: {
+        relatedScenesBegin,
+        relatedScenesContinue,
+        relatedScenesRelease,
+        nir1EvidenceQualify,
+      } as unknown as NapiBackendLike,
+      shell: {},
+    };
+    expect(
+      await dispatchInvoke(
+        "related_scenes_begin",
+        { ...begin, arbitraryDb: "/other" },
+        deps,
+      ),
+    ).toMatchObject({ ok: true });
     expect(relatedScenesBegin).toHaveBeenCalledExactlyOnceWith(begin);
-    await dispatchInvoke("related_scenes_continue", { ownerKey, operationTicket: "ticket", projectId: "cannot-rebind" }, deps);
-    expect(relatedScenesContinue).toHaveBeenCalledExactlyOnceWith(ownerKey, "ticket");
-    await dispatchInvoke("related_scenes_release", { ownerKey, operationTicket: "ticket" }, deps);
-    expect(relatedScenesRelease).toHaveBeenCalledExactlyOnceWith(ownerKey, "ticket");
-    await dispatchInvoke("nir1_evidence_qualify", { ownerKey, navigationIdentity: "handle", sceneId: "cannot-rebind" }, deps);
-    expect(nir1EvidenceQualify).toHaveBeenCalledExactlyOnceWith(ownerKey, "handle");
+    await dispatchInvoke(
+      "related_scenes_continue",
+      { ownerKey, operationTicket: "ticket", projectId: "cannot-rebind" },
+      deps,
+    );
+    expect(relatedScenesContinue).toHaveBeenCalledExactlyOnceWith(
+      ownerKey,
+      "ticket",
+    );
+    await dispatchInvoke(
+      "related_scenes_release",
+      { ownerKey, operationTicket: "ticket" },
+      deps,
+    );
+    expect(relatedScenesRelease).toHaveBeenCalledExactlyOnceWith(
+      ownerKey,
+      "ticket",
+    );
+    await dispatchInvoke(
+      "nir1_evidence_qualify",
+      { ownerKey, navigationIdentity: "handle", sceneId: "cannot-rebind" },
+      deps,
+    );
+    expect(nir1EvidenceQualify).toHaveBeenCalledExactlyOnceWith(
+      ownerKey,
+      "handle",
+    );
   });
 
   it("rejects malformed begin bindings before Native execution", async () => {
     const relatedScenesBegin = vi.fn();
-    const deps = { backend: { relatedScenesBegin } as unknown as NapiBackendLike, shell: {} };
+    const deps = {
+      backend: { relatedScenesBegin } as unknown as NapiBackendLike,
+      shell: {},
+    };
     for (const invalid of [
       { ...begin, ownerKey: "" },
       { ...begin, expectedWorkspacePath: "" },
@@ -10543,14 +10662,32 @@ describe("NIR-1 two-result command boundary", () => {
       { ...begin, query: " " },
       { ...begin, query: "x".repeat(501) },
       { ...begin, query: 7 },
-    ]) expect((await dispatchInvoke("related_scenes_begin", invalid, deps)).ok).toBe(false);
+    ])
+      expect(
+        (await dispatchInvoke("related_scenes_begin", invalid, deps)).ok,
+      ).toBe(false);
     expect(relatedScenesBegin).not.toHaveBeenCalled();
   });
 
   it("exposes explicit backend/version-skew errors, and never exposes owner release to renderer", async () => {
-    for (const command of ["related_scenes_begin", "related_scenes_continue", "related_scenes_release", "nir1_evidence_qualify"]) {
-      expect(await dispatchInvoke(command, begin, { backend: null, shell: {} })).toMatchObject({ ok: false, error: expect.stringContaining("IPC_BACKEND_UNAVAILABLE") });
-      expect(await dispatchInvoke(command, begin, { backend: {} as NapiBackendLike, shell: {} })).toMatchObject({ ok: false });
+    for (const command of [
+      "related_scenes_begin",
+      "related_scenes_continue",
+      "related_scenes_release",
+      "nir1_evidence_qualify",
+    ]) {
+      expect(
+        await dispatchInvoke(command, begin, { backend: null, shell: {} }),
+      ).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("IPC_BACKEND_UNAVAILABLE"),
+      });
+      expect(
+        await dispatchInvoke(command, begin, {
+          backend: {} as NapiBackendLike,
+          shell: {},
+        }),
+      ).toMatchObject({ ok: false });
     }
     expect(NAPI_COMMANDS).not.toHaveProperty("related_scenes_release_owner");
   });

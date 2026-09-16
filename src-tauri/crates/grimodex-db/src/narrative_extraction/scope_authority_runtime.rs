@@ -694,11 +694,19 @@ pub(crate) fn load_sealed_snapshot_document_binding_in_tx(
         "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_INVALID: edited revealDocumentRef must be trimmed and non-empty"
     );
     let mut matches = load_sealed_snapshot_document_bindings_in_tx(conn, project_id, run_id)?
-        .into_iter().filter(|d| d.document_ref == document_ref);
-    let document = matches.next().ok_or_else(|| anyhow::anyhow!(
-        "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_MISSING: parent corpus has no document '{}'", document_ref))?;
-    anyhow::ensure!(matches.next().is_none(),
-        "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_AMBIGUOUS: parent corpus has multiple documents '{}'", document_ref);
+        .into_iter()
+        .filter(|d| d.document_ref == document_ref);
+    let document = matches.next().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_MISSING: parent corpus has no document '{}'",
+            document_ref
+        )
+    })?;
+    anyhow::ensure!(
+        matches.next().is_none(),
+        "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_AMBIGUOUS: parent corpus has multiple documents '{}'",
+        document_ref
+    );
     Ok(document)
 }
 
@@ -775,11 +783,15 @@ pub(crate) fn load_sealed_snapshot_document_bindings_in_tx(
         "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: parent corpus payloadDigest differs from Native canonical payload"
     );
     let corpus = validate_sealed_snapshot_payload(&payload, project_id, &snapshot_digest)?;
-    Ok(corpus.documents.iter().map(|document| SealedSnapshotDocumentBinding {
-        document_ref: document.document_ref.clone(),
-        source_key: document.source_key.clone(),
-        node_id: document.node_id.clone(),
-    }).collect())
+    Ok(corpus
+        .documents
+        .iter()
+        .map(|document| SealedSnapshotDocumentBinding {
+            document_ref: document.document_ref.clone(),
+            source_key: document.source_key.clone(),
+            node_id: document.node_id.clone(),
+        })
+        .collect())
 }
 
 /// The sealed historical basis must stay durably linked to the snapshot

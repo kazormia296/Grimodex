@@ -264,6 +264,7 @@ const RELATED_SCENES_MUTATION_WAKE_COMMANDS = new Set([
   ...HISTORY_JOURNAL_WRITER_COMMANDS,
   "narrative_extraction_save_proposal_set",
   "nir1_entity_relation_revision_create",
+  "nir1_entity_relation_revision_prepare",
   "narrative_extraction_create_human_derived_revision",
   "narrative_extraction_append_revision",
   "narrative_extraction_append_decision",

@@ -8,9 +8,7 @@ use super::super::{
     dependency_edges::{canonical_source_object_identity, find_edges_by_consumer, DependencyEdge},
     project_scope_authority::load_live_project_scope_authority,
     retrieval_admission::{
-        build::{
-            finalize_build_candidate, preflight_build_candidate, BuildCandidate,
-        },
+        build::{finalize_build_candidate, preflight_build_candidate, BuildCandidate},
         ChronicleRetrievalDocument,
     },
     revision_eligibility::pending::{self, FeedSnapshot},
@@ -182,13 +180,9 @@ pub(super) fn read_snapshot(
     };
     let mut candidates = Vec::new();
     for preflight in preflights {
-        if let Ok(candidate) = finalize_build_candidate(
-            conn,
-            project,
-            &authority,
-            preflight,
-            &material_scope_cache,
-        )? {
+        if let Ok(candidate) =
+            finalize_build_candidate(conn, project, &authority, preflight, &material_scope_cache)?
+        {
             candidates.push(candidate);
         }
     }

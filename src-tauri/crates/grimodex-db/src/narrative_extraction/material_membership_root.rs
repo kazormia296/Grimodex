@@ -5,10 +5,10 @@
 mod prompt;
 #[path = "material_roster/replay.rs"]
 mod replay;
-#[path = "material_roster/segments.rs"]
-mod segments;
 #[path = "material_roster/required.rs"]
 mod required;
+#[path = "material_roster/segments.rs"]
+mod segments;
 pub use prompt::{Digests as RequestDigests, RequestProof};
 pub use segments::Material;
 
@@ -347,7 +347,14 @@ pub(super) fn read_root_material(
     if !report.issues.is_empty() {
         return Ok(report);
     }
-    match replay::resolve(conn, &run_id, &context_root, &coverage, &receipts, &envelope) {
+    match replay::resolve(
+        conn,
+        &run_id,
+        &context_root,
+        &coverage,
+        &receipts,
+        &envelope,
+    ) {
         Ok(replay::Outcome::Complete(materials, proofs)) => {
             report.materials = materials;
             report.replayed_requests = proofs;
@@ -487,8 +494,15 @@ mod material_roster_tests {
         ] {
             let mut receipts = g["receipts"].as_array().expect("receipts").clone();
             *receipts[0].pointer_mut(field).expect("field") = Value::String(value.into());
-            match replay::resolve(&conn, "unused", &root, &Value::Null, &receipts, &Value::Null)
-                .expect("unsupported before reads")
+            match replay::resolve(
+                &conn,
+                "unused",
+                &root,
+                &Value::Null,
+                &receipts,
+                &Value::Null,
+            )
+            .expect("unsupported before reads")
             {
                 replay::Outcome::Unsupported(code) => assert_eq!(code, expected),
                 _ => panic!("must not publish materials"),

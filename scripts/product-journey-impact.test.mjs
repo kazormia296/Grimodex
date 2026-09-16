@@ -68,6 +68,7 @@ test("the current catalog has complete journey, contract, and interaction covera
     "map-native-roundtrip",
     "snapshot-native-roundtrip",
     "chronicle-extract-review-apply-reopen",
+    "codex-entity-relation-review-apply-reopen",
     ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
       (journey) => journey.id,
     ),
@@ -247,7 +248,11 @@ test("each newly classified lifecycle or MCP domain selects its declared journey
     ],
     [
       "src/features/workspace/WorkspaceMenu.tsx",
-      ["workspace-switch-authority", "chat-stream-workspace-switch"],
+      [
+        "workspace-switch-authority",
+        "chat-stream-workspace-switch",
+        "codex-entity-relation-review-apply-reopen",
+      ],
     ],
     [
       "src-tauri/crates/grimodex-mcp/src/server.rs",
@@ -373,7 +378,10 @@ test("one changed domain selects every declared journey that can be affected", (
   });
 
   assert.deepEqual(selection.affectedDomains, ["codex"]);
-  assert.deepEqual(selection.journeyIds, ["cross-feature-authoring"]);
+  assert.deepEqual(selection.journeyIds, [
+    "cross-feature-authoring",
+    "codex-entity-relation-review-apply-reopen",
+  ]);
   assert.equal(selection.fallback, false);
   assert.equal(selection.allSelected, false);
 });
@@ -582,7 +590,10 @@ test("shadow mode records affected recommendations but executes the full catalog
     selection,
   });
 
-  assert.deepEqual(execution.selectedJourneyIds, ["cross-feature-authoring"]);
+  assert.deepEqual(execution.selectedJourneyIds, [
+    "cross-feature-authoring",
+    "codex-entity-relation-review-apply-reopen",
+  ]);
   assert.deepEqual(
     execution.executionJourneyIds,
     PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
@@ -710,6 +721,7 @@ test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
   assert.equal(report.execution.catalogDigest, PRODUCT_JOURNEY_CATALOG_DIGEST);
   assert.deepEqual(report.execution.selectedJourneyIds, [
     "cross-feature-authoring",
+    "codex-entity-relation-review-apply-reopen",
   ]);
   assert.deepEqual(
     report.execution.executionJourneyIds,
@@ -738,7 +750,7 @@ test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
   );
   assert.match(
     githubOutput,
-    /selected_journey_ids=\["cross-feature-authoring"\]/,
+    /selected_journey_ids=\["cross-feature-authoring","codex-entity-relation-review-apply-reopen"\]/,
   );
   assert.match(
     githubOutput,

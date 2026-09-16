@@ -734,23 +734,10 @@ pub(crate) fn scope_extension_digest(
             .unwrap_or_else(|| "<invalid-scene-id>".to_owned());
         let raw = scene_scope_digest_raw_row(&raw_values);
         let binding = (|| -> Result<Option<NarrativeSceneScopeBindingV1>> {
-            let [
-                scene_id,
-                incarnation,
-                marker,
-                query_identity,
-                material_constraint,
-                knowledge_holder,
-                version,
-                audience,
-                source_token,
-                updated_at,
-                scene_owned,
-                knowledge_holder_owned,
-                audience_owned,
-            ] = raw_values
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("scene scope row has an invalid column count"))?;
+            let [scene_id, incarnation, marker, query_identity, material_constraint, knowledge_holder, version, audience, source_token, updated_at, scene_owned, knowledge_holder_owned, audience_owned] =
+                raw_values
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("scene scope row has an invalid column count"))?;
             let scene_id = material_scope_text(scene_id)?;
             let incarnation = material_scope_text(incarnation)?;
             let marker = material_scope_text(marker)?;
@@ -793,7 +780,10 @@ pub(crate) fn scope_extension_digest(
                     "knowledgeHolder character is not in project '{project_id}'"
                 );
             }
-            if matches!(binding.audience, NarrativeScopePrincipalV1::Character { .. }) {
+            if matches!(
+                binding.audience,
+                NarrativeScopePrincipalV1::Character { .. }
+            ) {
                 anyhow::ensure!(
                     audience_owned == 1,
                     "audience character is not in project '{project_id}'"
@@ -1109,7 +1099,10 @@ pub(crate) fn invalidate_character_references_with_events_in_tx(
                 scene_id,
             ],
         )?;
-        anyhow::ensure!(changed == 1, "scene scope binding disappeared during invalidation");
+        anyhow::ensure!(
+            changed == 1,
+            "scene scope binding disappeared during invalidation"
+        );
         let after = canonical_scene_scope_snapshot(conn, project_id, &scene_id)?;
         events.push(scene_scope_feed_event(
             &scene_id,
@@ -1744,7 +1737,10 @@ pub(crate) fn preload_material_scene_scopes(
                     "NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE: material knowledge-holder character is not in project '{project_id}'"
                 );
             }
-            if matches!(binding.audience, NarrativeScopePrincipalV1::Character { .. }) {
+            if matches!(
+                binding.audience,
+                NarrativeScopePrincipalV1::Character { .. }
+            ) {
                 anyhow::ensure!(
                     audience_owned == 1,
                     "NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE: material audience character is not in project '{project_id}'"
@@ -1841,7 +1837,7 @@ pub(crate) fn check_material_constraints(
                     ScopeDependencyIdentity::from_source_key(&control.source_key)
                         .ok()
                         .is_some_and(|identity| {
-                                identity.project_id == query.project_id
+                            identity.project_id == query.project_id
                                 && identity.run_id == owning_run_id
                                 && !identity.secret
                                 && projection_revision(&identity, authority).ok().as_deref()
@@ -1979,12 +1975,7 @@ mod tests {
             .expect("read scope before ordinary edit");
         let refresh_event = db
             .with_conn(|conn| {
-                refresh_scene_scope_source_token_in_tx(
-                    conn,
-                    "p1",
-                    "s1",
-                    "2026-09-13T00:04:00.000Z",
-                )
+                refresh_scene_scope_source_token_in_tx(conn, "p1", "s1", "2026-09-13T00:04:00.000Z")
             })
             .expect("refresh scope after ordinary edit");
         assert_eq!(
@@ -2124,11 +2115,12 @@ mod tests {
         .expect("seed character principal reference");
 
         db.with_conn(|conn| {
-            let delete = ensure_character_reference_mutation_allowed_in_tx(
-                conn, "p1", "c1", "delete",
-            )
-            .expect_err("delete of referenced character must be rejected");
-            assert!(delete.to_string().contains("NEX_SCENE_SCOPE_CHARACTER_REFERENCED"));
+            let delete =
+                ensure_character_reference_mutation_allowed_in_tx(conn, "p1", "c1", "delete")
+                    .expect_err("delete of referenced character must be rejected");
+            assert!(delete
+                .to_string()
+                .contains("NEX_SCENE_SCOPE_CHARACTER_REFERENCED"));
             let change_type = ensure_character_reference_mutation_allowed_in_tx(
                 conn,
                 "p1",
@@ -2175,7 +2167,10 @@ mod tests {
             after.binding.compatibility_marker,
             NarrativeScopeCompatibilityMarkerV1::Unknown
         );
-        assert_eq!(after.binding.knowledge_holder, NarrativeScopePrincipalV1::Reader {});
+        assert_eq!(
+            after.binding.knowledge_holder,
+            NarrativeScopePrincipalV1::Reader {}
+        );
         assert!(after.binding.version > before.binding.version);
         assert_ne!(after.binding.source_token, before.binding.source_token);
         db.with_conn(|conn| {
@@ -2230,9 +2225,7 @@ mod tests {
                 "UPDATE narrative_scene_scope_bindings
                     SET source_token = ?1
                   WHERE project_id = 'p1' AND scene_id = 's1'",
-                params![
-                    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-                ],
+                params!["sha256:0000000000000000000000000000000000000000000000000000000000000000",],
             )?;
             Ok(())
         })
@@ -2262,12 +2255,7 @@ mod tests {
                      VALUES (?1, 'p1', 'scene', ?1, ?1)",
                     [scene_id],
                 )?;
-                ensure_scene_scope_binding_in_tx(
-                    conn,
-                    "p1",
-                    scene_id,
-                    "2026-09-13T00:13:00.000Z",
-                )?;
+                ensure_scene_scope_binding_in_tx(conn, "p1", scene_id, "2026-09-13T00:13:00.000Z")?;
             }
             Ok(())
         })

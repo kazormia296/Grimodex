@@ -334,7 +334,13 @@ describe("caller timeout policy（electron 分岐）", () => {
     await Promise.resolve();
   });
 
-  it.each(["fts_search", "nir1_evidence_qualify"])(
+  it.each([
+    "fts_search",
+    "nir1_evidence_qualify",
+    "nir1_entity_relation_revision_read",
+    "nir1_entity_relation_revision_read_current",
+    "nir1_entity_relation_revision_restore",
+  ])(
     "%s は lifecycle quiescence を保持せず read caller を cancel する",
     async (command) => {
       let resolveBridge!: (value: { ok: true; value: null }) => void;

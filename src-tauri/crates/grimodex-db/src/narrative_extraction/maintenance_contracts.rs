@@ -220,7 +220,14 @@ fn parse_dependency_producer_registry(registry_json: &str) -> Result<DependencyP
             entry.declaration_set_generation == *declaration_set_generation,
             "NEX_PRODUCER_REGISTRY_INVALID: writer '{id}' declarationSetGeneration does not match its Rust source contract"
         );
-        let expected_supported: &[i64] = if *id == "proposal-revision-source-basis" { &[PROPOSAL_REVISION_D1_PRODUCER_GENERATION, super::human_material_basis::SCOPE_DEPENDENCY_D1_GENERATION] } else { &[] };
+        let expected_supported: &[i64] = if *id == "proposal-revision-source-basis" {
+            &[
+                PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
+                super::human_material_basis::SCOPE_DEPENDENCY_D1_GENERATION,
+            ]
+        } else {
+            &[]
+        };
         ensure!(entry.supported_declaration_set_generations == expected_supported,
             "NEX_PRODUCER_REGISTRY_INVALID: writer '{id}' supported D1 generations differ from implementation");
         let source = match *module {

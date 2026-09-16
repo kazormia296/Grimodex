@@ -1120,7 +1120,11 @@ fn validate_revision_basis(value: &Value) -> Result<(), NarrativeIrValidationErr
     }
 }
 
-fn validate_projection_binding(value: &Value) -> Result<(), NarrativeIrValidationError> {
+fn validate_projection_binding(
+    value: &Value,
+    expected_adapter_id: &str,
+    expected_adapter_version: &str,
+) -> Result<(), NarrativeIrValidationError> {
     let path = "projectionBinding";
     let value = object(value, path)?;
     reject_unknown(
@@ -1143,9 +1147,9 @@ fn validate_projection_binding(value: &Value) -> Result<(), NarrativeIrValidatio
     {
         return Err(validation_error("invalid-projection-binding", path));
     }
-    if require(value, "adapterContractId", path)?.as_str() != Some(CHRONICLE_SCENE_EVENT_ADAPTER_ID)
+    if require(value, "adapterContractId", path)?.as_str() != Some(expected_adapter_id)
         || require(value, "adapterContractVersion", path)?.as_str()
-            != Some(CHRONICLE_SCENE_EVENT_ADAPTER_VERSION)
+            != Some(expected_adapter_version)
     {
         return Err(validation_error(
             "unsupported-adapter",
@@ -1157,8 +1161,11 @@ fn validate_projection_binding(value: &Value) -> Result<(), NarrativeIrValidatio
 
 /// Fail-closed structural validation equivalent to K1's Envelope V2 validator.
 /// Assertion payload semantics remain owned by the assertion-kind adapter.
-pub fn validate_narrative_revision_envelope_v2(
+pub(crate) fn validate_narrative_revision_envelope_v2_with_contract(
     value: &Value,
+    expected_assertion_kind: &str,
+    expected_adapter_id: &str,
+    expected_adapter_version: &str,
 ) -> Result<(), NarrativeIrValidationError> {
     let value = value
         .as_object()
@@ -1209,9 +1216,7 @@ pub fn validate_narrative_revision_envelope_v2(
             "assertion.assertionId",
         ));
     }
-    if require(assertion, "assertionKind", "assertion")?.as_str()
-        != Some(CHRONICLE_SCENE_EVENT_ASSERTION_KIND)
-    {
+    if require(assertion, "assertionKind", "assertion")?.as_str() != Some(expected_assertion_kind) {
         return Err(validation_error(
             "unsupported-assertion-kind",
             "assertion.assertionKind",
@@ -1335,7 +1340,22 @@ pub fn validate_narrative_revision_envelope_v2(
         }
     };
     validate_material_consistency(material, context_set, context_path)?;
-    validate_projection_binding(require(value, "projectionBinding", "envelope")?)
+    validate_projection_binding(
+        require(value, "projectionBinding", "envelope")?,
+        expected_adapter_id,
+        expected_adapter_version,
+    )
+}
+
+pub fn validate_narrative_revision_envelope_v2(
+    value: &Value,
+) -> Result<(), NarrativeIrValidationError> {
+    validate_narrative_revision_envelope_v2_with_contract(
+        value,
+        CHRONICLE_SCENE_EVENT_ASSERTION_KIND,
+        CHRONICLE_SCENE_EVENT_ADAPTER_ID,
+        CHRONICLE_SCENE_EVENT_ADAPTER_VERSION,
+    )
 }
 
 /// Validate the Chronicle `scene-event@1` add-only binding layered on K1's

@@ -1500,16 +1500,14 @@ fn undo_one_entity(
             let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| {
                 anyhow::anyhow!("scene chronicle patch journal missing beforeSnapshot")
             })?;
-            let expected_after_version =
-                entity.get("version").and_then(Value::as_i64).unwrap_or(0);
-            let (_, scope_refresh_event) =
-                restore_scene_chronicle_patch(
-                    conn,
-                    entity_id,
-                    &before,
-                    expected_after_version,
-                    now,
-                )?;
+            let expected_after_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
+            let (_, scope_refresh_event) = restore_scene_chronicle_patch(
+                conn,
+                entity_id,
+                &before,
+                expected_after_version,
+                now,
+            )?;
             scene_scope_refresh_events.push(scope_refresh_event);
         }
         "temporal_event_chronicle" => {

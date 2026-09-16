@@ -2249,6 +2249,239 @@ describe("NIR-1 router sender binding", () => {
     expect(saveAiSettings).toHaveBeenCalledWith({});
   });
 
+  it("runs the dedicated typed cold reader through D2a at entry and return", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: "/workspace-1",
+      sessionId: "session-1",
+    };
+    const typedRead = vi.fn(async () =>
+      JSON.stringify({
+        status: "available",
+        result: {
+          projectId: "project-1",
+          revisionId: "revision-1",
+          bundle: { entities: [], relations: [] },
+        },
+      }),
+    );
+    const assertPlaintextPublication = vi.fn(() => {
+      throw new Error("D2A_EGRESS_DENIED: plaintext-publication");
+    });
+    const profileEgress = {
+      restricted: false,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication,
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    registerIpcRouter(
+      {
+        nir1EntityRelationRevisionRead: typedRead,
+      } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "nir1_entity_relation_revision_read",
+      {
+        expectedWorkspacePath: "/workspace-1",
+        projectId: "project-1",
+        revisionId: "revision-1",
+        callerIdentity: { callerId: "renderer-forged" },
+      },
+    );
+
+    expect(envelope).toEqual({
+      ok: false,
+      error: "D2A_EGRESS_DENIED: plaintext-publication",
+    });
+    expect(typedRead).toHaveBeenCalledExactlyOnceWith({
+      expectedWorkspacePath: "/workspace-1",
+      projectId: "project-1",
+      revisionId: "revision-1",
+    });
+    expect(profileEgress.assertInvoke).toHaveBeenCalledWith(
+      "nir1_entity_relation_revision_read",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(assertPlaintextPublication).toHaveBeenCalledWith(
+      "nir1_entity_relation_revision_read",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+  });
+
+  it("runs typed prepare and target/current typed reads through D2a at both boundaries", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: "/workspace-1",
+      sessionId: "session-1",
+    };
+    const prepare = vi.fn(async () =>
+      JSON.stringify({
+        runId: "run-1",
+        status: "draft",
+        receipt: {
+          proposalSetId: "set-1",
+          proposalId: "proposal-1",
+          revisionId: "revision-1",
+          status: "unreviewed",
+        },
+      }),
+    );
+    const readCurrent = vi.fn(async () =>
+      JSON.stringify({ status: "draft", result: {} }),
+    );
+    const restore = vi.fn(async () =>
+      JSON.stringify({
+        runId: "run-1",
+        response: {
+          status: "unavailable",
+          result: { reason: "source-revision-changed" },
+        },
+      }),
+    );
+    const assertPlaintextPublication = vi.fn((command: string) => {
+      if (command === "nir1_entity_relation_revision_prepare") return;
+      throw new Error("D2A_EGRESS_DENIED: plaintext-publication");
+    });
+    const profileEgress = {
+      restricted: false,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication,
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    registerIpcRouter(
+      {
+        nir1EntityRelationRevisionPrepare: prepare,
+        nir1EntityRelationRevisionReadCurrent: readCurrent,
+        nir1EntityRelationRevisionRestore: restore,
+      } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const workspaceBinding = {
+      authorityId: "authority-1",
+      generation: 1,
+      authorityInstanceId: "1",
+    };
+    const prepareArgs = {
+      payload: {
+        projectId: "project-1",
+        sceneId: "scene-1",
+        entityIds: ["entity-1"],
+        relationIds: [],
+      },
+      workspaceBinding,
+    };
+    const prepareEnvelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "nir1_entity_relation_revision_prepare",
+      prepareArgs,
+    );
+    expect(prepareEnvelope).toEqual({
+      ok: true,
+      value: {
+        runId: "run-1",
+        status: "draft",
+        receipt: {
+          proposalSetId: "set-1",
+          proposalId: "proposal-1",
+          revisionId: "revision-1",
+          status: "unreviewed",
+        },
+      },
+    });
+    expect(prepare).toHaveBeenCalledExactlyOnceWith(
+      prepareArgs.payload,
+      workspaceBinding,
+    );
+
+    const currentArgs = {
+      expectedWorkspacePath: "/workspace-1",
+      projectId: "project-1",
+      runId: "run-1",
+    };
+    const currentEnvelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "nir1_entity_relation_revision_read_current",
+      currentArgs,
+    );
+    expect(currentEnvelope).toEqual({
+      ok: false,
+      error: "D2A_EGRESS_DENIED: plaintext-publication",
+    });
+    expect(readCurrent).toHaveBeenCalledExactlyOnceWith(currentArgs);
+    const restoreArgs = {
+      expectedWorkspacePath: "/workspace-1",
+      projectId: "project-1",
+      entityId: "entity-1",
+      relationId: null,
+    };
+    const restoreEnvelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "nir1_entity_relation_revision_restore",
+      restoreArgs,
+    );
+    expect(restoreEnvelope).toEqual({
+      ok: false,
+      error: "D2A_EGRESS_DENIED: plaintext-publication",
+    });
+    expect(restore).toHaveBeenCalledExactlyOnceWith(restoreArgs);
+    expect(profileEgress.assertInvoke).toHaveBeenNthCalledWith(
+      1,
+      "nir1_entity_relation_revision_prepare",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(profileEgress.assertInvoke).toHaveBeenNthCalledWith(
+      2,
+      "nir1_entity_relation_revision_read_current",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(profileEgress.assertInvoke).toHaveBeenNthCalledWith(
+      3,
+      "nir1_entity_relation_revision_restore",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(assertPlaintextPublication).toHaveBeenNthCalledWith(
+      1,
+      "nir1_entity_relation_revision_prepare",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(assertPlaintextPublication).toHaveBeenNthCalledWith(
+      2,
+      "nir1_entity_relation_revision_read_current",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(assertPlaintextPublication).toHaveBeenNthCalledWith(
+      3,
+      "nir1_entity_relation_revision_restore",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+  });
+
   it("does not return an admitted plaintext read while profile activation drains", async () => {
     const initialStatus = {
       profileId: "profile-1",
@@ -2371,15 +2604,11 @@ describe("NIR-1 router sender binding", () => {
       profileEgress,
     );
 
-    const single = await invokeHandler()(
-      { sender: { id: 42 } },
-      "db_execute",
-      {
-        sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
-        params: ["next", "session-1"],
-        method: "run",
-      },
-    );
+    const single = await invokeHandler()({ sender: { id: 42 } }, "db_execute", {
+      sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
+      params: ["next", "session-1"],
+      method: "run",
+    });
     const batch = await invokeHandler()(
       { sender: { id: 42 } },
       "db_execute_batch",
@@ -2462,15 +2691,11 @@ describe("NIR-1 router sender binding", () => {
       profileEgress,
     );
 
-    const single = await invokeHandler()(
-      { sender: { id: 42 } },
-      "db_execute",
-      {
-        sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
-        params: ["next", "session-1"],
-        method: "run",
-      },
-    );
+    const single = await invokeHandler()({ sender: { id: 42 } }, "db_execute", {
+      sql: "UPDATE chat_sessions SET title = ? WHERE id = ?",
+      params: ["next", "session-1"],
+      method: "run",
+    });
     const batch = await invokeHandler()(
       { sender: { id: 42 } },
       "db_execute_batch",
@@ -2755,19 +2980,47 @@ describe("NIR-1 router sender binding", () => {
 
   it("passes a main owner to Native and prevents a second WebContents from copying it", async () => {
     const calls: Array<Record<string, unknown>> = [];
-    const relatedScenesBegin = vi.fn(async (request: Record<string, unknown>) => {
-      calls.push(request);
-      return '{"status":"raw-ready"}';
-    });
+    const relatedScenesBegin = vi.fn(
+      async (request: Record<string, unknown>) => {
+        calls.push(request);
+        return '{"status":"raw-ready"}';
+      },
+    );
     registerIpcRouter({ relatedScenesBegin } as unknown as NapiBackendLike);
-    const createSender = () => ({ id: 99, isDestroyed: () => false, once: vi.fn() });
+    const createSender = () => ({
+      id: 99,
+      isDestroyed: () => false,
+      once: vi.fn(),
+    });
     const first = createSender();
-    const payload = { expectedWorkspacePath: "/workspace", projectId: "p", currentSceneId: "s2", query: "tail", ownerKey: "forged" };
-    expect((await invokeHandler()({ sender: first }, "related_scenes_begin", payload)).ok).toBe(true);
+    const payload = {
+      expectedWorkspacePath: "/workspace",
+      projectId: "p",
+      currentSceneId: "s2",
+      query: "tail",
+      ownerKey: "forged",
+    };
+    expect(
+      (
+        await invokeHandler()(
+          { sender: first },
+          "related_scenes_begin",
+          payload,
+        )
+      ).ok,
+    ).toBe(true);
     const owner = calls[0]?.ownerKey;
     expect(owner).not.toBe("forged");
     expect(typeof owner).toBe("string");
-    expect((await invokeHandler()({ sender: createSender() }, "related_scenes_begin", { ...payload, ownerKey: owner })).ok).toBe(true);
+    expect(
+      (
+        await invokeHandler()(
+          { sender: createSender() },
+          "related_scenes_begin",
+          { ...payload, ownerKey: owner },
+        )
+      ).ok,
+    ).toBe(true);
     expect(calls[1]?.ownerKey).not.toBe(owner);
   });
 });

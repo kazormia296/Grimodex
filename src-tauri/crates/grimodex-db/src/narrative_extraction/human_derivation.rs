@@ -514,13 +514,16 @@ fn build_human_envelope(
             "selector": {"kind": "whole-source"}
         }));
     } else if let Some(trusted_material_basis) = trusted_material_basis {
-        if let Some(source) = trusted_material_basis
-            .source_basis
-            .iter()
-            .find(|source| trusted_material_basis.dependency_set.iter().any(|dependency|
-                dependency.role == grimodex_core::narrative_dependency::DependencyRole::ScopeResolution
-                    && dependency.input_ref == source.source_key))
-        {
+        if let Some(source) = trusted_material_basis.source_basis.iter().find(|source| {
+            trusted_material_basis
+                .dependency_set
+                .iter()
+                .any(|dependency| {
+                    dependency.role
+                        == grimodex_core::narrative_dependency::DependencyRole::ScopeResolution
+                        && dependency.input_ref == source.source_key
+                })
+        }) {
             derivation_context.push(json!({
                 "contextId": "context:chronicle-scope-resolver",
                 "inputRef": source.source_key.clone(),

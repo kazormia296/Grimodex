@@ -80,9 +80,7 @@ function backend(status: Record<string, unknown> = {}) {
 
 describe("D2a profile egress gate", () => {
   it("does not expose main-only activation through renderer commands", () => {
-    expect(Object.hasOwn(NAPI_COMMANDS, "activate_profile_egress")).toBe(
-      false,
-    );
+    expect(Object.hasOwn(NAPI_COMMANDS, "activate_profile_egress")).toBe(false);
   });
 
   it("passes through a valid unrestricted startup without registering callers", async () => {
@@ -233,9 +231,8 @@ describe("D2a profile egress gate", () => {
       deferred<string>(),
       deferred<string>(),
     ];
-    gate.registerMainEgressParticipant(
-      "license-validation",
-      () => scheduler.quiesceForProfileEgress(),
+    gate.registerMainEgressParticipant("license-validation", () =>
+      scheduler.quiesceForProfileEgress(),
     );
     const admitted = manualOperations.map((operation) =>
       scheduler.runManualOperation(() => operation.promise),
@@ -415,6 +412,59 @@ describe("D2a profile egress gate", () => {
     ).toThrow(new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`));
   });
 
+  it("binds the typed cold reader to the issued caller and workspace epoch", async () => {
+    const gate = await createProfileEgressGate(backend());
+    const issued = gate.issueCallerIdentity(11);
+    const request = {
+      expectedWorkspacePath: "/workspace-1",
+      projectId: "project-1",
+      revisionId: "revision-1",
+      callerIdentity: issued,
+    };
+    expect(() =>
+      gate.assertInvoke("nir1_entity_relation_revision_read", request),
+    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`));
+
+    const forged = { ...issued, senderId: 12 };
+    expect(() =>
+      gate.assertInvoke("nir1_entity_relation_revision_read", {
+        ...request,
+        callerIdentity: forged,
+      }),
+    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
+  });
+
+  it("keeps typed prepare available as a Native mutation while gating readers", async () => {
+    const gate = await createProfileEgressGate(backend());
+    const issued = gate.issueCallerIdentity(11);
+    expect(() =>
+      gate.assertInvoke("nir1_entity_relation_revision_prepare", {
+        callerIdentity: issued,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      gate.assertPlaintextPublication("nir1_entity_relation_revision_prepare", {
+        callerIdentity: issued,
+      }),
+    ).not.toThrow();
+    for (const command of [
+      "nir1_entity_relation_revision_read",
+      "nir1_entity_relation_revision_read_current",
+      "nir1_entity_relation_revision_restore",
+    ]) {
+      expect(() =>
+        gate.assertInvoke(command, { callerIdentity: issued }),
+      ).toThrow(
+        new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
+      );
+      expect(() =>
+        gate.assertPlaintextPublication(command, { callerIdentity: issued }),
+      ).toThrow(
+        new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
+      );
+    }
+  });
+
   it("fails the sender closed when Native rejects identity registration", async () => {
     const gate = await createProfileEgressGate({
       ...backend(),
@@ -503,6 +553,9 @@ describe("D2a profile egress gate", () => {
     ["lint_ignore_list", {}],
     ["lint_ignore_list_scene", {}],
     ["lint_term_dictionary_list", {}],
+    ["nir1_entity_relation_revision_read", {}],
+    ["nir1_entity_relation_revision_read_current", {}],
+    ["nir1_entity_relation_revision_restore", {}],
     ["db_execute", { method: "all", sql: "SELECT body FROM messages" }],
     ["db_execute", { method: "all", sql: "SELECT 1" }],
     [

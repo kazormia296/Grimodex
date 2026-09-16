@@ -92,7 +92,11 @@ pub fn read_revision_retrieval_eligibility(
         {
             return Err(error)
         }
-        Err(_) => return Ok(unavailable(RevisionEligibilityReason::MaterialAuthorityUnavailable)),
+        Err(_) => {
+            return Ok(unavailable(
+                RevisionEligibilityReason::MaterialAuthorityUnavailable,
+            ))
+        }
     };
     let material_scopes = match super::scene_scope::select_material_scene_scopes(
         &material_scope_cache,
