@@ -1,6 +1,6 @@
 // Share the exact scene-anchor ADR002 source with the diagnostic adapter.
 #[path = "../disclosure_precheck/scene_axis.rs"]
-mod scene_axis;
+pub(in crate::narrative_extraction) mod scene_axis;
 
 use anyhow::{ensure, Result};
 use rusqlite::Connection;

@@ -8,6 +8,7 @@ mod scene_source;
 mod types;
 
 pub use query_context::read_retrieval_query_context;
+pub(in crate::narrative_extraction) use query_context::scene_axis;
 pub use scene_source::read_retrieval_scene_source;
 pub use types::*;
 

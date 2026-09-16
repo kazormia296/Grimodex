@@ -127,6 +127,7 @@ test("the NIR-1 Entity/Relation suite covers the typed review seam and its contr
   for (const expected of [
     "CodexEntityRelationReviewDialog.integration.test.tsx",
     "useCodexEntityRelationReview.test.tsx",
+    "nir1PhaseParity.test.ts",
     "nir1EntityRelationRevisionApi.test.ts",
     "tauri.electron.test.ts",
     "electron/main/ipc.test.ts",
