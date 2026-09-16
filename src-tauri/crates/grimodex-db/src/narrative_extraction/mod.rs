@@ -61,10 +61,12 @@ pub use nir1_entity_relation::{
     nir1_entity_relation_revision_current_read_for_renderer,
     nir1_entity_relation_revision_prepare_receipt, nir1_entity_relation_revision_read_for_renderer,
     prepare_nir1_entity_relation_revision, read_nir1_entity_relation_revision,
-    read_nir1_entity_relation_revision_current, Nir1EntityRelationRevision,
+    read_nir1_entity_relation_revision_current,
+    read_nir1_entity_relation_revision_current_for_revision, Nir1EntityRelationRevision,
     Nir1EntityRelationRevisionCurrentRead, Nir1EntityRelationRevisionPrepareRequest,
     Nir1EntityRelationRevisionRead, Nir1EntityRelationRevisionRequest,
-    NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
+    Nir1EntityRelationRevisionRestoreMatch, NIR1_ENTITY_RELATION_DECISION_LOCKED,
+    NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
 };
 pub use nir1_graph::{read_nir1_graph, Nir1GraphRequest, Nir1GraphResponse};
 pub use reconciliation_envelope::SourceBasisRow;

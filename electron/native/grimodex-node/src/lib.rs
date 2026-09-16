@@ -6597,7 +6597,7 @@ impl Backend {
                 &request.expected_workspace_path,
             )?;
             let response = workspace.authority.db().with_read_transaction(|conn| {
-                let Some(run_id) = narrative_extraction::find_nir1_entity_relation_revision_run(
+                let Some(target) = narrative_extraction::find_nir1_entity_relation_revision_run(
                     conn,
                     &request.project_id,
                     &request.entity_id,
@@ -6606,18 +6606,17 @@ impl Backend {
                 else {
                     return Ok(serde_json::Value::Null);
                 };
-                let current =
-                    narrative_extraction::read_nir1_entity_relation_revision_current(
-                        conn,
-                        &request.project_id,
-                        &run_id,
-                    )?;
+                let current = narrative_extraction::read_nir1_entity_relation_revision_current_for_revision(
+                    conn,
+                    &request.project_id,
+                    &target.revision_id,
+                )?;
                 let current =
                     narrative_extraction::nir1_entity_relation_revision_current_read_for_renderer(
                         current,
                     )?;
                 Ok(serde_json::json!({
-                    "runId": run_id,
+                    "runId": target.run_id,
                     "response": current,
                 }))
             })?;

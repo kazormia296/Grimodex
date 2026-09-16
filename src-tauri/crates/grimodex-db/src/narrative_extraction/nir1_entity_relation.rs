@@ -1497,6 +1497,25 @@ pub fn read_nir1_entity_relation_revision_current(
     read_typed_revision_core(conn, project_id, &revision_id, true)
 }
 
+/// Read one exact Revision selected by a target-aware restore lookup. The
+/// current-by-Run reader above intentionally keeps its historical newest-set
+/// behavior for generic callers; restore must instead send this immutable
+/// Revision identity through the existing current/decision/source/Freshness
+/// validation core.
+pub fn read_nir1_entity_relation_revision_current_for_revision(
+    conn: &Connection,
+    project_id: &str,
+    revision_id: &str,
+) -> anyhow::Result<Nir1EntityRelationRevisionCurrentRead> {
+    read_typed_revision_core(conn, project_id, revision_id, true)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Nir1EntityRelationRevisionRestoreMatch {
+    pub run_id: String,
+    pub revision_id: String,
+}
+
 /// Find the current typed review Run for one launcher target inside Native.
 ///
 /// The generic resumable-run list is intentionally not target-aware: applying
@@ -1510,7 +1529,7 @@ pub fn find_nir1_entity_relation_revision_run(
     project_id: &str,
     entity_id: &str,
     relation_id: Option<&str>,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<Option<Nir1EntityRelationRevisionRestoreMatch>> {
     if conn.is_autocommit() {
         anyhow::bail!("NIR1_ENTITY_RELATION_REQUIRES_READ_TRANSACTION");
     }
@@ -1529,7 +1548,7 @@ pub fn find_nir1_entity_relation_revision_run(
 
     let sql = format!(
         r#"
-        SELECT r.id
+        SELECT r.id, revision.id
           FROM narrative_extraction_runs r
           JOIN narrative_proposal_sets ps
             ON ps.run_id = r.id
@@ -1650,7 +1669,12 @@ pub fn find_nir1_entity_relation_revision_run(
             entity_id,
             relation_id,
         ],
-        |row| row.get(0),
+        |row| {
+            Ok(Nir1EntityRelationRevisionRestoreMatch {
+                run_id: row.get(0)?,
+                revision_id: row.get(1)?,
+            })
+        },
     )
     .optional()
     .map_err(Into::into)
@@ -2387,11 +2411,12 @@ mod tests {
     use super::{
         create_nir1_entity_relation_revision, find_nir1_entity_relation_revision_run,
         prepare_nir1_entity_relation_revision, read_nir1_entity_relation_revision,
-        read_nir1_entity_relation_revision_current, Nir1EntityRelationRevisionCurrentRead,
-        Nir1EntityRelationRevisionPrepareRequest, Nir1EntityRelationRevisionRead,
-        Nir1EntityRelationRevisionRequest, NIR1_ENTITY_RELATION_DECISION_LOCKED,
-        NIR1_ENTITY_RELATION_PROPOSAL_KIND, NIR1_ENTITY_RELATION_REVISION_ORIGIN,
-        NIR1_ENTITY_RELATION_SET_KIND,
+        read_nir1_entity_relation_revision_current,
+        read_nir1_entity_relation_revision_current_for_revision,
+        Nir1EntityRelationRevisionCurrentRead, Nir1EntityRelationRevisionPrepareRequest,
+        Nir1EntityRelationRevisionRead, Nir1EntityRelationRevisionRequest,
+        NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_PROPOSAL_KIND,
+        NIR1_ENTITY_RELATION_REVISION_ORIGIN, NIR1_ENTITY_RELATION_SET_KIND,
     };
     use crate::narrative_extraction::change_feed::get_changes_since;
     use crate::narrative_extraction::incremental_freshness::{
@@ -2894,12 +2919,13 @@ mod tests {
                 Some("nir1-edge"),
             )
         })?;
-        assert_eq!(found.as_deref(), Some(target_run.as_str()));
+        let found = found.ok_or_else(|| anyhow::anyhow!("target typed revision not found"))?;
+        assert_eq!(found.run_id, target_run);
         let current = db.with_read_transaction(|conn| {
-            read_nir1_entity_relation_revision_current(
+            read_nir1_entity_relation_revision_current_for_revision(
                 conn,
                 "default-project",
-                found.as_deref().unwrap_or_default(),
+                &found.revision_id,
             )
         })?;
         assert!(matches!(
@@ -2932,15 +2958,108 @@ mod tests {
                 Some("nir1-edge"),
             )
         })?;
-        assert_eq!(stale_found.as_deref(), Some(target_run.as_str()));
+        let stale_found =
+            stale_found.ok_or_else(|| anyhow::anyhow!("stale target typed revision not found"))?;
+        assert_eq!(stale_found.run_id, target_run);
         let stale_current = db.with_read_transaction(|conn| {
-            read_nir1_entity_relation_revision_current(conn, "default-project", &target_run)
+            read_nir1_entity_relation_revision_current_for_revision(
+                conn,
+                "default-project",
+                &stale_found.revision_id,
+            )
         })?;
         assert!(matches!(
             stale_current,
             Nir1EntityRelationRevisionCurrentRead::Unavailable { ref reason }
                 if reason == "source-revision-changed"
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn target_lookup_keeps_exact_revision_when_newer_typed_set_shares_run() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let a = create_nir1_entity_relation_revision(
+            &db,
+            request_for_run(&db, "nir1-run", "nir1:lookup:same-run-a"),
+        )?;
+        let a_revision_id = a["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("A typed revision id missing"))?
+            .to_owned();
+        approve_typed_revision(&db, "nir1-run", &a)?;
+
+        let mut b_request = request_for_run(&db, "nir1-run", "nir1:lookup:same-run-b");
+        b_request
+            .bundle
+            .entities
+            .retain(|entity| entity.entity_id == "nir1-bob");
+        b_request.bundle.relations.clear();
+        let b = create_nir1_entity_relation_revision(&db, b_request)?;
+        let b_revision_id = b["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("B typed revision id missing"))?
+            .to_owned();
+        approve_typed_revision(&db, "nir1-run", &b)?;
+
+        let a_set_id = a["proposalSetId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("A typed proposal set id missing"))?;
+        let b_set_id = b["proposalSetId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("B typed proposal set id missing"))?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposal_sets
+                    SET created_at = '2026-09-15T00:00:00.001Z'
+                  WHERE id = ?1",
+                [a_set_id],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposal_sets
+                    SET created_at = '2026-09-15T00:00:00.002Z'
+                  WHERE id = ?1",
+                [b_set_id],
+            )?;
+            Ok(())
+        })?;
+
+        let generic = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision_current(conn, "default-project", "nir1-run")
+        })?;
+        match generic {
+            Nir1EntityRelationRevisionCurrentRead::Available(revision) => {
+                assert_eq!(revision.revision_id, b_revision_id);
+            }
+            other => anyhow::bail!("newer same-Run typed set was not current: {other:?}"),
+        }
+
+        let found = db.with_read_transaction(|conn| {
+            find_nir1_entity_relation_revision_run(conn, "default-project", "nir1-alice", None)
+        })?;
+        let found = found.ok_or_else(|| anyhow::anyhow!("A target typed revision not found"))?;
+        assert_eq!(found.run_id, "nir1-run");
+        assert_eq!(found.revision_id, a_revision_id);
+
+        let exact = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision_current_for_revision(
+                conn,
+                "default-project",
+                &found.revision_id,
+            )
+        })?;
+        match exact {
+            Nir1EntityRelationRevisionCurrentRead::Available(revision) => {
+                assert_eq!(revision.revision_id, a_revision_id);
+                assert!(revision
+                    .bundle
+                    .entities
+                    .iter()
+                    .any(|entity| entity.entity_id == "nir1-alice"));
+            }
+            other => anyhow::bail!("A target typed revision was not available: {other:?}"),
+        }
         Ok(())
     }
 
