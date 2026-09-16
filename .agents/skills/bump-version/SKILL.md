@@ -88,11 +88,11 @@ electron-builder、`app.getVersion()`、v2 release workflow の tag gate は、�
    - release commit を作成して作業ツリーが clean になった後、`/ship-branch` をbranchのpush／PR／mergeフローとして使用する。
    - ユーザーが依頼したゴールに含まれる push、PR、merge まで進める。
    - `/ship-branch` のcompleteなローカルFull、mergeability、レビュー、HEAD固定、base反映確認を満たす。
-9. **注釈付き tag をpushし、Draft Releaseを確認する**
-   - merge 後の `origin/master` を fetch し、release commit を確認する。
-   - squash前のbranch HEADに対するFull receiptは、merge後のrelease commitの証跡として再利用しない。
-   - tagを作る前に、release commitそのものをcleanなcheckout／worktreeの現在HEADにし、
-     `origin/master`とHEADがそのrelease commitを指す状態で、最初のstageからFullを再実行して検証する。
+9. **merge済みrelease goalのFull、注釈付きtag、Draft Release**
+   - tag／Draft Releaseが依頼範囲に含まれ、CIが許可され、mergeが完了した場合だけ、merge後の `origin/master` を fetch してrelease commitを確認し、release commitそのものをcleanなcheckout／worktreeの現在HEADにする。
+   - その条件を満たす場合、`origin/master`とHEADがrelease commitを指す状態で、最初のstageからFullを実行し直して直後にverifyする。squash前のbranch HEADに対するFull receiptは、merge後のrelease commitの証跡として再利用しない。
+   - local／commit-only／PR-only、またはCI明示除外の依頼ではこのStep 9のFull／verify／tag／Draft Releaseを開始せず、候補commitを保持してrelease readinessを主張しない。
+   - 上記のrelease／CI／merge条件を満たす場合だけ、次の固定値でrelease Fullと直後のverifyを実行する。
 
      ```bash
      release_base="$(git rev-parse 'origin/master^{commit}')"

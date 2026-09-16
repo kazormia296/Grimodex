@@ -263,8 +263,28 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   assert.match(createBranch, /保存先とbranch名の衝突/);
   assert.match(createBranch, /明示された新worktreeでは元checkoutのdirty状態は停止条件にせず/);
   assert.match(ship, /candidate_base.*candidate_head.*Quick.*verify/is);
+  assert.match(
+    ship,
+    /PR／releaseの証跡が依頼範囲に含まれ.*CIが許可されている場合に限り.*Quick/is,
+  );
+  assert.match(
+    ship,
+    /CI明示除外の作業ではQuickを開始せず.*merge／release readiness/is,
+  );
+  assert.match(ship, /mergeまでがゴールでCIが許可されている場合.*Full/is);
+  assert.match(ship, /CIが明示的に除外されている場合はFullとmergeを開始せず/);
+  assert.match(ship, /上記のmerge／CI条件を満たす場合だけ.*Fullと直後のverify/is);
   assert.match(bump, /release commit後.*cleanなHEAD.*Quick.*verify/is);
   assert.match(bump, /release_base.*release_head.*ci:local:full.*ci:local:verify/is);
+  assert.match(
+    bump,
+    /tag／Draft Releaseが依頼範囲に含まれ.*CIが許可され.*mergeが完了した場合だけ.*Full/is,
+  );
+  assert.match(
+    bump,
+    /local／commit-only／PR-only.*CI明示除外.*Step 9.*Full／verify／tag／Draft Releaseを開始せず.*release readiness/is,
+  );
+  assert.match(bump, /上記のrelease／CI／merge条件を満たす場合だけ.*release Fullと直後のverify/is);
 
   const nirValidationSection = normalizeSection(
     sectionFromHeading(nirPlan, "## 実装時の検証手順"),
