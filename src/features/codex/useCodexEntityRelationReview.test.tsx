@@ -144,6 +144,22 @@ describe("useCodexEntityRelationReview", () => {
     });
   });
 
+  it("passes the launcher Entity and Relation target to warm restore", async () => {
+    renderHook(() =>
+      useCodexEntityRelationReview(true, {
+        entityId: "entry-2",
+        relationId: "relation-2",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(restoreMock).toHaveBeenCalledExactlyOnceWith("p1", "/w", {
+        entityId: "entry-2",
+        relationId: "relation-2",
+      }),
+    );
+  });
+
   it("prepares a new revision after an unavailable cold restore with no result", async () => {
     restoreMock.mockResolvedValue({
       runId: "old-typed-run",
@@ -182,6 +198,34 @@ describe("useCodexEntityRelationReview", () => {
       status: "unavailable",
       result: null,
       receipt: typedPrepareResult("new-typed-run").receipt,
+    });
+  });
+
+  it("exposes an initial Prepare rejection and allows an intentional retry", async () => {
+    prepareMock
+      .mockRejectedValueOnce(new Error("Native prepare rejected"))
+      .mockResolvedValueOnce(typedPrepareResult("retried-typed-run"));
+    readCurrentMock.mockResolvedValue({
+      status: "unavailable",
+      result: { reason: "typed-review-evidence-unavailable" },
+    });
+    const { result } = renderHook(() => useCodexEntityRelationReview(true));
+
+    await act(async () => {
+      await result.current.prepareTypedReview(prepareArgs());
+    });
+    expect(result.current.typedReview).toBeNull();
+    expect(result.current.typedDecisionError).toBe("Native prepare rejected");
+    expect(result.current.typedPrepareBusy).toBe(false);
+
+    await act(async () => {
+      await result.current.prepareTypedReview(prepareArgs());
+    });
+    expect(prepareMock).toHaveBeenCalledTimes(2);
+    expect(result.current.typedDecisionError).toBeNull();
+    expect(result.current.typedReview).toMatchObject({
+      runId: "retried-typed-run",
+      status: "unavailable",
     });
   });
 

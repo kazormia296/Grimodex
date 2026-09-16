@@ -139,4 +139,142 @@ describe("direct Option B Entity/Relation preparation", () => {
       runId: "typed-run",
     });
   });
+
+  it("restores only a Run matching the launcher Entity target", async () => {
+    listRunsMock.mockResolvedValue([
+      {
+        runId: "entity-a-run",
+        projectId: "p1",
+        surfacePathId: "nir1/entity-relation-review",
+      },
+      {
+        runId: "entity-b-run",
+        projectId: "p1",
+        surfacePathId: "nir1/entity-relation-review",
+      },
+    ]);
+    readCurrentMock
+      .mockResolvedValueOnce({
+        status: "available",
+        result: { entities: [{ entityId: "entity-a" }], relations: [] },
+      })
+      .mockResolvedValueOnce({
+        status: "draft",
+        result: { entities: [{ entityId: "entity-b" }], relations: [] },
+      });
+
+    await expect(
+      restoreCodexEntityRelationReview("p1", "/w", {
+        entityId: "entity-b",
+      }),
+    ).resolves.toMatchObject({ runId: "entity-b-run" });
+    expect(readCurrentMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the Relation target when a launcher opens a relation review", async () => {
+    listRunsMock.mockResolvedValue([
+      {
+        runId: "relation-a-run",
+        projectId: "p1",
+        surfacePathId: "nir1/entity-relation-review",
+      },
+      {
+        runId: "relation-b-run",
+        projectId: "p1",
+        surfacePathId: "nir1/entity-relation-review",
+      },
+    ]);
+    readCurrentMock
+      .mockResolvedValueOnce({
+        status: "available",
+        result: {
+          entities: [{ entityId: "entity-a" }, { entityId: "entity-b" }],
+          relations: [{ edgeId: "relation-a" }],
+        },
+      })
+      .mockResolvedValueOnce({
+        status: "available",
+        result: {
+          entities: [{ entityId: "entity-a" }, { entityId: "entity-b" }],
+          relations: [{ edgeId: "relation-b" }],
+        },
+      });
+
+    await expect(
+      restoreCodexEntityRelationReview("p1", "/w", {
+        entityId: "entity-b",
+        relationId: "relation-b",
+      }),
+    ).resolves.toMatchObject({ runId: "relation-b-run" });
+    expect(readCurrentMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("prefers a later matching review over an unavailable restore fallback", async () => {
+    listRunsMock.mockResolvedValue([
+      {
+        runId: "stale-run",
+        projectId: "p1",
+        surfacePathId: "nir1/entity-relation-review",
+      },
+      {
+        runId: "entity-b-run",
+        projectId: "p1",
+        surfacePathId: "nir1/entity-relation-review",
+      },
+    ]);
+    readCurrentMock
+      .mockResolvedValueOnce({
+        status: "unavailable",
+        result: { reason: "revision-restore-invalidated" },
+      })
+      .mockResolvedValueOnce({
+        status: "draft",
+        result: { entities: [{ entityId: "entity-b" }], relations: [] },
+      });
+
+    await expect(
+      restoreCodexEntityRelationReview("p1", "/w", {
+        entityId: "entity-b",
+      }),
+    ).resolves.toMatchObject({
+      runId: "entity-b-run",
+      response: { status: "draft" },
+    });
+  });
+
+  it("keeps the first unavailable restore reason when no target Run matches", async () => {
+    listRunsMock.mockResolvedValue([
+      {
+        runId: "stale-run",
+        projectId: "p1",
+        surfacePathId: "nir1/entity-relation-review",
+      },
+      {
+        runId: "entity-a-run",
+        projectId: "p1",
+        surfacePathId: "nir1/entity-relation-review",
+      },
+    ]);
+    readCurrentMock
+      .mockResolvedValueOnce({
+        status: "unavailable",
+        result: { reason: "revision-restore-invalidated" },
+      })
+      .mockResolvedValueOnce({
+        status: "available",
+        result: { entities: [{ entityId: "entity-a" }], relations: [] },
+      });
+
+    await expect(
+      restoreCodexEntityRelationReview("p1", "/w", {
+        entityId: "entity-b",
+      }),
+    ).resolves.toMatchObject({
+      runId: "stale-run",
+      response: {
+        status: "unavailable",
+        result: { reason: "revision-restore-invalidated" },
+      },
+    });
+  });
 });

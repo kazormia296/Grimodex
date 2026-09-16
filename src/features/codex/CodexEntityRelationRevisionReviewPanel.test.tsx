@@ -161,4 +161,20 @@ describe("CodexEntityRelationRevisionReviewPanel", () => {
     fireEvent.click(screen.getByTestId("nir1-typed-replace"));
     expect(onReplace).toHaveBeenCalledTimes(1);
   });
+
+  it("offers a separate new-input path without changing the existing review", () => {
+    const onStartNew = vi.fn();
+    render(
+      <CodexEntityRelationRevisionReviewPanel
+        status="available"
+        runId="run-1"
+        result={sampleResult()}
+        decision="approved"
+        onStartNew={onStartNew}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("nir1-typed-start-new"));
+    expect(onStartNew).toHaveBeenCalledOnce();
+  });
 });

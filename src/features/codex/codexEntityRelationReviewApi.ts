@@ -30,6 +30,32 @@ export interface CodexEntityRelationReviewRestore {
   readonly response: Nir1EntityRelationRevisionCurrentReadResponse;
 }
 
+/**
+ * The launcher target is used only to select a matching durable Run during a
+ * warm restore. Native includes both Relation endpoint Entities in the review
+ * projection, so both the launcher Entity and optional Relation must match.
+ */
+export interface CodexEntityRelationReviewRestoreTarget {
+  readonly entityId: string;
+  readonly relationId?: string | null;
+}
+
+function matchesRestoreTarget(
+  response: Nir1EntityRelationRevisionCurrentReadResponse,
+  target: CodexEntityRelationReviewRestoreTarget,
+): boolean {
+  if (response.status === "unavailable") return false;
+  const entityMatches = response.result.entities.some(
+    (entity) => entity.entityId === target.entityId,
+  );
+  const relationMatches =
+    !target.relationId ||
+    response.result.relations.some(
+      (relation) => relation.edgeId === target.relationId,
+    );
+  return entityMatches && relationMatches;
+}
+
 function exactIdList(values: readonly string[]): string[] {
   return [...new Set(values)]
     .filter(
@@ -102,12 +128,14 @@ export async function prepareCodexEntityRelationReview(
 export async function restoreCodexEntityRelationReview(
   projectId: string,
   workspacePath: string,
+  target?: CodexEntityRelationReviewRestoreTarget,
 ): Promise<CodexEntityRelationReviewRestore | null> {
   const summaries = await narrativeExtractionListResumableRuns({
     projectId,
     surfacePathId: NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
     limit: 8,
   });
+  let unavailableFallback: CodexEntityRelationReviewRestore | null = null;
   for (const summary of summaries) {
     if (
       summary.projectId !== projectId ||
@@ -120,9 +148,14 @@ export async function restoreCodexEntityRelationReview(
       projectId,
       runId: summary.runId,
     });
+    if (target && response.status === "unavailable") {
+      unavailableFallback ??= { runId: summary.runId, response };
+      continue;
+    }
+    if (target && !matchesRestoreTarget(response, target)) continue;
     return { runId: summary.runId, response };
   }
-  return null;
+  return unavailableFallback;
 }
 
 export interface CodexEntityRelationReviewReplacementInput {

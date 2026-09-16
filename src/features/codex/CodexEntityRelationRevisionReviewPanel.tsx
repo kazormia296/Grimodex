@@ -21,6 +21,7 @@ export interface CodexEntityRelationRevisionReviewPanelProps {
   readonly error?: string | null;
   readonly onDecision?: (decision: CodexEntityRelationReviewDecision) => void;
   readonly onReplace?: () => void;
+  readonly onStartNew?: () => void;
 }
 
 function statusLabel(
@@ -46,6 +47,7 @@ export function CodexEntityRelationRevisionReviewPanel({
   error = null,
   onDecision,
   onReplace,
+  onStartNew,
 }: CodexEntityRelationRevisionReviewPanelProps) {
   const entityLabels = new Map(
     result?.entities.map((entity) => [entity.entityId, entity.label]) ?? [],
@@ -174,6 +176,19 @@ export function CodexEntityRelationRevisionReviewPanel({
           busy={busy}
           onDecision={onDecision}
         />
+      )}
+      {result && onStartNew && (
+        <div className="flex flex-wrap gap-2 border-t border-border/60 pt-2">
+          <button
+            type="button"
+            className="rounded border border-input px-3 py-1.5 text-xs disabled:opacity-50"
+            onClick={onStartNew}
+            disabled={busy}
+            data-testid="nir1-typed-start-new"
+          >
+            新しい入力を準備
+          </button>
+        </div>
       )}
       {status === "unavailable" && result && onReplace && (
         <div className="mt-auto flex flex-wrap gap-2 border-t border-border/60 pt-2">

@@ -107,7 +107,10 @@ export function CodexEntityRelationReviewDialog({
     handleTypedDecision,
     replaceTypedReview,
     clearTypedReview,
-  } = useCodexEntityRelationReview(open);
+  } = useCodexEntityRelationReview(open, {
+    entityId: entry.id,
+    relationId: initialRelationId,
+  });
 
   const scenes = useMemo(
     () =>
@@ -255,6 +258,7 @@ export function CodexEntityRelationReviewDialog({
       typedDecisionError={typedDecisionError}
       onDecision={(decision) => void handleTypedDecision(decision)}
       onReplace={() => void replaceTypedReview()}
+      onStartNew={() => clearTypedReview()}
       onPrepare={() => void prepare()}
     />
   );

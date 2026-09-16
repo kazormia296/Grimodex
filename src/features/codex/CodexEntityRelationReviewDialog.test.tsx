@@ -10,7 +10,7 @@ const { listRelationsMock, reviewState, codexState, treeState, sceneNodes } =
       typedReview: null,
       typedDecisionBusy: false,
       typedPrepareBusy: false,
-      typedDecisionError: null,
+      typedDecisionError: null as string | null,
       prepareTypedReview: vi.fn(),
       handleTypedDecision: vi.fn(),
       replaceTypedReview: vi.fn(),
@@ -78,6 +78,7 @@ describe("CodexEntityRelationReviewDialog", () => {
     codexState.entries = [entry];
     listRelationsMock.mockResolvedValue([]);
     reviewState.typedReview = null;
+    reviewState.typedDecisionError = null;
   });
 
   it("opens the direct typed preparation surface without a render loop", async () => {
@@ -121,6 +122,72 @@ describe("CodexEntityRelationReviewDialog", () => {
     expect(prepare).toBeInTheDocument();
     fireEvent.click(prepare);
     expect(reviewState.prepareTypedReview).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a rejected initial Prepare reason in the dialog and leaves Prepare retryable", async () => {
+    reviewState.typedDecisionError =
+      "NIR1_ENTITY_RELATION_PREPARE_ENTITY_MISSING";
+    render(
+      <CodexEntityRelationReviewDialog
+        entry={entry}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "NIR1_ENTITY_RELATION_PREPARE_ENTITY_MISSING",
+    );
+    const prepare = screen.getByTestId("nir1-typed-prepare");
+    fireEvent.click(prepare);
+    fireEvent.click(prepare);
+    expect(reviewState.prepareTypedReview).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets a matching restored review switch to a new input without touching its decision", async () => {
+    reviewState.typedReview = {
+      runId: "approved-a-run",
+      status: "available",
+      result: {
+        projectId: "p1",
+        runId: "approved-a-run",
+        proposalSetId: "set-a",
+        proposalId: "proposal-a",
+        revisionId: "revision-a",
+        sceneId: "scene-1",
+        entities: [
+          {
+            entityId: "entry-1",
+            entityType: "character",
+            label: "主人公",
+            evidence: [],
+          },
+        ],
+        relations: [],
+      },
+      decision: "approved",
+      receipt: {
+        proposalSetId: "set-a",
+        proposalId: "proposal-a",
+        revisionId: "revision-a",
+        status: "unreviewed",
+      },
+      unavailableReason: null,
+    } as never;
+    render(
+      <CodexEntityRelationReviewDialog
+        entry={entry}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByTestId("nir1-entity-relation-review-panel"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("nir1-typed-start-new"));
+    expect(reviewState.clearTypedReview).toHaveBeenCalledOnce();
+    expect(reviewState.handleTypedDecision).not.toHaveBeenCalled();
   });
 
   it("bounds selection proposal payloads and separates recovery attempts", () => {

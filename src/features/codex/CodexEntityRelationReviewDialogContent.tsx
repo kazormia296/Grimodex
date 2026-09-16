@@ -33,6 +33,7 @@ export interface CodexEntityRelationReviewDialogContentProps {
   readonly typedDecisionError: string | null;
   readonly onDecision: (decision: Nir1EntityRelationHumanDecision) => void;
   readonly onReplace: () => void;
+  readonly onStartNew: () => void;
   readonly onPrepare: () => void;
 }
 
@@ -56,6 +57,7 @@ export function CodexEntityRelationReviewDialogContent({
   typedDecisionError,
   onDecision,
   onReplace,
+  onStartNew,
   onPrepare,
 }: CodexEntityRelationReviewDialogContentProps) {
   // A cold current-read may know the durable Run but not be allowed to
@@ -88,6 +90,7 @@ export function CodexEntityRelationReviewDialogContent({
             error={typedDecisionError}
             onDecision={onDecision}
             onReplace={onReplace}
+            onStartNew={onStartNew}
           />
         )}
         {!typedReview || coldUnavailableWithoutResult ? (
@@ -103,6 +106,7 @@ export function CodexEntityRelationReviewDialogContent({
             setSelectedRelationIds={setSelectedRelationIds}
             selectionError={
               selectionError ??
+              typedDecisionError ??
               (!projectMatches
                 ? "Project bindingが一致しないため準備できません"
                 : null)

@@ -13,6 +13,7 @@ import {
   prepareCodexEntityRelationReview,
   replacementPrepareInput,
   restoreCodexEntityRelationReview,
+  type CodexEntityRelationReviewRestoreTarget,
 } from "./codexEntityRelationReviewApi";
 import {
   decideNir1EntityRelationRevision,
@@ -126,6 +127,7 @@ export interface UseCodexEntityRelationReviewResult {
 
 export function useCodexEntityRelationReview(
   open: boolean,
+  restoreTarget?: CodexEntityRelationReviewRestoreTarget,
 ): UseCodexEntityRelationReviewResult {
   const projectId = useCurrentProjectId();
   const activeWorkspacePath = useWorkspaceStore(
@@ -134,6 +136,8 @@ export function useCodexEntityRelationReview(
   const workspaceOpenRevision = useWorkspaceStore(
     (state) => state.workspaceOpenRevision,
   );
+  const restoreEntityId = restoreTarget?.entityId ?? null;
+  const restoreRelationId = restoreTarget?.relationId ?? null;
   const [typedReview, setTypedReview] = useState<TypedReviewSession | null>(
     null,
   );
@@ -194,6 +198,12 @@ export function useCodexEntityRelationReview(
     void restoreCodexEntityRelationReview(
       context.projectId,
       context.workspacePath,
+      restoreEntityId
+        ? {
+            entityId: restoreEntityId,
+            relationId: restoreRelationId,
+          }
+        : undefined,
     )
       .then((restored) => {
         if (!restored) return;
@@ -228,6 +238,8 @@ export function useCodexEntityRelationReview(
     nextGeneration,
     open,
     projectId,
+    restoreEntityId,
+    restoreRelationId,
     workspaceOpenRevision,
   ]);
 
