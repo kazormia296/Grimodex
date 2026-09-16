@@ -180,6 +180,7 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   const ship = await read(".agents/skills/ship-branch/SKILL.md");
   const bump = await read(".agents/skills/bump-version/SKILL.md");
   const runbook = await read("docs/local-ci-runner.md");
+  const nirPlan = await read("docs/plans/nir1-l6-l9-execution-plan.md");
 
   const assertOrder = (text, labels) => {
     let previous = -1;
@@ -245,12 +246,48 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   }
   assert.match(runbook, /durable ID.*corresponding UI\s*projection before editing/is);
   assert.match(runbook, /selector.*ready signal/);
+  assert.match(
+    bump,
+    /PR／releaseの証跡が依頼範囲に含まれ.*CIが許可されている場合だけ/is,
+  );
+  assert.match(
+    bump,
+    /commit-onlyまたはCI明示除外.*Quickを開始せず.*merge／release readiness/is,
+  );
+  assert.match(
+    bump,
+    /commit／PRを依頼していない場合はQuickのためだけにcommitを作らず.*CIも開始しない/is,
+  );
   assert.match(createBranch, /git worktree add -b/);
   assert.match(createBranch, /保存先とbranch名の衝突/);
   assert.match(createBranch, /明示された新worktreeでは元checkoutのdirty状態は停止条件にせず/);
   assert.match(ship, /candidate_base.*candidate_head.*Quick.*verify/is);
   assert.match(bump, /release commit後.*cleanなHEAD.*Quick.*verify/is);
   assert.match(bump, /release_base.*release_head.*ci:local:full.*ci:local:verify/is);
+
+  const nirValidationSection = normalizeSection(
+    sectionFromHeading(nirPlan, "## 実装時の検証手順"),
+  );
+  assertOrder(nirValidationSection, [
+    ["NIR focused validation", /候補commit前のfocused検証/],
+    ["NIR candidate commit", /commitが依頼範囲に含まれる場合/],
+    ["NIR clean candidate", /cleanな候補HEAD/],
+    ["NIR Quick", /候補commit後のPR用Quick/],
+    ["NIR immediate verify", /ci:local:verify -- quick.*candidate_head/is],
+  ]);
+  assert.match(
+    nirValidationSection,
+    /PR／releaseの証跡が依頼されCIが許可された場合だけQuickと直後verifyを実行/is,
+  );
+  assert.match(
+    nirValidationSection,
+    /commit-onlyまたはCI明示除外の作業ではQuickを開始せず/is,
+  );
+  assert.doesNotMatch(
+    nirPlan,
+    /pnpm ci:local:quick -- --base origin\/master --head HEAD/,
+    "NIR current instructions must not run Quick against the pre-commit dirty HEAD",
+  );
 });
 
 test("high-risk work keeps threat models user-confirmed and candidate evidence reproducible", async () => {
@@ -1231,10 +1268,14 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   }
   for (const command of [
     "pnpm verify:quality",
-    "pnpm ci:local:quick -- --base origin/master --head HEAD",
-    "pnpm ci:local:verify -- quick --base origin/master --head HEAD",
-    "pnpm ci:local:full -- --base origin/master --head HEAD",
-    "pnpm ci:local:verify -- full --base origin/master --head HEAD",
+    "candidate_base=\"$(git rev-parse 'origin/master^{commit}')\"",
+    "candidate_head=\"$(git rev-parse 'HEAD^{commit}')\"",
+    "pnpm ci:local:quick -- --base \"$candidate_base\" --head \"$candidate_head\"",
+    "pnpm ci:local:verify -- quick --base \"$candidate_base\" --head \"$candidate_head\"",
+    "full_base=\"$(git rev-parse 'origin/master^{commit}')\"",
+    "full_head=\"$(git rev-parse 'HEAD^{commit}')\"",
+    "pnpm ci:local:full -- --base \"$full_base\" --head \"$full_head\"",
+    "pnpm ci:local:verify -- full --base \"$full_base\" --head \"$full_head\"",
   ]) {
     assert.match(
       executionPlan,

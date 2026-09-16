@@ -221,16 +221,28 @@ retrievalの比較armは `R / R+IR / R+IR+Graph` とし、Graph改善は `R+IR` 
 
 全PR（R0、途中の機能PR、E、Pを含む）のmergeには、最新 `origin/master` を取り込んだcleanなcommit済みcandidate、Full、直後のverifyを要求する。baseまたはHEADが変わった場合はFullをstage 1から再実行し、古いreceiptを再利用しない。R0の機能受入れは文書・品質契約に限定するが、R0もmerge gate Mの対象であり、merge前にはFull＋verifyを実行する。R0の機能受入れではruntime journeyとactivationを実行しない。
 
-完成commit前のcanonical commandは次のとおりで、R0のfocused test後に実行する。
+候補commit前のfocused検証は次のとおりで、R0のfocused test後に実行する。
 
     pnpm verify:quality
-    pnpm ci:local:quick -- --base origin/master --head HEAD
-    pnpm ci:local:verify -- quick --base origin/master --head HEAD
+
+commitが依頼範囲に含まれる場合はCI許可の有無にかかわらず候補commitを作成し、cleanな候補HEADで
+`candidate_base`／`candidate_head`を一度だけ解決する。PR／releaseの証跡が依頼されCIが許可された場合だけQuickと直後verifyを実行し、
+commit-onlyまたはCI明示除外の作業ではQuickを開始せず候補commitを保持してmerge／release readinessを主張しない。候補変更後は旧receiptを再利用しない。
+commit／PRを依頼されていない調査・計画ではcommitもCIも開始せず、working-treeの評価は診断専用とする。
+
+候補commit後のPR用Quick:
+
+    candidate_base="$(git rev-parse 'origin/master^{commit}')"
+    candidate_head="$(git rev-parse 'HEAD^{commit}')"
+    pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
+    pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
 
 merge前のMは次のとおりで、rootの受入れ担当が候補をfreezeした後に実行する。
 
-    pnpm ci:local:full -- --base origin/master --head HEAD
-    pnpm ci:local:verify -- full --base origin/master --head HEAD
+    full_base="$(git rev-parse 'origin/master^{commit}')"
+    full_head="$(git rev-parse 'HEAD^{commit}')"
+    pnpm ci:local:full -- --base "$full_base" --head "$full_head"
+    pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"
 
 candidateのbase・head・tree・clean state・receipt directoryは境界時点で記録する。各ステップで同じSHAを過度に照合することや、receiptの見た目だけで承認を推定することはしない。
 
@@ -474,16 +486,28 @@ Graphでは巨大frontier、単一巨大行、allocation前検査、JSON/materia
 
 freeze後にfindingが出た場合は候補を再開し、関連receiptを無効化して再検証する。候補未編集の独立受入れ担当を置く。
 
-完成commit前:
+候補commit前のfocused検証:
 
     pnpm verify:quality
-    pnpm ci:local:quick -- --base origin/master --head HEAD
-    pnpm ci:local:verify -- quick --base origin/master --head HEAD
+
+commitが依頼範囲に含まれる場合はCI許可の有無にかかわらず、focused検証後に候補commitを作成し、cleanな候補HEADで
+`candidate_base`／`candidate_head`を一度だけ解決する。PR／releaseの証跡が依頼されCIが許可された場合だけQuickと直後verifyを実行し、
+commit-onlyまたはCI明示除外の作業ではQuickを開始せず候補commitを保持してmerge／release readinessを主張しない。候補変更後は旧receiptを再利用しない。
+commit／PRを依頼されていない調査・計画ではcommitもCIも開始せず、working-treeの評価は診断専用とする。
+
+候補commit後のPR用Quick:
+
+    candidate_base="$(git rev-parse 'origin/master^{commit}')"
+    candidate_head="$(git rev-parse 'HEAD^{commit}')"
+    pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
+    pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
 
 L9受入れ・merge前:
 
-    pnpm ci:local:full -- --base origin/master --head HEAD
-    pnpm ci:local:verify -- full --base origin/master --head HEAD
+    full_base="$(git rev-parse 'origin/master^{commit}')"
+    full_head="$(git rev-parse 'HEAD^{commit}')"
+    pnpm ci:local:full -- --base "$full_base" --head "$full_head"
+    pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"
 
 baseまたはHEADが変わった場合、古いreceiptを流用せずFullをstage 1から再実行する。初回static draftではruntime journey・activation・merge gate MのFull／verifyを実施していないと記録したが、これは現在候補の免除ではない。初回static draftの旧R0候補で実施済みだった `verify:quality`、Quick、直後のQuick verifyを本版で無効化し、再開候補で再実施する記録だった。今後の実装候補は全PR共通 merge gate Mの対象であり、merge前のclean HEADでFull＋直後verifyが必須である。runtime journey・activationはR0の機能受入れ範囲外である。
 
