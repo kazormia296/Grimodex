@@ -291,11 +291,22 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     contracts: ["codex:entity-relation-review-apply-reopen"],
     capabilities: ["electron", "napi"],
     description:
-      "production Codex Structure Extract evidence review -> Apply -> dedicated Entity/Relation typed approval -> cold reopen",
+      "normal Codex entry creation -> typed Entity/Relation relation selection -> direct scope/material -> Native evidence review -> explicit approval -> target-bound cold reopen",
   },
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
   ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
 ]);
+
+/**
+ * The A2 Entity/Relation journey is also runnable as an isolated Heavy
+ * evaluation. Keep the subset catalog explicit so its required IDs and
+ * catalog digest describe the one journey that actually ran.
+ */
+export const NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG = freezeEntries(
+  PRODUCT_JOURNEY_CATALOG.filter(
+    ({ id }) => id === "codex-entity-relation-review-apply-reopen",
+  ),
+);
 
 /**
  * Bind acceptance evidence to the exact catalog that selected and executed
@@ -314,6 +325,9 @@ export function digestProductJourneyCatalog(catalog) {
 export const PRODUCT_JOURNEY_CATALOG_DIGEST = digestProductJourneyCatalog(
   PRODUCT_JOURNEY_CATALOG,
 );
+
+export const NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG_DIGEST =
+  digestProductJourneyCatalog(NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG);
 
 /**
  * Known coverage gaps remain explicit. Entries move into

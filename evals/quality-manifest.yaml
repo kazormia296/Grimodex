@@ -15,6 +15,7 @@ lightSuites:
   - narrative-runtime
   - narrative-extraction
   - narrative-semantic-contract
+  - nir1-entity-relation-review
 requirements:
   - id: GDX-ROUTE-001
     title: Every production AI route is registered, routed, and assigned a verifier.
@@ -254,6 +255,25 @@ requirements:
       - electron/scripts/c2zc-canonical-product-journey.mjs
       - electron/scripts/product-journeys.mjs
       - electron/scripts/product-journey-shards.mjs
+      - electron/scripts/codex-entity-relation-product-journey.mjs
+      - electron/scripts/product-journey-catalog.mjs
+      - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/product-journey-backlog.test.mjs
+      - scripts/product-journey-impact.test.mjs
+      - electron/shared/nir1EntityRelationIpcContract.test.ts
+      - electron/main/ipc.ts
+      - electron/main/profileEgress.ts
+      - src/features/codex/CodexEntityRelationReviewDialog.tsx
+      - src/features/codex/CodexEntityRelationReviewSelectors.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewDecisionControls.tsx
+      - src/features/codex/codexEntityRelationReviewApi.ts
+      - src/features/codex/useCodexEntityRelationReview.ts
+      - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.ts
+      - src/lib/tauri.ts
+      - electron/native/grimodex-node/index.d.ts
+      - electron/native/grimodex-node/src/lib.rs
+      - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/validate-run-kind-policy.test.mjs
@@ -268,6 +288,16 @@ requirements:
       - scripts/c2-5b-product-journeys.test.mjs
       - scripts/c2zc-product-journeys.test.mjs
       - electron/scripts/product-journey-shards.test.mjs
+      - scripts/codex-entity-relation-product-journey.test.mjs
+      - electron/shared/nir1EntityRelationIpcContract.test.ts
+      - electron/main/ipc.test.ts
+      - electron/main/profileEgress.test.ts
+      - src/features/codex/CodexEntityRelationReviewDialog.test.tsx
+      - src/features/codex/CodexEntityRelationReviewDialog.integration.test.tsx
+      - src/features/codex/codexEntityRelationReviewApi.test.ts
+      - src/features/codex/useCodexEntityRelationReview.test.tsx
+      - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.test.ts
+      - src/lib/tauri.electron.test.ts
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:
@@ -282,6 +312,7 @@ requirements:
       - eval-policy-propose-body
       - eval-policy-delete-relation
       - eval-narrative-runtime-authority-fail-closed
+      - eval-nir1-entity-relation-review
   - id: GDX-GROUND-001
     title: Answers and prompts preserve current, attributable grounding.
     definedIn: policies/quality/iron-laws.md#GDX-GROUND-001
@@ -371,6 +402,20 @@ requirements:
       - experiments/lfm25-encoder-phase0/data/public/gate4/provenance.json
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
       - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
+      - src/features/codex/CodexEntityRelationReviewDialog.tsx
+      - src/features/codex/CodexEntityRelationReviewDialogContent.tsx
+      - src/features/codex/CodexEntityRelationReviewDialogFooter.tsx
+      - src/features/codex/CodexEntityRelationReviewSelectors.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewDecisionControls.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewPanel.tsx
+      - src/features/codex/codexEntityRelationReviewApi.ts
+      - src/features/codex/useCodexEntityRelationReview.ts
+      - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.ts
+      - src/lib/tauri.ts
+      - electron/native/grimodex-node/index.d.ts
+      - electron/native/grimodex-node/src/lib.rs
+      - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/quality-workflow.test.mjs
@@ -382,6 +427,18 @@ requirements:
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
+      - src/features/codex/CodexEntityRelationReviewDialog.test.tsx
+      - src/features/codex/CodexEntityRelationReviewDialog.integration.test.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewPanel.test.tsx
+      - src/features/codex/codexEntityRelationReviewApi.test.ts
+      - src/features/codex/useCodexEntityRelationReview.test.tsx
+      - src/features/codex/components/CodexTypedRelationsSection.test.tsx
+      - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.test.ts
+      - src/lib/tauri.electron.test.ts
+      - electron/main/ipc.test.ts
+      - electron/main/profileEgress.test.ts
+      - electron/shared/nir1EntityRelationIpcContract.test.ts
+      - scripts/codex-entity-relation-product-journey.test.mjs
     heavyTests:
       - src-tauri/src/commands/post_effect.rs
       - src/features/codex/candidateJudgment.live.test.ts
@@ -393,6 +450,7 @@ requirements:
       - eval-policy-create-snippet
       - eval-policy-apply-tree
       - eval-prompt-post-effect-json
+      - eval-nir1-entity-relation-review
   - id: GDX-NARR-EVAL-001
     title: Narrative evaluations preserve versioned Human Gold, replay provenance, and failure state.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-EVAL-001
@@ -702,6 +760,32 @@ requirements:
       - electron/main/narrativeMaintenanceTriggers.test.ts
       - electron/main/foregroundBarrierRelease.test.ts
       - scripts/quality/validate-execution-state-authority.mjs
+      - src/features/codex/CodexEntityRelationReviewDialog.tsx
+      - src/features/codex/CodexEntityRelationReviewDialogContent.tsx
+      - src/features/codex/CodexEntityRelationReviewDialogFooter.tsx
+      - src/features/codex/CodexEntityRelationReviewSelectors.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewDecisionControls.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewPanel.tsx
+      - src/features/codex/codexEntityRelationReviewApi.ts
+      - src/features/codex/useCodexEntityRelationReview.ts
+      - src/features/codex/components/CodexTypedRelationsSection.tsx
+      - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.ts
+      - src/lib/tauri.ts
+      - electron/main/ipc.ts
+      - electron/main/profileEgress.ts
+      - electron/native/grimodex-node/index.d.ts
+      - electron/native/grimodex-node/src/lib.rs
+      - electron/shared/ipcContract.ts
+      - electron/shared/nir1EntityRelationIpcContract.test.ts
+      - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
+      - electron/scripts/codex-entity-relation-product-journey.mjs
+      - electron/scripts/product-journey-catalog.mjs
+      - electron/scripts/product-journey-shards.mjs
+      - electron/scripts/product-journeys.mjs
+      - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/product-journey-backlog.test.mjs
+      - scripts/product-journey-impact.test.mjs
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/validate-narrative-ir-contract.test.mjs
@@ -745,10 +829,25 @@ requirements:
       - scripts/quality/impact-map.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
+      - src/features/codex/CodexEntityRelationReviewDialog.test.tsx
+      - src/features/codex/CodexEntityRelationReviewDialog.integration.test.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewPanel.test.tsx
+      - src/features/codex/codexEntityRelationReviewApi.test.ts
+      - src/features/codex/useCodexEntityRelationReview.test.tsx
+      - src/features/codex/components/CodexTypedRelationsSection.test.tsx
+      - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.test.ts
+      - src/lib/tauri.electron.test.ts
+      - electron/main/ipc.test.ts
+      - electron/main/profileEgress.test.ts
+      - electron/shared/ipcContract.test.ts
+      - electron/shared/nir1EntityRelationIpcContract.test.ts
+      - electron/scripts/product-journey-shards.test.mjs
+      - scripts/codex-entity-relation-product-journey.test.mjs
     heavyTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     evaluatedBy:
       - eval-narrative-replay-provenance
+      - eval-nir1-entity-relation-review
   - id: GDX-NARR-COVERAGE-001
     title: Partial Narrative coverage cannot support absence or completion claims.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-COVERAGE-001
@@ -917,11 +1016,18 @@ requirements:
       - .agents/skills/rerun-sandbox-eperm/SKILL.md
       - .agents/skills/ship-branch/SKILL.md
       - .agents/skills/bump-version/SKILL.md
+      - .agents/skills/debug-issue/SKILL.md
+      - .agents/skills/test-feature/SKILL.md
+      - docs/local-ci-runner.md
       - scripts/local-ci.mjs
       - scripts/local-ci-registry.json
       - scripts/local-ci-runner.mjs
       - scripts/local-ci-process-supervisor.mjs
       - scripts/quality/impact-map.mjs
+      - scripts/quality/impact-map.test.mjs
+      - evals/impact-map.yaml
+      - src/lib/tauri.ts
+      - src/lib/tauri.electron.test.ts
       - scripts/quality/certify-gate-b2.mjs
       - scripts/quality/quality-evaluation-runtime.mjs
       - scripts/quality/run-live-model-qualification.mjs
@@ -930,8 +1036,18 @@ requirements:
       - evals/qualifications/schemas/live-model-qualification-v1.schema.json
       - evals/impact-map.yaml
       - electron/scripts/narrative-maintenance-product-journeys.mjs
+      - electron/scripts/codex-entity-relation-product-journey.mjs
+      - electron/scripts/product-journey-catalog.mjs
       - electron/scripts/product-journeys.mjs
       - electron/scripts/product-journey-shards.mjs
+      - electron/scripts/product-journey-shards.test.mjs
+      - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/product-journey-backlog.test.mjs
+      - scripts/product-journey-impact.test.mjs
+      - electron/scripts/product-journey-impact.mjs
+      - scripts/electron-product-journeys.test.mjs
+      - package.json
+      - scripts/local-ci-registry.json
       - src/features/ai-verification/aiPathRegistry.ts
       - docs/Grimodex_Semantic_Reranker_Shadow_Impact_Matrix.md
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE2_RESULTS.md
@@ -954,11 +1070,13 @@ requirements:
       - scripts/quality/impact-map.test.mjs
       - scripts/quality/certify-gate-b2.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
+      - src/lib/tauri.electron.test.ts
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
       - scripts/product-journey-phase1.test.mjs
       - scripts/c2-5b-product-journeys.test.mjs
       - electron/scripts/product-journey-shards.test.mjs
+      - scripts/electron-product-journeys.test.mjs
       - scripts/semantic-reranker-release.test.mjs
       - scripts/quality/validate-narrative-writers.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
@@ -974,11 +1092,16 @@ requirements:
       - eval-prompt-post-effect-json
       - eval-route-search-scenes
       - eval-narrative-runtime-authority-fail-closed
+      - eval-nir1-entity-relation-review
 heavyEvaluations:
   - id: heavy-nir1-raw-retrieval-baseline
     suiteId: retrieval-grounding
     command: node scripts/quality/run-nir1-retrieval.mjs
     reason: Actual Electron Raw baseline only; requires independently frozen NIR-1 expectations, the pinned local ja/en ONNX artifacts in NIR1_JA_MODEL/NIR1_EN_MODEL, standard build receipt in NIR1_BUILD_RECEIPT, and a display. Missing prerequisites are blocked; this does not accept IR, Graph, Packing or author value.
+  - id: heavy-nir1-entity-relation-product-journey
+    suiteId: nir1-entity-relation-review
+    command: GRIMODEX_PRODUCT_JOURNEY_SET=nir1-entity-relation-review pnpm electron:product-journeys
+    reason: Runs the real Electron Entity/Relation review, explicit approval, and target-bound cold-reopen journey. It is a Heavy product evaluation separate from Light contract tests; missing build, display, or native prerequisites remain deferred or blocked and do not activate Graph, Packing, or AI dispatch.
   - id: heavy-c2-5b-narrative-maintenance-product-journeys
     suiteId: narrative-runtime
     command: GRIMODEX_PRODUCT_JOURNEY_SET=c2-5b pnpm electron:product-journeys

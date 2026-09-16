@@ -11,6 +11,7 @@ import { rootDir } from "./build.mjs";
 import {
   digestProductJourneyCatalog,
   NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+  NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG_DIGEST,
 } from "./product-journey-catalog.mjs";
@@ -532,7 +533,28 @@ export function resolveProductJourneySet(
   if (name === undefined || name === "") return PRODUCT_JOURNEYS;
   if (name === "c2-5b") return NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS;
   if (name === "c2-zc") return NARRATIVE_C2ZC_PRODUCT_JOURNEYS;
+  if (name === "nir1-entity-relation-review") {
+    const ids = new Set(
+      NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG.map(
+        ({ id }) => id,
+      ),
+    );
+    return PRODUCT_JOURNEYS.filter((journey) => ids.has(journey.id));
+  }
   throw new Error(`unknown GRIMODEX_PRODUCT_JOURNEY_SET: ${name}`);
+}
+
+export function resolveProductJourneyCatalog(
+  name = process.env.GRIMODEX_PRODUCT_JOURNEY_SET,
+) {
+  if (name === undefined || name === "") return PRODUCT_JOURNEY_CATALOG;
+  // Preserve the existing focused C2-5B selection's full-catalog binding.
+  if (name === "c2-5b") return PRODUCT_JOURNEY_CATALOG;
+  if (name === "c2-zc") return NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG;
+  if (name === "nir1-entity-relation-review") {
+    return NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG;
+  }
+  throw new Error(`unknown product journey catalog set: ${name}`);
 }
 
 async function queryRows(harness, page, sql, params = []) {
@@ -3313,20 +3335,18 @@ export async function runProductJourneys({
 if (process.argv[1] === new URL(import.meta.url).pathname) {
   const requireAll =
     process.env.GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL === "true";
-  const journeySet = resolveProductJourneySet();
+  const selectionName = process.env.GRIMODEX_PRODUCT_JOURNEY_SET ?? "";
+  const journeySet = resolveProductJourneySet(selectionName);
   const selectedJourneys = resolveSelectedProductJourneys(
     journeySet,
     process.env.GRIMODEX_PRODUCT_JOURNEY_IDS,
     { requireAll },
   );
   runProductJourneys({
-    catalog:
-      process.env.GRIMODEX_PRODUCT_JOURNEY_SET === "c2-zc"
-        ? NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG
-        : PRODUCT_JOURNEY_CATALOG,
+    catalog: resolveProductJourneyCatalog(selectionName),
     journeys: selectedJourneys,
     requireAll,
-    selectionName: process.env.GRIMODEX_PRODUCT_JOURNEY_SET ?? "",
+    selectionName,
   }).then(
     () => log("PASS — product journeys completed"),
     (error) => {

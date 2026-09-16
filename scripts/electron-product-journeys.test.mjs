@@ -88,6 +88,12 @@ test("package.json exposes the runner and canonical product journey contracts", 
       .includes("scripts/product-journey-mcp-client.test.mjs"),
     "canonical product journey contracts must include the MCP client tests",
   );
+  assert.ok(
+    packageJson.scripts["test:product-journey-contracts"]
+      .split(/\s+/)
+      .includes("scripts/codex-entity-relation-product-journey.test.mjs"),
+    "canonical product journey contracts must include the NIR-1 Entity/Relation journey",
+  );
 });
 
 const RECEIPT_NONCE = "00000000-0000-4000-8000-000000000001";

@@ -401,6 +401,7 @@
             "scripts/electron-product-journey-cleanup-results.test.mjs",
             "scripts/electron-product-journeys.test.mjs",
             "electron/scripts/product-journey-shards.test.mjs",
+            "scripts/codex-entity-relation-product-journey.test.mjs",
             "scripts/generate-licenses.test.mjs",
             "scripts/license-policy.test.mjs",
             "scripts/semantic-reranker-release.test.mjs"

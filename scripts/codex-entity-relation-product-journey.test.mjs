@@ -9,7 +9,15 @@ import {
   CODEX_ENTITY_RELATION_REVIEW_SELECTORS,
   createCodexEntityRelationReviewJourney,
 } from "../electron/scripts/codex-entity-relation-product-journey.mjs";
-import { PRODUCT_JOURNEY_CATALOG } from "../electron/scripts/product-journey-catalog.mjs";
+import {
+  NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG,
+  PRODUCT_JOURNEY_CATALOG,
+} from "../electron/scripts/product-journey-catalog.mjs";
+import {
+  resolveProductJourneyCatalog,
+  resolveProductJourneySet,
+} from "../electron/scripts/product-journeys.mjs";
+import { resolveProductJourneyImpactCatalog } from "../electron/scripts/product-journey-impact.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
@@ -55,6 +63,31 @@ test("Journey factory is production-dispatchable without importing Electron", ()
   assert.deepEqual(catalogEntry?.contracts, [
     "codex:entity-relation-review-apply-reopen",
   ]);
+});
+
+test("A2 Heavy set binds one selected journey to its subset catalog", () => {
+  const expectedIds = NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG.map(
+    ({ id }) => id,
+  );
+  assert.deepEqual(expectedIds, [CODEX_ENTITY_RELATION_REVIEW_JOURNEY_ID]);
+  assert.deepEqual(
+    resolveProductJourneySet("nir1-entity-relation-review").map(
+      ({ id }) => id,
+    ),
+    expectedIds,
+  );
+  assert.deepEqual(
+    resolveProductJourneyCatalog("nir1-entity-relation-review").map(
+      ({ id }) => id,
+    ),
+    expectedIds,
+  );
+  assert.deepEqual(
+    resolveProductJourneyImpactCatalog("nir1-entity-relation-review").map(
+      ({ id }) => id,
+    ),
+    expectedIds,
+  );
 });
 
 test("runner source pins the normal UI path and keeps typed payload reads out of generic review", async () => {

@@ -146,6 +146,11 @@ test("package scripts expose one canonical quality workflow", async () => {
     packageJson.scripts["test:quality"],
     /run-live-model-qualification\.test\.mjs/,
   );
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /scripts\/codex-entity-relation-product-journey\.test\.mjs/,
+    "the canonical quality command must include the A2 Journey contract",
+  );
 });
 test("CI runs the diff gate with full history and selected light suites", async () => {
   const workflow = await read(".github/workflows/ci.yml");
@@ -509,6 +514,7 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     ".agents/skills/review-code/SKILL.md",
     ".agents/skills/refactor-cross-boundaries/SKILL.md",
     ".agents/skills/refactor-cross-boundaries/references/impact-matrix.md",
+    "src/lib/tauri.ts",
   ]) {
     assert.ok(
       trace.implementedBy.includes(implementationPath),
@@ -523,17 +529,37 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   const integrationPlan = await read(
     "docs/plans/narrative-ir-nir1-implementation-plan.md",
   );
+  const qualityManifest = yaml.load(await read("evals/quality-manifest.yaml"));
 
-  assert.match(executionPlan, /PR-R0.*現在地と評価契約の固定/is);
+  assert.match(executionPlan, /PR-R0.*履歴台帳と評価契約の固定/is);
   assert.match(
     executionPlan,
-    /master@68516b033f395f24f98c502c9fd2a715d7aec2af/,
+    /基点:\s*master@81d0390fe7a935191753b41e5673503f99d51d16/,
   );
   assert.match(
     executionPlan,
-    /Tree:\s*04c491c29627ecc840112ebe379a5363e16892ff/,
+    /Tree:\s*0decaab5470c2408be81856ac2373b28e078b945/,
   );
-  assert.match(executionPlan, /#572でtyped基盤runtime.*実装済み/is);
+  assert.match(
+    executionPlan,
+    /2026-09-16現在.*PR #591.*A2.*通常準備.*Evidence.*immutable Revision.*明示Decision.*cold reopen/is,
+  );
+  assert.match(executionPlan, /Graph.*Packing.*未activate.*downstream threat model.*draft/is);
+  assert.match(executionPlan, /NIR-1全体.*未完了/);
+  const a2Heavy = qualityManifest.heavyEvaluations.find(
+    (evaluation) => evaluation.id === "heavy-nir1-entity-relation-product-journey",
+  );
+  assert.equal(
+    a2Heavy?.command,
+    "GRIMODEX_PRODUCT_JOURNEY_SET=nir1-entity-relation-review pnpm electron:product-journeys",
+    "A2 Heavy must run against its one-entry subset catalog",
+  );
+  assert.match(
+    executionPlan,
+    /\| requestedBase \/ resolvedBase \| `master@68516b033f395f24f98c502c9fd2a715d7aec2af`/,
+    "R0 base remains in the historical ledger",
+  );
+  assert.match(executionPlan, /#572の実装済み／未完了/);
   assert.match(
     executionPlan,
     /production runtime integration.*activation.*L6〜L9.*未完了/is,
@@ -665,8 +691,9 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   );
   assert.match(
     executionPlan,
-    /R0.*proposal\/3の五つ.*PR #579.*Option B.*第六行.*明示批准済み.*契約として有効.*A2はA1＋D2a/is,
+    /R0でmerge済みのproposal\/3五つ.*PR #579.*Option B.*明示批准済み.*契約として有効/is,
   );
+  assert.match(executionPlan, /明示確認済み・契約として有効.*第六行.*A2はA1＋D2a/is);
   assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/1/);
   assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/2/);
 
@@ -938,8 +965,13 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   }
   assert.match(
     a2LaneRow,
-    /\| A2 \|[^|]*\| ready-after-A1＋D2a \|/,
-    "A2 lane status must include only its ordinary feature dependencies",
+    /\| A2 \|[^|]*\| complete-limited \|/,
+    "current A2 lane status must record PR #591's limited completion",
+  );
+  assert.match(
+    executionPlan,
+    /R0 lane開始判定と評価manifest \(historical\)[\s\S]*\| A2 \|[^|]*\| ready-after-A1＋D2a \|/,
+    "R0's earlier A2 ready condition must remain historical",
   );
   const implementationOrder = executionPlan.split("## 実装順序と公開条件\n", 2)[1];
   assert.ok(implementationOrder, "implementation order must be present");
@@ -1075,11 +1107,11 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   );
   assert.match(
     executionPlan,
-    /初回static draft.*focused contract testのみ.*Quick／verify／Full／verifyは実施しなかった.*過去候補の証跡または免除ではない.*今後の実装候補.*merge gate M.*Full＋直後のverify.*要求する/is,
+    /初回static draftの旧R0候補.*focused test／`verify:quality`／Quick＋verifyは無効.*旧receiptを流用しない/is,
   );
   assert.match(
     executionPlan,
-    /初回static draft.*旧R0候補で実施済みだった.*verify:quality.*Quick.*無効化し.*再開候補で再実施する記録だった.*今後の実装候補.*merge gate M.*Full＋直後verify.*必須/is,
+    /候補commit後のPR用canonical Quick.*focused検証.*候補commit.*clean確認.*candidate_base.*candidate_head.*ci:local:quick.*ci:local:verify/is,
   );
   assert.doesNotMatch(
     executionPlan,
@@ -1143,10 +1175,14 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   }
   for (const command of [
     "pnpm verify:quality",
-    "pnpm ci:local:quick -- --base origin/master --head HEAD",
-    "pnpm ci:local:verify -- quick --base origin/master --head HEAD",
-    "pnpm ci:local:full -- --base origin/master --head HEAD",
-    "pnpm ci:local:verify -- full --base origin/master --head HEAD",
+    "candidate_base=\"$(git rev-parse 'origin/master^{commit}')\"",
+    "candidate_head=\"$(git rev-parse 'HEAD^{commit}')\"",
+    "pnpm ci:local:quick -- --base \"$candidate_base\" --head \"$candidate_head\"",
+    "pnpm ci:local:verify -- quick --base \"$candidate_base\" --head \"$candidate_head\"",
+    "full_base=\"$(git rev-parse 'origin/master^{commit}')\"",
+    "full_head=\"$(git rev-parse 'HEAD^{commit}')\"",
+    "pnpm ci:local:full -- --base \"$full_base\" --head \"$full_head\"",
+    "pnpm ci:local:verify -- full --base \"$full_base\" --head \"$full_head\"",
   ]) {
     assert.match(
       executionPlan,
@@ -1155,20 +1191,28 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   }
 
   assert.match(roadmap, /PR-R0/);
-  assert.match(roadmap, /68516b033f395f24f98c502c9fd2a715d7aec2af/);
-  assert.match(roadmap, /downstream.*blocked|blocked.*downstream/is);
+  assert.match(roadmap, /81d0390fe7a935191753b41e5673503f99d51d16/);
+  assert.match(roadmap, /0decaab5470c2408be81856ac2373b28e078b945/);
+  assert.match(roadmap, /PR #591.*A2.*Entity／Relation.*immutable Revision.*cold reopen/is);
+  assert.match(roadmap, /Graph.*Packing.*AI.*(?:inactive|未activate)/is);
+  assert.match(roadmap, /downstream threat model.*draft/is);
+  assert.match(roadmap, /NIR-1 overall acceptance remains incomplete/);
   assert.match(integrationPlan, /PR-R0/);
   assert.match(
     integrationPlan,
     /proposal\/4.*Entity／Relation-only.*typed-revision-material.*(?:explicitly ratified|明示批准済み)/is,
   );
+  assert.match(integrationPlan, /PR #591.*A2.*Entity／Relation.*immutable Revision.*cold reopen/is);
+  assert.match(integrationPlan, /Graph.*Packing.*AI.*(?:inactive|未activate)/is);
+  assert.match(integrationPlan, /downstream threat model.*draft/is);
+  assert.match(integrationPlan, /NIR-1 overall acceptance remains incomplete/);
   for (const [name, narrative] of [
     ["roadmap", roadmap],
     ["integration plan", integrationPlan],
   ]) {
     assert.match(
       narrative,
-      /R0 (?:merged|confirmation state: five) (?:with )?five proposal\/3(?: contract)? rows[\s\S]*PR #579[\s\S]*records the sixth[\s\S]*proposal\/4 Option B Entity／Relation-only assertion family `typed-revision-material`[\s\S]*(?:explicitly ratified and effective|明示批准済み・契約として有効)[\s\S]*A2 (?:is|becomes) ready only after A1＋D2a[\s\S]*activate any runtime or consumer/is,
+      /(?:R0 confirmation state: five proposal\/3(?: contract)? rows|R0 merged with five proposal\/3(?: contract)? rows)[\s\S]*PR #579[\s\S]*records the sixth[\s\S]*proposal\/4 Option B Entity／Relation-only assertion family `typed-revision-material`[\s\S]*(?:explicitly ratified and effective|明示批准済み・契約として有効)[\s\S]*A2 (?:is|becomes) ready only after A1＋D2a[\s\S]*activate any runtime or consumer/is,
       `${name} must mirror R0's five rows and the effective typed-ratification state`,
     );
     assert.match(
