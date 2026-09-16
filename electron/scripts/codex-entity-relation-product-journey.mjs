@@ -156,23 +156,39 @@ async function openPanel(page, panelId, readyTestId) {
 }
 
 async function createCodexEntryThroughUi(harness, page, { name, summary }) {
+  const existingEntryIds = new Set(
+    (await rows(harness, page, "SELECT id FROM codex_entries")).map((entry) =>
+      String(entry.id),
+    ),
+  );
   await page.getByTestId("codex-new-entry-button").click();
-  const nameField = page.getByTestId("codex-detail-name");
-  await nameField.waitFor({ state: "visible", timeout: 30_000 });
-  await nameField.fill(name);
-  await page.keyboard.press("Enter");
 
-  const nameRows = await harness.waitUntil(
+  const createdEntry = await harness.waitUntil(
     () =>
       rows(
         harness,
         page,
         "SELECT id, project_id AS projectId, name, summary FROM codex_entries WHERE name = ? ORDER BY created_at DESC",
-        [name],
-      ).then((result) => result[0] ?? null),
-    `Codex entry ${name} name persistence`,
+        ["Untitled"],
+      ).then(
+        (result) =>
+          result.find((entry) => !existingEntryIds.has(String(entry.id))) ??
+          null,
+      ),
+    `Codex entry ${name} creation`,
     30_000,
   );
+  const createdEntryId = String(createdEntry.id);
+  const nameField = page.getByTestId("codex-detail-name");
+  await nameField.waitFor({ state: "visible", timeout: 30_000 });
+  await harness.waitUntil(
+    async () => (await nameField.inputValue()) === String(createdEntry.name),
+    `Codex entry ${name} detail selection`,
+    30_000,
+  );
+  await nameField.fill(name);
+  await page.keyboard.press("Enter");
+
   const summaryField = page.getByTestId("codex-detail-summary");
   await summaryField.waitFor({ state: "visible", timeout: 30_000 });
   await summaryField.fill(summary);
@@ -184,7 +200,7 @@ async function createCodexEntryThroughUi(harness, page, { name, summary }) {
         harness,
         page,
         "SELECT id, project_id AS projectId, name, summary FROM codex_entries WHERE id = ? AND name = ? AND summary = ?",
-        [nameRows.id, name, summary],
+        [createdEntryId, name, summary],
       ).then((result) => result[0] ?? null),
     `Codex entry ${name} summary persistence`,
     30_000,

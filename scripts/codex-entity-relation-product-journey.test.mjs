@@ -122,3 +122,52 @@ test("runner source pins the normal UI path and keeps typed payload reads out of
     "typed journey must not depend on a DEV-only flag",
   );
 });
+
+test("Codex creation waits for the created entry selection before editing", async () => {
+  const journeySource = await readFile(
+    path.join(
+      repoRoot,
+      "electron/scripts/codex-entity-relation-product-journey.mjs",
+    ),
+    "utf8",
+  );
+  const creationStart = journeySource.indexOf(
+    "async function createCodexEntryThroughUi",
+  );
+  const creationSource = journeySource.slice(creationStart);
+  const createdEntryOffset = creationSource.indexOf("const createdEntry =");
+  const inputTransitionOffset = creationSource.indexOf(
+    "nameField.inputValue()",
+  );
+  const fillOffset = creationSource.indexOf("await nameField.fill(name)");
+
+  assert.ok(
+    creationStart >= 0,
+    "journey must define the Codex creation helper",
+  );
+  assert.ok(
+    creationSource.includes("SELECT id FROM codex_entries"),
+    "creation must snapshot existing Codex IDs before clicking New",
+  );
+  assert.ok(
+    creationSource.includes("!existingEntryIds.has(String(entry.id))"),
+    "creation must identify the new DB row rather than a pre-existing Untitled row",
+  );
+  assert.ok(
+    creationSource.includes("createdEntry.name"),
+    "creation must wait for the detail field to show the new row's initial name",
+  );
+  assert.ok(
+    inputTransitionOffset >= 0,
+    "creation must wait for the selected detail to render before editing",
+  );
+  assert.ok(
+    createdEntryOffset >= 0 && createdEntryOffset < inputTransitionOffset,
+    "new DB row identification must precede the detail transition wait",
+  );
+  assert.ok(fillOffset >= 0, "creation must fill the requested name");
+  assert.ok(
+    inputTransitionOffset < fillOffset,
+    "detail transition wait must precede name editing",
+  );
+});
