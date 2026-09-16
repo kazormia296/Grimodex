@@ -17,6 +17,7 @@ import {
 } from "./codexEntityRelationReviewApi";
 import {
   decideNir1EntityRelationRevision,
+  readNir1EntityRelationRevision,
   readCurrentNir1EntityRelationRevision,
   type Nir1EntityRelationHumanDecision,
   type Nir1EntityRelationRevisionPrepareResult,
@@ -397,10 +398,12 @@ export function useCodexEntityRelationReview(
         ) {
           return;
         }
-        const current = await readCurrentNir1EntityRelationRevision({
+        // Keep the post-decision projection bound to the immutable Revision
+        // selected above; another typed ProposalSet may share this Run.
+        const current = await readNir1EntityRelationRevision({
           expectedWorkspacePath: context.workspacePath,
           projectId: context.projectId,
-          runId: session.runId,
+          revisionId: result.revisionId,
         });
         if (
           !isTypedReviewContextCurrent(

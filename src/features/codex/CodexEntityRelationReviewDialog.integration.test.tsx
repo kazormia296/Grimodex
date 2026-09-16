@@ -13,6 +13,11 @@ type NativeRun = {
   decision: "approved" | "rejected" | "deferred" | null;
 };
 
+type RevisionDecisionState = {
+  decision: "approved" | "rejected" | "deferred" | null;
+  writeCount: number;
+};
+
 const {
   captureAuthorityMock,
   captureBindingMock,
@@ -20,6 +25,7 @@ const {
   listRelationsMock,
   listRunsMock,
   nativePrepareMock,
+  nativeReadExactMock,
   nativeRestoreMock,
   nativeReadCurrentMock,
   nativeState,
@@ -46,6 +52,7 @@ const {
     listRelationsMock: vi.fn(),
     listRunsMock: vi.fn(),
     nativePrepareMock: vi.fn(),
+    nativeReadExactMock: vi.fn(),
     nativeRestoreMock: vi.fn(),
     nativeReadCurrentMock: vi.fn(),
     nativeState: state,
@@ -119,6 +126,7 @@ vi.mock(
     NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH: "nir1/entity-relation-review",
     decideNir1EntityRelationRevision: decideMock,
     prepareNir1EntityRelationRevision: nativePrepareMock,
+    readNir1EntityRelationRevision: nativeReadExactMock,
     readCurrentNir1EntityRelationRevision: nativeReadCurrentMock,
     restoreNir1EntityRelationRevision: nativeRestoreMock,
   }),
@@ -309,6 +317,29 @@ function installStatefulNativeMocks() {
       return { status: run.status, result: run.result };
     },
   );
+  nativeReadExactMock.mockImplementation(
+    async ({
+      projectId,
+      revisionId,
+    }: {
+      readonly projectId: string;
+      readonly revisionId: string;
+    }) => {
+      const run = [...nativeState.runs.values()].find(
+        (candidate) =>
+          candidate.projectId === projectId &&
+          (candidate.result as { revisionId?: string }).revisionId ===
+            revisionId,
+      );
+      if (!run) {
+        return {
+          status: "unavailable" as const,
+          result: { reason: "revision-not-found" },
+        };
+      }
+      return { status: run.status, result: run.result };
+    },
+  );
   decideMock.mockImplementation(
     async (decisionRequest: Record<string, unknown>) => {
       nativeState.decisions.push({ ...decisionRequest });
@@ -322,6 +353,61 @@ function installStatefulNativeMocks() {
   );
 }
 
+function installSharedRunRevisionScenario(
+  initialAStatus: "draft" | "available",
+) {
+  const aResult = {
+    ...createResult("shared-run", {
+      projectId: "p1",
+      sceneId: "scene-a",
+      entityIds: ["entry-1"],
+      relationIds: [],
+    }),
+    revisionId: "revision-a",
+  };
+  const bResult = {
+    ...createResult("shared-run", {
+      projectId: "p1",
+      sceneId: "scene-b",
+      entityIds: ["entry-2"],
+      relationIds: [],
+    }),
+    revisionId: "revision-b",
+  };
+  nativeRestoreMock.mockResolvedValue({
+    runId: "shared-run",
+    response: { status: initialAStatus, result: aResult },
+  });
+  nativeReadCurrentMock.mockResolvedValue({
+    status: "available",
+    result: bResult,
+  });
+  const revisionState = new Map<string, RevisionDecisionState>([
+    [
+      aResult.revisionId,
+      {
+        decision: initialAStatus === "available" ? ("approved" as const) : null,
+        writeCount: 0,
+      },
+    ],
+    [bResult.revisionId, { decision: "approved" as const, writeCount: 0 }],
+  ]);
+  decideMock.mockImplementation(
+    async (decisionRequest: Record<string, unknown>) => {
+      nativeState.decisions.push({ ...decisionRequest });
+      const state = revisionState.get(String(decisionRequest.revisionId));
+      if (!state) throw new Error("unexpected revision decision");
+      state.writeCount += 1;
+      state.decision = decisionRequest.decision as
+        | "approved"
+        | "rejected"
+        | "deferred";
+      return { status: decisionRequest.decision };
+    },
+  );
+  return { aResult, bResult, revisionState };
+}
+
 beforeEach(() => {
   for (const mock of [
     captureAuthorityMock,
@@ -330,6 +416,7 @@ beforeEach(() => {
     listRelationsMock,
     listRunsMock,
     nativePrepareMock,
+    nativeReadExactMock,
     nativeRestoreMock,
     nativeReadCurrentMock,
   ]) {
@@ -519,6 +606,86 @@ describe("CodexEntityRelationReviewDialog Native-boundary integration", () => {
       decision: "approved",
     });
   });
+
+  it.each([
+    ["approval", "draft", "nir1-typed-approve", "利用可能", "approved"],
+    [
+      "approval revoke",
+      "available",
+      "nir1-typed-cancel",
+      "利用不可",
+      "rejected",
+    ],
+  ] as const)(
+    "keeps restored A after %s when a newer B shares the Run",
+    async (
+      _operation,
+      initialAStatus,
+      actionTestId,
+      expectedStatus,
+      expectedDecision,
+    ) => {
+      const { aResult, bResult, revisionState } =
+        installSharedRunRevisionScenario(initialAStatus);
+      nativeReadExactMock.mockResolvedValue(
+        expectedDecision === "approved"
+          ? { status: "available", result: aResult }
+          : {
+              status: "unavailable",
+              result: { reason: "revision-not-human-approved" },
+            },
+      );
+      render(
+        <CodexEntityRelationReviewDialog
+          entry={entry}
+          open
+          onOpenChange={vi.fn()}
+        />,
+      );
+
+      expect(
+        await screen.findByTestId("nir1-typed-entity-row-entry-1"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("nir1-typed-entity-row-entry-2"),
+      ).not.toBeInTheDocument();
+      fireEvent.click(await screen.findByTestId(actionTestId));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("nir1-typed-status")).toHaveTextContent(
+          expectedStatus,
+        ),
+      );
+      expect(
+        screen.getByTestId("nir1-typed-entity-row-entry-1"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("nir1-typed-entity-row-entry-2"),
+      ).not.toBeInTheDocument();
+      expect(revisionState.get(aResult.revisionId)).toEqual({
+        decision: expectedDecision,
+        writeCount: 1,
+      });
+      expect(revisionState.get(bResult.revisionId)).toEqual({
+        decision: "approved",
+        writeCount: 0,
+      });
+      expect(nativeState.decisions).toEqual([
+        expect.objectContaining({
+          runId: "shared-run",
+          proposalId: "shared-run-proposal",
+          revisionId: aResult.revisionId,
+          decision: expectedDecision,
+        }),
+      ]);
+      expect(nativeReadCurrentMock).not.toHaveBeenCalled();
+      expect(nativeReadExactMock).toHaveBeenCalledExactlyOnceWith({
+        expectedWorkspacePath: "/workspace",
+        projectId: "p1",
+        revisionId: aResult.revisionId,
+      });
+    },
+  );
 
   it("prepares B after A is approved and closed while retaining A's persisted Decision", async () => {
     const first = render(<ControlledReviewLauncher entryToPrepare={entry} />);

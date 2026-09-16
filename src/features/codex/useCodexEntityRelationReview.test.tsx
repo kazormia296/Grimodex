@@ -9,6 +9,7 @@ const restoreMock = vi.hoisted(() => vi.fn());
 const prepareMock = vi.hoisted(() => vi.fn());
 const replacementInputMock = vi.hoisted(() => vi.fn());
 const decideMock = vi.hoisted(() => vi.fn());
+const readExactMock = vi.hoisted(() => vi.fn());
 const readCurrentMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./codexEntityRelationReviewApi", () => ({
@@ -20,6 +21,7 @@ vi.mock(
   "@/features/narrative-semantic-core/nir1EntityRelationRevisionApi",
   () => ({
     decideNir1EntityRelationRevision: decideMock,
+    readNir1EntityRelationRevision: readExactMock,
     readCurrentNir1EntityRelationRevision: readCurrentMock,
   }),
 );
@@ -100,6 +102,10 @@ describe("useCodexEntityRelationReview", () => {
     resetScope();
     restoreMock.mockResolvedValue(null);
     decideMock.mockResolvedValue({ status: "approved" });
+    readExactMock.mockResolvedValue({
+      status: "unavailable",
+      result: { reason: "typed-review-evidence-unavailable" },
+    });
   });
 
   it("shares one direct Native prepare across concurrent calls", async () => {
@@ -348,12 +354,12 @@ describe("useCodexEntityRelationReview", () => {
     expect(result.current.typedReview?.runId).toBe("replacement-run");
   });
 
-  it("keeps the receipt and records an approved Decision when current-read fails", async () => {
+  it("keeps the receipt and records an approved Decision when exact-read fails", async () => {
     restoreMock.mockResolvedValue({
       runId: "typed-run",
       response: { status: "draft", result: typedResult() },
     });
-    readCurrentMock.mockRejectedValueOnce(new Error("egress denied"));
+    readExactMock.mockRejectedValueOnce(new Error("egress denied"));
     const { result } = renderHook(() => useCodexEntityRelationReview(true));
     await waitFor(() =>
       expect(result.current.typedReview?.status).toBe("draft"),
@@ -368,6 +374,7 @@ describe("useCodexEntityRelationReview", () => {
       runId: "typed-run",
       status: "unavailable",
       decision: "approved",
+      result: typedResult(),
       unavailableReason: "typed-review-current-read-failed",
       receipt: {
         proposalSetId: "typed-set",
@@ -376,7 +383,66 @@ describe("useCodexEntityRelationReview", () => {
         status: "unreviewed",
       },
     });
+    expect(readExactMock).toHaveBeenCalledExactlyOnceWith({
+      expectedWorkspacePath: "/w",
+      projectId: "p1",
+      revisionId: "typed-revision",
+    });
+    expect(readCurrentMock).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["approval", "draft", "approved", "available"],
+    ["approval revoke", "available", "rejected", "unavailable"],
+  ] as const)(
+    "keeps A's result and receipt after %s",
+    async (_operation, initialStatus, decision, expectedStatus) => {
+      const aResult = typedResult();
+      restoreMock.mockResolvedValue({
+        runId: "typed-run",
+        response: { status: initialStatus, result: aResult },
+      });
+      readExactMock.mockResolvedValue(
+        decision === "approved"
+          ? { status: "available", result: aResult }
+          : {
+              status: "unavailable",
+              result: { reason: "revision-not-human-approved" },
+            },
+      );
+      const { result } = renderHook(() => useCodexEntityRelationReview(true));
+      await waitFor(() =>
+        expect(result.current.typedReview?.status).toBe(initialStatus),
+      );
+
+      await act(async () => {
+        await result.current.handleTypedDecision(decision);
+      });
+
+      expect(result.current.typedReview).toMatchObject({
+        runId: "typed-run",
+        status: expectedStatus,
+        result: {
+          revisionId: "typed-revision",
+          proposalId: "typed-proposal",
+          proposalSetId: "typed-set",
+        },
+        decision,
+        receipt: {
+          proposalSetId: "typed-set",
+          proposalId: "typed-proposal",
+          revisionId: "typed-revision",
+          status: "unreviewed",
+        },
+      });
+      expect(readExactMock).toHaveBeenCalledExactlyOnceWith({
+        expectedWorkspacePath: "/w",
+        projectId: "p1",
+        revisionId: "typed-revision",
+      });
+      expect(readCurrentMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not publish a late prepare after the dialog closes", async () => {
     let resolvePrepare!: (value: unknown) => void;
