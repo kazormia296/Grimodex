@@ -48,36 +48,36 @@ fn retrieval_statement_is_ordered_immutable_assertion_text_with_exact_bindings()
                 payload["attribution"],
                 payload["narrativeFrame"]
             );
-            assert_eq!(snapshot.revision_id, revision);
-            assert_eq!(snapshot.owning_run_id, manifest["runId"]);
-            assert_eq!(snapshot.envelope_digest, digest);
-            assert_eq!(snapshot.document.revision_id, revision);
-            assert_eq!(snapshot.document.envelope_digest, digest);
+            assert_eq!(snapshot.revision_id(), revision);
+            assert_eq!(snapshot.owning_run_id(), manifest["runId"]);
+            assert_eq!(snapshot.envelope_digest(), digest);
+            assert_eq!(snapshot.document().revision_id, revision);
+            assert_eq!(snapshot.document().envelope_digest, digest);
             assert_eq!(
-                snapshot.document.serializer_ref,
+                snapshot.document().serializer_ref,
                 "chronicle-semantic-retrieval/1"
             );
-            assert_eq!(snapshot.document.serialized_statement, expected);
+            assert_eq!(snapshot.document().serialized_statement, expected);
             assert_eq!(
-                snapshot.document.serialized_statement_digest,
+                snapshot.document().serialized_statement_digest,
                 format!(
                     "sha256:{}",
                     hex::encode(Sha256::digest(expected.as_bytes()))
                 )
             );
-            assert_eq!(snapshot.canonical_freshness.revision_id, revision);
-            assert!(!snapshot.current_decision_id.is_empty());
-            assert!(!snapshot.evidence.is_empty());
+            assert_eq!(snapshot.canonical_freshness().revision_id, revision);
+            assert!(!snapshot.current_decision_id().is_empty());
+            assert!(!snapshot.evidence().is_empty());
             assert_eq!(
-                serde_json::to_value(&snapshot.evidence).expect("evidence"),
+                serde_json::to_value(snapshot.evidence()).expect("evidence"),
                 envelope["effectiveMaterialBasis"]["evidenceSet"]
             );
             assert_eq!(
-                snapshot.query_context.audience,
+                snapshot.query_context().audience,
                 grimodex_db::narrative_extraction::QueryIdentityState::Resolved("reader".into())
             );
-            assert!(!snapshot.query_context.allow_secrets);
-            let parsed: Value = serde_json::from_str(&snapshot.document.serialized_statement)
+            assert!(!snapshot.query_context().allow_secrets);
+            let parsed: Value = serde_json::from_str(&snapshot.document().serialized_statement)
                 .expect("statement JSON");
             assert_eq!(parsed.as_object().expect("object").len(), 4);
             assert_eq!(parsed["actuality"], json!(payload["actuality"]));

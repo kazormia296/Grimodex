@@ -138,7 +138,22 @@ pub fn read_revision_retrieval_eligibility(
             owning_run_id: membership.run_id,
             proposal_id: current.proposal_id,
             envelope_digest: current.envelope_digest,
-            current_decision_id: current.decision_id,
+            current_decision: RevisionEligibilityDecision {
+                id: current.decision_id,
+                revision_id: current.decision_revision_id,
+                decision: current.decision,
+                decision_json: current.decision_json,
+                actor_kind: current.actor_kind,
+                actor_id: current.actor_id,
+                authority_scope: current.authority_scope,
+            },
+            material_basis_digest: membership.material_basis.material_basis_digest.clone(),
+            dependency_ids: membership
+                .material_basis
+                .dependency_set
+                .iter()
+                .map(|dependency| dependency.dependency_id.clone())
+                .collect(),
             query_context: query,
             canonical_freshness: canonical,
             document,

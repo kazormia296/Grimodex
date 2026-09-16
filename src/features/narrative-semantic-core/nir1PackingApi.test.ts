@@ -8,55 +8,23 @@ import { packNir1Context } from "./nir1PackingApi";
 describe("NIR-1 packing renderer API", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("forwards typed context units as one Native-local request", async () => {
+  it("forwards only the renderer-owned Raw context as one Native-local request", async () => {
     h.invoke.mockResolvedValueOnce({
-      selectedIds: ["raw:scene", "ir:alice"],
-      omittedIds: ["graph:bob"],
-      usedTokens: 12,
-      remainingTokens: 4,
+      selectedIds: ["raw:scene"],
+      omittedIds: [],
+      usedTokens: 8,
+      remainingTokens: 8,
     });
 
     await packNir1Context({
       budgetTokens: 16,
-      items: [
-        { kind: "raw", id: "raw:scene", text: "Raw", tokens: 8 },
-        {
-          kind: "acceptedIr",
-          id: "ir:alice",
-          text: "Alice",
-          tokens: 4,
-          atomicGroup: "ir:alice:unit",
-        },
-        {
-          kind: "graphEvidence",
-          id: "graph:bob",
-          text: "Bob",
-          tokens: 8,
-          atomicGroup: "graph:bob:unit",
-        },
-      ],
+      items: [{ kind: "raw", id: "raw:scene", text: "Raw", tokens: 8 }],
     });
 
     expect(h.invoke).toHaveBeenCalledExactlyOnceWith("nir1_pack_context", {
       payload: {
         budgetTokens: 16,
-        items: [
-          { kind: "raw", id: "raw:scene", text: "Raw", tokens: 8 },
-          {
-            kind: "acceptedIr",
-            id: "ir:alice",
-            text: "Alice",
-            tokens: 4,
-            atomicGroup: "ir:alice:unit",
-          },
-          {
-            kind: "graphEvidence",
-            id: "graph:bob",
-            text: "Bob",
-            tokens: 8,
-            atomicGroup: "graph:bob:unit",
-          },
-        ],
+        items: [{ kind: "raw", id: "raw:scene", text: "Raw", tokens: 8 }],
       },
     });
   });

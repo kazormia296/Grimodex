@@ -271,9 +271,9 @@ fn nir1_compact_build_admission_matches_the_cold_reader_for_each_scene() {
                     "{revision} at {scene}"
                 );
                 if let RevisionEligibilityRead::Eligible(value) = cold {
-                    assert_eq!(value.document, candidate.document);
-                    assert_eq!(value.evidence, candidate.evidence);
-                    assert_eq!(value.current_decision_id, candidate.current_decision_id);
+                    assert_eq!(value.document(), &candidate.document);
+                    assert_eq!(value.evidence(), candidate.evidence);
+                    assert_eq!(value.current_decision_id(), candidate.current_decision_id);
                     admitted += 1;
                 } else {
                     denied += 1;

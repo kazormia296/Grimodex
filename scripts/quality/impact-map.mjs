@@ -313,6 +313,8 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/codex/components/CodexTypedRelationsSection.test.tsx",
         "src/features/codex/context/nir1PhaseParity.test.ts",
         "src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.test.ts",
+        "src/features/narrative-semantic-core/nir1PackingApi.test.ts",
+        "src/features/ai-context/nir1Packing.test.ts",
         "src/lib/tauri.electron.test.ts",
       ],
       [
@@ -322,9 +324,17 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "electron/main/ipc.test.ts",
         "electron/main/profileEgress.test.ts",
         "electron/shared/ipcContract.test.ts",
+        "electron/shared/nir1GraphIpcContract.test.ts",
         "electron/shared/nir1EntityRelationIpcContract.test.ts",
       ],
       ["pnpm", "exec", "tsc", "-p", "electron/tsconfig.json", "--noEmit"],
+      [
+        "node",
+        "--test",
+        "scripts/quality/nir1-packing/contract.test.mjs",
+        "scripts/quality/nir1-packing/runner.test.mjs",
+        "scripts/quality/nir1-packing/scorer.test.mjs",
+      ],
       [
         "cargo",
         "test",
@@ -344,6 +354,16 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "grimodex-db",
         "--lib",
         "narrative_extraction::nir1_entity_relation",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_nir1_retrieval_admission",
       ],
       [
         "node",

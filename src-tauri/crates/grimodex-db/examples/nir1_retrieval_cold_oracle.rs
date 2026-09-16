@@ -30,11 +30,11 @@ fn main() -> Result<()> {
     for revision in &revisions {
         match read_revision_retrieval_eligibility(&tx, &args[2], revision, &args[3])? {
             RevisionEligibilityRead::Eligible(snapshot) => eligible.push(json!({
-                "revisionId": snapshot.revision_id, "owningRunId": snapshot.owning_run_id,
-                "envelopeDigest": snapshot.envelope_digest, "decisionId": snapshot.current_decision_id,
-                "statementDigest": snapshot.document.serialized_statement_digest,
-                "evidenceCount": snapshot.evidence.len(),
-                "sourceKeys": snapshot.evidence.iter().map(|e| &e.source_key).collect::<Vec<_>>()
+                "revisionId": snapshot.revision_id(), "owningRunId": snapshot.owning_run_id(),
+                "envelopeDigest": snapshot.envelope_digest(), "decisionId": snapshot.current_decision_id(),
+                "statementDigest": snapshot.document().serialized_statement_digest,
+                "evidenceCount": snapshot.evidence().len(),
+                "sourceKeys": snapshot.evidence().iter().map(|e| &e.source_key).collect::<Vec<_>>()
             })),
             RevisionEligibilityRead::Unavailable { reason } => unavailable.push(json!({
                 "revisionId": revision, "reason": format!("{reason:?}")

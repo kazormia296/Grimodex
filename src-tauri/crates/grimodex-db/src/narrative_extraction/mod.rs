@@ -99,6 +99,7 @@ pub mod human_material_basis;
 mod human_materialization;
 mod material_membership;
 mod material_membership_root;
+mod nir1_packing;
 pub use material_membership::{
     read_revision_material_membership, MaterialMembershipRead, RevisionMaterialMembership,
     VerifiedMaterialRevision,
@@ -120,12 +121,15 @@ mod repair;
 mod retrieval_admission;
 mod scene_scope;
 mod scope_dependency_projection;
+pub use nir1_packing::{
+    read_and_pack_native_a2_context, NativeNir1PackingRequest, NativeNir1RawContextItem,
+};
 pub use retrieval_admission::{
     read_retrieval_query_context, read_retrieval_scene_source, read_revision_retrieval_eligibility,
     ChronicleRetrievalDocument, QueryIdentityState, RetrievalQueryContext,
     RetrievalQueryContextRead, RetrievalSceneSource, RetrievalSceneSourceBinding,
-    RetrievalSceneSourceRead, RevisionEligibilityRead, RevisionEligibilityReason,
-    RevisionEligibilitySnapshot,
+    RetrievalSceneSourceRead, RevisionEligibilityDecision, RevisionEligibilityRead,
+    RevisionEligibilityReason, RevisionEligibilitySnapshot,
 };
 mod revision_eligibility;
 pub use revision_eligibility::{
