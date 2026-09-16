@@ -40,6 +40,7 @@ description: >
 3. PR作成だけがゴールの場合も、PR／releaseの証跡が依頼範囲に含まれ、CIが許可されている場合に限り、focused検証後のcleanなcommit済みHEADで
    候補base／headを一度だけ解決し、同じ値で次を実行してcompleteなQuick receiptを直後に確認する。CI明示除外の作業ではQuickを開始せず、
    候補commitを保持してmerge／release readinessを主張しない。候補変更後は旧receiptを再利用しない。
+   上記のPR／release／CI条件を満たす場合だけ、次の固定値でQuickと直後のverifyを実行する。
 
    ```bash
    candidate_base="$(git rev-parse 'origin/master^{commit}')"

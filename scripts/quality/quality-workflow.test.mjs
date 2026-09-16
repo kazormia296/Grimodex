@@ -271,6 +271,7 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     ship,
     /CI明示除外の作業ではQuickを開始せず.*merge／release readiness/is,
   );
+  assert.match(ship, /上記のPR／release／CI条件を満たす場合だけ.*Quickと直後のverify/is);
   assert.match(ship, /mergeまでがゴールでCIが許可されている場合.*Full/is);
   assert.match(ship, /CIが明示的に除外されている場合はFullとmergeを開始せず/);
   assert.match(ship, /上記のmerge／CI条件を満たす場合だけ.*Fullと直後のverify/is);
