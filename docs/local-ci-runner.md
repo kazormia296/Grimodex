@@ -17,6 +17,20 @@ overlapping, `slots` reserves part of the global twelve-slot limit, and
 `timeoutMs` optionally shortens the task timeout. The runner validates IDs,
 dependencies, slot bounds, and cycles before starting a command.
 
+PR-bound Quick evidence is collected only after focused validation and the
+requested candidate commit. Confirm the candidate worktree is clean, resolve
+`candidate_base` and `candidate_head` once, and pass those same expanded values
+to Quick and its immediate verify. A later candidate change invalidates the old
+receipt. Commit-only or CI-excluded work keeps its candidate commit without
+starting Quick or claiming merge readiness. Investigation, review, or a change
+without a requested commit/PR does not create a commit or start PR-bound CI
+solely for Quick; an explicitly requested dirty working-tree run remains
+diagnostic evidence and cannot establish merge readiness.
+
+Product journeys wait for the created durable ID and its corresponding UI
+projection before editing. A visible selector alone is not a ready signal.
+
+
 The shared-Rust test obligation stays Cargo-native. Three two-slot tasks run the
 DB library, the DB integration targets plus `schema-contract`, and the rest of
 the workspace. The non-DB shard retains its doctests; a fourth Cargo task runs
@@ -58,8 +72,8 @@ its own 120-second timeout. The four-slot runtime contract task starts
 after workspace dependency bootstrap and can overlap independent gates. Runtime
 performance waits for it and every pre-runtime terminal task, then owns all
 twelve slots as the final group. Product journeys run as three fixed, disjoint
-processes covering 10, 9, and 9 catalog entries (28 total). Catalog order is
-retained within each shard, and only the shard containing the catalog's C2-ZC acceptance roles
+processes covering all 28 catalog entries as 10/9/9 shards. Catalog order is retained within
+each shard, and only the shard containing the catalog's C2-ZC acceptance roles
 sets `acceptanceRequired` and can complete C2-ZC acceptance. Each process
 has a calibrated two-slot scheduler admission weight. Exact co-load with all
 three journey processes, four-slot quality contracts, and two-slot browser tests

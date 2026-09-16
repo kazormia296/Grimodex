@@ -37,18 +37,26 @@ description: >
    any fixed capacity/quota threshold（GB、percentage、inode、その他numericを含む）、host-specific cache deletion list、deletion automationは使わない。
    thresholdsはrisk/workload/filesystem stateから導出し、hardcodeしない。このpreflightはread-onlyであり、must not
    auto-delete artifacts, kill other jobs, or rewrite temp paths。competing jobはcoordination stopであり、kill authorityではない。
-3. PR作成だけがゴールの場合も、cleanなcommit済みHEADで次を実行し、completeなQuick receiptを確認する。
+3. PR作成だけがゴールの場合も、PR／releaseの証跡が依頼範囲に含まれ、CIが許可されている場合に限り、focused検証後のcleanなcommit済みHEADで
+   候補base／headを一度だけ解決し、同じ値で次を実行してcompleteなQuick receiptを直後に確認する。CI明示除外の作業ではQuickを開始せず、
+   候補commitを保持してmerge／release readinessを主張しない。候補変更後は旧receiptを再利用しない。
+   上記のPR／release／CI条件を満たす場合だけ、次の固定値でQuickと直後のverifyを実行する。
 
    ```bash
-   pnpm ci:local:quick -- --base origin/master --head HEAD
-   pnpm ci:local:verify -- quick --base origin/master --head HEAD
+   candidate_base="$(git rev-parse 'origin/master^{commit}')"
+   candidate_head="$(git rev-parse 'HEAD^{commit}')"
+   pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
+   pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
    ```
 
-4. mergeまでがゴールの場合、初回Fullの前提として`git fetch origin master`後のcurrent `origin/master`がcandidate HEADの
+4. mergeまでがゴールでCIが許可されている場合、初回Fullの前提として`git fetch origin master`後のcurrent `origin/master`がcandidate HEADの
    祖先であることを確認する。branchが遅れていれば安全に更新してレビュー対象を取り直し、cleanなcommit済みHEADで最初のstageから
    やり直す。この前提を満たした後、shell-localの不変な`candidate_base`／`candidate_head`をそれぞれ
    `origin/master^{commit}`／`HEAD^{commit}`から一度だけ解決し、再代入せず同じ展開済み入力文字列をFullとそのreceiptの全verifyに渡す。
    短縮refや別の記録値へ切り替えない。
+
+   mergeまでが依頼されていてもCIが明示的に除外されている場合はFullとmergeを開始せず、merge readinessを主張しない。
+   上記のmerge／CI条件を満たす場合だけ、次の固定値でFullと直後のverifyを実行する。
 
    ```bash
    candidate_base="$(git rev-parse 'origin/master^{commit}')"

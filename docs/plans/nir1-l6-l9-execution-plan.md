@@ -229,11 +229,16 @@ retrievalの比較armは `R / R+IR / R+IR+Graph` とし、Graph改善は `R+IR` 
 
 全PR（R0、途中の機能PR、E、Pを含む）のmergeには、最新 `origin/master` を取り込んだcleanなcommit済みcandidate、Full、直後のverifyを要求する。baseまたはHEADが変わった場合はFullをstage 1から再実行し、古いreceiptを再利用しない。R0の機能受入れは文書・品質契約に限定するが、R0もmerge gate Mの対象であり、merge前にはFull＋verifyを実行する。R0の機能受入れではruntime journeyとactivationを実行しない。
 
-focused検証（候補commit前）:
+候補commit前のfocused検証は次のとおりで、R0のfocused test後に実行する。
 
     pnpm verify:quality
 
-候補commit後のPR用canonical Quickは、PR／releaseの証跡が依頼範囲に含まれ、CIが許可されている場合に限り、focused検証、依頼範囲内の候補commit、clean確認の順に完了してから実行する。commit-onlyまたはCI明示除外の作業ではQuickを開始せず候補commitを保持し、commitが依頼されていない調査・計画ではQuickのためだけにcommitを作らずCIも開始しない。working-tree評価は診断専用とする。
+commitが依頼範囲に含まれる場合はCI許可の有無にかかわらず候補commitを作成し、cleanな候補HEADで
+`candidate_base`／`candidate_head`を一度だけ解決する。PR／releaseの証跡が依頼されCIが許可された場合だけQuickと直後verifyを実行し、
+commit-onlyまたはCI明示除外の作業ではQuickを開始せず候補commitを保持してmerge／release readinessを主張しない。候補変更後は旧receiptを再利用しない。
+commit／PRを依頼されていない調査・計画ではcommitもCIも開始せず、working-treeの評価は診断専用とする。
+
+候補commit後のPR用Quick:
 
     candidate_base="$(git rev-parse 'origin/master^{commit}')"
     candidate_head="$(git rev-parse 'HEAD^{commit}')"
@@ -242,10 +247,10 @@ focused検証（候補commit前）:
 
 merge前のMは次のとおりで、rootの受入れ担当が候補をfreezeした後に実行する。
 
-    candidate_base="$(git rev-parse 'origin/master^{commit}')"
-    candidate_head="$(git rev-parse 'HEAD^{commit}')"
-    pnpm ci:local:full -- --base "$candidate_base" --head "$candidate_head"
-    pnpm ci:local:verify -- full --base "$candidate_base" --head "$candidate_head"
+    full_base="$(git rev-parse 'origin/master^{commit}')"
+    full_head="$(git rev-parse 'HEAD^{commit}')"
+    pnpm ci:local:full -- --base "$full_base" --head "$full_head"
+    pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"
 
 candidateのbase・head・tree・clean state・receipt directoryは境界時点で記録する。各ステップで同じSHAを過度に照合することや、receiptの見た目だけで承認を推定することはしない。
 
@@ -491,7 +496,16 @@ Graphでは巨大frontier、単一巨大行、allocation前検査、JSON/materia
 
 freeze後にfindingが出た場合は候補を再開し、関連receiptを無効化して再検証する。候補未編集の独立受入れ担当を置く。
 
-候補commit後のPR用Quick（PR／releaseの証跡が依頼されCIが許可された場合だけ、同じ固定値を直後verifyへ渡す）:
+候補commit前のfocused検証:
+
+    pnpm verify:quality
+
+commitが依頼範囲に含まれる場合はCI許可の有無にかかわらず、focused検証後に候補commitを作成し、cleanな候補HEADで
+`candidate_base`／`candidate_head`を一度だけ解決する。PR／releaseの証跡が依頼されCIが許可された場合だけQuickと直後verifyを実行し、
+commit-onlyまたはCI明示除外の作業ではQuickを開始せず候補commitを保持してmerge／release readinessを主張しない。候補変更後は旧receiptを再利用しない。
+commit／PRを依頼されていない調査・計画ではcommitもCIも開始せず、working-treeの評価は診断専用とする。
+
+候補commit後のPR用Quick:
 
     candidate_base="$(git rev-parse 'origin/master^{commit}')"
     candidate_head="$(git rev-parse 'HEAD^{commit}')"

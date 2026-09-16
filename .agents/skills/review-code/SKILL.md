@@ -27,6 +27,10 @@ candidate-untouched independent acceptance reviewer は、候補のファイル�
 - TipTap拡張の既知パターン違反
 - Electron IPC: allowlist漏れ、引数未検証、Envelope破壊、preload越しの過剰権限
 - Rust所有権: 不要な.clone()、Arc<T>で解決すべき箇所
+- immutable child／revisionを扱う変更では、復元・Decision書込・再読取・表示・receiptを同じimmutable IDへ固定し、
+  親`runId`だけで再選択していないこと、操作対象外Decisionが不変であることを確認する。
+- bounded lookupでは全体一覧をlimit後に絞って不存在と判定していないこと、mockがlimit・順序・cursorとN/N+1境界を
+  再現していることを確認する。
 
 P0〜P3のactionableなfindingだけを、対象箇所、影響、再現または根拠、推奨修正とともに報告する。
 スタイルの指摘や一般論は報告しない。

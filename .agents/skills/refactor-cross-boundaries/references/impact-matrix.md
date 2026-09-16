@@ -20,6 +20,9 @@
 - `null`、未指定、空文字列、旧永続形式の意味
 - async 処理中の設定変更と snapshot 境界
 - focused test、contract test、serialization test、representative end-to-end path
+- immutable child／revisionを跨ぐ復元、Decision書込、再読取、表示、receiptは同じimmutable IDへ固定し、親`runId`だけで
+  再選択しない。対象外Decisionの不変性を行の検証へ含める。
+- bounded lookupはlimit後の全体一覧を再絞り込みして不存在と判定しない。mockはlimit・順序・cursorとN/N+1境界を再現する。
 
 ## Lifecycle-owner completeness
 

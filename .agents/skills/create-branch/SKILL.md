@@ -23,10 +23,11 @@ description: >
    git remote -v
    ```
 
-   detached HEADまたは未コミットの変更がある場合は、既存の変更をstash、reset、checkout、削除で
-   隠さず、状況を報告して停止する。現在の作業ブランチが`master`／`main`以外でも、それを暗黙の
-   基点にはしない。既存作業を残したまま別worktreeで作る場合だけ、そのworktreeのclean状態と
-   場所を明示して続行する。
+   detached HEADは停止する。未コミットの変更がある場合は、既存の変更をstash、reset、checkout、削除で
+   隠さず、通常のin-place作成では状況を報告して停止する。現在の作業ブランチが`master`／`main`以外でも、
+   それを暗黙の基点にはしない。ユーザーが新worktreeを明示した場合だけ、元checkoutのdirty状態を記録して
+   保持したまま、指定保存先が未使用で新branchが衝突しないことを確認して続行する。作成先worktreeは
+   解決済み基点から作るcleanな状態でなければならない。
 
 2. 基点を解決する。
 
@@ -86,9 +87,24 @@ description: >
    このスキルの範囲ではcommit、push、PR作成、mergeを行わない。それらは依頼された場合に
    `/ship-branch`へ渡す。
 
+## 明示された新worktree
+
+ユーザーが新しいworktreeを明示した場合は、手順4で解決した基点から既存checkoutを変更せずに作成する。
+保存先とbranch名の衝突を先に確認し、次の形で`git worktree add -b`を使う。
+
+```bash
+git worktree add -b <new-branch> <new-worktree-path> <resolved-base>
+```
+
+`git worktree list --porcelain`で既存worktreeを確認し、保存先が存在しないこと、local／remote branchが未使用であることを確認する。
+既存の保存先、local／remote branch、または同名のworktreeがある場合は上書きせず停止する。作成後は
+`git -C <new-worktree-path> branch --show-current`、`git -C <new-worktree-path> rev-parse HEAD`、
+`git -C <new-worktree-path> status --short --branch`、`git -C <new-worktree-path> merge-base --is-ancestor <resolved-base> HEAD`
+で新worktreeのHEAD、clean状態、基点の子孫性を確認する。元のcheckoutは保持し、commit、push、mergeは行わない。
+
 ## 停止条件
 
-- 未コミット変更、既存branch名、解決不能な基点、fetch／pull失敗、baseのancestor検証失敗がある。
+- 通常のin-place作成で未コミット変更がある、または新worktree作成先で既存branch名／保存先／worktreeが衝突する、解決不能な基点、fetch／pull失敗、baseのancestor検証失敗がある。明示された新worktreeでは元checkoutのdirty状態は停止条件にせず、作成先のclean確認を必須とする。
 - ユーザーが指定した基点と実際に解決したrefが一致しない。
 - `origin/master`が更新された後に、古いローカル`master`から作ろうとしている。
 
