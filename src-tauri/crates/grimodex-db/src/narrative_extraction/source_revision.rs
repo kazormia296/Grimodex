@@ -31,6 +31,20 @@ pub(crate) fn resolve_source_revision(
             resolve_domain_projection(conn, project_id, source_key)
         }
         "codex-catalog" => resolve_codex_catalog(conn, project_id, source_key),
+        "codex-entry" | "codex-relation" => {
+            let token = super::nir1_entity_relation::typed_source_token_for_incremental(
+                conn, project_id, source_key,
+            )?;
+            token
+                .map(|value| CurrentSourceRevision {
+                    revision_token: value,
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_SOURCE_MISSING: typed Entity/Relation Source '{source_key}' was not found"
+                    )
+                })
+        }
         "scope-dependency-projection-v1" => ensure_non_empty_token(
             super::scope_dependency_projection::resolve(conn, project_id, run_id, source_key)?,
         ),
@@ -48,6 +62,19 @@ pub(crate) fn resolve_source_revision(
                 super::nir1_chronicle_index::source::read_eligibility_source(&tx, project_id)?
             } else {
                 super::nir1_chronicle_index::source::read_eligibility_source(conn, project_id)?
+            };
+            ensure_non_empty_token(source.digest)
+        }
+        super::nir1_entity_relation_index::SOURCE_KIND => {
+            anyhow::ensure!(
+                source_key == super::nir1_entity_relation_index::source_key(project_id),
+                "NEX_SOURCE_KEY_INVALID: Entity/Relation eligibility Source must belong to the exact project"
+            );
+            let source = if conn.is_autocommit() {
+                let tx = conn.unchecked_transaction()?;
+                super::nir1_entity_relation_index::read_eligibility_source(&tx, project_id)?
+            } else {
+                super::nir1_entity_relation_index::read_eligibility_source(conn, project_id)?
             };
             ensure_non_empty_token(source.digest)
         }

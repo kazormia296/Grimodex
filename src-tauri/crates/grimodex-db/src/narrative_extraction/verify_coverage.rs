@@ -393,8 +393,10 @@ pub(crate) fn verify_application_revision_artifact_references(
 /// metadata `index_key` must equal the D1 `consumer_key` and freshness
 /// `consumer_key`; metadata `generation` must equal the active sealed D1
 /// head's `producer_generation`; and metadata `dependency_set_digest` must
-/// equal the active sealed D1 declaration set's digest. Only that complete
-/// binding is removed from reserved counts; mixed unknown rows stay visible.
+/// equal the active sealed D1 declaration set's digest. A structurally
+/// registered binding is removed from reserved counts even when its live
+/// source, epoch, Freshness, or dirty flag requires a rebuild; mixed unknown
+/// rows stay visible. Live usability remains a separate producer check.
 pub(crate) fn verify_semantic_index_checks(
     conn: &Connection,
     project_id: &str,
@@ -448,6 +450,27 @@ pub(crate) fn verify_semantic_index_checks(
     )? {
         let known_edge_count: i64 = conn.query_row("SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id=?1 AND consumer_kind='semantic-index' AND consumer_key=?2",
             params![project_id,super::nir1_chronicle_index::INDEX_KEY],|row|row.get(0))?;
+        for (surface, known) in [
+            ("metadataRows", 1),
+            ("activeD1HeadRows", 1),
+            ("v1EdgeRows", usize::try_from(known_edge_count)?),
+            ("consumerFreshnessRows", 1),
+        ] {
+            let raw = reserved_counts
+                .get_mut(surface)
+                .ok_or_else(|| anyhow::anyhow!("missing semantic index surface"))?;
+            *raw = raw.checked_sub(known).ok_or_else(|| {
+                anyhow::anyhow!("declared semantic index count exceeds observed count")
+            })?;
+        }
+    }
+    if super::nir1_entity_relation_index::is_registered(
+        conn,
+        project_id,
+        super::nir1_entity_relation_index::INDEX_KEY,
+    )? {
+        let known_edge_count: i64 = conn.query_row("SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id=?1 AND consumer_kind='semantic-index' AND consumer_key=?2",
+            params![project_id,super::nir1_entity_relation_index::INDEX_KEY],|row|row.get(0))?;
         for (surface, known) in [
             ("metadataRows", 1),
             ("activeD1HeadRows", 1),

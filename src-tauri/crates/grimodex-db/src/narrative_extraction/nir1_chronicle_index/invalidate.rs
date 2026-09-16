@@ -1,7 +1,8 @@
 use anyhow::{ensure, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::INDEX_KEY;
+use super::super::nir1_entity_relation_index::INDEX_KEY as GRAPH_INDEX_KEY;
+use super::INDEX_KEY as CHRONICLE_INDEX_KEY;
 
 /// Invalidation owns no Freshness verdict. A committed dirty change makes every
 /// previously lent Native proof unusable in the same SQL commit. The published
@@ -9,11 +10,15 @@ use super::INDEX_KEY;
 /// publishes the next generation; dirtying must not corrupt that identity.
 /// This also dirties a malformed known-key row without granting it authority.
 pub(crate) fn suspend_project_in_tx(conn: &Connection, project: &str) -> Result<()> {
-    let generation: Option<i64> = conn.query_row(
-        "SELECT generation FROM narrative_semantic_index_metadata WHERE project_id=?1 AND index_key=?2",
-        params![project,INDEX_KEY],|row|row.get(0),
-    ).optional()?;
-    if generation.is_none() {
+    let has_binding: bool = conn.query_row(
+        "SELECT EXISTS(
+                 SELECT 1 FROM narrative_semantic_index_metadata
+                  WHERE project_id=?1 AND index_key IN (?2, ?3)
+             )",
+        params![project, CHRONICLE_INDEX_KEY, GRAPH_INDEX_KEY],
+        |row| row.get(0),
+    )?;
+    if !has_binding {
         return Ok(());
     }
     ensure!(
@@ -22,8 +27,8 @@ pub(crate) fn suspend_project_in_tx(conn: &Connection, project: &str) -> Result<
     );
     conn.execute(
         "UPDATE narrative_semantic_index_metadata SET dirty_cache_flag=1
-         WHERE project_id=?1 AND index_key=?2",
-        params![project, INDEX_KEY],
+         WHERE project_id=?1 AND index_key IN (?2, ?3)",
+        params![project, CHRONICLE_INDEX_KEY, GRAPH_INDEX_KEY],
     )?;
     Ok(())
 }

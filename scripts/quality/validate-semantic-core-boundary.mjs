@@ -84,7 +84,7 @@ const REQUIRED_SEMANTIC_INDEX_FOOTPRINT_SURFACES = Object.freeze([
   }),
 ]);
 
-const APPROVED_NIR1_INDEX_BINDING = Object.freeze({
+const APPROVED_NIR1_CHRONICLE_INDEX_BINDING = Object.freeze({
   "consumerKey": "nir1-reviewed-chronicle:v1",
   "producerId": "nir1-reviewed-chronicle-v1",
   "producerVersion": "nir1-reviewed-chronicle/v1",
@@ -111,13 +111,54 @@ const APPROVED_NIR1_INDEX_BINDING = Object.freeze({
   "queryUsability": "canonical-fresh-and-clean-current-native-proof",
   "unknownOrIncoherentBinding": "manual-terminal"
 });
-const APPROVED_NIR1_CONSUMER_BINDING = Object.freeze({
+const APPROVED_NIR1_ENTITY_RELATION_INDEX_BINDING = Object.freeze({
+  "consumerKey": "nir1-reviewed-entity-relation:v1",
+  "producerId": "nir1-reviewed-entity-relation-v1",
+  "producerVersion": "nir1-reviewed-entity-relation/v1",
+  "registryGeneration": "nir1-reviewed-entity-relation/v1",
+  "declarationSetGeneration": "positive-monotonic-per-project",
+  "metadataBinding": {
+    "indexKey": "equals-consumer-key",
+    "producerId": "explicit-exact-producer-id",
+    "producerVersion": "explicit-exact-producer-version",
+    "generation": "equals-active-sealed-D1-head-consumer-scoped-generation",
+    "dependencySetDigest": "equals-active-sealed-D1-set-digest"
+  },
+  "eligibilitySource": {
+    "kind": "nir1-entity-relation-eligibility-set",
+    "keyFormat": "project:nir1-entity-relation-eligibility:{projectId}",
+    "digestBasis": "sorted-qualified-current-revision-object-revision-decision-source-token-roster",
+    "freshnessInDigest": "forbidden"
+  },
+  "writer": {
+    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+    "symbol": "publish_nir1_entity_relation_index_in_tx"
+  },
+  "recognizedUnavailable": "rebuildable-not-query-usable",
+  "queryUsability": "canonical-fresh-and-clean-current-native-proof",
+  "unknownOrIncoherentBinding": "manual-terminal"
+});
+const APPROVED_NIR1_INDEX_BINDINGS = Object.freeze([
+  APPROVED_NIR1_CHRONICLE_INDEX_BINDING,
+  APPROVED_NIR1_ENTITY_RELATION_INDEX_BINDING,
+]);
+const APPROVED_NIR1_CHRONICLE_CONSUMER_BINDING = Object.freeze({
   "consumerKey": "nir1-reviewed-chronicle:v1",
   "producerId": "nir1-reviewed-chronicle-v1",
   "producerVersion": "nir1-reviewed-chronicle/v1",
   "registryGeneration": "nir1-reviewed-chronicle/v1"
 });
-const APPROVED_NIR1_PRODUCER = Object.freeze({
+const APPROVED_NIR1_ENTITY_RELATION_CONSUMER_BINDING = Object.freeze({
+  "consumerKey": "nir1-reviewed-entity-relation:v1",
+  "producerId": "nir1-reviewed-entity-relation-v1",
+  "producerVersion": "nir1-reviewed-entity-relation/v1",
+  "registryGeneration": "nir1-reviewed-entity-relation/v1"
+});
+const APPROVED_NIR1_CONSUMER_BINDINGS = Object.freeze([
+  APPROVED_NIR1_CHRONICLE_CONSUMER_BINDING,
+  APPROVED_NIR1_ENTITY_RELATION_CONSUMER_BINDING,
+]);
+const APPROVED_NIR1_CHRONICLE_PRODUCER = Object.freeze({
   "id": "nir1-reviewed-chronicle-v1",
   "writer": {
     "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
@@ -129,6 +170,22 @@ const APPROVED_NIR1_PRODUCER = Object.freeze({
   "producerVersion": "nir1-reviewed-chronicle/v1",
   "declaration": "NIR-1 reviewed Chronicle current eligibility Source and complete admitted Scene Source dependencies"
 });
+const APPROVED_NIR1_ENTITY_RELATION_PRODUCER = Object.freeze({
+  "id": "nir1-reviewed-entity-relation-v1",
+  "writer": {
+    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+    "symbol": "publish_nir1_entity_relation_index_in_tx"
+  },
+  "generation": "nir1-reviewed-entity-relation/v1",
+  "consumerKind": "semantic-index",
+  "consumerKey": "nir1-reviewed-entity-relation:v1",
+  "producerVersion": "nir1-reviewed-entity-relation/v1",
+  "declaration": "NIR-1 reviewed Entity/Relation qualified current revision roster and object-token dependencies"
+});
+const APPROVED_NIR1_PRODUCERS = Object.freeze([
+  APPROVED_NIR1_CHRONICLE_PRODUCER,
+  APPROVED_NIR1_ENTITY_RELATION_PRODUCER,
+]);
 
 const REQUIRED_SEMANTIC_INDEX_UNAPPROVED_DECISIONS = Object.freeze([
   "fixed-keys",
@@ -1402,8 +1459,8 @@ export function validateSemanticIndexReservation(matrix, errors) {
   if (footprint?.classification !== "exclude-only-validated-declared-bindings") {
     errors.push("semantic-index footprint must exclude only validated declared bindings, never a known key alone");
   }
-  if (!isDeepStrictEqual(reservation.declaredBindings, [APPROVED_NIR1_INDEX_BINDING])) {
-    errors.push("semantic-index must retain the exact approved NIR-1 binding only");
+  if (!isDeepStrictEqual(reservation.declaredBindings, APPROVED_NIR1_INDEX_BINDINGS)) {
+    errors.push("semantic-index must retain the exact approved NIR-1 Chronicle and Entity/Relation bindings");
   }
 
   const chunkRows = reservation.chunkRows;
@@ -1459,16 +1516,16 @@ export function validateSemanticIndexReservation(matrix, errors) {
 }
 
 export function validateSemanticIndexDeclaredBindings(matrix, consumerContract, producerRegistry, errors) {
-  if (!isDeepStrictEqual(matrix?.semanticIndexReservation?.declaredBindings, [APPROVED_NIR1_INDEX_BINDING])) {
-    errors.push("semantic-index must retain the exact approved NIR-1 binding only");
+  if (!isDeepStrictEqual(matrix?.semanticIndexReservation?.declaredBindings, APPROVED_NIR1_INDEX_BINDINGS)) {
+    errors.push("semantic-index must retain the exact approved NIR-1 Chronicle and Entity/Relation bindings");
   }
   const consumers = consumerContract?.consumerKinds?.filter((entry) => entry?.kind === "semantic-index") ?? [];
-  if (consumers.length !== 1 || !isDeepStrictEqual(consumers[0]?.declaredBindings, [APPROVED_NIR1_CONSUMER_BINDING])) {
-    errors.push("semantic-index consumer must declare exactly the approved NIR-1 identity tuple");
+  if (consumers.length !== 1 || !isDeepStrictEqual(consumers[0]?.declaredBindings, APPROVED_NIR1_CONSUMER_BINDINGS)) {
+    errors.push("semantic-index consumer must declare the exact approved NIR-1 Chronicle and Entity/Relation identity tuples");
   }
-  const producers = producerRegistry?.entries?.filter((entry) => entry?.consumerKind === "semantic-index" || entry?.id === APPROVED_NIR1_PRODUCER.id) ?? [];
-  if (!isDeepStrictEqual(producers, [APPROVED_NIR1_PRODUCER])) {
-    errors.push("semantic-index producer registry must retain the exact approved NIR-1 binding and monotonic D1 generation, never a fixed declarationSetGeneration");
+  const producers = producerRegistry?.entries?.filter((entry) => entry?.consumerKind === "semantic-index") ?? [];
+  if (!isDeepStrictEqual(producers, APPROVED_NIR1_PRODUCERS)) {
+    errors.push("semantic-index producer registry must retain the exact approved NIR-1 Chronicle and Entity/Relation bindings and monotonic D1 generation, never a fixed declarationSetGeneration");
   }
 }
 
@@ -7243,7 +7300,7 @@ export function validateConsumerContract(repoRoot, contract, errors) {
     );
   } else {
     const [semanticIndex] = semanticIndexEntries;
-    if (!isDeepStrictEqual(semanticIndex.declaredBindings, [APPROVED_NIR1_CONSUMER_BINDING])) {
+    if (!isDeepStrictEqual(semanticIndex.declaredBindings, APPROVED_NIR1_CONSUMER_BINDINGS)) {
       errors.push("semantic-index consumer must declare exactly the approved NIR-1 identity tuple");
     }
     if (semanticIndex.status !== "reserved") {

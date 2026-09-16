@@ -354,6 +354,7 @@ const NIR1_CACHE_WRITERS = {
   narrative_semantic_index_metadata: [
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/invalidate.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
   ],
   narrative_nir1_chronicle_vectors: [
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
@@ -362,8 +363,9 @@ const NIR1_CACHE_WRITERS = {
 
 export function isAllowedForWriter(relativePath, writer, table) {
   const normalized = relativePath.replaceAll("\\", "/");
-  // A cache publisher receives only these table-specific exact paths. Adding
-  // its generic filename to writer-wide basename matching would grant more.
+  // Semantic-index cache publishers receive only these table-specific exact
+  // paths. Adding a generic filename to writer-wide basename matching would
+  // grant more than the approved binding surface.
   if (
     writer === "narrative.authority" &&
     NIR1_CACHE_WRITERS[table]?.includes(normalized)

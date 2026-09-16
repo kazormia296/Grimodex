@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
 };
 
 use anyhow::{anyhow, Result};
@@ -15,6 +18,7 @@ use crate::{read_sqlite_source_revision, Database};
 pub struct NirChronicleIndexRuntime {
     owner: u64,
     connection_epoch: Option<String>,
+    cancellation_epoch: Arc<AtomicU64>,
     state: Mutex<RuntimeState>,
 }
 
@@ -107,6 +111,7 @@ impl NirChronicleIndexRuntime {
         Self {
             owner,
             connection_epoch,
+            cancellation_epoch: Arc::new(AtomicU64::new(1)),
             state: Mutex::new(RuntimeState {
                 epoch: 1,
                 embedding_generation: None,
@@ -140,6 +145,38 @@ impl NirChronicleIndexRuntime {
         })
     }
 
+    /// Admit a native index build through the same workspace-bound runtime
+    /// owner and cancellation epoch used by the Chronicle producer. The
+    /// returned pair is intentionally opaque to callers: it is only a
+    /// process-local capability for a later publication recheck.
+    pub(crate) fn admit_native_build(&self, conn: &Connection) -> Result<Option<(u64, u64)>> {
+        Ok(match self.current_epoch(conn)? {
+            Ok(epoch) => Some((self.owner, epoch)),
+            Err(_) => None,
+        })
+    }
+
+    /// Revalidate a previously admitted native build at the publication
+    /// boundary. Pause/resume, stop, workspace replacement and embedding
+    /// runtime replacement all rotate or invalidate this owner/epoch pair.
+    pub(crate) fn native_build_is_current(
+        &self,
+        conn: &Connection,
+        owner: u64,
+        epoch: u64,
+    ) -> Result<bool> {
+        Ok(self.owner == owner && self.current_epoch(conn)? == Ok(epoch))
+    }
+
+    /// A read-only callback-safe view of the same epoch used by native build
+    /// admission.  SQLite's progress handler cannot call back into the
+    /// connection, so the scan compares this atomic signal every 1,000 VM
+    /// steps while the normal connection-bound check remains the publication
+    /// authority.
+    pub(crate) fn native_build_cancellation_epoch(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.cancellation_epoch)
+    }
+
     pub(super) fn owner(&self) -> u64 {
         self.owner
     }
@@ -160,6 +197,8 @@ impl NirChronicleIndexRuntime {
                 .epoch
                 .checked_add(1)
                 .ok_or_else(|| anyhow!("NIR1 runtime epoch exhausted"))?;
+            self.cancellation_epoch
+                .store(state.epoch, Ordering::Release);
             state.proofs.clear();
             state.embedding_generation = Some(generation);
         }
@@ -186,6 +225,8 @@ impl NirChronicleIndexRuntime {
             .epoch
             .checked_add(1)
             .ok_or_else(|| anyhow!("NIR1 runtime epoch exhausted"))?;
+        self.cancellation_epoch
+            .store(state.epoch, Ordering::Release);
         state.proofs.clear();
         state.stopped |= stop;
         state.active = active && !state.stopped;

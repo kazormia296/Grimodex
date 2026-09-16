@@ -120,6 +120,12 @@
                 "producerId": "nir1-reviewed-chronicle-v1",
                 "producerVersion": "nir1-reviewed-chronicle/v1",
                 "registryGeneration": "nir1-reviewed-chronicle/v1"
+              },
+              {
+                "consumerKey": "nir1-reviewed-entity-relation:v1",
+                "producerId": "nir1-reviewed-entity-relation-v1",
+                "producerVersion": "nir1-reviewed-entity-relation/v1",
+                "registryGeneration": "nir1-reviewed-entity-relation/v1"
               }
             ]
           }

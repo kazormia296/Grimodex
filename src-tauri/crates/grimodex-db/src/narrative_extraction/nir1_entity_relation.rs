@@ -1553,6 +1553,34 @@ pub fn read_nir1_entity_relation_revision_current_for_revision(
     read_typed_revision_core(conn, project_id, revision_id, true)
 }
 
+/// Crate-private projection for the Native Graph Index producer. The exact
+/// A2 reader above remains the qualification authority; this accessor only
+/// attaches the unique latest Decision id that the Graph roster records.
+pub(crate) fn read_nir1_entity_relation_revision_current_for_graph_index(
+    conn: &Connection,
+    project_id: &str,
+    revision_id: &str,
+) -> anyhow::Result<Option<(Nir1EntityRelationRevision, String)>> {
+    let response = read_typed_revision_core(conn, project_id, revision_id, true)?;
+    let Nir1EntityRelationRevisionCurrentRead::Available(revision) = response else {
+        return Ok(None);
+    };
+    let decision_id: Option<String> = conn
+        .query_row(
+            "SELECT id
+               FROM narrative_proposal_decisions
+              WHERE proposal_id = ?1 AND revision_id = ?2
+              ORDER BY created_at DESC, id DESC
+              LIMIT 1",
+            params![revision.proposal_id, revision.revision_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let decision_id =
+        decision_id.ok_or_else(|| anyhow::anyhow!("NIR1_ENTITY_RELATION_DECISION_MISSING"))?;
+    Ok(Some((*revision, decision_id)))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Nir1EntityRelationRevisionRestoreMatch {
     pub run_id: String,
@@ -3418,13 +3446,16 @@ mod tests {
         NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_PROPOSAL_KIND,
         NIR1_ENTITY_RELATION_REVISION_ORIGIN, NIR1_ENTITY_RELATION_SET_KIND,
     };
+    use crate::domain_writes::{tree_node_patch, TreeNodePatchPayload};
     use crate::narrative_extraction::change_feed::get_changes_since;
+    use crate::narrative_extraction::change_feed::NarrativeChangeOrigin;
     use crate::narrative_extraction::incremental_freshness::{
         run_incremental_freshness_cycle, IncrementalFreshnessCycleOutcome,
     };
     use crate::narrative_extraction::material_membership::{
         read_revision_material_membership, MaterialMembershipRead,
     };
+    use crate::narrative_extraction::nir1_entity_relation_index;
     use crate::narrative_extraction::revision_eligibility::RevisionFreshnessReason;
     use crate::narrative_extraction::{
         narrative_extraction_append_human_decision, narrative_extraction_append_revision,
@@ -3437,6 +3468,7 @@ mod tests {
     use crate::Database;
     use grimodex_core::narrative_nir1::{
         EntityInput, EntityRelationBundle, EvidenceInput, GraphEdgeInput, ScopeBinding, ScopeValue,
+        MAX_GRAPH_INPUT_BYTES,
     };
     use grimodex_core::narrative_project_scope_authority::{
         build_narrative_project_scope_authority_v1, NarrativeProjectScopeAuthoritySceneInputV1,
@@ -5479,6 +5511,88 @@ mod tests {
     }
 
     #[test]
+    fn graph_index_publishes_sealed_roster_and_reopens_complete() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+
+        let snapshot = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let binding = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx, &runtime, snapshot,
+            )?;
+            tx.commit()?;
+            Ok(binding)
+        })?;
+        assert_eq!(binding.generation, 1);
+        let repeated = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let repeated_binding = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx, &runtime, repeated,
+            )?;
+            tx.commit()?;
+            Ok(binding)
+        })?;
+        assert_eq!(repeated_binding.generation, 2);
+        assert!(db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::is_complete_registered(
+                conn,
+                "default-project",
+                nir1_entity_relation_index::INDEX_KEY,
+            )
+        })?);
+        let report = db.with_read_transaction(|conn| {
+            super::super::restore_rebuild::verify_narrative_dependency_graph_for_project(
+                conn,
+                "default-project",
+            )
+        })?;
+        assert!(report.edge_ids_with_malformed_keys.is_empty());
+        assert!(report.edge_ids_with_missing_source.is_empty());
+        assert!(report.edge_ids_with_unresolvable_consumer_scope.is_empty());
+        let counts = db.with_conn(|conn| {
+            let edge_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edges
+                  WHERE project_id='default-project' AND consumer_kind='semantic-index'
+                    AND consumer_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| row.get(0),
+            )?;
+            let generation: i64 = conn.query_row(
+                "SELECT generation FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| row.get(0),
+            )?;
+            let graph_dirty: i64 = conn.query_row(
+                "SELECT dirty_cache_flag FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| row.get(0),
+            )?;
+            let chronicle_dirty: i64 = conn.query_row(
+                "SELECT COALESCE((SELECT dirty_cache_flag
+                                    FROM narrative_semantic_index_metadata
+                                   WHERE project_id='default-project'
+                                     AND index_key='nir1-reviewed-chronicle:v1'), 0)",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok((edge_count, generation, graph_dirty, chronicle_dirty))
+        })?;
+        assert_eq!(counts, (4, 2, 0, 0));
+        Ok(())
+    }
+
+    #[test]
     fn a3_positive_read_revalidates_exact_revision_scope_and_reveal_state() -> anyhow::Result<()> {
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
@@ -5952,6 +6066,273 @@ mod tests {
     }
 
     #[test]
+    fn graph_index_dirty_keeps_generation_and_invalidates_usability() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let snapshot = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx, &runtime, snapshot,
+            )?;
+            tx.commit()?;
+            Ok(())
+        })?;
+
+        append_typed_decision(&db, "nir1-run", &created, "rejected")?;
+        let metadata = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT generation,dirty_cache_flag FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(metadata, (1, 1));
+        assert!(db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::is_registered(
+                conn,
+                "default-project",
+                nir1_entity_relation_index::INDEX_KEY,
+            )
+        })?);
+        assert!(!db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::is_complete_registered(
+                conn,
+                "default-project",
+                nir1_entity_relation_index::INDEX_KEY,
+            )
+        })?);
+        let (digest_check, generation_check) = db.with_read_transaction(|conn| {
+            super::super::verify_coverage::verify_semantic_index_checks(conn, "default-project")
+        })?;
+        assert!(digest_check.is_consistent());
+        assert!(generation_check.is_consistent());
+        let report = db.with_read_transaction(|conn| {
+            super::super::restore_rebuild::verify_narrative_dependency_graph_for_project(
+                conn,
+                "default-project",
+            )
+        })?;
+        assert!(report.edge_ids_with_unresolvable_consumer_scope.is_empty());
+
+        let rebuilt = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let rebuilt_binding = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx, &runtime, rebuilt,
+            )?;
+            tx.commit()?;
+            Ok(binding)
+        })?;
+        assert_eq!(rebuilt_binding.generation, 2);
+        assert!(db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::is_complete_registered(
+                conn,
+                "default-project",
+                nir1_entity_relation_index::INDEX_KEY,
+            )
+        })?);
+        let rebuilt_edge_count: i64 = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edges
+                  WHERE project_id='default-project' AND consumer_kind='semantic-index'
+                    AND consumer_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(
+            rebuilt_edge_count, 1,
+            "revoked roster rebuilds to source-only Graph"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn graph_index_real_source_and_scope_writers_dirty_and_reject_old_snapshot(
+    ) -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let initial_source_snapshot = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx,
+                &runtime,
+                initial_source_snapshot,
+            )?;
+            tx.commit()?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+        let source_snapshot = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let source_before = db.with_read_transaction(graph_surface_snapshot)?;
+        let event_uid = uuid::Uuid::new_v4().to_string();
+        tree_node_patch(
+            &db,
+            TreeNodePatchPayload {
+                project_id: "default-project".into(),
+                request_id: format!("graph-source-{event_uid}"),
+                session_id: "graph-source-session".into(),
+                event_uid: event_uid.clone(),
+                node_id: "nir1".into(),
+                patch: json!({"content":"graph source writer mutation"})
+                    .as_object()
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("source patch must be an object"))?,
+                base_version: None,
+                bump_version: true,
+                updated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                change_event: None,
+                timelapse_doc_step_coverage: None,
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                source_domain: None,
+                op_type: None,
+                canonical_payload: None,
+            },
+        )?;
+        let source_after_mutation = db.with_read_transaction(graph_surface_snapshot)?;
+        assert_ne!(source_before, source_after_mutation);
+        let source_metadata: (i64, i64) = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT generation,dirty_cache_flag FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(source_metadata, (1, 1));
+        let source_error = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let error = match nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx,
+                &runtime,
+                source_snapshot,
+            ) {
+                Ok(_) => anyhow::bail!("source writer must reject the old Graph snapshot"),
+                Err(error) => error.to_string(),
+            };
+            tx.rollback()?;
+            Ok::<_, anyhow::Error>(error)
+        })?;
+        assert!(
+            source_error.contains("NIR1_GRAPH_SNAPSHOT_STALE"),
+            "{source_error}"
+        );
+        assert_eq!(
+            db.with_read_transaction(graph_surface_snapshot)?,
+            source_after_mutation,
+            "source rejection must roll back Graph writes"
+        );
+
+        let db = fresh_migrated_memory()?;
+        let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let initial_scope_snapshot = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx,
+                &runtime,
+                initial_scope_snapshot,
+            )?;
+            tx.commit()?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+        let scope_snapshot = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let scope_before = db.with_read_transaction(graph_surface_snapshot)?;
+        let current_scope = db.with_read_transaction(|conn| {
+            super::super::scene_scope::read_narrative_scene_scope(conn, "default-project", "nir1")
+        })?;
+        let mut material_constraint = current_scope.binding.material_constraint.clone();
+        material_constraint.timeline = NarrativeScopeConstraintV1::Unresolved {
+            reason: "graph-scope-writer-test".into(),
+        };
+        update_narrative_scene_scope(
+            &db,
+            NarrativeSceneScopeUpdatePayload {
+                project_id: "default-project".into(),
+                scene_id: "nir1".into(),
+                request_id: "graph-scope-writer-request".into(),
+                session_id: "graph-scope-writer-session".into(),
+                event_uid: "graph-scope-writer-event".into(),
+                base_version: current_scope.binding.version,
+                updated_at: "2026-09-17T00:00:02.000Z".into(),
+                scope: super::super::scene_scope::NarrativeSceneScopeUpdateV1 {
+                    schema_version: current_scope.binding.schema_version,
+                    compatibility_marker: current_scope.binding.compatibility_marker,
+                    query_identity: current_scope.binding.query_identity.clone(),
+                    material_constraint,
+                    knowledge_holder: current_scope.binding.knowledge_holder.clone(),
+                    audience: current_scope.binding.audience.clone(),
+                },
+            },
+        )?;
+        let scope_after_mutation = db.with_read_transaction(graph_surface_snapshot)?;
+        assert_ne!(scope_before, scope_after_mutation);
+        let scope_metadata: (i64, i64) = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT generation,dirty_cache_flag FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(scope_metadata, (1, 1));
+        let scope_error = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let error = match nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx,
+                &runtime,
+                scope_snapshot,
+            ) {
+                Ok(_) => anyhow::bail!("scope writer must reject the old Graph snapshot"),
+                Err(error) => error.to_string(),
+            };
+            tx.rollback()?;
+            Ok::<_, anyhow::Error>(error)
+        })?;
+        assert!(
+            scope_error.contains("NIR1_GRAPH_SNAPSHOT_STALE"),
+            "{scope_error}"
+        );
+        assert_eq!(
+            db.with_read_transaction(graph_surface_snapshot)?,
+            scope_after_mutation,
+            "scope rejection must roll back Graph writes"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a3_pov_requires_an_explicit_visible_query_viewpoint_match() -> anyhow::Result<()> {
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
@@ -6032,6 +6413,63 @@ mod tests {
             Nir1EntityRelationDisclosureRead::Unavailable { ref reason }
                 if reason == "a3-query-viewpoint-unavailable"
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_index_rejects_tampered_snapshot_before_generation_write() -> anyhow::Result<()> {
+        let (db, runtime, _) = published_graph_fixture()?;
+        let before = db.with_read_transaction(graph_surface_snapshot)?;
+
+        for tamper in 0..3 {
+            let mut snapshot = db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::prepare_graph_index_build(
+                    conn,
+                    &runtime,
+                    "default-project",
+                )
+            })?;
+            let mut edges = snapshot.edges_for_test();
+            match tamper {
+                0 => {
+                    edges.pop();
+                }
+                1 => {
+                    let mut extra = edges
+                        .first()
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("Graph fixture has no edges"))?;
+                    extra.id.clear();
+                    extra.source_object_identity = "codex:graph-extra".into();
+                    extra.read_set_json = "[\"graph-extra-token\"]".into();
+                    edges.push(extra);
+                }
+                2 => {
+                    let first = edges
+                        .first_mut()
+                        .ok_or_else(|| anyhow::anyhow!("Graph fixture has no edges"))?;
+                    first.read_set_json = "[\"graph-tampered-token\"]".into();
+                }
+                _ => unreachable!("bounded tamper cases"),
+            }
+            snapshot.replace_edges_for_test(edges);
+
+            let (error, during, after) = db.with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                    &tx, &runtime, snapshot,
+                )
+                .expect_err("tampered Graph V1 set must be denied before D1 write")
+                .to_string();
+                let during = graph_surface_snapshot(&tx)?;
+                tx.rollback()?;
+                let after = graph_surface_snapshot(conn)?;
+                Ok::<_, anyhow::Error>((error, during, after))
+            })?;
+            assert!(error.contains("NIR1_GRAPH_SNAPSHOT_EDGES_MISMATCH"));
+            assert_eq!(during, before, "rejection must precede every surface write");
+            assert_eq!(after, before, "rollback must preserve every Graph surface");
+        }
         Ok(())
     }
 
@@ -6227,6 +6665,97 @@ mod tests {
                 recovered,
                 Nir1EntityRelationDisclosureRead::Eligible(_)
             ));
+            Ok(())
+        })();
+        for suffix in ["", "-wal", "-shm"] {
+            let mut candidate = path.as_os_str().to_owned();
+            candidate.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(candidate));
+        }
+        result
+    }
+
+    #[test]
+    fn graph_index_publish_failpoint_rolls_back_and_cold_reopens() -> anyhow::Result<()> {
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-nir1-graph-failpoint-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let result = (|| -> anyhow::Result<()> {
+            let db = Database::new(&path)?;
+            db.migrate()?;
+            let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+            seed_run_and_catalog(&db)?;
+            let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+            approve_typed_revision(&db, "nir1-run", &created)?;
+
+            let first = db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::prepare_graph_index_build(
+                    conn,
+                    &runtime,
+                    "default-project",
+                )
+            })?;
+            db.with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                    &tx, &runtime, first,
+                )?;
+                tx.commit()?;
+                Ok::<_, anyhow::Error>(())
+            })?;
+            let before = db.with_read_transaction(graph_surface_snapshot)?;
+            let second = db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::prepare_graph_index_build(
+                    conn,
+                    &runtime,
+                    "default-project",
+                )
+            })?;
+            db.with_conn(|conn| {
+                conn.execute_batch(
+                    "CREATE TEMP TRIGGER nir1_graph_failpoint
+                       BEFORE UPDATE OF generation
+                         ON narrative_semantic_index_metadata
+                        WHEN OLD.project_id='default-project'
+                         AND OLD.index_key='nir1-reviewed-entity-relation:v1'
+                         AND NEW.generation=2
+                     BEGIN
+                       SELECT RAISE(ABORT, 'NIR1_GRAPH_FAILPOINT');
+                     END;",
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })?;
+
+            db.with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                    &tx, &runtime, second,
+                )
+                .expect_err("metadata failpoint must abort the publication")
+                .to_string();
+                assert!(error.contains("NIR1_GRAPH_FAILPOINT"), "{error}");
+                let during = graph_surface_snapshot(&tx)?;
+                assert_ne!(
+                    during, before,
+                    "D1/V1 writes must be observable before the failpoint rollback"
+                );
+                tx.rollback()?;
+                let after = graph_surface_snapshot(conn)?;
+                assert_eq!(after, before, "rollback must remove all partial surfaces");
+                Ok::<_, anyhow::Error>(())
+            })?;
+            drop(runtime);
+            drop(db);
+
+            let cold_db = Database::new(&path)?;
+            cold_db.migrate()?;
+            let cold = cold_db.with_read_transaction(graph_surface_snapshot)?;
+            assert_eq!(
+                cold, before,
+                "cold reopen must retain the prior generation only"
+            );
+            assert_graph_binding_usable(&cold_db)?;
             Ok(())
         })();
         for suffix in ["", "-wal", "-shm"] {
@@ -6496,5 +7025,1128 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    fn published_graph_fixture() -> anyhow::Result<(
+        crate::Database,
+        super::super::nir1_chronicle_index::NirChronicleIndexRuntime,
+        serde_json::Value,
+    )> {
+        let db = fresh_migrated_memory()?;
+        let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let snapshot = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx, &runtime, snapshot,
+            )?;
+            tx.commit()?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+        Ok((db, runtime, created))
+    }
+
+    fn assert_graph_binding_usable(db: &crate::Database) -> anyhow::Result<()> {
+        assert!(db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::is_registered(
+                conn,
+                "default-project",
+                nir1_entity_relation_index::INDEX_KEY,
+            )
+        })?);
+        assert!(db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::is_complete_registered(
+                conn,
+                "default-project",
+                nir1_entity_relation_index::INDEX_KEY,
+            )
+        })?);
+        Ok(())
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct GraphSurfaceSnapshot(Vec<Vec<Vec<rusqlite::types::Value>>>);
+
+    fn graph_surface_snapshot(conn: &rusqlite::Connection) -> anyhow::Result<GraphSurfaceSnapshot> {
+        const QUERIES: [&str; 7] = [
+            "SELECT project_id,index_key,generation,built_at,source_digest,
+                    dependency_set_digest,dirty_cache_flag,producer_id,producer_version
+               FROM narrative_semantic_index_metadata
+              WHERE project_id='default-project'
+                AND index_key='nir1-reviewed-entity-relation:v1'",
+            "SELECT id,project_id,consumer_kind,consumer_key,producer_id,
+                    producer_generation,dependency_set_digest,state,created_at
+               FROM narrative_dependency_declaration_sets
+              WHERE project_id='default-project'
+                AND consumer_kind='semantic-index'
+                AND consumer_key='nir1-reviewed-entity-relation:v1'
+              ORDER BY producer_generation,id",
+            "SELECT entry.id,entry.declaration_set_id,entry.source_object_identity,
+                    entry.dependency_key,entry.dependency_role,
+                    entry.role_contract_version,entry.selector_json,
+                    entry.selector_digest,entry.created_at
+               FROM narrative_dependency_declaration_entries entry
+               JOIN narrative_dependency_declaration_sets set_row
+                 ON set_row.id=entry.declaration_set_id
+              WHERE set_row.project_id='default-project'
+                AND set_row.consumer_kind='semantic-index'
+                AND set_row.consumer_key='nir1-reviewed-entity-relation:v1'
+              ORDER BY entry.declaration_set_id,entry.source_object_identity,entry.id",
+            "SELECT project_id,consumer_kind,consumer_key,
+                    active_declaration_set_id,producer_id,producer_generation,
+                    version,updated_at
+               FROM narrative_dependency_declaration_heads
+              WHERE project_id='default-project'
+                AND consumer_kind='semantic-index'
+                AND consumer_key='nir1-reviewed-entity-relation:v1'",
+            "SELECT id,project_id,consumer_kind,consumer_key,
+                    source_object_identity,read_set_json,
+                    generated_by_transaction_id,created_at,owning_run_id
+               FROM narrative_dependency_edges
+              WHERE project_id='default-project'
+                AND consumer_kind='semantic-index'
+                AND consumer_key='nir1-reviewed-entity-relation:v1'
+              ORDER BY source_object_identity,id",
+            "SELECT state.edge_id,state.project_id,state.evidence_freshness,
+                    state.reason_code,state.build_action,
+                    state.evaluated_at_epoch_id,state.evaluated_at
+               FROM narrative_dependency_edge_states state
+               JOIN narrative_dependency_edges edge ON edge.id=state.edge_id
+              WHERE edge.project_id='default-project'
+                AND edge.consumer_kind='semantic-index'
+                AND edge.consumer_key='nir1-reviewed-entity-relation:v1'
+              ORDER BY state.edge_id",
+            "SELECT project_id,consumer_kind,consumer_key,evidence_freshness,
+                    build_action,semantic_epoch_id,last_evaluated_run_id,
+                    dependency_set_digest,updated_at
+               FROM narrative_consumer_freshness
+              WHERE project_id='default-project'
+                AND consumer_kind='semantic-index'
+                AND consumer_key='nir1-reviewed-entity-relation:v1'",
+        ];
+        let mut surfaces = Vec::with_capacity(QUERIES.len());
+        for query in QUERIES {
+            let mut statement = conn.prepare(query)?;
+            let column_count = statement.column_count();
+            let rows = statement
+                .query_map([], |row| {
+                    (0..column_count)
+                        .map(|index| row.get(index))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            surfaces.push(rows);
+        }
+        Ok(GraphSurfaceSnapshot(surfaces))
+    }
+
+    #[test]
+    fn graph_index_runtime_cancellation_and_replacement_preserve_generation() -> anyhow::Result<()>
+    {
+        let (db, runtime, created) = published_graph_fixture()?;
+        let stale_source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let before_source_failure = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT generation,dirty_cache_flag FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(before_source_failure, (1, 0));
+        append_typed_decision(&db, "nir1-run", &created, "rejected")?;
+        let stale_error = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx,
+                &runtime,
+                stale_source,
+            )
+            .expect_err("source mutation must invalidate Graph publication");
+            tx.rollback()?;
+            Ok(error.to_string())
+        })?;
+        assert!(stale_error.contains("NIR1_GRAPH_SNAPSHOT_STALE"));
+        let source_failure_state = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT generation,dirty_cache_flag FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(source_failure_state, (1, 1));
+
+        let (db, runtime, _) = published_graph_fixture()?;
+        let freshness_failure = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_consumer_freshness
+                  WHERE project_id='default-project'
+                    AND consumer_kind='semantic-index'
+                    AND consumer_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+        let freshness_error = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx,
+                &runtime,
+                freshness_failure,
+            )
+            .expect_err("missing Graph Freshness must abort publication");
+            tx.rollback()?;
+            Ok::<_, anyhow::Error>(error.to_string())
+        })?;
+        assert!(freshness_error.contains("NIR1_GRAPH_SNAPSHOT_STALE"));
+        let freshness_state = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT generation,dirty_cache_flag FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(freshness_state, (1, 0));
+
+        let (db, runtime, _) = published_graph_fixture()?;
+        let paused = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        runtime.pause()?;
+        let paused_error = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx, &runtime, paused,
+            )
+            .expect_err("paused runtime must cancel Graph publication");
+            tx.rollback()?;
+            Ok::<_, anyhow::Error>(error.to_string())
+        })?;
+        assert!(paused_error.contains("NIR1_GRAPH_SNAPSHOT_STALE"));
+        assert_graph_binding_usable(&db)?;
+
+        runtime.resume()?;
+        let resumed_old = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        runtime.pause()?;
+        runtime.resume()?;
+        let resumed_error = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx,
+                &runtime,
+                resumed_old,
+            )
+            .expect_err("pause/resume epoch rotation must invalidate old Graph publication");
+            tx.rollback()?;
+            Ok::<_, anyhow::Error>(error.to_string())
+        })?;
+        assert!(resumed_error.contains("NIR1_GRAPH_SNAPSHOT_STALE"));
+        assert_graph_binding_usable(&db)?;
+        let resumed_new = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let resumed_binding = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx,
+                &runtime,
+                resumed_new,
+            )?;
+            tx.commit()?;
+            Ok::<_, anyhow::Error>(binding)
+        })?;
+        assert_eq!(resumed_binding.generation, 2);
+
+        let (db, runtime, _) = published_graph_fixture()?;
+        let stopped = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        runtime.stop()?;
+        let stopped_error = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx, &runtime, stopped,
+            )
+            .expect_err("stopped runtime must cancel Graph publication");
+            tx.rollback()?;
+            Ok::<_, anyhow::Error>(error.to_string())
+        })?;
+        assert!(stopped_error.contains("NIR1_GRAPH_SNAPSHOT_STALE"));
+        assert_graph_binding_usable(&db)?;
+
+        let (db, runtime, _) = published_graph_fixture()?;
+        let embedding_replaced = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        runtime.bind_embedding_generation(7)?;
+        let embedding_error = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx,
+                &runtime,
+                embedding_replaced,
+            )
+            .expect_err("embedding runtime replacement must invalidate Graph publication");
+            tx.rollback()?;
+            Ok::<_, anyhow::Error>(error.to_string())
+        })?;
+        assert!(embedding_error.contains("NIR1_GRAPH_SNAPSHOT_STALE"));
+        assert_graph_binding_usable(&db)?;
+
+        let (db, runtime, _) = published_graph_fixture()?;
+        let owner_replaced = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let replacement_runtime =
+            super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 2);
+        let owner_error = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx,
+                &replacement_runtime,
+                owner_replaced,
+            )
+            .expect_err("runtime owner replacement must invalidate Graph publication");
+            tx.rollback()?;
+            Ok::<_, anyhow::Error>(error.to_string())
+        })?;
+        assert!(owner_error.contains("NIR1_GRAPH_SNAPSHOT_STALE"));
+        assert_graph_binding_usable(&db)?;
+
+        let (db, runtime, _) = published_graph_fixture()?;
+        let connection_replaced = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let replacement_db = fresh_migrated_memory()?;
+        let replacement_connection_runtime =
+            super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&replacement_db, 1);
+        let cancellation_error = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx,
+                &replacement_connection_runtime,
+                connection_replaced,
+            )
+            .expect_err("connection replacement must invalidate Graph publication");
+            tx.rollback()?;
+            Ok::<_, anyhow::Error>(error.to_string())
+        })?;
+        assert!(cancellation_error.contains("NIR1_GRAPH_SNAPSHOT_STALE"));
+        assert_graph_binding_usable(&db)?;
+        let metadata = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT generation,dirty_cache_flag FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(metadata, (1, 0));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_index_roster_skips_revoked_ambiguous_and_stale_revisions() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let revoked = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &revoked)?;
+        let approved = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        assert_eq!(approved.roster.len(), 3);
+        append_typed_decision(&db, "nir1-run", &revoked, "rejected")?;
+        let revoked_source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        assert!(revoked_source.roster.is_empty());
+        assert_ne!(approved.digest, revoked_source.digest);
+
+        let ambiguous = create_nir1_entity_relation_revision(
+            &db,
+            request_for_run(&db, "nir1-run", "nir1:review:ambiguous-graph"),
+        )?;
+        approve_typed_revision(&db, "nir1-run", &ambiguous)?;
+        let proposal_id = ambiguous["proposalId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("ambiguous proposal id missing"))?;
+        let revision_id = ambiguous["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("ambiguous revision id missing"))?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposal_decisions
+                    SET created_at='2026-09-17T00:00:00.000Z'
+                  WHERE proposal_id=?1 AND revision_id=?2",
+                params![proposal_id, revision_id],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_decisions
+                    (id,proposal_id,revision_id,decision,decision_json,created_at,created_by,
+                     actor_kind,actor_id,authority_scope,override_field_paths_json)
+                 VALUES ('graph-ambiguous-decision',?1,?2,'approved','{}',
+                         '2026-09-17T00:00:00.000Z','test','human',
+                         'electron:human-review','human-review','[]')",
+                params![proposal_id, revision_id],
+            )?;
+            Ok(())
+        })?;
+        let ambiguous_source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        assert!(ambiguous_source.roster.is_empty());
+
+        let stale = create_nir1_entity_relation_revision(
+            &db,
+            request_for_run(&db, "nir1-run", "nir1:review:stale-graph"),
+        )?;
+        approve_typed_revision(&db, "nir1-run", &stale)?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries
+                    SET updated_at='2026-09-18T00:00:00Z'
+                  WHERE id='nir1-alice' AND project_id='default-project'",
+                [],
+            )?;
+            Ok(())
+        })?;
+        let stale_source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        assert!(stale_source.roster.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn graph_index_rejects_oversized_input_before_parse_and_reuses_connection() -> anyhow::Result<()>
+    {
+        let (db, runtime, created) = published_graph_fixture()?;
+        let revision_id = created["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Graph revision id missing"))?
+            .to_owned();
+        let original_payload: String = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT payload_json FROM narrative_proposal_revisions WHERE id=?1",
+                [&revision_id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })?;
+        let oversized_payload = format!(
+            "{}{}",
+            original_payload,
+            " ".repeat(MAX_GRAPH_INPUT_BYTES + 1)
+        );
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposal_revisions SET payload_json=?1 WHERE id=?2",
+                params![oversized_payload, revision_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        let error = match db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        }) {
+            Ok(_) => anyhow::bail!("a valid oversized row must be rejected before JSON parsing"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("NIR1_GRAPH_ROSTER_INPUT_LIMIT"), "{error}");
+        let generation: i64 = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT generation FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(generation, 1);
+        let reusable: i64 = db.with_conn(|conn| {
+            conn.query_row("SELECT 1", [], |row| row.get(0))
+                .map_err(Into::into)
+        })?;
+        assert_eq!(reusable, 1);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposal_revisions SET payload_json=?1 WHERE id=?2",
+                params![original_payload, revision_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+        let snapshot = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let binding = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx, &runtime, snapshot,
+            )?;
+            tx.commit()?;
+            Ok::<_, anyhow::Error>(binding)
+        })?;
+        assert_eq!(binding.generation, 2);
+        assert_graph_binding_usable(&db)
+    }
+
+    #[test]
+    fn graph_index_wrong_tuple_or_partial_surface_is_reserved() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let snapshot = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                &tx, &runtime, snapshot,
+            )?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        assert!(db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::is_registered(
+                conn,
+                "default-project",
+                nir1_entity_relation_index::INDEX_KEY,
+            )
+        })?);
+        assert!(!db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::is_registered(
+                conn,
+                "other-project",
+                nir1_entity_relation_index::INDEX_KEY,
+            )
+        })?);
+        assert!(!db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::is_registered(conn, "default-project", "wrong-key")
+        })?);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_semantic_index_metadata
+                    SET producer_version='wrong-version'
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+            )?;
+            Ok(())
+        })?;
+        assert!(matches!(
+            db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::read(conn, "default-project")
+            })?,
+            nir1_entity_relation_index::BindingRead::Reserved
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_index_rejects_wrong_producer_and_partial_d1_v1_or_freshness() -> anyhow::Result<()> {
+        let published = || -> anyhow::Result<crate::Database> {
+            let db = fresh_migrated_memory()?;
+            let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+            seed_run_and_catalog(&db)?;
+            let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+            approve_typed_revision(&db, "nir1-run", &created)?;
+            let snapshot = db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::prepare_graph_index_build(
+                    conn,
+                    &runtime,
+                    "default-project",
+                )
+            })?;
+            db.with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                    &tx, &runtime, snapshot,
+                )?;
+                tx.commit()?;
+                Ok(())
+            })?;
+            Ok(db)
+        };
+
+        let db = published()?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_semantic_index_metadata
+                    SET producer_id='wrong-producer'
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+            )?;
+            Ok(())
+        })?;
+        assert!(matches!(
+            db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::read(conn, "default-project")
+            })?,
+            nir1_entity_relation_index::BindingRead::Reserved
+        ));
+
+        let db = published()?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_dependency_declaration_entries
+                  WHERE declaration_set_id=(
+                      SELECT active_declaration_set_id
+                        FROM narrative_dependency_declaration_heads
+                       WHERE project_id='default-project'
+                         AND consumer_kind='semantic-index'
+                         AND consumer_key=?1
+                  )
+                  AND source_object_identity <> ?2",
+                params![
+                    nir1_entity_relation_index::INDEX_KEY,
+                    nir1_entity_relation_index::source_key("default-project"),
+                ],
+            )?;
+            Ok(())
+        })?;
+        assert!(matches!(
+            db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::read(conn, "default-project")
+            })?,
+            nir1_entity_relation_index::BindingRead::Reserved
+        ));
+
+        let db = published()?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_dependency_edges
+                  WHERE project_id='default-project'
+                    AND consumer_kind='semantic-index'
+                    AND consumer_key=?1
+                    AND source_object_identity <> ?2",
+                params![
+                    nir1_entity_relation_index::INDEX_KEY,
+                    nir1_entity_relation_index::source_key("default-project"),
+                ],
+            )?;
+            Ok(())
+        })?;
+        assert!(matches!(
+            db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::read(conn, "default-project")
+            })?,
+            nir1_entity_relation_index::BindingRead::Reserved
+        ));
+
+        let db = published()?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_consumer_freshness
+                  WHERE project_id='default-project'
+                    AND consumer_kind='semantic-index'
+                    AND consumer_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+            )?;
+            Ok(())
+        })?;
+        assert!(matches!(
+            db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::read(conn, "default-project")
+            })?,
+            nir1_entity_relation_index::BindingRead::Reserved
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_index_structural_freshness_corruption_is_reserved_and_reported() -> anyhow::Result<()>
+    {
+        let corruptions = [
+            (
+                "freshness-digest",
+                "UPDATE narrative_consumer_freshness
+                    SET dependency_set_digest='0000000000000000000000000000000000000000000000000000000000000000'
+                  WHERE project_id='default-project'
+                    AND consumer_kind='semantic-index'
+                    AND consumer_key=?1",
+                true,
+            ),
+            (
+                "freshness-updated-at",
+                "UPDATE narrative_consumer_freshness
+                    SET updated_at='2026-09-17T00:00:00Z'
+                  WHERE project_id='default-project'
+                    AND consumer_kind='semantic-index'
+                    AND consumer_key=?1",
+                true,
+            ),
+            (
+                "metadata-built-at",
+                "UPDATE narrative_semantic_index_metadata
+                    SET built_at='2026-09-17T00:00:00Z'
+                  WHERE project_id='default-project' AND index_key=?1",
+                true,
+            ),
+        ];
+
+        for (label, mutation, target_is_reserved) in corruptions {
+            let (db, _runtime, _) = published_graph_fixture()?;
+            db.with_conn(|conn| {
+                conn.execute(mutation, [nir1_entity_relation_index::INDEX_KEY])?;
+                Ok::<_, anyhow::Error>(())
+            })?;
+            assert!(
+                matches!(
+                    db.with_read_transaction(|conn| {
+                        nir1_entity_relation_index::read(conn, "default-project")
+                    })?,
+                    nir1_entity_relation_index::BindingRead::Reserved
+                ),
+                "{label} must deny structural registration"
+            );
+
+            let (digest_check, generation_check) = db.with_read_transaction(|conn| {
+                super::super::verify_coverage::verify_semantic_index_checks(conn, "default-project")
+            })?;
+            assert!(
+                !digest_check.incomplete.is_empty(),
+                "{label} must remain in the reserved Verify footprint"
+            );
+            assert!(!generation_check.incomplete.is_empty(), "{label}");
+            let report = db.with_read_transaction(|conn| {
+                super::super::restore_rebuild::verify_narrative_dependency_graph_for_project(
+                    conn,
+                    "default-project",
+                )
+            })?;
+            assert!(
+                !report.edge_ids_with_unresolvable_consumer_scope.is_empty(),
+                "{label} must be surfaced by Restore/Verify consumer scope"
+            );
+
+            let error = db.with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                let epoch_id: String = tx.query_row(
+                    "SELECT id FROM narrative_semantic_epochs
+                      WHERE project_id='default-project'
+                      ORDER BY epoch_number DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let error =
+                    super::super::publish_runtime::publish_complete_runless_graph_freshness_in_tx(
+                        &tx,
+                        "default-project",
+                        "semantic-index",
+                        nir1_entity_relation_index::INDEX_KEY,
+                        &[],
+                        &epoch_id,
+                        "2026-09-17T00:00:00.000Z",
+                    )
+                    .expect_err("corrupted Graph structure must not be a normal Freshness target")
+                    .to_string();
+                tx.rollback()?;
+                Ok::<_, anyhow::Error>(error)
+            })?;
+            if target_is_reserved {
+                assert!(
+                    error.contains("NEX_PUBLISH_RUNTIME_RESERVED_CONSUMER"),
+                    "{label}: {error}"
+                );
+            } else {
+                unreachable!("all structural corruptions must be reserved: {label}: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn graph_prepare_native_material_admission_accepts_512_and_rejects_513() -> anyhow::Result<()> {
+        for (extra_relation, should_prepare) in [(false, true), (true, false)] {
+            let db = fresh_migrated_memory()?;
+            seed_run_and_catalog(&db)?;
+            let entity_ids = (0..254)
+                .map(|index| format!("nir1-admission-entity-{index:03}"))
+                .collect::<Vec<_>>();
+            db.with_conn(|conn| {
+                for (index, entity_id) in entity_ids.iter().enumerate() {
+                    let name = format!("Admission {index:03}");
+                    conn.execute(
+                        "INSERT INTO codex_entries
+                            (id, project_id, type, name, summary, updated_at)
+                         VALUES (?1, 'default-project', 'character', ?2, ?2,
+                                 '2026-09-12T00:00:00Z')",
+                        params![entity_id, name],
+                    )?;
+                }
+                if extra_relation {
+                    conn.execute(
+                        "INSERT INTO codex_relations
+                            (id, project_id, from_codex_id, to_codex_id, relation_type,
+                             directionality, version, updated_at)
+                         VALUES ('nir1-admission-edge', 'default-project', ?1, ?2,
+                                 'knows', 'directed', 1, '2026-09-12T00:00:00Z')",
+                        params![entity_ids[0], entity_ids[1]],
+                    )?;
+                }
+                Ok::<_, anyhow::Error>(())
+            })?;
+
+            let relation_ids = if extra_relation {
+                vec!["nir1-admission-edge".to_owned()]
+            } else {
+                Vec::new()
+            };
+            let first = prepare_nir1_entity_relation_revision(
+                &db,
+                Nir1EntityRelationRevisionPrepareRequest {
+                    project_id: "default-project".into(),
+                    scene_id: "nir1".into(),
+                    proposal_key: Some(format!("nir1:graph-admission:first:{extra_relation}")),
+                    entity_ids: entity_ids.clone(),
+                    relation_ids,
+                },
+            )?;
+            let first = super::nir1_entity_relation_revision_prepare_receipt(first)?;
+            let first_run = first["runId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("first Graph admission run missing"))?;
+            let first_revision = db.with_read_transaction(|conn| {
+                read_nir1_entity_relation_revision_current(conn, "default-project", first_run)
+            })?;
+            let first_revision = match first_revision {
+                Nir1EntityRelationRevisionCurrentRead::Draft(revision) => revision,
+                other => anyhow::bail!("first Graph admission revision was not draft: {other:?}"),
+            };
+            approve_typed_revision(
+                &db,
+                first_run,
+                &json!({
+                    "proposalId": first_revision.proposal_id,
+                    "revisionId": first_revision.revision_id,
+                }),
+            )?;
+
+            let second = prepare_nir1_entity_relation_revision(
+                &db,
+                Nir1EntityRelationRevisionPrepareRequest {
+                    project_id: "default-project".into(),
+                    scene_id: "nir1".into(),
+                    proposal_key: Some(format!("nir1:graph-admission:second:{extra_relation}")),
+                    entity_ids: vec![entity_ids[0].clone()],
+                    relation_ids: vec![],
+                },
+            )?;
+            let second = super::nir1_entity_relation_revision_prepare_receipt(second)?;
+            let second_run = second["runId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("second Graph admission run missing"))?;
+            let second_revision = db.with_read_transaction(|conn| {
+                read_nir1_entity_relation_revision_current(conn, "default-project", second_run)
+            })?;
+            let second_revision = match second_revision {
+                Nir1EntityRelationRevisionCurrentRead::Draft(revision) => revision,
+                other => anyhow::bail!("second Graph admission revision was not draft: {other:?}"),
+            };
+            approve_typed_revision(
+                &db,
+                second_run,
+                &json!({
+                    "proposalId": second_revision.proposal_id,
+                    "revisionId": second_revision.revision_id,
+                }),
+            )?;
+
+            let eligible_revision_ids = [
+                first_revision.revision_id.clone(),
+                second_revision.revision_id.clone(),
+            ];
+            for revision_id in &eligible_revision_ids {
+                assert!(matches!(
+                    db.with_read_transaction(|conn| {
+                        read_nir1_entity_relation_revision(conn, "default-project", revision_id)
+                    })?,
+                    Nir1EntityRelationRevisionRead::Available(_)
+                ));
+            }
+
+            let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+            let graph_result = db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::prepare_graph_index_build(
+                    conn,
+                    &runtime,
+                    "default-project",
+                )
+            });
+            if should_prepare {
+                let source = db.with_read_transaction(|conn| {
+                    nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+                })?;
+                assert!(eligible_revision_ids.iter().all(|revision_id| {
+                    source
+                        .roster
+                        .iter()
+                        .any(|entry| &entry.revision_id == revision_id)
+                }));
+                graph_result.expect("512 material records must remain within Graph admission");
+            } else {
+                let error = match graph_result {
+                    Ok(_) => anyhow::bail!(
+                        "513 material records must be rejected before snapshot creation"
+                    ),
+                    Err(error) => error.to_string(),
+                };
+                assert!(error.contains("NIR1_GRAPH_ROSTER_RECORD_LIMIT"), "{error}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn graph_prepare_counts_ineligible_revision_material_before_qualification() -> anyhow::Result<()>
+    {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let entity_ids = (0..254)
+            .map(|index| format!("nir1-admission-ineligible-{index:03}"))
+            .collect::<Vec<_>>();
+        db.with_conn(|conn| {
+            for (index, entity_id) in entity_ids.iter().enumerate() {
+                let name = format!("Ineligible {index:03}");
+                conn.execute(
+                    "INSERT INTO codex_entries
+                        (id, project_id, type, name, summary, updated_at)
+                     VALUES (?1, 'default-project', 'character', ?2, ?2,
+                             '2026-09-12T00:00:00Z')",
+                    params![entity_id, name],
+                )?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        let prepare = |proposal_key: &str, ids: Vec<String>| -> anyhow::Result<(Value, String)> {
+            let created = super::nir1_entity_relation_revision_prepare_receipt(
+                prepare_nir1_entity_relation_revision(
+                    &db,
+                    Nir1EntityRelationRevisionPrepareRequest {
+                        project_id: "default-project".into(),
+                        scene_id: "nir1".into(),
+                        proposal_key: Some(proposal_key.into()),
+                        entity_ids: ids,
+                        relation_ids: vec![],
+                    },
+                )?,
+            )?;
+            let run_id = created["runId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Graph admission run missing"))?
+                .to_owned();
+            let decision = json!({
+                "proposalId": created["receipt"]["proposalId"].clone(),
+                "revisionId": created["receipt"]["revisionId"].clone(),
+            });
+            approve_typed_revision(&db, &run_id, &decision)?;
+            Ok((decision, run_id))
+        };
+
+        let (_eligible, _eligible_run) = prepare(
+            "nir1:graph-admission:ineligible-boundary:eligible",
+            entity_ids.clone(),
+        )?;
+        let (ineligible, ineligible_run) = prepare(
+            "nir1:graph-admission:ineligible-boundary:rejected",
+            entity_ids[..2].to_vec(),
+        )?;
+        append_typed_decision(&db, &ineligible_run, &ineligible, "rejected")?;
+
+        let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+        let error = match db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        }) {
+            Ok(_) => anyhow::bail!(
+                "ineligible Revision material must still count toward the whole Source bound"
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("NIR1_GRAPH_ROSTER_RECORD_LIMIT"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn graph_prepare_cancels_during_native_roster_read_and_reuses_connection() -> anyhow::Result<()>
+    {
+        let (db, runtime, _) = published_graph_fixture()?;
+        let before = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT generation,dirty_cache_flag FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(before, (1, 0));
+
+        nir1_entity_relation_index::cancel_next_native_prepare_after_first_roster_row_for_test();
+        let error = match db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        }) {
+            Ok(_) => anyhow::bail!("native Graph preparation must observe the rotated epoch"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("NIR1_GRAPH_ROSTER_CANCELLED"), "{error}");
+
+        let after = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT generation,dirty_cache_flag FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(
+            after, before,
+            "cancelled prepare must not mutate Graph metadata"
+        );
+        let reusable: i64 = db.with_conn(|conn| {
+            conn.query_row(
+                "WITH RECURSIVE steps(value) AS (
+                     SELECT 1
+                     UNION ALL
+                     SELECT value + 1 FROM steps WHERE value < 1500
+                 )
+                 SELECT SUM(value) FROM steps",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(
+            reusable, 1_125_750,
+            "the progress handler must be cleared after cancellation"
+        );
+
+        runtime.resume()?;
+        db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn graph_prepare_rejects_oversized_current_revision_id_before_owned_read() -> anyhow::Result<()>
+    {
+        let (db, runtime, created) = published_graph_fixture()?;
+        let proposal_id = created["proposalId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("published Graph proposal id missing"))?;
+        let oversized_revision_id = "r".repeat(MAX_GRAPH_INPUT_BYTES + 1);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposals
+                    SET current_revision_id=?1
+                  WHERE id=?2",
+                params![oversized_revision_id, proposal_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        let error = match db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        }) {
+            Ok(_) => anyhow::bail!("oversized current Revision identity must be rejected"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("NIR1_GRAPH_ROSTER_INPUT_LIMIT"),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn graph_index_file_backed_cold_reopen_revalidates_binding() -> anyhow::Result<()> {
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-nir1-graph-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let result = (|| -> anyhow::Result<()> {
+            let db = Database::new(&path)?;
+            db.migrate()?;
+            let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+            seed_run_and_catalog(&db)?;
+            let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+            approve_typed_revision(&db, "nir1-run", &created)?;
+            let snapshot = db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::prepare_graph_index_build(
+                    conn,
+                    &runtime,
+                    "default-project",
+                )
+            })?;
+            db.with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                    &tx, &runtime, snapshot,
+                )?;
+                tx.commit()?;
+                Ok(())
+            })?;
+            drop(runtime);
+            drop(db);
+
+            let cold_db = Database::new(&path)?;
+            cold_db.migrate()?;
+            let cold_runtime =
+                super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&cold_db, 2);
+            assert!(cold_db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::is_registered(
+                    conn,
+                    "default-project",
+                    nir1_entity_relation_index::INDEX_KEY,
+                )
+            })?);
+            assert!(cold_db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::is_complete_registered(
+                    conn,
+                    "default-project",
+                    nir1_entity_relation_index::INDEX_KEY,
+                )
+            })?);
+            let report = cold_db.with_read_transaction(|conn| {
+                super::super::restore_rebuild::verify_narrative_dependency_graph_for_project(
+                    conn,
+                    "default-project",
+                )
+            })?;
+            assert!(report.edge_ids_with_unresolvable_consumer_scope.is_empty());
+            assert!(report.edge_ids_with_missing_source.is_empty());
+            drop(cold_runtime);
+            drop(cold_db);
+            Ok(())
+        })();
+        for suffix in ["", "-wal", "-shm"] {
+            let mut candidate = path.as_os_str().to_owned();
+            candidate.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(candidate));
+        }
+        result
     }
 }

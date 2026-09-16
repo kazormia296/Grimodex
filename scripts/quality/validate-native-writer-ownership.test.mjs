@@ -52,6 +52,20 @@ test("NIR-1 cache ownership is scoped to its exact module and table", () => {
     false,
   );
   assert.equal(
+    owns(
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+      "narrative_semantic_index_metadata",
+    ),
+    true,
+  );
+  assert.equal(
+    owns(
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+      "narrative_consumer_freshness",
+    ),
+    false,
+  );
+  assert.equal(
     owns(`${directory}query.rs`, "narrative_nir1_chronicle_vectors"),
     false,
   );
