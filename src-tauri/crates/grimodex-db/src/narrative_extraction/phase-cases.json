@@ -1,0 +1,225 @@
+[
+  {
+    "id": "story-scene-anchor-filters-invalid-before-fallback",
+    "scenes": [
+      { "sceneId": "s1", "sortOrder": "a0", "rawStoryKey": "b0" },
+      { "sceneId": "s2", "sortOrder": "a1", "rawStoryKey": "a0" }
+    ],
+    "phases": [
+      {
+        "id": "invalid",
+        "label": "invalid",
+        "anchorNodeId": "deleted",
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      },
+      {
+        "id": "past",
+        "label": "past",
+        "anchorNodeId": "s1",
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      }
+    ],
+    "phaseValue": "past",
+    "mode": "story",
+    "querySceneId": "s2",
+    "expected": { "eligible": false, "reason": "a3-phase-future" }
+  },
+  {
+    "id": "story-reading-before-but-story-after-rejects",
+    "scenes": [
+      { "sceneId": "s1", "sortOrder": "a0", "rawStoryKey": "b0" },
+      { "sceneId": "s2", "sortOrder": "a1", "rawStoryKey": "a0" }
+    ],
+    "phases": [
+      {
+        "id": "past-reading",
+        "label": "past-reading",
+        "anchorNodeId": "s1",
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      }
+    ],
+    "phaseValue": "past-reading",
+    "mode": "story",
+    "querySceneId": "s2",
+    "expected": { "eligible": false, "reason": "a3-phase-future" }
+  },
+  {
+    "id": "story-reading-after-but-story-before-admits",
+    "scenes": [
+      { "sceneId": "s1", "sortOrder": "a0", "rawStoryKey": "b0" },
+      { "sceneId": "s2", "sortOrder": "a1", "rawStoryKey": "a0" }
+    ],
+    "phases": [
+      {
+        "id": "past-story",
+        "label": "past-story",
+        "anchorNodeId": "s2",
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      }
+    ],
+    "phaseValue": "past-story",
+    "mode": "story",
+    "querySceneId": "s1",
+    "expected": { "eligible": true, "reason": null }
+  },
+  {
+    "id": "auto-complete-story-coverage-selects-story",
+    "scenes": [
+      { "sceneId": "s1", "sortOrder": "a0", "rawStoryKey": "b0" },
+      { "sceneId": "s2", "sortOrder": "a1", "rawStoryKey": "a0" }
+    ],
+    "phases": [
+      {
+        "id": "past-auto-story",
+        "label": "past-auto-story",
+        "anchorNodeId": "s2",
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      }
+    ],
+    "phaseValue": "past-auto-story",
+    "mode": "auto",
+    "querySceneId": "s1",
+    "expected": { "eligible": true, "reason": null }
+  },
+  {
+    "id": "story-valid-anchor-unresolved-falls-back-to-reading",
+    "scenes": [
+      { "sceneId": "s1", "sortOrder": "a0", "rawStoryKey": null },
+      { "sceneId": "s2", "sortOrder": "a1", "rawStoryKey": "b0" }
+    ],
+    "phases": [
+      {
+        "id": "past",
+        "label": "past",
+        "anchorNodeId": "s1",
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      }
+    ],
+    "phaseValue": "past",
+    "mode": "story",
+    "querySceneId": "s2",
+    "expected": { "eligible": true, "reason": null }
+  },
+  {
+    "id": "auto-incomplete-uses-reading",
+    "scenes": [
+      { "sceneId": "s1", "sortOrder": "a0", "rawStoryKey": "b0" },
+      { "sceneId": "s2", "sortOrder": "a1", "rawStoryKey": null }
+    ],
+    "phases": [
+      {
+        "id": "past",
+        "label": "past",
+        "anchorNodeId": "s1",
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      }
+    ],
+    "phaseValue": "past",
+    "mode": "auto",
+    "querySceneId": "s2",
+    "expected": { "eligible": true, "reason": null }
+  },
+  {
+    "id": "duplicate-label-is-ambiguous",
+    "scenes": [
+      { "sceneId": "s1", "sortOrder": "a0", "rawStoryKey": "a0" },
+      { "sceneId": "s2", "sortOrder": "a1", "rawStoryKey": "b0" }
+    ],
+    "phases": [
+      {
+        "id": "first",
+        "label": "same",
+        "anchorNodeId": "s1",
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      },
+      {
+        "id": "second",
+        "label": "same",
+        "anchorNodeId": "s1",
+        "createdAt": "2026-01-02T00:00:00.000Z"
+      }
+    ],
+    "phaseValue": "same",
+    "mode": "reading",
+    "querySceneId": "s2",
+    "expected": { "eligible": false, "reason": "a3-phase-ambiguous" }
+  },
+  {
+    "id": "id-label-collision-is-ambiguous",
+    "scenes": [
+      { "sceneId": "s1", "sortOrder": "a0", "rawStoryKey": "a0" },
+      { "sceneId": "s2", "sortOrder": "a1", "rawStoryKey": "b0" }
+    ],
+    "phases": [
+      {
+        "id": "phase-id",
+        "label": "label",
+        "anchorNodeId": "s1",
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      },
+      {
+        "id": "other",
+        "label": "phase-id",
+        "anchorNodeId": "s1",
+        "createdAt": "2026-01-02T00:00:00.000Z"
+      }
+    ],
+    "phaseValue": "phase-id",
+    "mode": "reading",
+    "querySceneId": "s2",
+    "expected": { "eligible": false, "reason": "a3-phase-ambiguous" }
+  },
+  {
+    "id": "draft-is-base",
+    "scenes": [{ "sceneId": "s1", "sortOrder": "a0", "rawStoryKey": null }],
+    "phases": [],
+    "phaseValue": "draft",
+    "mode": "reading",
+    "querySceneId": "s1",
+    "expected": { "eligible": true, "reason": null }
+  },
+  {
+    "id": "unknown-phase-fails-closed",
+    "scenes": [{ "sceneId": "s1", "sortOrder": "a0", "rawStoryKey": null }],
+    "phases": [],
+    "phaseValue": "missing",
+    "mode": "reading",
+    "querySceneId": "s1",
+    "expected": { "eligible": false, "reason": "a3-phase-unavailable" }
+  },
+  {
+    "id": "null-anchor-target-fails-closed",
+    "scenes": [{ "sceneId": "s1", "sortOrder": "a0", "rawStoryKey": null }],
+    "phases": [
+      {
+        "id": "unanchored",
+        "label": "unanchored",
+        "anchorNodeId": null,
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      }
+    ],
+    "phaseValue": "unanchored",
+    "mode": "reading",
+    "querySceneId": "s1",
+    "expected": { "eligible": false, "reason": "a3-phase-anchor-unavailable" }
+  },
+  {
+    "id": "future-phase-is-not-applicable",
+    "scenes": [
+      { "sceneId": "s1", "sortOrder": "a0", "rawStoryKey": "a0" },
+      { "sceneId": "s2", "sortOrder": "a1", "rawStoryKey": "b0" }
+    ],
+    "phases": [
+      {
+        "id": "future",
+        "label": "future",
+        "anchorNodeId": "s2",
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      }
+    ],
+    "phaseValue": "future",
+    "mode": "reading",
+    "querySceneId": "s1",
+    "expected": { "eligible": false, "reason": "a3-phase-future" }
+  }
+]

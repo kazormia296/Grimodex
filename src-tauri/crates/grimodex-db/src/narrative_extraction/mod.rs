@@ -57,16 +57,18 @@ pub use maintenance_skip_evidence::{
 #[cfg(test)]
 pub(crate) use material_membership::MATERIAL_MEMBERSHIP_READ_COUNT;
 pub use nir1_entity_relation::{
-    find_nir1_entity_relation_revision_run,
+    evaluate_nir1_entity_relation_disclosure, find_nir1_entity_relation_revision_run,
     nir1_entity_relation_revision_current_read_for_renderer,
     nir1_entity_relation_revision_prepare_receipt, nir1_entity_relation_revision_read_for_renderer,
     prepare_nir1_entity_relation_revision, read_nir1_entity_relation_revision,
     read_nir1_entity_relation_revision_current,
-    read_nir1_entity_relation_revision_current_for_revision, Nir1EntityRelationRevision,
-    Nir1EntityRelationRevisionCurrentRead, Nir1EntityRelationRevisionPrepareRequest,
-    Nir1EntityRelationRevisionRead, Nir1EntityRelationRevisionRequest,
-    Nir1EntityRelationRevisionRestoreMatch, NIR1_ENTITY_RELATION_DECISION_LOCKED,
-    NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
+    read_nir1_entity_relation_revision_current_for_revision,
+    revalidate_nir1_entity_relation_disclosure, Nir1EntityRelationDisclosure,
+    Nir1EntityRelationDisclosureRead, Nir1EntityRelationMaterialSceneProof,
+    Nir1EntityRelationRevision, Nir1EntityRelationRevisionCurrentRead,
+    Nir1EntityRelationRevisionPrepareRequest, Nir1EntityRelationRevisionRead,
+    Nir1EntityRelationRevisionRequest, Nir1EntityRelationRevisionRestoreMatch,
+    NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
 };
 pub use nir1_graph::{read_nir1_graph, Nir1GraphRequest, Nir1GraphResponse};
 pub use reconciliation_envelope::SourceBasisRow;
