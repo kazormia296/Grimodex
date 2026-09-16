@@ -3,8 +3,8 @@
 ## Status
 
 - **Lifecycle:** Active mutable roadmap
-- **Last updated:** 2026-09-13
-- **Current focus:** NIR-1 First Retrieval Vertical Slice; #572 is merged on `master@68516b033f395f24f98c502c9fd2a715d7aec2af` (Tree `04c491c29627ecc840112ebe379a5363e16892ff`) with the typed foundational runtime. R0 merged five proposal/3 contract rows (proposal scope only). PR #579 records the sixth proposal/4 Option B Entity／Relation-only assertion family `typed-revision-material`; the exact user confirmation makes this row explicitly ratified and effective as a contract. The exact ref `nir1-l6-l9-contract-proposal/4#typed-revision-material`, user confirmation, and A2 dependency on A1＋D2a are recorded in the execution-plan ledger. These records do not complete the downstream threat model or activate any runtime or consumer. Production runtime integration/activation and L6-L9 acceptance remain incomplete; the standalone PR-P performance gate is resolved and only Graph-integrated recheck pending/Hold remains.
+- **Last updated:** 2026-09-16
+- **Current focus:** NIR-1 A2 Entity／Relation review is complete in PR #591 at `master@81d0390fe7a935191753b41e5673503f99d51d16` (Tree `0decaab5470c2408be81856ac2373b28e078b945`). The completed scope is normal preparation → Evidence confirmation → explicit Decision on an immutable Revision → target-bound cold reopen. Graph, Packing, and AI dispatch remain inactive; the downstream threat model is draft and NIR-1 overall acceptance remains incomplete.
 - **North star:** **本文に追従し、根拠を示し、人間の修正を覚える Living Story Bible**
 
 This document is the canonical **mutable implementation and product roadmap** for Narrative Semantic Core, AI-assisted extraction, incremental maintenance, and the Living Story Bible product surface.
@@ -63,7 +63,7 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 | C2-ZA cutover preparation          | **Complete**             | SELECT-only legacy/Generic parity measurement, fail-closed per-workspace readiness, and `application` re-key dry-run classification are merged without changing the canonical read authority.                                                                                                                                                                                                                                                                                       |
 | C2-ZB Application re-key migration | **Complete**             | SCHEMA 32 performs the schema-owned, all-project preflighted Application re-key, Finding/Attention re-home, derived invalidation, migration Epoch, and final marker atomically. PR #559 closed the remaining ownership, restart, and compatibility findings.                                                                                                                                                                                                                        |
 | C2-ZC canonical cutover            | **Complete**             | [PR #564](https://github.com/kazormia296/Grimodex/pull/564) merged the accepted candidate (`base 201f8968f324bef1341282c625aee3fb164ea401`, `head 2c1bc67c749eb90e4d441099bfa9bc7ea6ee950e`, `tree e7dff96286be3f111d9130cf89faf37929b88f17`, merge `0e62b40b622652f203690968d308b837e1481a33`). Quick/verify, Rust 17/17, Verify 13/13, Full run `cb03f6fb-b711-4377-bf7b-a5bd23c7ce79`, product journeys 26/26 allPassed/allClean, runtime performance, and Sol final all passed. |
-| First Retrieval Vertical Slice     | **Partial**              | L0〜L5のRelated Scenes、Evidence navigation、失効・復旧は[PR #567](https://github.com/kazormia296/Grimodex/pull/567)で、#572はtyped基盤runtimeまでマージ済み。PR-R0で現在地・24検索case／8 Graph case／12 Packing task・writer／caller／egress・契約別開始判定を固定した。R0はproposal/3の五つのcontract rowをmerge済みで、PR #579はproposal/4 Option B Entity／Relation-only assertion family `typed-revision-material`という第六行を記録する。exact user confirmationによりこのrowは明示批准済み・契約として有効であり、refとユーザー確認、A2のA1＋D2a依存はexecution-plan ledgerに記録する。これらはdownstream threat modelを完了させず、runtime／consumerをactivateしない。standaloneのPR-P固定性能gateは解決済みで、残るのは Graph-integrated recheck pending/Hold（Graph統合再確認）だけであり、L6〜L9のproduction runtime integration・activation・受入れとNIR-1全体受入れは未完了。 |
+| First Retrieval Vertical Slice     | **Partial**              | L0〜L5のRelated Scenes、Evidence navigation、失効・復旧は[PR #567](https://github.com/kazormia296/Grimodex/pull/567)で、A2 Entity／Relation reviewの限定範囲は[PR #591](https://github.com/kazormia296/Grimodex/pull/591)で通常準備 → Evidence確認 → immutable Revisionへの明示Decision → 対象別cold reopenまで完了した。Graph、Packing、AI送信は未activate、downstream threat modelはdraft、残るL6〜L9のproduction runtime integration・activation・受入れとNIR-1全体受入れは未完了である。R0の評価母集団・契約行・PR-P固定性能gateとGraph-integrated recheck pending/Holdは履歴として保持する。 |
 | Living Story Bible product Epics   | **Planned**              | Correction Memory, live Structure Health, Change Review, reports, graph exploration, and Map proposals are defined below.                                                                                                                                                                                                                                                                                                                                                           |
 
 ## Critical path
@@ -81,7 +81,7 @@ C2-ZC: Generic Consumer Freshness becomes canonical ── complete (PR #564)
   ↓
 NIR-1 L0〜L5: Related Scenes + Evidence navigation + invalidation/recovery ── complete (PR #567); standalone PR-P performance gate resolved, Graph-integrated recheck pending/Hold remains
   ↓
-NIR-1 L6〜L9: execution contract documented; PR-R0 merged five proposal/3 rows ── PR #579 records the sixth proposal/4 Option B Entity／Relation-only assertion family `typed-revision-material`, explicitly ratified and effective by the exact user confirmation; A2 is ready only after A1＋D2a; #572 typed foundational runtime merged; no runtime or consumer activation and L6-L9 acceptance incomplete
+NIR-1 L6〜L9: A2 Entity／Relation review limited scope complete in PR #591 (normal preparation → Evidence → immutable Revision Decision → target-bound cold reopen); Graph/Packing/AI dispatch inactive; downstream threat model draft; remaining L6-L9 acceptance incomplete
   ↓
 Codex Entity / Relation projection migration
   ↓
@@ -470,7 +470,11 @@ evaluations remain explicitly deferred and were not counted as passing evidence.
 
 ## NIR-1: First Retrieval Vertical Slice
 
-**State:** Partial — L0〜L5 are merged in [PR #567](https://github.com/kazormia296/Grimodex/pull/567), and #572 is merged with the typed foundational runtime (Scope/Entity/Relation/Evidence and request-local primitives). PR-R0 fixes the current-state and evaluation ledger on the #572 base and merged five proposal/3 rows. PR #579 records the sixth proposal/4 Option B Entity／Relation-only assertion family `typed-revision-material`; the exact user confirmation makes this row explicitly ratified and effective as a contract. The exact ref, user confirmation, and A2 dependency on A1＋D2a are recorded in the execution-plan ledger. These records do not complete the downstream threat model or activate any runtime or consumer. The standalone PR-P performance gate is resolved; only Graph-integrated recheck pending/Hold remains, and the remaining L6〜L9 production runtime integration, activation, and acceptance are incomplete. NIR-1 overall acceptance is incomplete.
+### Current snapshot (2026-09-16)
+
+PR #591 completes the A2 Entity／Relation review scope: normal preparation, Evidence confirmation, an explicit Decision bound to the immutable Revision, and target-bound cold reopen. The current HEAD is `81d0390fe7a935191753b41e5673503f99d51d16` with Tree `0decaab5470c2408be81856ac2373b28e078b945`. Graph, Packing, and AI dispatch are not activated; the downstream threat model remains draft; NIR-1 overall acceptance remains incomplete.
+
+**State:** Partial — L0〜L5 are merged in [PR #567](https://github.com/kazormia296/Grimodex/pull/567), and #572 is merged with the typed foundational runtime (Scope/Entity/Relation/Evidence and request-local primitives). PR #591 completes the limited A2 Entity／Relation review scope: normal preparation → Evidence confirmation → an explicit Decision bound to an immutable Revision → target-bound cold reopen. Graph, Packing, and AI dispatch remain inactive; the downstream threat model remains draft; the remaining L6〜L9 runtime integration, activation, and acceptance are incomplete. NIR-1 overall acceptance is incomplete. The R0 ledger and its proposal/3 and proposal/4 contract rows remain preserved in the historical section below.
 
 Integrated execution and approval draft:
 [NIR-1 統合実装計画](narrative-ir-nir1-implementation-plan.md) and the
@@ -486,12 +490,15 @@ Verify set at production coverage 13/13 and the reserved Semantic Index
 four-surface scan at all zero. That scan is the C2-ZC acceptance record; the
 reserved Semantic Index binding and the producer/data-contract decisions listed
 in the C2-ZC reserved-boundary section remain unapproved for L6〜L9. The #572
-typed foundational runtime is complete, but no L6〜L9 production runtime
-integration, activation, or acceptance is claimed by this readiness state. The execution document adds D2a as the
-profile-wide local-only plaintext-publication prerequisite: Graph activation
-requires A3+B+C+D2a, and Packing activation requires C+D1+D2a+D2b-1+D2b-2.
+typed foundational runtime is complete and PR #591 adds the limited A2 review
+integration recorded above. Graph, Packing, and AI dispatch remain inactive;
+the downstream threat model and the remaining L6〜L9 production integration,
+activation, and acceptance are still incomplete. The execution document adds
+D2a as the profile-wide local-only plaintext-publication prerequisite: Graph
+activation requires A3+B+C+D2a, and Packing activation requires
+C+D1+D2a+D2b-1+D2b-2.
 
-### PR-R0 ledger state
+### PR-R0 ledger state (historical)
 
 PR-R0 is a documentation and quality-contract slice only. It keeps the three existing plan documents as the canonical narrative, traces the existing quality manifest/impact map and contract test, and records #572's typed foundational runtime while leaving production integration incomplete. Its fixed evaluation population is the existing 24 retrieval cases in `evals/nir1-retrieval/manifest.json` (ja/en 12 each) plus planned identifiers G-01〜G-08 and P-01〜P-12; the Packing IDs cover six task classes twice, with G-01/P-12 as the predeclared improvement cases. No Graph/Packing fixture or production runtime activation is added. R0 confirmation state: five proposal/3 contract rows were merged. PR #579 records the sixth proposal/4 Option B Entity／Relation-only assertion family `typed-revision-material`; the exact user confirmation makes this row explicitly ratified and effective as a contract. The exact per-contract refs and user confirmation are recorded in the execution-plan ledger, and A2 is ready only after A1＋D2a. These records do not complete the downstream threat model or activate any runtime or consumer. Future implementation candidates remain subject to the shared merge gate M: a clean candidate must pass Full and immediate verify before merge; earlier static-draft no-run notes do not waive that gate. The standalone PR-P performance gate is resolved; only Graph-integrated recheck pending/Hold remains, and `author-value: not-measured` remains explicit.
 

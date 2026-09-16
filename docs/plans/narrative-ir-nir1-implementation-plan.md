@@ -4,6 +4,15 @@
 
 2026-09-08追記: [A5候補2](nir1-a5-candidate-2.md)のIR専用floor、Raw順序維持＋最大1件追加、復旧正例probeの別版実装とL5検証が承認された。以下の初回A5算法は比較履歴として残し、現候補は追加policy版に従う。固定Gold・B/D/T・安全境界・受入れ条件は維持する。
 
+## Current snapshot (2026-09-16)
+
+PR #591 completes the limited A2 Entity／Relation review scope: normal preparation → Evidence confirmation → explicit Decision on an immutable Revision → target-bound cold reopen. The current candidate is `master@81d0390fe7a935191753b41e5673503f99d51d16` with Tree `0decaab5470c2408be81856ac2373b28e078b945`. Graph, Packing, and AI dispatch remain inactive; the downstream threat model is draft; NIR-1 overall acceptance remains incomplete.
+
+The dated R0 entries below are historical ledger records. They retain the earlier
+ready conditions without changing the current A2 completion boundary above.
+
+### Historical approval snapshot (2026-09-08)
+
 Status: **条件反映済み・L0–L5 実行承認済み**。計画版 `nir1-plan/1`、初回製品threat model
 `nir1-product-tm/1`。2026-09-08のユーザーによる計画への賛成と、指定修正後にL0からL5まで継続する指示を承認根拠とする。
 承認は本書の初回製品policy・信頼境界・保存範囲・受入れ条件に束縛する。診断policyへの過去の承認は流用しない。
@@ -17,6 +26,8 @@ L6–L9は全体計画に保持する。L6正例に必要なL7入力adapterの�
 [L6〜L9実行計画](nir1-l6-l9-execution-plan.md)へ分離して文書化した。L0〜L5はマージ済みで、#572のtyped基盤runtimeは実装済みだが、L6〜L9のproduction runtime integration、activation、受入れは未完了である。
 本追記以降、L6〜L9の実行契約は新文書を参照する。従前の「今回の継続実装範囲はL0〜L5」という記述は、2026-09-08時点の承認範囲を示す履歴であり、現在のL6〜L9実行契約を制限しない。
 公開条件は、restricted plaintextを返すすべてのentrypointに対する先行送信基盤 D2a、Graphは A3＋B＋C＋D2a、Packingは C＋D1＋D2a＋D2b-1＋D2b-2 とする。
+
+### Historical R0 ledger snapshot (2026-09-13)
 
 2026-09-13追記（PR-R0）: 最新 `origin/master` の #572（`master@68516b033f395f24f98c502c9fd2a715d7aec2af`、Tree
 `04c491c29627ecc840112ebe379a5363e16892ff`）を現在地の基点として、
@@ -421,19 +432,34 @@ requested/effective model/effort（把握できない値はunknown）を記録�
 focused gates後にfreezeし、freeze後は編集しない。findingは候補をreopenして関連receiptを無効化し、
 修正・必要なgate・再freeze・独立再受入れを行う。P3 debtをcritical candidateへ混ぜない。
 
-完成commit前:
+候補commit前のfocused検証:
 
 ```sh
 pnpm verify:quality
-pnpm ci:local:quick -- --base origin/master --head HEAD
-pnpm ci:local:verify -- quick --base origin/master --head HEAD
 ```
 
-最終NIR-1受入れ、および別途承認されたmerge前は、最新origin/masterを含むcleanなcommit済みHEADで:
+commitが依頼範囲に含まれる場合はCI許可の有無にかかわらず、focused検証後に候補commitを作成し、cleanな候補HEADで
+`candidate_base`／`candidate_head`を一度だけ解決する。PR／releaseの証跡が依頼されCIが許可された場合だけQuickと直後verifyを実行し、
+commit-onlyまたはCI明示除外の作業ではQuickを開始せず候補commitを保持してmerge／release readinessを主張しない。候補変更後は旧receiptを再利用しない。
+commit／PRを依頼されていない調査・計画ではcommitもCIも開始せず、working-treeの評価は診断専用とする。
+
+候補commit後のPR用Quick:
 
 ```sh
-pnpm ci:local:full -- --base origin/master --head HEAD
-pnpm ci:local:verify -- full --base origin/master --head HEAD
+candidate_base="$(git rev-parse 'origin/master^{commit}')"
+candidate_head="$(git rev-parse 'HEAD^{commit}')"
+pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
+pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
+```
+
+最終NIR-1受入れ、および別途承認されたmerge前は、最新origin/masterを含むcleanなcommit済みHEADで
+`full_base`／`full_head`を一度だけ解決し、同じ値でFullと直後のverifyを実行する。
+
+```sh
+full_base="$(git rev-parse 'origin/master^{commit}')"
+full_head="$(git rev-parse 'HEAD^{commit}')"
+pnpm ci:local:full -- --base "$full_base" --head "$full_head"
+pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"
 ```
 
 merge直前にも同じFull verify。base/HEADが変わればFullをstage 1から再実行する。
@@ -465,6 +491,12 @@ author/all-secrets context、新たな外部送信は本書から消さず、未
 NIR-1のcanonical deliverableを満たすことと、すべての抽出recipe・全作品規模の製品coverageは別に報告する。
 
 ## 10. 今回の作業結果
+
+### Current update (2026-09-16)
+
+PR #591のA2限定レビュー範囲は、通常準備、Evidence確認、immutable Revisionへの明示Decision、対象別cold reopenまで完了した。今回の正本更新ではA2専用の品質rule・Light suite・fixture・Journey契約登録とagent運用契約を追加したが、アプリ公開API、IPC型、DB schema、runtime activationは変更していない。Graph、Packing、AI送信は未activateで、downstream threat modelはdraft、NIR-1全体受入れは未完了である。
+
+### Historical implementation record
 
 実施したのは現在コード・正本・保存証跡の読み取り、計画の作成、2名の候補未編集reviewerによる独立した計画照合。
 その指摘により、初期contextのtyped state、後続の全材料reading-history制約、GraphのRevision/Decisionと独立Index bindingを具体化した。

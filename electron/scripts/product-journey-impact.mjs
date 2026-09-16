@@ -15,6 +15,7 @@ import {
 import {
   NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+  NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_DOMAIN_RULES,
   PRODUCT_JOURNEY_CAPABILITY_ORDER,
   PRODUCT_JOURNEY_CATALOG,
@@ -31,6 +32,9 @@ export function resolveProductJourneyImpactCatalog(
   if (name === undefined || name === "") return PRODUCT_JOURNEY_CATALOG;
   if (name === "c2-5b") return NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG;
   if (name === "c2-zc") return NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG;
+  if (name === "nir1-entity-relation-review") {
+    return NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG;
+  }
   throw new Error(`unknown GRIMODEX_PRODUCT_JOURNEY_SET: ${name}`);
 }
 

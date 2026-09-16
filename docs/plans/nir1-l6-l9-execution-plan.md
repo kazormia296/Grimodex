@@ -1,11 +1,11 @@
 # NIR-1 L6〜L9 実行計画
 
-更新日: 2026-09-13
+更新日: 2026-09-16
 
-基点: master@68516b033f395f24f98c502c9fd2a715d7aec2af
-Tree: 04c491c29627ecc840112ebe379a5363e16892ff
+基点: master@81d0390fe7a935191753b41e5673503f99d51d16
+Tree: 0decaab5470c2408be81856ac2373b28e078b945
 
-状態: #572でtyped基盤runtime（Scope／Entity／Relation／Evidence validation、Native所有のimmutable Revision writer／reader、request-local Graph／Packing primitives）は実装済み。PR-R0の文書・quality contract test・manifest traceを固定し、proposal/3の五つのcontract rowをmergeした。残るproduction runtime integration、activation、L6〜L9受入れは未完了。PR #579は、選択済みOption Bの `nir1-l6-l9-contract-proposal/4` にあるEntity／Relation-only assertion familyの `typed-revision-material` を第六行として記録し、ユーザーのexact statementにより明示批准済み・契約として有効となった。A2はA1＋D2aの通常依存が満たされればreadyとなる。downstream threat modelはdraftのままで、runtime／consumer activationは行わない。初回static draftではmaster更新待ちのためfocused contract testのみを実施し、Quick／verify／Full／verifyは実施しなかった。これは過去候補の証跡または免除ではない。今後の実装候補は全PR共通 merge gate Mの対象であり、merge前のclean candidateにFull＋直後のverifyを要求する。
+状態: 2026-09-16現在、PR #591でA2 Entity／Relation reviewの限定範囲（通常準備 → Evidence確認 → immutable Revisionへの明示Decision → 対象別cold reopen）が完了した。Graph、Packing、AI送信は未activateで、downstream threat modelはdraft、NIR-1全体のruntime integration・activation・受入れは未完了である。#591の実装・契約範囲は現行HEAD／Treeに固定し、R0台帳は履歴として保持する。
 
 ## 概要
 
@@ -13,7 +13,9 @@ Tree: 04c491c29627ecc840112ebe379a5363e16892ff
 
 初期版の強い送信境界は、制限成立後、同一Electron profile内の全作品・全会話を継続的なlocal-only領域にする。NIR非対応の通常会話も例外にしない。通常操作による解除や、外部利用と併存する分離profileは初期版に含めない。reload、workspace切替、別窓、再起動後も制限を維持する。
 
-## PR-R0 — 現在地と評価契約の固定
+## PR-R0 — 履歴台帳と評価契約の固定
+
+この節の台帳、開始判定、ready状態は2026-09-13時点のR0記録であり、2026-09-16の現在スナップショットにあるA2限定完了を上書きしない。
 
 R0は、#572の現在地、後続laneの境界、契約ごとの開始可否、評価条件をこの実行計画に固定する文書・品質契約の変更である。runtime、policy、activation、既存のL0〜L5評価fixtureは変更しない。確認基点は最新 `origin/master` の #572であり、下表のrefは実装・履歴の存在または記録した明示確認の範囲だけを示し、確認済みtyped /4のscopeを越えて新しいruntime／consumer資格を有効化したことを示さない。
 
@@ -147,7 +149,13 @@ Confirmation protocol (recorded, bounded): only an explicit user statement namin
 - Mandatory defenses: Native per-turn reauthorization against exact `Source`／`Revision`／`Decision`／`Freshness`／`Index` tuple, current purpose、input-use、send classification、and every `readingOrder`／`storyTime`／`viewpoint`／`knowledgeHolder`／`audience`／`timeline`／`worldline`／`narrativeLayer`／`scene` axis; opaque reference-only lineage, allowlisted purpose／category／dependency roles, full transitive dependency enumeration, descendant-wide exclusion, expiry／epoch checks, mutation invalidation in same transaction, no auto-approval／auto-assertion, fail closed on unknown／unavailable。
 - Acceptance implications: Positive: 同一projectのcurrent approved materialを明示目的で再利用し、full transitive dependency setと全descendant exclusionを解決してcold reopen後も同じ eligibilityとEvidence refsになること。Negative: `Source`／`Revision`／`Decision`／`Freshness`／`Index` の各不一致、purpose、input-use、send classification、`readingOrder`、`storyTime`、`viewpoint`、`knowledgeHolder`、`audience`、`timeline`、`worldline`、`narrativeLayer`、`scene` の各mismatch／unknown、stale／restored／ID-reused child、dependency omission、descendant継続を個別に拒否すること。Recovery: 新immutable childと再承認を作り、旧lineageを再利用せず、failure時はdisplay-onlyへ戻すこと。Lane unlocked if confirmed: D2b-2（Eは他全laneとPの独立受入れ後）。
 
-### lane開始判定と評価manifest
+### Current lane snapshot (2026-09-16)
+
+| lane | current dependency | currentStatus | 現在の証跡と境界 |
+| ---- | ------------------ | ------------- | --------------- |
+| A2 | A1、D2a依存のPR #591限定範囲 | complete-limited | 通常準備 → Evidence確認 → immutable Revisionへの明示Decision → 対象別cold reopen。Graph、Packing、AI送信、NIR-1全体受入れは未完了 |
+
+### R0 lane開始判定と評価manifest (historical)
 
 | lane | R0が固定する依存 | startStatus | 機能評価 |
 | ---- | ---------------- | ----------- | -------- |
@@ -274,7 +282,7 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 
   68.1msは先行候補の測定であり、現在HEADの再測定値ではない。#570のFull 600秒は助言的なCI目標であり、NIR検索の固定性能gateとは別に扱う。Graph統合再確認は未実施のまま保持する。
 
-### 区分
+### R0区分 (historical)
 
 | 区分                      | 内容                                                                                                                        |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -301,7 +309,9 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 | E: L9 | 比較、実製品journey、独立受入れ、Full・verify、全deliverable判定 | 全機能lane＋P | NIR-1 Complete判定 |
 | P | 固定検索性能契約の完了、Graph統合再確認 | R0後。機能laneと独立に測定 | NIR-1 Complete時にGraph統合再確認まで完了しHoldなし |
 
-R0がmergeされ、各laneの通常依存が満たされた後に限り、D2aとA1を開始できる。D2aは先行実装できるが、A1/A2の保存・reader・評価の開発を妨げない。proposal/4 Option Bの`typed-revision-material` rowはexact user confirmationにより既に批准済み・契約として有効であり、A2はA1＋D2aの通常依存が成立した後にreadyとなる。A3・B・C・D1とそれらを消費する後続laneは通常依存が成立するまでblockedのままとする。Pだけは独立して測定できる。
+R0がmergeされ、各laneの通常依存が満たされた後に限り、D2aとA1を開始できるという依存関係は、上のR0履歴台帳へ保持する。2026-09-16現在、PR #591はA2の限定レビュー範囲を完了したが、Graph、Packing、AI送信、A3・B・C・D1とそれらを消費する後続laneのactivation・受入れは未完了である。Pだけは独立して測定できる。
+
+R0時点の旧判定（履歴）は、R0がmergeされ各laneの通常依存が満たされた後にD2aとA1を開始でき、proposal/4 Option Bの`typed-revision-material` rowが既に批准済み・契約として有効で、A2はA1＋D2aの通常依存が成立した後にreadyとなり、A3・B・C・D1とそれらを消費する後続laneはblockedのまま、Pだけは独立して測定できるというものだった。これは現在のA2限定完了を示す記述ではない。
 
 依存は次の最小図に固定する。PはR0後に独立して測定できるが、Eの完了判定では機能laneと同じMを通る。
 

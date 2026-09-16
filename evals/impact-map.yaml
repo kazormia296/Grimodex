@@ -8,6 +8,7 @@ allSuites:
   - narrative-runtime
   - narrative-extraction
   - narrative-semantic-contract
+  - nir1-entity-relation-review
 rules:
   - id: quality-foundation
     reason: Quality policy, skills, selectors, and evaluation metadata affect every gate.
@@ -273,11 +274,80 @@ rules:
       - src-tauri/crates/grimodex-db/tests/narrative_scope_authority_runtime.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
       - scripts/quality/validate-semantic-core-boundary.test.mjs
+      - electron/main/ipc.ts
+      - electron/main/ipc.test.ts
+      - src/lib/tauri.ts
+      - src/lib/tauri.electron.test.ts
     requirements:
       - GDX-NARR-SEMANTIC-CONTRACT-001
       - GDX-ARTIFACT-001
     suites:
       - narrative-semantic-contract
+  - id: nir1-entity-relation-review
+    reason: NIR-1 typed Entity/Relation review keeps its renderer API, hook/dialog, Revision reader, typed IPC/Native persistence, core/DB contracts, and dedicated target-bound journey together while preserving overlap with shared semantic and runtime gates.
+    paths:
+      - src/features/codex/CodexEntityRelationReviewDialog.integration.test.tsx
+      - src/features/codex/CodexEntityRelationReviewDialog.test.tsx
+      - src/features/codex/CodexEntityRelationReviewDialog.tsx
+      - src/features/codex/CodexEntityRelationReviewDialogContent.tsx
+      - src/features/codex/CodexEntityRelationReviewDialogFooter.tsx
+      - src/features/codex/CodexEntityRelationReviewSelectors.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewDecisionControls.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewPanel.test.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewPanel.tsx
+      - src/features/codex/codexEntityRelationReviewApi.test.ts
+      - src/features/codex/codexEntityRelationReviewApi.ts
+      - src/features/codex/components/CodexTypedRelationsSection.test.tsx
+      - src/features/codex/components/CodexTypedRelationsSection.tsx
+      - src/features/codex/useCodexEntityRelationReview.test.tsx
+      - src/features/codex/useCodexEntityRelationReview.ts
+      - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.test.ts
+      - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.ts
+      - src/lib/tauri.electron.test.ts
+      - src/lib/tauri.ts
+      - electron/main/ipc.test.ts
+      - electron/main/ipc.ts
+      - electron/main/profileEgress.test.ts
+      - electron/main/profileEgress.ts
+      - electron/native/grimodex-node/index.d.ts
+      - electron/native/grimodex-node/src/lib.rs
+      - electron/scripts/codex-entity-relation-product-journey.mjs
+      - electron/scripts/product-journey-catalog.mjs
+      - electron/scripts/product-journey-shards.mjs
+      - electron/scripts/product-journeys.mjs
+      - electron/scripts/product-journey-shards.test.mjs
+      - scripts/electron-product-journeys.test.mjs
+      - electron/scripts/product-journey-impact.mjs
+      - electron/shared/ipcContract.test.ts
+      - electron/shared/ipcContract.ts
+      - electron/shared/nir1EntityRelationIpcContract.test.ts
+      - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/product-journey-backlog.test.mjs
+      - scripts/product-journey-impact.test.mjs
+      - src-tauri/crates/grimodex-core/src/narrative_ir.rs
+      - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/codex_operations.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/human_derivation.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_contracts.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/material_membership_root.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/**
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/project_scope_authority.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scene_scope.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scope_authority_runtime.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs
+    requirements:
+      - GDX-NARR-SEMANTIC-CONTRACT-001
+      - GDX-ARTIFACT-001
+      - GDX-TRACE-001
+      - GDX-POLICY-001
+    suites:
+      - nir1-entity-relation-review
   - id: narrative-extraction
     reason: Narrative source, Evidence, semantic scoring, Detail and Temporal projection contracts, Gold corpus, and Chronicle extraction changes share one release gate.
     paths:
@@ -340,9 +410,11 @@ rules:
       - electron/scripts/narrative-maintenance-product-journeys.mjs
       - electron/scripts/c2zc-canonical-product-journey.mjs
       - electron/scripts/c2zc-renderer-mcp-dml-denial-product-journey.mjs
+      - electron/scripts/product-journey-catalog.mjs
       - electron/scripts/product-journeys.mjs
       - electron/scripts/product-journey-shards.mjs
       - electron/scripts/product-journey-shards.test.mjs
+      - scripts/electron-product-journeys.test.mjs
       - electron/main/narrativeFreshness.ts
       - electron/main/narrativeFreshness.test.ts
       - electron/native/grimodex-node/**
@@ -363,6 +435,9 @@ rules:
       - scripts/quality/impact-map.mjs
       - scripts/quality/impact-map.test.mjs
       - scripts/product-journey-phase1.test.mjs
+      - scripts/product-journey-backlog.test.mjs
+      - scripts/product-journey-impact.test.mjs
+      - electron/scripts/product-journey-impact.mjs
     acceptanceGates:
       - id: c2-zc-canonical-no-legacy-fallback
         argv:
@@ -862,6 +937,10 @@ rules:
       - electron/main/narrativeMaintenanceTriggers.test.ts
       - electron/main/narrativeFreshness.ts
       - electron/main/narrativeFreshness.test.ts
+      - electron/main/ipc.ts
+      - electron/main/ipc.test.ts
+      - electron/main/profileEgress.ts
+      - electron/main/profileEgress.test.ts
       - electron/shared/ipcContract.ts
       - electron/shared/ipcContract.test.ts
       - electron/native/grimodex-node/Cargo.toml

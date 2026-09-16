@@ -120,6 +120,110 @@ test("the Narrative semantic suite executes terminal timestamp and projection ga
   assert.match(commandText, /narrative_terminal_failure_projection/);
 });
 
+test("the NIR-1 Entity/Relation suite covers the typed review seam and its contracts", () => {
+  const commandText = JSON.stringify(
+    LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands,
+  );
+  for (const expected of [
+    "CodexEntityRelationReviewDialog.integration.test.tsx",
+    "useCodexEntityRelationReview.test.tsx",
+    "nir1EntityRelationRevisionApi.test.ts",
+    "tauri.electron.test.ts",
+    "electron/main/ipc.test.ts",
+    "electron/main/profileEgress.test.ts",
+    "electron/shared/nir1EntityRelationIpcContract.test.ts",
+    "narrative_nir1",
+    "narrative_extraction::nir1_entity_relation",
+    "scripts/codex-entity-relation-product-journey.test.mjs",
+    "product-journey-shards.test.mjs",
+  ]) {
+    assert.match(commandText, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});
+
+test("NIR-1 Entity/Relation paths select their dedicated suite without losing shared overlap", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const dedicatedPaths = [
+    "src/features/codex/CodexEntityRelationReviewDialog.tsx",
+    "src/features/codex/useCodexEntityRelationReview.ts",
+    "src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.ts",
+    "src/lib/tauri.ts",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs",
+    "scripts/codex-entity-relation-product-journey.test.mjs",
+  ];
+  for (const changedPath of dedicatedPaths) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("nir1-entity-relation-review"));
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"));
+    for (const requirementId of [
+      "GDX-NARR-SEMANTIC-CONTRACT-001",
+      "GDX-ARTIFACT-001",
+      "GDX-TRACE-001",
+      "GDX-POLICY-001",
+    ]) {
+      assert.ok(selection.requirementIds.includes(requirementId), changedPath);
+    }
+    assert.equal(selection.fallback, false);
+  }
+  const sharedSelection = selectImpact(map, ["electron/shared/ipcContract.ts"]);
+  assert.ok(sharedSelection.matchedRuleIds.includes("nir1-entity-relation-review"));
+  assert.ok(sharedSelection.matchedRuleIds.includes("narrative-semantic-contract"));
+  assert.ok(sharedSelection.suiteIds.includes("narrative-semantic-contract"));
+  assert.equal(sharedSelection.fallback, false);
+
+  const sharedBoundaryExpectations = [
+    ["electron/main/ipc.ts", "narrative-semantic-contract"],
+    ["electron/main/profileEgress.ts", "narrative-runtime-authority"],
+    ["src/lib/tauri.ts", "narrative-semantic-contract"],
+    [
+      "electron/scripts/product-journey-catalog.mjs",
+      "narrative-maintenance-product-journeys",
+    ],
+    [
+      "electron/scripts/product-journey-impact.mjs",
+      "narrative-maintenance-product-journeys",
+    ],
+    [
+      "scripts/electron-product-journeys.test.mjs",
+      "narrative-maintenance-product-journeys",
+    ],
+    [
+      "scripts/product-journey-backlog.test.mjs",
+      "narrative-maintenance-product-journeys",
+    ],
+    [
+      "scripts/product-journey-impact.test.mjs",
+      "narrative-maintenance-product-journeys",
+    ],
+  ];
+  for (const [changedPath, overlappingRuleId] of sharedBoundaryExpectations) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("nir1-entity-relation-review"));
+    assert.ok(selection.matchedRuleIds.includes(overlappingRuleId), changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+  }
+
+  const unknownSelection = selectImpact(map, ["tmp/unclassified-a2-path.ts"]);
+  assert.equal(unknownSelection.fallback, true);
+  assert.deepEqual(unknownSelection.suiteIds, map.allSuites);
+  const emptySelection = selectImpact(map, []);
+  assert.equal(emptySelection.fallback, true);
+  assert.deepEqual(emptySelection.suiteIds, map.allSuites);
+  const unavailableSelection = selectImpact(map, ["src/features/codex/useCodexEntityRelationReview.ts"], {
+    forceAllReason: "changed range unavailable",
+  });
+  assert.equal(unavailableSelection.fallback, true);
+  assert.deepEqual(unavailableSelection.suiteIds, map.allSuites);
+
+  const qualityDefinitionSelection = selectImpact(map, ["evals/quality-manifest.yaml"]);
+  assert.deepEqual(qualityDefinitionSelection.suiteIds, map.allSuites);
+  assert.equal(qualityDefinitionSelection.fallback, false);
+});
+
 test("incremental Freshness runtime changes select the Narrative runtime gate", async () => {
   const source = await readFile(
     new URL("../../evals/impact-map.yaml", import.meta.url),

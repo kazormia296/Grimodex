@@ -208,9 +208,9 @@ export async function validateQualityModel(
   if (
     !Array.isArray(model.cases) ||
     model.cases.length < 20 ||
-    model.cases.length > 30
+    model.cases.length > 31
   ) {
-    errors.push("light evaluation corpus must contain 20-30 cases");
+    errors.push("light evaluation corpus must contain 20-31 cases");
   }
 
   const requirementIds = new Set();
