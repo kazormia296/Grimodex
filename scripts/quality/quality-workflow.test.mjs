@@ -234,9 +234,13 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     implement,
     /CIが明示的に除外されたcommit-only作業ではQuickを実行せず/,
   );
-  assert.match(impactGate, /PR／releaseの証跡が依頼範囲に含まれ.*cleanな候補commit/is);
+  assert.match(
+    impactGate,
+    /PR／releaseの証跡が依頼範囲に含まれ.*CIが許可されている場合だけ.*次のブロック全体が同じ条件のguard内.*candidate_base.*candidate_head.*Quick.*verify/is,
+  );
   assert.match(impactGate, /commit／PRが依頼されていない調査・レビューではcommitを作らず/);
   assert.match(impactGate, /commitを作らず、\s*CIも開始せず/);
+  assert.match(impactGate, /guard外でQuickまたはverifyを開始してはならない/);
 
   for (const skill of [review, testFeature, matrix]) {
     assert.match(skill, /immutable child.*revision|immutable.*child.*revision/i);
@@ -246,6 +250,7 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   }
   assert.match(runbook, /durable ID.*corresponding UI\s*projection before editing/is);
   assert.match(runbook, /selector.*ready signal/);
+  assert.match(runbook, /28 catalog entries as 10\/9\/9 shards/);
   assert.match(
     bump,
     /PR／releaseの証跡が依頼範囲に含まれ.*CIが許可されている場合だけ/is,

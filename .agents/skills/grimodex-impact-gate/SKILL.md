@@ -30,29 +30,23 @@ description: >
    pnpm verify:quality
    ```
 
-2. PR／releaseの証跡が依頼範囲に含まれ、CIが許可されている場合は、focused検証後のcleanな候補commitを対象に、
-   local CI wrapperから選択されたLight suiteを実行する。`candidate_base`／`candidate_head`は候補HEADの後に一度だけ解決し、
-   Quickと直後のverifyへ同じ値を渡す。commit-onlyまたはCI明示除外の作業ではQuickを開始せず、commit／PRが依頼されていない調査・レビューではcommitを作らず、
+2. PR／releaseの証跡が依頼範囲に含まれ、CIが許可されている場合だけ、focused検証後のcleanな候補commitを対象に、
+   local CI wrapperから選択されたLight suiteを実行する。次のブロック全体が同じ条件のguard内にあり、
+   `candidate_base`／`candidate_head`は候補HEADの後に一度だけ解決し、Quickと直後のverifyへ同じ値を渡す。
+   commit-onlyまたはCI明示除外の作業ではこのブロックを実行せず、commit／PRが依頼されていない調査・レビューではcommitを作らず、
    CIも開始せず、working treeの選択・実行は診断専用として扱う。
    wrapperが内部で`pnpm eval:impact`を呼ぶため、差分選択ロジックを別経路で再実装しない。
 
    ```bash
+   # PR／releaseの証跡が依頼され、CIが許可された場合だけ実行する
    candidate_base="$(git rev-parse 'origin/master^{commit}')"
    candidate_head="$(git rev-parse 'HEAD^{commit}')"
    pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
-   ```
-
-3. 明示的な比較範囲が必要な場合は、検証済みのrefを`candidate_base`／`candidate_head`へ一度だけ代入し、以後は再解決・再代入しない。
-
-   ```bash
-   pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
-   ```
-
-4. 実行直後に同じrefでreceiptを検証する。途中で差分やHEADが変わったreceiptを成功証跡にしない。
-
-   ```bash
    pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
    ```
+
+3. 明示的な比較範囲が必要な場合は、上記のguard内で検証済みのrefを`candidate_base`／`candidate_head`へ一度だけ代入し、
+   以後は再解決・再代入しない。guard外でQuickまたはverifyを開始してはならない。実行途中で差分やHEADが変わったreceiptを成功証跡にしない。
 
    machine-readable evidenceの正本は`.artifacts/local-ci/quick.json`、選択suiteの詳細は
    `.artifacts/local-ci/impact.json`とする。stdoutのbannerをJSONとして扱わない。

@@ -72,7 +72,7 @@ its own 120-second timeout. The four-slot runtime contract task starts
 after workspace dependency bootstrap and can overlap independent gates. Runtime
 performance waits for it and every pre-runtime terminal task, then owns all
 twelve slots as the final group. Product journeys run as three fixed, disjoint
-processes covering nine catalog entries each. Catalog order is retained within
+processes covering all 28 catalog entries as 10/9/9 shards. Catalog order is retained within
 each shard, and only the shard containing the catalog's C2-ZC acceptance roles
 sets `acceptanceRequired` and can complete C2-ZC acceptance. Each process
 has a calibrated two-slot scheduler admission weight. Exact co-load with all
