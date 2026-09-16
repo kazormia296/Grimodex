@@ -668,9 +668,18 @@ export interface NapiBackendLike {
     descriptionMode?: boolean | null,
   ): Promise<string>;
   relatedScenesBegin?(request: unknown): Promise<string>;
-  relatedScenesContinue?(ownerKey: string, operationTicket: string): Promise<string>;
-  relatedScenesRelease?(ownerKey: string, operationTicket: string): Promise<string>;
-  nir1EvidenceQualify?(ownerKey: string, navigationIdentity: string): Promise<string>;
+  relatedScenesContinue?(
+    ownerKey: string,
+    operationTicket: string,
+  ): Promise<string>;
+  relatedScenesRelease?(
+    ownerKey: string,
+    operationTicket: string,
+  ): Promise<string>;
+  nir1EvidenceQualify?(
+    ownerKey: string,
+    navigationIdentity: string,
+  ): Promise<string>;
   /** Native-only NIR-1 graph scaffold; deliberately absent from renderer IPC. */
   nir1GraphQuery?(payload: unknown): Promise<string>;
   /** Native-only atomic Raw/IR/Graph context packing. */
@@ -689,6 +698,8 @@ export interface NapiBackendLike {
   nir1EntityRelationRevisionRead?(payload: unknown): Promise<string>;
   /** Dedicated typed current-by-review-Run reader for cold reopen. */
   nir1EntityRelationRevisionReadCurrent?(payload: unknown): Promise<string>;
+  /** Dedicated Native target-aware typed review restore reader. */
+  nir1EntityRelationRevisionRestore?(payload: unknown): Promise<string>;
   narrativeSceneScopeRead?(payload: unknown): Promise<string>;
   narrativeSceneScopeUpdate?(payload: unknown): Promise<string>;
   narrativeSceneScopeRegistryUpdate?(payload: unknown): Promise<string>;
@@ -2258,7 +2269,11 @@ function requireTimelapseLayoutSnapshotRecordArgs(args: CommandArgs): {
     );
   }
   const payload = requireRecord(args, "payload", command);
-  const payloadKeys = new Set(["layout", "activePresetId", "hiddenStripePanels"]);
+  const payloadKeys = new Set([
+    "layout",
+    "activePresetId",
+    "hiddenStripePanels",
+  ]);
   if (
     !Object.hasOwn(payload, "layout") ||
     Object.keys(payload).some((key) => !payloadKeys.has(key))
@@ -2273,7 +2288,10 @@ function requireTimelapseLayoutSnapshotRecordArgs(args: CommandArgs): {
   }
   if (Object.hasOwn(payload, "hiddenStripePanels")) {
     const panels = requireArray(payload, "hiddenStripePanels", command);
-    if (panels.length > 128 || panels.some((panel) => typeof panel !== "string")) {
+    if (
+      panels.length > 128 ||
+      panels.some((panel) => typeof panel !== "string")
+    ) {
       throw new Error(
         `invalid args \`payload.hiddenStripePanels\` for command \`${command}\`: expected at most 128 strings`,
       );
@@ -6378,11 +6396,17 @@ function requireRelatedScenesBeginRequest(args: CommandArgs) {
   const command = "related_scenes_begin";
   const query = requireNonEmptyString(args, "query", command);
   if (query.trim().length === 0 || query.length > 500) {
-    throw new Error("IPC_INVALID_REQUEST: related_scenes_begin query exceeds Raw UTF-16 tail");
+    throw new Error(
+      "IPC_INVALID_REQUEST: related_scenes_begin query exceeds Raw UTF-16 tail",
+    );
   }
   return {
     ownerKey: requireNonEmptyString(args, "ownerKey", command),
-    expectedWorkspacePath: requireNonEmptyString(args, "expectedWorkspacePath", command),
+    expectedWorkspacePath: requireNonEmptyString(
+      args,
+      "expectedWorkspacePath",
+      command,
+    ),
     projectId: requireNonEmptyString(args, "projectId", command),
     currentSceneId: requireNonEmptyString(args, "currentSceneId", command),
     query,
@@ -6393,10 +6417,8 @@ function requireNir1EntityRelationRevisionCreateRequest(
   args: CommandArgs,
 ): readonly [CommandArgs, CommandArgs] {
   const command = "nir1_entity_relation_revision_create";
-  const [rawPayload, workspaceBinding] = requireNarrativeExtractionBoundMutation(
-    args,
-    command,
-  );
+  const [rawPayload, workspaceBinding] =
+    requireNarrativeExtractionBoundMutation(args, command);
   const payload = requireRecord({ payload: rawPayload }, "payload", command);
   const allowedKeys = new Set(["runId", "projectId", "proposalKey", "bundle"]);
   for (const key of Object.keys(payload)) {
@@ -6415,7 +6437,13 @@ function requireNir1EntityRelationRevisionCreateRequest(
     }
   }
   const bundle = requireRecord(payload, "bundle", command);
-  for (const key of ["projectId", "revisionId", "producer", "entities", "relations"]) {
+  for (const key of [
+    "projectId",
+    "revisionId",
+    "producer",
+    "entities",
+    "relations",
+  ]) {
     requirePresent(bundle, key, command);
   }
   return [payload, workspaceBinding];
@@ -6460,10 +6488,8 @@ function requireNir1EntityRelationRevisionPrepareRequest(
   args: CommandArgs,
 ): readonly [CommandArgs, CommandArgs] {
   const command = "nir1_entity_relation_revision_prepare";
-  const [rawPayload, workspaceBinding] = requireNarrativeExtractionBoundMutation(
-    args,
-    command,
-  );
+  const [rawPayload, workspaceBinding] =
+    requireNarrativeExtractionBoundMutation(args, command);
   const payload = requireRecord({ payload: rawPayload }, "payload", command);
   const allowedKeys = new Set([
     "projectId",
@@ -6503,7 +6529,11 @@ function requireNir1EntityRelationRevisionPrepareRequest(
   for (const [key, values] of identityLists) {
     const seen = new Set<string>();
     for (const [index, value] of values.entries()) {
-      if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
+      if (
+        typeof value !== "string" ||
+        value.length === 0 ||
+        value.trim() !== value
+      ) {
         throw new Error(
           `invalid args \`${key}[${index}]\` for command \`${command}\`: expected an exact non-empty string`,
         );
@@ -6549,6 +6579,51 @@ function requireNir1EntityRelationRevisionCurrentReadRequest(
     expectedWorkspacePath: args.expectedWorkspacePath,
     projectId: args.projectId,
     runId: args.runId,
+  };
+}
+
+function requireNir1EntityRelationRevisionRestoreRequest(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "nir1_entity_relation_revision_restore";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "entityId",
+    "relationId",
+  ]);
+  for (const key of Object.keys(args)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of [
+    "expectedWorkspacePath",
+    "projectId",
+    "entityId",
+  ] as const) {
+    const value = requireNonEmptyString(args, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact string`,
+      );
+    }
+  }
+  if (Object.hasOwn(args, "relationId") && args.relationId !== null) {
+    const relationId = requireNonEmptyString(args, "relationId", command);
+    if (relationId.trim() !== relationId) {
+      throw new Error(
+        `invalid args \`relationId\` for command \`${command}\`: expected an exact string`,
+      );
+    }
+  }
+  return {
+    expectedWorkspacePath: args.expectedWorkspacePath,
+    projectId: args.projectId,
+    entityId: args.entityId,
+    relationId: args.relationId ?? null,
   };
 }
 
@@ -6622,17 +6697,26 @@ function requireSceneScopeReadRequest(args: CommandArgs): CommandArgs {
   ]);
   for (const key of Object.keys(args)) {
     if (!allowedKeys.has(key)) {
-      throw new Error(`invalid args \`${key}\` for command \`${command}\`: unknown field`);
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
     }
   }
   return {
-    expectedWorkspacePath: requireNonEmptyString(args, "expectedWorkspacePath", command),
+    expectedWorkspacePath: requireNonEmptyString(
+      args,
+      "expectedWorkspacePath",
+      command,
+    ),
     projectId: requireNonEmptyString(args, "projectId", command),
     sceneId: requireNonEmptyString(args, "sceneId", command),
   };
 }
 
-function requireSceneScopeMutationRequest(args: CommandArgs, command: string): CommandArgs {
+function requireSceneScopeMutationRequest(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
   const allowedKeys = new Set([
     "expectedWorkspacePath",
     "payload",
@@ -6643,21 +6727,51 @@ function requireSceneScopeMutationRequest(args: CommandArgs, command: string): C
   ]);
   for (const key of Object.keys(args)) {
     if (!allowedKeys.has(key)) {
-      throw new Error(`invalid args \`${key}\` for command \`${command}\`: unknown field`);
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
     }
   }
   const payload = requireRecord(args, "payload", command);
-  const requiredKeys = command === "narrative_scene_scope_update"
-    ? ["projectId", "sceneId", "requestId", "sessionId", "eventUid", "baseVersion", "updatedAt", "scope"]
-    : ["projectId", "requestId", "sessionId", "eventUid", "baseVersion", "updatedAt", "registry"];
+  const requiredKeys =
+    command === "narrative_scene_scope_update"
+      ? [
+          "projectId",
+          "sceneId",
+          "requestId",
+          "sessionId",
+          "eventUid",
+          "baseVersion",
+          "updatedAt",
+          "scope",
+        ]
+      : [
+          "projectId",
+          "requestId",
+          "sessionId",
+          "eventUid",
+          "baseVersion",
+          "updatedAt",
+          "registry",
+        ];
   for (const key of requiredKeys) {
     requirePresent(payload, key, command);
   }
-  if (typeof payload.baseVersion !== "number" || !Number.isSafeInteger(payload.baseVersion) || payload.baseVersion < 1) {
-    throw new Error(`invalid args \`payload.baseVersion\` for command \`${command}\`: expected a positive safe integer`);
+  if (
+    typeof payload.baseVersion !== "number" ||
+    !Number.isSafeInteger(payload.baseVersion) ||
+    payload.baseVersion < 1
+  ) {
+    throw new Error(
+      `invalid args \`payload.baseVersion\` for command \`${command}\`: expected a positive safe integer`,
+    );
   }
   return {
-    expectedWorkspacePath: requireNonEmptyString(args, "expectedWorkspacePath", command),
+    expectedWorkspacePath: requireNonEmptyString(
+      args,
+      "expectedWorkspacePath",
+      command,
+    ),
     payload,
   };
 }
@@ -7721,42 +7835,70 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   related_scenes_begin: {
-    run: async (b, a) => parseWire(
-      await requireNapiMethod(b, b.relatedScenesBegin, "relatedScenesBegin")(
-        requireRelatedScenesBeginRequest(a),
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.relatedScenesBegin,
+          "relatedScenesBegin",
+        )(requireRelatedScenesBeginRequest(a)),
       ),
-    ),
   },
   related_scenes_continue: {
-    run: async (b, a) => parseWire(
-      await requireNapiMethod(b, b.relatedScenesContinue, "relatedScenesContinue")(
-        requireNonEmptyString(a, "ownerKey", "related_scenes_continue"),
-        requireNonEmptyString(a, "operationTicket", "related_scenes_continue"),
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.relatedScenesContinue,
+          "relatedScenesContinue",
+        )(
+          requireNonEmptyString(a, "ownerKey", "related_scenes_continue"),
+          requireNonEmptyString(
+            a,
+            "operationTicket",
+            "related_scenes_continue",
+          ),
+        ),
       ),
-    ),
   },
   related_scenes_release: {
-    run: async (b, a) => parseWire(
-      await requireNapiMethod(b, b.relatedScenesRelease, "relatedScenesRelease")(
-        requireNonEmptyString(a, "ownerKey", "related_scenes_release"),
-        requireNonEmptyString(a, "operationTicket", "related_scenes_release"),
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.relatedScenesRelease,
+          "relatedScenesRelease",
+        )(
+          requireNonEmptyString(a, "ownerKey", "related_scenes_release"),
+          requireNonEmptyString(a, "operationTicket", "related_scenes_release"),
+        ),
       ),
-    ),
   },
   nir1_evidence_qualify: {
-    run: async (b, a) => parseWire(
-      await requireNapiMethod(b, b.nir1EvidenceQualify, "nir1EvidenceQualify")(
-        requireNonEmptyString(a, "ownerKey", "nir1_evidence_qualify"),
-        requireNonEmptyString(a, "navigationIdentity", "nir1_evidence_qualify"),
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EvidenceQualify,
+          "nir1EvidenceQualify",
+        )(
+          requireNonEmptyString(a, "ownerKey", "nir1_evidence_qualify"),
+          requireNonEmptyString(
+            a,
+            "navigationIdentity",
+            "nir1_evidence_qualify",
+          ),
+        ),
       ),
-    ),
   },
   nir1_pack_context: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.nir1PackContext, "nir1PackContext")(
-          requireNir1PackingRequest(a),
-        ),
+        await requireNapiMethod(
+          b,
+          b.nir1PackContext,
+          "nir1PackContext",
+        )(requireNir1PackingRequest(a)),
       ),
   },
   nir1_entity_relation_revision_create: {
@@ -7803,6 +7945,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.nir1EntityRelationRevisionReadCurrent,
           "nir1EntityRelationRevisionReadCurrent",
         )(requireNir1EntityRelationRevisionCurrentReadRequest(a)),
+      ),
+  },
+  nir1_entity_relation_revision_restore: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EntityRelationRevisionRestore,
+          "nir1EntityRelationRevisionRestore",
+        )(requireNir1EntityRelationRevisionRestoreRequest(a)),
       ),
   },
   narrative_scene_scope_read: {

@@ -9,6 +9,7 @@ import {
   prepareNir1EntityRelationRevision,
   readCurrentNir1EntityRelationRevision,
   readNir1EntityRelationRevision,
+  restoreNir1EntityRelationRevision,
 } from "./nir1EntityRelationRevisionApi";
 
 describe("NIR-1 typed Entity/Relation Revision renderer API", () => {
@@ -121,6 +122,29 @@ describe("NIR-1 typed Entity/Relation Revision renderer API", () => {
 
     expect(h.invoke).toHaveBeenCalledExactlyOnceWith(
       "nir1_entity_relation_revision_read_current",
+      request,
+    );
+  });
+
+  it("restores a target through the Native typed-family lookup", async () => {
+    h.invoke.mockResolvedValueOnce({
+      runId: "run-a",
+      response: {
+        status: "unavailable",
+        result: { reason: "source-revision-changed" },
+      },
+    });
+    const request = {
+      expectedWorkspacePath: "/workspace/project-1",
+      projectId: "project-1",
+      entityId: "entity-a",
+      relationId: "relation-a",
+    };
+
+    await restoreNir1EntityRelationRevision(request);
+
+    expect(h.invoke).toHaveBeenCalledExactlyOnceWith(
+      "nir1_entity_relation_revision_restore",
       request,
     );
   });

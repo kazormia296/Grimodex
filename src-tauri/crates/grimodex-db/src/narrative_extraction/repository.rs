@@ -73,7 +73,7 @@ const CHRONICLE_EXISTING_EVENTS_CATALOG_KIND: &str = "chronicle.existing-events-
 /// Canonical Review-resumability predicate shared by bounded discovery and
 /// the exact, limit-free authority query. Keep the Run alias fixed as `r` so
 /// both call sites consume the same SQL rather than parallel vocabularies.
-const REVIEW_RESUMABLE_RUN_PREDICATE_SQL: &str = r#"
+pub(crate) const REVIEW_RESUMABLE_RUN_PREDICATE_SQL: &str = r#"
     r.status IN ('pending', 'running', 'completed')
     AND EXISTS (
         SELECT 1

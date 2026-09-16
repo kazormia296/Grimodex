@@ -57,6 +57,7 @@ pub use maintenance_skip_evidence::{
 #[cfg(test)]
 pub(crate) use material_membership::MATERIAL_MEMBERSHIP_READ_COUNT;
 pub use nir1_entity_relation::{
+    find_nir1_entity_relation_revision_run,
     nir1_entity_relation_revision_current_read_for_renderer,
     nir1_entity_relation_revision_prepare_receipt, nir1_entity_relation_revision_read_for_renderer,
     prepare_nir1_entity_relation_revision, read_nir1_entity_relation_revision,

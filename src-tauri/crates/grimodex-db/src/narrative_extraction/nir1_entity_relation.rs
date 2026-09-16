@@ -53,6 +53,7 @@ use super::reconciliation_envelope::{
 };
 use super::repository::{
     current_chronicle_run_spec_for_run, ensure_run_project, insert_source_basis_rows,
+    REVIEW_RESUMABLE_RUN_PREDICATE_SQL,
 };
 use super::revision_eligibility::pending;
 use super::semantic_epoch::get_current_epoch;
@@ -1496,6 +1497,165 @@ pub fn read_nir1_entity_relation_revision_current(
     read_typed_revision_core(conn, project_id, &revision_id, true)
 }
 
+/// Find the current typed review Run for one launcher target inside Native.
+///
+/// The generic resumable-run list is intentionally not target-aware: applying
+/// its page limit before a renderer-side filter can hide an older launcher
+/// revision. This query filters the sealed current typed payload first, then
+/// applies the same canonical resumability predicate and ordering. A matching
+/// stale Run is still returned so the current reader can report its exact
+/// unavailable reason instead of falling back to an unrelated Run.
+pub fn find_nir1_entity_relation_revision_run(
+    conn: &Connection,
+    project_id: &str,
+    entity_id: &str,
+    relation_id: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    if conn.is_autocommit() {
+        anyhow::bail!("NIR1_ENTITY_RELATION_REQUIRES_READ_TRANSACTION");
+    }
+    for (field, value) in [("projectId", project_id), ("entityId", entity_id)] {
+        anyhow::ensure!(
+            !value.trim().is_empty() && value.trim() == value,
+            "NIR1_ENTITY_RELATION_RESTORE_INVALID: {field} must be non-empty and unpadded"
+        );
+    }
+    if let Some(relation_id) = relation_id {
+        anyhow::ensure!(
+            !relation_id.trim().is_empty() && relation_id.trim() == relation_id,
+            "NIR1_ENTITY_RELATION_RESTORE_INVALID: relationId must be non-empty and unpadded"
+        );
+    }
+
+    let sql = format!(
+        r#"
+        SELECT r.id
+          FROM narrative_extraction_runs r
+          JOIN narrative_proposal_sets ps
+            ON ps.run_id = r.id
+           AND ps.project_id = r.project_id
+          JOIN narrative_proposals p
+            ON p.proposal_set_id = ps.id
+          JOIN narrative_proposal_revisions revision
+            ON revision.id = p.current_revision_id
+           AND revision.proposal_id = p.id
+         WHERE r.project_id = ?1
+           AND r.surface_path_id = ?2
+           AND ps.set_kind = ?3
+           AND p.kind = ?4
+           AND revision.origin_kind = ?5
+           AND json_valid(revision.payload_json)
+           AND json_extract(
+                 CASE WHEN json_valid(revision.payload_json)
+                      THEN revision.payload_json ELSE '{{}}' END,
+                 '$.schemaVersion'
+               ) = 1
+           AND json_extract(
+                 CASE WHEN json_valid(revision.payload_json)
+                      THEN revision.payload_json ELSE '{{}}' END,
+                 '$.kind'
+               ) = ?4
+           AND json_extract(
+                 CASE WHEN json_valid(revision.payload_json)
+                      THEN revision.payload_json ELSE '{{}}' END,
+                 '$.producer'
+               ) = ?6
+           AND json_extract(
+                 CASE WHEN json_valid(revision.payload_json)
+                      THEN revision.payload_json ELSE '{{}}' END,
+                 '$.projectId'
+               ) = ?1
+           AND json_extract(
+                 CASE WHEN json_valid(revision.payload_json)
+                      THEN revision.payload_json ELSE '{{}}' END,
+                 '$.revisionId'
+               ) = revision.id
+           AND EXISTS (
+                 SELECT 1
+                   FROM json_each(
+                     CASE
+                       WHEN json_type(
+                              CASE WHEN json_valid(revision.payload_json)
+                                   THEN revision.payload_json ELSE '{{}}' END,
+                              '$.bundle.entities'
+                            ) = 'array'
+                       THEN json_extract(
+                              CASE WHEN json_valid(revision.payload_json)
+                                   THEN revision.payload_json ELSE '{{}}' END,
+                              '$.bundle.entities'
+                            )
+                       ELSE '[]'
+                     END
+                   ) AS entity
+                  WHERE json_extract(
+                          CASE WHEN json_valid(entity.value)
+                               THEN entity.value ELSE '{{}}' END,
+                          '$.entityId'
+                        ) = ?7
+               )
+           AND (
+                 ?8 IS NULL
+                 OR EXISTS (
+                      SELECT 1
+                        FROM json_each(
+                          CASE
+                            WHEN json_type(
+                                   CASE WHEN json_valid(revision.payload_json)
+                                        THEN revision.payload_json ELSE '{{}}' END,
+                                   '$.bundle.relations'
+                                 ) = 'array'
+                            THEN json_extract(
+                                   CASE WHEN json_valid(revision.payload_json)
+                                        THEN revision.payload_json ELSE '{{}}' END,
+                                   '$.bundle.relations'
+                                 )
+                            ELSE '[]'
+                          END
+                        ) AS relation
+                       WHERE json_extract(
+                               CASE WHEN json_valid(relation.value)
+                                    THEN relation.value ELSE '{{}}' END,
+                               '$.edgeId'
+                             ) = ?8
+                         AND (
+                           json_extract(
+                             CASE WHEN json_valid(relation.value)
+                                  THEN relation.value ELSE '{{}}' END,
+                             '$.fromEntityId'
+                           ) = ?7
+                           OR json_extract(
+                             CASE WHEN json_valid(relation.value)
+                                  THEN relation.value ELSE '{{}}' END,
+                             '$.toEntityId'
+                           ) = ?7
+                         )
+                    )
+               )
+           AND {REVIEW_RESUMABLE_RUN_PREDICATE_SQL}
+         ORDER BY julianday(COALESCE(r.completed_at, r.started_at, r.created_at)) DESC,
+                  COALESCE(r.completed_at, r.started_at, r.created_at) DESC,
+                  r.id DESC
+         LIMIT 1
+        "#,
+    );
+    conn.query_row(
+        &sql,
+        params![
+            project_id,
+            NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
+            NIR1_ENTITY_RELATION_SET_KIND,
+            NIR1_ENTITY_RELATION_PROPOSAL_KIND,
+            NIR1_ENTITY_RELATION_REVISION_ORIGIN,
+            ENTITY_RELATION_PRODUCER,
+            entity_id,
+            relation_id,
+        ],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 fn read_typed_revision_core(
     conn: &Connection,
     project_id: &str,
@@ -2225,12 +2385,13 @@ fn create_typed_run_in_tx(
 #[cfg(test)]
 mod tests {
     use super::{
-        create_nir1_entity_relation_revision, prepare_nir1_entity_relation_revision,
-        read_nir1_entity_relation_revision, read_nir1_entity_relation_revision_current,
-        Nir1EntityRelationRevisionCurrentRead, Nir1EntityRelationRevisionPrepareRequest,
-        Nir1EntityRelationRevisionRead, Nir1EntityRelationRevisionRequest,
-        NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_PROPOSAL_KIND,
-        NIR1_ENTITY_RELATION_REVISION_ORIGIN, NIR1_ENTITY_RELATION_SET_KIND,
+        create_nir1_entity_relation_revision, find_nir1_entity_relation_revision_run,
+        prepare_nir1_entity_relation_revision, read_nir1_entity_relation_revision,
+        read_nir1_entity_relation_revision_current, Nir1EntityRelationRevisionCurrentRead,
+        Nir1EntityRelationRevisionPrepareRequest, Nir1EntityRelationRevisionRead,
+        Nir1EntityRelationRevisionRequest, NIR1_ENTITY_RELATION_DECISION_LOCKED,
+        NIR1_ENTITY_RELATION_PROPOSAL_KIND, NIR1_ENTITY_RELATION_REVISION_ORIGIN,
+        NIR1_ENTITY_RELATION_SET_KIND,
     };
     use crate::narrative_extraction::change_feed::get_changes_since;
     use crate::narrative_extraction::incremental_freshness::{
@@ -2613,6 +2774,172 @@ mod tests {
         assert!(matches!(
             approved,
             Nir1EntityRelationRevisionCurrentRead::Available(_)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn target_lookup_filters_before_newer_unrelated_runs_and_keeps_stale_target_bound(
+    ) -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let target = prepare_nir1_entity_relation_revision(
+            &db,
+            Nir1EntityRelationRevisionPrepareRequest {
+                project_id: "default-project".into(),
+                scene_id: "nir1".into(),
+                proposal_key: Some("nir1:lookup:target".into()),
+                entity_ids: vec!["nir1-alice".into()],
+                relation_ids: vec!["nir1-edge".into()],
+            },
+        )?;
+        let target_run = target["runId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("target typed run id missing"))?
+            .to_owned();
+        let target_draft = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision_current(conn, "default-project", &target_run)
+        })?;
+        let (target_proposal_id, target_revision_id) = match target_draft {
+            Nir1EntityRelationRevisionCurrentRead::Draft(revision) => {
+                (revision.proposal_id.clone(), revision.revision_id.clone())
+            }
+            other => anyhow::bail!("target typed preparation was not a draft: {other:?}"),
+        };
+        approve_typed_revision(
+            &db,
+            &target_run,
+            &json!({
+                "proposalId": target_proposal_id,
+                "revisionId": target_revision_id,
+            }),
+        )?;
+
+        for index in 0..8 {
+            prepare_nir1_entity_relation_revision(
+                &db,
+                Nir1EntityRelationRevisionPrepareRequest {
+                    project_id: "default-project".into(),
+                    scene_id: "nir1".into(),
+                    proposal_key: Some(format!("nir1:lookup:unrelated-{index}")),
+                    entity_ids: vec!["nir1-bob".into()],
+                    relation_ids: vec![],
+                },
+            )?;
+        }
+        let corrupt = prepare_nir1_entity_relation_revision(
+            &db,
+            Nir1EntityRelationRevisionPrepareRequest {
+                project_id: "default-project".into(),
+                scene_id: "nir1".into(),
+                proposal_key: Some("nir1:lookup:corrupt-unrelated".into()),
+                entity_ids: vec!["nir1-bob".into()],
+                relation_ids: vec![],
+            },
+        )?;
+        let corrupt_revision = corrupt["result"]["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("corrupt typed revision id missing"))?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposal_revisions
+                    SET payload_json = '{not-json'
+                  WHERE id = ?1",
+                [corrupt_revision],
+            )?;
+            Ok(())
+        })?;
+        let malformed_shape = prepare_nir1_entity_relation_revision(
+            &db,
+            Nir1EntityRelationRevisionPrepareRequest {
+                project_id: "default-project".into(),
+                scene_id: "nir1".into(),
+                proposal_key: Some("nir1:lookup:malformed-shape-unrelated".into()),
+                entity_ids: vec!["nir1-bob".into()],
+                relation_ids: vec![],
+            },
+        )?;
+        let malformed_shape_revision = malformed_shape["result"]["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("malformed shape revision id missing"))?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposal_revisions
+                    SET payload_json = ?1
+                  WHERE id = ?2",
+                params![
+                    json!({
+                        "schemaVersion": 1,
+                        "kind": NIR1_ENTITY_RELATION_PROPOSAL_KIND,
+                        "producer": "nir1-reviewed-entity-relation-v1",
+                        "projectId": "default-project",
+                        "revisionId": malformed_shape_revision,
+                        "bundle": {
+                            "entities": ["not-json"],
+                            "relations": "not-json",
+                        },
+                    })
+                    .to_string(),
+                    malformed_shape_revision,
+                ],
+            )?;
+            Ok(())
+        })?;
+
+        let found = db.with_read_transaction(|conn| {
+            find_nir1_entity_relation_revision_run(
+                conn,
+                "default-project",
+                "nir1-alice",
+                Some("nir1-edge"),
+            )
+        })?;
+        assert_eq!(found.as_deref(), Some(target_run.as_str()));
+        let current = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision_current(
+                conn,
+                "default-project",
+                found.as_deref().unwrap_or_default(),
+            )
+        })?;
+        assert!(matches!(
+            current,
+            Nir1EntityRelationRevisionCurrentRead::Available(_)
+        ));
+
+        let base_version: i64 = db.with_read_transaction(|conn| {
+            conn.query_row(
+                "SELECT version FROM codex_entries
+                  WHERE id = 'nir1-alice' AND project_id = 'default-project'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })?;
+        super::super::codex_operations::test_agent_codex_update_for_change_feed(
+            &db,
+            "default-project",
+            "nir1-lookup-stale",
+            "nir1-alice",
+            base_version,
+            "Alice changed after target lookup",
+        )?;
+        let stale_found = db.with_read_transaction(|conn| {
+            find_nir1_entity_relation_revision_run(
+                conn,
+                "default-project",
+                "nir1-alice",
+                Some("nir1-edge"),
+            )
+        })?;
+        assert_eq!(stale_found.as_deref(), Some(target_run.as_str()));
+        let stale_current = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision_current(conn, "default-project", &target_run)
+        })?;
+        assert!(matches!(
+            stale_current,
+            Nir1EntityRelationRevisionCurrentRead::Unavailable { ref reason }
+                if reason == "source-revision-changed"
         ));
         Ok(())
     }

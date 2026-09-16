@@ -339,6 +339,7 @@ describe("caller timeout policy（electron 分岐）", () => {
     "nir1_evidence_qualify",
     "nir1_entity_relation_revision_read",
     "nir1_entity_relation_revision_read_current",
+    "nir1_entity_relation_revision_restore",
   ])(
     "%s は lifecycle quiescence を保持せず read caller を cancel する",
     async (command) => {

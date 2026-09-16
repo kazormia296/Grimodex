@@ -6,6 +6,8 @@ import type { CodexEntry } from "./api";
 
 type NativeRun = {
   readonly runId: string;
+  readonly projectId: string;
+  readonly surfacePathId: string;
   readonly result: Record<string, unknown>;
   status: "draft" | "available";
   decision: "approved" | "rejected" | "deferred" | null;
@@ -18,6 +20,7 @@ const {
   listRelationsMock,
   listRunsMock,
   nativePrepareMock,
+  nativeRestoreMock,
   nativeReadCurrentMock,
   nativeState,
   sceneNodes,
@@ -43,6 +46,7 @@ const {
     listRelationsMock: vi.fn(),
     listRunsMock: vi.fn(),
     nativePrepareMock: vi.fn(),
+    nativeRestoreMock: vi.fn(),
     nativeReadCurrentMock: vi.fn(),
     nativeState: state,
     sceneNodes: [{ id: "scene-1", projectId: "p1", title: "Scene" }],
@@ -116,6 +120,7 @@ vi.mock(
     decideNir1EntityRelationRevision: decideMock,
     prepareNir1EntityRelationRevision: nativePrepareMock,
     readCurrentNir1EntityRelationRevision: nativeReadCurrentMock,
+    restoreNir1EntityRelationRevision: nativeRestoreMock,
   }),
 );
 
@@ -168,12 +173,82 @@ function installStatefulNativeMocks() {
     generation: 1,
     authorityInstanceId: "1",
   });
-  listRunsMock.mockImplementation(async () =>
-    [...nativeState.runs.values()].reverse().map((run) => ({
-      runId: run.runId,
-      projectId: "p1",
-      surfacePathId: "nir1/entity-relation-review",
-    })),
+  listRunsMock.mockImplementation(
+    async ({
+      projectId,
+      surfacePathId,
+      limit,
+    }: {
+      readonly projectId: string;
+      readonly surfacePathId?: string;
+      readonly limit?: number;
+    }) =>
+      [...nativeState.runs.values()]
+        .reverse()
+        .filter(
+          (run) =>
+            run.projectId === projectId &&
+            (surfacePathId === undefined ||
+              run.surfacePathId === surfacePathId),
+        )
+        .slice(0, limit)
+        .map((run) => ({
+          runId: run.runId,
+          projectId: run.projectId,
+          surfacePathId: run.surfacePathId,
+        })),
+  );
+  nativeRestoreMock.mockImplementation(
+    async ({
+      projectId,
+      entityId,
+      relationId,
+    }: {
+      readonly projectId: string;
+      readonly entityId: string;
+      readonly relationId?: string | null;
+    }) => {
+      const matchingRun = [...nativeState.runs.values()]
+        .reverse()
+        .find((run) => {
+          if (
+            run.projectId !== projectId ||
+            run.surfacePathId !== "nir1/entity-relation-review"
+          ) {
+            return false;
+          }
+          const result = run.result as {
+            readonly entities?: readonly { readonly entityId: string }[];
+            readonly relations?: readonly {
+              readonly edgeId: string;
+              readonly fromEntityId: string;
+              readonly toEntityId: string;
+            }[];
+          };
+          if (
+            !result.entities?.some((entity) => entity.entityId === entityId)
+          ) {
+            return false;
+          }
+          if (relationId == null) return true;
+          return (
+            result.relations?.some(
+              (relation) =>
+                relation.edgeId === relationId &&
+                (relation.fromEntityId === entityId ||
+                  relation.toEntityId === entityId),
+            ) ?? false
+          );
+        });
+      if (!matchingRun) return null;
+      return {
+        runId: matchingRun.runId,
+        response: {
+          status: matchingRun.status,
+          result: matchingRun.result,
+        },
+      };
+    },
   );
   nativePrepareMock.mockImplementation(async (rawPayload: unknown) => {
     const payload = rawPayload as {
@@ -201,6 +276,8 @@ function installStatefulNativeMocks() {
     const runId = `run-${++nativeState.nextRunNumber}`;
     const run: NativeRun = {
       runId,
+      projectId: payload.projectId,
+      surfacePathId: "nir1/entity-relation-review",
       result: createResult(runId, payload),
       status: "draft",
       decision: null,
@@ -253,6 +330,7 @@ beforeEach(() => {
     listRelationsMock,
     listRunsMock,
     nativePrepareMock,
+    nativeRestoreMock,
     nativeReadCurrentMock,
   ]) {
     mock.mockReset();
@@ -278,6 +356,25 @@ async function prepareAndApprove(entryToPrepare: CodexEntry) {
       "利用可能",
     ),
   );
+}
+
+function addUnrelatedRuns(count: number) {
+  for (let index = 0; index < count; index += 1) {
+    const runId = `run-${++nativeState.nextRunNumber}`;
+    nativeState.runs.set(runId, {
+      runId,
+      projectId: "p1",
+      surfacePathId: "nir1/entity-relation-review",
+      result: createResult(runId, {
+        projectId: "p1",
+        sceneId: `unrelated-scene-${index}`,
+        entityIds: [`unrelated-entry-${index}`],
+        relationIds: [],
+      }),
+      status: "draft",
+      decision: null,
+    });
+  }
 }
 
 function ControlledReviewLauncher({
@@ -356,6 +453,71 @@ describe("CodexEntityRelationReviewDialog Native-boundary integration", () => {
         decision: "approved",
       }),
     ]);
+  });
+
+  it("restores A after newer unrelated Runs exceed the bounded generic list", async () => {
+    const first = render(
+      <CodexEntityRelationReviewDialog
+        entry={entry}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+    await prepareAndApprove(entry);
+
+    const originalRun = nativeState.runs.get("run-1");
+    expect(originalRun).toBeDefined();
+    if (!originalRun) throw new Error("A's prepared Run is missing");
+    const originalRunId = originalRun.runId;
+    const originalRevisionId = (originalRun.result as { revisionId: string })
+      .revisionId;
+    expect(nativeState.decisions).toEqual([
+      expect.objectContaining({
+        runId: originalRunId,
+        revisionId: originalRevisionId,
+        decision: "approved",
+      }),
+    ]);
+    const prepareCallCount = nativePrepareMock.mock.calls.length;
+    addUnrelatedRuns(8);
+
+    const boundedRuns = await listRunsMock({
+      projectId: "p1",
+      surfacePathId: "nir1/entity-relation-review",
+      limit: 8,
+    });
+    expect(boundedRuns).toHaveLength(8);
+    expect(boundedRuns).not.toContainEqual(
+      expect.objectContaining({ runId: originalRunId }),
+    );
+
+    first.unmount();
+    render(
+      <CodexEntityRelationReviewDialog
+        entry={entry}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    const panel = await screen.findByTestId(
+      "nir1-entity-relation-review-panel",
+    );
+    expect(panel).toHaveAttribute("data-run-id", originalRunId);
+    expect(screen.getByTestId("nir1-typed-status")).toHaveTextContent(
+      "利用可能",
+    );
+    expect(
+      (nativeState.runs.get(originalRunId)?.result as { revisionId: string })
+        .revisionId,
+    ).toBe(originalRevisionId);
+    expect(nativePrepareMock).toHaveBeenCalledTimes(prepareCallCount);
+    expect(nativeState.decisions).toHaveLength(1);
+    expect(nativeState.decisions[0]).toMatchObject({
+      runId: originalRunId,
+      revisionId: originalRevisionId,
+      decision: "approved",
+    });
   });
 
   it("prepares B after A is approved and closed while retaining A's persisted Decision", async () => {

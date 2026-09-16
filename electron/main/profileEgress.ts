@@ -61,6 +61,7 @@ export const D2A_TYPED_RESULT_POLICY = {
   lint_term_dictionary_list: "plaintext-publication",
   nir1_entity_relation_revision_read: "plaintext-publication",
   nir1_entity_relation_revision_read_current: "plaintext-publication",
+  nir1_entity_relation_revision_restore: "plaintext-publication",
 } as const satisfies Partial<
   Record<keyof typeof NAPI_COMMANDS, D2aTypedResultPolicy>
 >;
@@ -652,8 +653,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     const route = commandRoute(command, args, this.policy);
     const callerIdentity = args.callerIdentity;
     const requiresBoundCaller =
-      command === "db_execute" ||
-      command === "db_execute_batch";
+      command === "db_execute" || command === "db_execute_batch";
     if (
       requiresBoundCaller &&
       (callerIdentity === undefined || callerIdentity === null)
@@ -775,10 +775,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   async activateFirstRestrictedPublication(): Promise<void> {
     if (this.activationPromise) return this.activationPromise;
     if (this.unavailable) {
-      throw denied(
-        "unclassified",
-        "profile egress activation is unavailable",
-      );
+      throw denied("unclassified", "profile egress activation is unavailable");
     }
     if (this.restricted) return;
 

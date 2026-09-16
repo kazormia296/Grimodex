@@ -581,6 +581,13 @@ export declare class Backend {
    */
   nir1EntityRelationRevisionReadCurrent(payload: any): Promise<string>
   /**
+   * Find and reopen the current typed review Run for a launcher target.
+   * Native filters the sealed typed Revision metadata before any ordering
+   * limit, then publishes only the dedicated renderer projection (or the
+   * target Run's unavailable reason).
+   */
+  nir1EntityRelationRevisionRestore(payload: any): Promise<string>
+  /**
    * Read the Native-owned A1 scene Scope binding and registry from the
    * workspace selected at IPC arrival. The renderer supplies identity only;
    * the active workspace path remains the Native authority check.

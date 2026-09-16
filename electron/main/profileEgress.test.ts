@@ -80,9 +80,7 @@ function backend(status: Record<string, unknown> = {}) {
 
 describe("D2a profile egress gate", () => {
   it("does not expose main-only activation through renderer commands", () => {
-    expect(Object.hasOwn(NAPI_COMMANDS, "activate_profile_egress")).toBe(
-      false,
-    );
+    expect(Object.hasOwn(NAPI_COMMANDS, "activate_profile_egress")).toBe(false);
   });
 
   it("passes through a valid unrestricted startup without registering callers", async () => {
@@ -233,9 +231,8 @@ describe("D2a profile egress gate", () => {
       deferred<string>(),
       deferred<string>(),
     ];
-    gate.registerMainEgressParticipant(
-      "license-validation",
-      () => scheduler.quiesceForProfileEgress(),
+    gate.registerMainEgressParticipant("license-validation", () =>
+      scheduler.quiesceForProfileEgress(),
     );
     const admitted = manualOperations.map((operation) =>
       scheduler.runManualOperation(() => operation.promise),
@@ -453,11 +450,16 @@ describe("D2a profile egress gate", () => {
     for (const command of [
       "nir1_entity_relation_revision_read",
       "nir1_entity_relation_revision_read_current",
+      "nir1_entity_relation_revision_restore",
     ]) {
-      expect(() => gate.assertInvoke(command, { callerIdentity: issued })).toThrow(
+      expect(() =>
+        gate.assertInvoke(command, { callerIdentity: issued }),
+      ).toThrow(
         new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
       );
-      expect(() => gate.assertPlaintextPublication(command, { callerIdentity: issued })).toThrow(
+      expect(() =>
+        gate.assertPlaintextPublication(command, { callerIdentity: issued }),
+      ).toThrow(
         new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
       );
     }
@@ -553,6 +555,7 @@ describe("D2a profile egress gate", () => {
     ["lint_term_dictionary_list", {}],
     ["nir1_entity_relation_revision_read", {}],
     ["nir1_entity_relation_revision_read_current", {}],
+    ["nir1_entity_relation_revision_restore", {}],
     ["db_execute", { method: "all", sql: "SELECT body FROM messages" }],
     ["db_execute", { method: "all", sql: "SELECT 1" }],
     [

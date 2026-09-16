@@ -113,7 +113,10 @@ describe("NIR-1 typed Entity/Relation revision IPC contract", () => {
 
   it("forwards the dedicated typed cold reader through the Native adapter", async () => {
     const read = vi.fn().mockResolvedValue(
-      JSON.stringify({ status: "unavailable", result: { reason: "revision-not-found" } }),
+      JSON.stringify({
+        status: "unavailable",
+        result: { reason: "revision-not-found" },
+      }),
     );
     const backend = {
       nir1EntityRelationRevisionRead: read,
@@ -131,7 +134,10 @@ describe("NIR-1 typed Entity/Relation revision IPC contract", () => {
 
     expect(result).toEqual({
       ok: true,
-      value: { status: "unavailable", result: { reason: "revision-not-found" } },
+      value: {
+        status: "unavailable",
+        result: { reason: "revision-not-found" },
+      },
     });
     expect(read).toHaveBeenCalledExactlyOnceWith({
       expectedWorkspacePath: "/workspace",
@@ -170,6 +176,74 @@ describe("NIR-1 typed Entity/Relation revision IPC contract", () => {
       projectId: "project-1",
       runId: "run-typed-1",
     });
+  });
+
+  it("forwards target-aware restore through the Native typed-family adapter", async () => {
+    const restore = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        runId: "run-typed-1",
+        response: {
+          status: "available",
+          result: { revisionId: "revision-1" },
+        },
+      }),
+    );
+    const backend = {
+      nir1EntityRelationRevisionRestore: restore,
+    } as unknown as NapiBackendLike;
+    const payload = {
+      expectedWorkspacePath: "/workspace",
+      projectId: "project-1",
+      entityId: "entity-1",
+      relationId: "relation-1",
+    };
+
+    const result = await dispatchInvoke(
+      "nir1_entity_relation_revision_restore",
+      payload,
+      { backend, shell: {} as never },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        runId: "run-typed-1",
+        response: {
+          status: "available",
+          result: { revisionId: "revision-1" },
+        },
+      },
+    });
+    expect(restore).toHaveBeenCalledExactlyOnceWith(payload);
+  });
+
+  it("rejects malformed target-aware restore arguments before Native", async () => {
+    const restore = vi.fn();
+    const backend = {
+      nir1EntityRelationRevisionRestore: restore,
+    } as unknown as NapiBackendLike;
+    const valid = {
+      expectedWorkspacePath: "/workspace",
+      projectId: "project-1",
+      entityId: "entity-1",
+      relationId: "relation-1",
+    };
+
+    for (const args of [
+      {},
+      { ...valid, entityId: " entity-1" },
+      { ...valid, relationId: "" },
+      { ...valid, relationId: undefined },
+      { ...valid, unexpected: true },
+    ]) {
+      const result = await dispatchInvoke(
+        "nir1_entity_relation_revision_restore",
+        args,
+        { backend, shell: {} as never },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(restore).not.toHaveBeenCalled();
   });
 
   it("rejects malformed typed cold-reader arguments before Native", async () => {
@@ -289,7 +363,9 @@ describe("NIR-1 typed Entity/Relation revision IPC contract", () => {
         workspaceBinding,
       },
       {
-        backend: { nir1EntityRelationRevisionCreate: create } as unknown as NapiBackendLike,
+        backend: {
+          nir1EntityRelationRevisionCreate: create,
+        } as unknown as NapiBackendLike,
         shell: {} as never,
       },
     );
@@ -303,12 +379,19 @@ describe("NIR-1 typed Entity/Relation revision IPC contract", () => {
     const result = await dispatchInvoke(
       "nir1_entity_relation_revision_create",
       {
-        payload: { runId: "run-1", projectId: "project-1", proposalKey: "review-1", bundle },
+        payload: {
+          runId: "run-1",
+          projectId: "project-1",
+          proposalKey: "review-1",
+          bundle,
+        },
         workspaceBinding,
         owner: "renderer-is-not-authority",
       },
       {
-        backend: { nir1EntityRelationRevisionCreate: create } as unknown as NapiBackendLike,
+        backend: {
+          nir1EntityRelationRevisionCreate: create,
+        } as unknown as NapiBackendLike,
         shell: {} as never,
       },
     );

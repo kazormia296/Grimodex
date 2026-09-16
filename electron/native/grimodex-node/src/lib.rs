@@ -6562,6 +6562,70 @@ impl Backend {
         .await
     }
 
+    /// Find and reopen the current typed review Run for a launcher target.
+    /// Native filters the sealed typed Revision metadata before any ordering
+    /// limit, then publishes only the dedicated renderer projection (or the
+    /// target Run's unavailable reason).
+    #[napi]
+    pub async fn nir1_entity_relation_revision_restore(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            project_id: String,
+            entity_id: String,
+            #[serde(default)]
+            relation_id: Option<String>,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let request: Request = from_wire("payload", payload)?;
+            if request.expected_workspace_path.trim().is_empty()
+                || request.expected_workspace_path.trim() != request.expected_workspace_path
+            {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NIR1_ENTITY_RELATION_RESTORE_INVALID: expectedWorkspacePath must be non-empty and unpadded"
+                )));
+            }
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(
+                &workspace,
+                &request.expected_workspace_path,
+            )?;
+            let response = workspace.authority.db().with_read_transaction(|conn| {
+                let Some(run_id) = narrative_extraction::find_nir1_entity_relation_revision_run(
+                    conn,
+                    &request.project_id,
+                    &request.entity_id,
+                    request.relation_id.as_deref(),
+                )?
+                else {
+                    return Ok(serde_json::Value::Null);
+                };
+                let current =
+                    narrative_extraction::read_nir1_entity_relation_revision_current(
+                        conn,
+                        &request.project_id,
+                        &run_id,
+                    )?;
+                let current =
+                    narrative_extraction::nir1_entity_relation_revision_current_read_for_renderer(
+                        current,
+                    )?;
+                Ok(serde_json::json!({
+                    "runId": run_id,
+                    "response": current,
+                }))
+            })?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     /// Read the Native-owned A1 scene Scope binding and registry from the
     /// workspace selected at IPC arrival. The renderer supplies identity only;
     /// the active workspace path remains the Native authority check.

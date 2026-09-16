@@ -99,6 +99,13 @@ export interface Nir1EntityRelationRevisionCurrentReadRequest {
   readonly runId: string;
 }
 
+export interface Nir1EntityRelationRevisionRestoreRequest {
+  readonly expectedWorkspacePath: string;
+  readonly projectId: string;
+  readonly entityId: string;
+  readonly relationId?: string | null;
+}
+
 /**
  * The renderer publication is intentionally narrower than the Native typed
  * bundle.  Source tokens, Scope bindings, material closure and Freshness
@@ -168,6 +175,11 @@ export type Nir1EntityRelationRevisionCurrentReadResponse =
       readonly result: { readonly reason: string };
     };
 
+export interface Nir1EntityRelationRevisionRestoreResult {
+  readonly runId: string;
+  readonly response: Nir1EntityRelationRevisionCurrentReadResponse;
+}
+
 export type Nir1EntityRelationHumanDecision =
   | "approved"
   | "rejected"
@@ -230,6 +242,23 @@ export function readCurrentNir1EntityRelationRevision(
     expectedWorkspacePath: request.expectedWorkspacePath,
     projectId: request.projectId,
     runId: request.runId,
+  });
+}
+
+/**
+ * Resolve a launcher target inside the Native typed family before the
+ * bounded generic resumable-run list. The response remains the dedicated
+ * current typed projection, including an unavailable reason for a matched
+ * stale Run; no generic payload is consulted.
+ */
+export function restoreNir1EntityRelationRevision(
+  request: Nir1EntityRelationRevisionRestoreRequest,
+): Promise<Nir1EntityRelationRevisionRestoreResult | null> {
+  return invoke("nir1_entity_relation_revision_restore", {
+    expectedWorkspacePath: request.expectedWorkspacePath,
+    projectId: request.projectId,
+    entityId: request.entityId,
+    relationId: request.relationId ?? null,
   });
 }
 
