@@ -4096,6 +4096,8 @@
     }
   },
   "inlineAi": {
+    "accept": "反映",
+    "reject": "破棄",
     "generateFailed": "生成に失敗しました",
     "proposalAlreadyFinalized": "このAI提案は別の経路で処理済みだったため、古いプレビューを閉じました",
     "pendingBlocked": "未確定のAI生成があります。Tab で反映 / Esc で破棄してから操作できます",
