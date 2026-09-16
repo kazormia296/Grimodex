@@ -30,24 +30,23 @@ description: >
    pnpm verify:quality
    ```
 
-2. 現在の working tree を対象に、local CI wrapperから選択されたLight suiteを実行する。
+2. PR／releaseの証跡が依頼範囲に含まれ、CIが許可されている場合だけ、focused検証後のcleanな候補commitを対象に、
+   local CI wrapperから選択されたLight suiteを実行する。次のブロック全体が同じ条件のguard内にあり、
+   `candidate_base`／`candidate_head`は候補HEADの後に一度だけ解決し、Quickと直後のverifyへ同じ値を渡す。
+   commit-onlyまたはCI明示除外の作業ではこのブロックを実行せず、commit／PRが依頼されていない調査・レビューではcommitを作らず、
+   CIも開始せず、working treeの選択・実行は診断専用として扱う。
    wrapperが内部で`pnpm eval:impact`を呼ぶため、差分選択ロジックを別経路で再実装しない。
 
    ```bash
-   pnpm ci:local:quick
+   # PR／releaseの証跡が依頼され、CIが許可された場合だけ実行する
+   candidate_base="$(git rev-parse 'origin/master^{commit}')"
+   candidate_head="$(git rev-parse 'HEAD^{commit}')"
+   pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
+   pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
    ```
 
-3. 明示的な比較範囲が必要な場合だけ、検証済みの ref を渡す。
-
-   ```bash
-   pnpm ci:local:quick -- --base <base-ref> --head <head-ref>
-   ```
-
-4. 実行直後に同じrefでreceiptを検証する。途中で差分やHEADが変わったreceiptを成功証跡にしない。
-
-   ```bash
-   pnpm ci:local:verify -- quick --base <base-ref> --head <head-ref>
-   ```
+3. 明示的な比較範囲が必要な場合は、上記のguard内で検証済みのrefを`candidate_base`／`candidate_head`へ一度だけ代入し、
+   以後は再解決・再代入しない。guard外でQuickまたはverifyを開始してはならない。実行途中で差分やHEADが変わったreceiptを成功証跡にしない。
 
    machine-readable evidenceの正本は`.artifacts/local-ci/quick.json`、選択suiteの詳細は
    `.artifacts/local-ci/impact.json`とする。stdoutのbannerをJSONとして扱わない。
@@ -66,6 +65,9 @@ selector が複数 rule の suite を合算し、未分類 path、空差分、�
 - 実行可能な runner 自体がない評価は `blocked` gap として必要作業を報告し、Heavy の
   runnable command や成功へ読み替えない。
 - diff fallback が発生した場合は、原因と全 suite が選ばれたことを明示する。
+- immutable child／revisionを扱う差分では、復元・Decision・再読取・表示・receiptのIDが同一で、親`runId`だけで
+  再選択していないこと、操作対象外のDecisionが不変であることを確認する。bounded lookupはlimit後の一覧だけで
+  不存在と判定せず、mockでlimit・順序・cursorとN/N+1境界を再現する。
 - command が失敗した場合は最初の失敗を保持し、再試行で隠さない。失敗分類と該当 suite を
   報告して停止する。
 - 本スキル内で production code、テスト、fixture、manifest、impact map を修正しない。
