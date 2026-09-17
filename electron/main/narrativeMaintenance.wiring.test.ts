@@ -245,6 +245,11 @@ describe("narrative maintenance main-only wiring", () => {
           }),
       );
       const onWorkspaceBindingMismatch = vi.fn();
+      let firstCycleSettled = false;
+      let resolveFirstCycleSettled!: () => void;
+      const firstCycleSettledPromise = new Promise<void>((resolve) => {
+        resolveFirstCycleSettled = resolve;
+      });
       const scheduler = createNarrativeMaintenanceScheduler(
         {
           getNarrativeMaintenanceWorkspaceBinding: () => binding,
@@ -252,7 +257,16 @@ describe("narrative maintenance main-only wiring", () => {
           beginNarrativeMaintenanceAttempt,
           cancelNarrativeMaintenanceAttempt,
         },
-        { onWorkspaceBindingMismatch, warn: vi.fn() },
+        {
+          onWorkspaceBindingMismatch,
+          onCycleSettled: () => {
+            if (!firstCycleSettled) {
+              firstCycleSettled = true;
+              resolveFirstCycleSettled();
+            }
+          },
+          warn: vi.fn(),
+        },
       ) as WiringScheduler;
 
       scheduler.requestWithBinding(
@@ -261,16 +275,18 @@ describe("narrative maintenance main-only wiring", () => {
       );
       scheduler.start();
       await vi.advanceTimersByTimeAsync(NARRATIVE_MAINTENANCE_INITIAL_DELAY_MS);
+      await firstCycleSettledPromise;
       await vi.advanceTimersByTimeAsync(10);
 
-      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+      expect(beginNarrativeMaintenanceAttempt).toHaveBeenCalledTimes(2);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
       expect(onWorkspaceBindingMismatch).toHaveBeenCalledOnce();
       expect(scheduler.getQuiescenceState?.().timerScheduled).toBe(false);
 
       // The stale durable wake is parked with the old binding; it must not
       // block forever behind the generic retry timer while rediscovery runs.
       await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS * 2);
-      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
       await scheduler.dispose();
     },
   );

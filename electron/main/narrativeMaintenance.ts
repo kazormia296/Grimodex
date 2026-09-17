@@ -1589,7 +1589,7 @@ export function createNarrativeMaintenanceScheduler(
           activeAttemptId === cycleAttemptId;
         if (nativeAttemptActive && !nativeReceiptAdopted) {
           try {
-            nativeTerminalReceipt = await cancelActiveAttempt("closed");
+            nativeTerminalReceipt = (await cancelActiveAttempt("closed")) ?? null;
             nativeReceiptAdopted = true;
             const receiptConfirmsCancellation =
               nativeTerminalReceipt?.state === "interrupted" &&
