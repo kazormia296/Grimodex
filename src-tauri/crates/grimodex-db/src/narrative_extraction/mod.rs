@@ -122,7 +122,9 @@ mod retrieval_admission;
 mod scene_scope;
 mod scope_dependency_projection;
 pub use nir1_packing::{
-    read_and_pack_native_a2_context, NativeNir1PackingRequest, NativeNir1RawContextItem,
+    read_and_pack_native_a2_context, NativeNir1AuthorityBinding, NativeNir1DecisionBinding,
+    NativeNir1PackedContext, NativeNir1PackingRequest, NativeNir1RawContextItem,
+    NativeNir1ScopeBinding, NativeNir1SelectedContextItem,
 };
 pub use retrieval_admission::{
     read_retrieval_query_context, read_retrieval_scene_source, read_revision_retrieval_eligibility,

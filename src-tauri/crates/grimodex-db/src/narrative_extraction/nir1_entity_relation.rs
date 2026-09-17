@@ -142,6 +142,11 @@ pub struct Nir1EntityRelationRevision {
     pub material_basis: MaterialBasis,
     pub canonical_freshness: Nir1EntityRelationFreshness,
     pub bundle: EntityRelationBundle,
+    /// The exact current Decision is Native-only.  It is retained for
+    /// request-local consumers (such as D1 packing) and deliberately omitted
+    /// from renderer-facing serialization.
+    #[serde(skip)]
+    pub(crate) decision: Option<Nir1EntityRelationDecision>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -155,6 +160,62 @@ pub struct Nir1EntityRelationFreshness {
     pub edge_count: usize,
     pub feed_acknowledged_through_sequence: i64,
     pub feed_head_sequence: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Nir1EntityRelationDecision {
+    id: String,
+    revision_id: String,
+    decision: String,
+    decision_json: String,
+    created_at: String,
+    created_by: String,
+    actor_kind: String,
+    actor_id: String,
+    authority_scope: Option<String>,
+    override_field_paths_json: String,
+}
+
+impl Nir1EntityRelationDecision {
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub(crate) fn revision_id(&self) -> &str {
+        &self.revision_id
+    }
+
+    pub(crate) fn decision(&self) -> &str {
+        &self.decision
+    }
+
+    pub(crate) fn decision_json(&self) -> &str {
+        &self.decision_json
+    }
+
+    pub(crate) fn created_at(&self) -> &str {
+        &self.created_at
+    }
+
+    pub(crate) fn created_by(&self) -> &str {
+        &self.created_by
+    }
+
+    pub(crate) fn actor_kind(&self) -> &str {
+        &self.actor_kind
+    }
+
+    pub(crate) fn actor_id(&self) -> &str {
+        &self.actor_id
+    }
+
+    pub(crate) fn authority_scope(&self) -> Option<&str> {
+        self.authority_scope.as_deref()
+    }
+
+    pub(crate) fn override_field_paths_json(&self) -> &str {
+        &self.override_field_paths_json
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -192,7 +253,7 @@ pub struct Nir1EntityRelationDisclosure {
     pub material_scene_proofs: Vec<Nir1EntityRelationMaterialSceneProof>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Nir1EntityRelationMaterialSceneProof {
     pub scene_id: String,
     pub scene_incarnation_id: String,
@@ -1845,7 +1906,8 @@ fn read_typed_revision_core(
         )
         .optional()?
         .flatten();
-    let decision: Option<(String, String, String)> = if let Some(created_at) = latest_decision_at {
+    let decision: Option<Nir1EntityRelationDecision> = if let Some(created_at) = latest_decision_at
+    {
         let latest_count: i64 = conn.query_row(
             "SELECT COUNT(*)
                FROM narrative_proposal_decisions
@@ -1857,23 +1919,37 @@ fn read_typed_revision_core(
             return Ok(unavailable("revision-decision-ambiguous"));
         }
         conn.query_row(
-            "SELECT decision, actor_kind, actor_id
+            "SELECT id, revision_id, decision, decision_json, created_at, created_by,
+                    actor_kind, actor_id, authority_scope, override_field_paths_json
                FROM narrative_proposal_decisions
               WHERE proposal_id = ?1 AND revision_id = ?2 AND created_at = ?3",
             params![proposal_id, revision_id, created_at],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok(Nir1EntityRelationDecision {
+                    id: row.get(0)?,
+                    revision_id: row.get(1)?,
+                    decision: row.get(2)?,
+                    decision_json: row.get(3)?,
+                    created_at: row.get(4)?,
+                    created_by: row.get(5)?,
+                    actor_kind: row.get(6)?,
+                    actor_id: row.get(7)?,
+                    authority_scope: row.get(8)?,
+                    override_field_paths_json: row.get(9)?,
+                })
+            },
         )
         .optional()?
     } else {
         None
     };
     let human_approved = status == "approved"
-        && decision.as_ref()
-            == Some(&(
-                "approved".to_owned(),
-                "human".to_owned(),
-                "electron:human-review".to_owned(),
-            ));
+        && decision.as_ref().is_some_and(|decision| {
+            decision.revision_id() == revision_id
+                && decision.decision() == "approved"
+                && decision.actor_kind() == "human"
+                && decision.actor_id() == "electron:human-review"
+        });
     if !human_approved && (!allow_draft || status != "unreviewed" || decision.is_some()) {
         return Ok(unavailable("revision-not-human-approved"));
     }
@@ -1977,6 +2053,7 @@ fn read_typed_revision_core(
         material_basis,
         canonical_freshness: freshness,
         bundle: payload.bundle,
+        decision,
     });
     if human_approved {
         Ok(Nir1EntityRelationRevisionCurrentRead::Available(revision))
@@ -3692,15 +3769,18 @@ mod tests {
     use crate::narrative_extraction::{
         narrative_extraction_append_human_decision, narrative_extraction_append_revision,
         narrative_extraction_create_run, narrative_extraction_save_proposal_set,
-        update_narrative_scene_scope, update_narrative_scene_scope_registry, AppendDecisionPayload,
-        AppendRevisionPayload, CreateRunPayload, NarrativeSceneScopeRegistryUpdatePayload,
-        NarrativeSceneScopeUpdatePayload, SaveProposalSetPayload,
+        read_and_pack_native_a2_context, update_narrative_scene_scope,
+        update_narrative_scene_scope_registry, AppendDecisionPayload, AppendRevisionPayload,
+        CreateRunPayload, NarrativeSceneScopeRegistryUpdatePayload,
+        NarrativeSceneScopeUpdatePayload, NativeNir1PackingRequest, NativeNir1RawContextItem,
+        SaveProposalSetPayload,
     };
     use crate::test_support::fresh_migrated_memory;
     use crate::Database;
     use grimodex_core::narrative_nir1::{
-        EntityInput, EntityRelationBundle, EvidenceInput, GraphEdgeInput, ScopeBinding, ScopeValue,
-        MAX_GRAPH_INPUT_BYTES,
+        AtomicPart, ContextItemKind, EntityInput, EntityRelationBundle, EvidenceInput,
+        GraphEdgeInput, PackingPurpose, ScopeBinding, ScopeValue, MAX_GRAPH_INPUT_BYTES,
+        MAX_PACKING_INPUT_BYTES, MAX_PACKING_ITEMS,
     };
     use grimodex_core::narrative_project_scope_authority::{
         build_narrative_project_scope_authority_v1, NarrativeProjectScopeAuthoritySceneInputV1,
@@ -4187,6 +4267,578 @@ mod tests {
             approved,
             Nir1EntityRelationRevisionCurrentRead::Available(_)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn native_entity_relation_prepare_approve_current_reader_packs_closed_accepted_ir(
+    ) -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        run_incremental_freshness_cycle(&db)?;
+
+        let prepared = prepare_nir1_entity_relation_revision(
+            &db,
+            Nir1EntityRelationRevisionPrepareRequest {
+                project_id: "default-project".into(),
+                scene_id: "nir1".into(),
+                proposal_key: Some("nir1:packing:typed-positive".into()),
+                entity_ids: vec!["nir1-alice".into(), "nir1-bob".into()],
+                relation_ids: vec!["nir1-edge".into()],
+            },
+        )?;
+        let run_id = prepared["runId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("typed packing run id missing"))?
+            .to_owned();
+        let (proposal_set_id, proposal_id, revision_id) =
+            match db.with_read_transaction(|conn| {
+                read_nir1_entity_relation_revision_current(conn, "default-project", &run_id)
+            })? {
+                Nir1EntityRelationRevisionCurrentRead::Draft(revision) => (
+                    revision.proposal_set_id.clone(),
+                    revision.proposal_id.clone(),
+                    revision.revision_id.clone(),
+                ),
+                other => anyhow::bail!("typed packing preparation was not a draft: {other:?}"),
+            };
+
+        narrative_extraction_append_human_decision(
+            &db,
+            AppendDecisionPayload {
+                run_id: run_id.clone(),
+                project_id: "default-project".into(),
+                proposal_id: proposal_id.clone(),
+                revision_id: revision_id.clone(),
+                decision: "approved".into(),
+                decision_json: Some(json!({
+                    "reviewerNote": "private arbitrary reviewer note",
+                    "probableDuplicateChoice": "create-as-new",
+                })),
+                created_by: Some("renderer-reviewer".into()),
+            },
+        )?;
+
+        let current = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision_current(conn, "default-project", &run_id)
+        })?;
+        match &current {
+            Nir1EntityRelationRevisionCurrentRead::Available(revision) => {
+                assert_eq!(revision.revision_id, revision_id);
+                assert_eq!(
+                    revision
+                        .decision
+                        .as_ref()
+                        .map(|decision| decision.decision()),
+                    Some("approved")
+                );
+            }
+            other => anyhow::bail!("approved typed packing revision unavailable: {other:?}"),
+        }
+
+        let packed = read_and_pack_native_a2_context(
+            &db,
+            NativeNir1PackingRequest {
+                project_id: "default-project".into(),
+                revision_id: revision_id.clone(),
+                query_scene_id: "a3-future".into(),
+                budget_tokens: 100_000,
+                purpose: PackingPurpose::Writing,
+                // Typed groups derive identity from the Revision and record;
+                // this caller label must not become their authority binding.
+                atomic_group: "caller-supplied-label".into(),
+                raw_items: vec![NativeNir1RawContextItem {
+                    id: "typed-packing-raw".into(),
+                    text: "Raw context".into(),
+                    tokens: 1,
+                }],
+            },
+        )?;
+        assert_eq!(packed.binding().revision_id(), revision_id);
+        assert_eq!(packed.binding().revision().project_id, "default-project");
+        assert_eq!(packed.binding().revision().revision_id, revision_id);
+        assert_eq!(packed.binding().revision().proposal_set_id, proposal_set_id);
+        assert_eq!(
+            packed.binding().revision().bundle.producer,
+            "nir1-reviewed-entity-relation-v1"
+        );
+        assert!(!packed
+            .binding()
+            .revision()
+            .material_basis
+            .source_basis
+            .is_empty());
+        assert!(!packed
+            .binding()
+            .revision()
+            .material_basis
+            .dependency_set
+            .is_empty());
+        assert_eq!(
+            packed
+                .binding()
+                .revision()
+                .material_basis
+                .evidence_set
+                .len(),
+            2
+        );
+        assert_eq!(packed.binding().decision().decision(), "approved");
+        assert_eq!(packed.binding().scope().query_scene_id(), "a3-future");
+        assert_eq!(packed.selected_items().len(), 16);
+
+        let mut accepted_ir_count = 0;
+        let mut qualification_count = 0;
+        let mut relation_statement = None;
+        let mut relation_evidence = None;
+        let selected_snapshot = packed.selected_items().to_vec();
+        for selected in packed.selected_items() {
+            match selected.item() {
+                ContextItemKind::Raw { id, .. } => assert_eq!(id, "typed-packing-raw"),
+                ContextItemKind::AcceptedIr {
+                    id,
+                    text,
+                    atomic_group,
+                    ..
+                } => {
+                    assert!(selected.candidate_binding().is_some());
+                    accepted_ir_count += 1;
+                    assert!(atomic_group.starts_with(&format!("nir1:accepted-ir:{revision_id}:")));
+                    assert_ne!(atomic_group, "caller-supplied-label");
+                    if selected.atomic_part() == Some(AtomicPart::Qualification) {
+                        qualification_count += 1;
+                        assert!(text.contains("human-approved"));
+                        assert!(text.contains("\"decision\":\"approved\""));
+                        assert!(!text.contains("private arbitrary reviewer note"));
+                        assert!(!text.contains("probableDuplicateChoice"));
+                    }
+                    if id.contains(":relation:") && id.ends_with(":statement") {
+                        assert!(text.contains("\"from\":"));
+                        assert!(text.contains("\"to\":"));
+                        relation_statement = Some(text.as_str());
+                    }
+                    if id.contains(":relation:") && id.ends_with(":evidence") {
+                        relation_evidence = Some(text.as_str());
+                    }
+                }
+                ContextItemKind::GraphEvidence { .. } => {
+                    anyhow::bail!("ordinary typed Entity/Relation IR must not be GraphEvidence")
+                }
+                other => anyhow::bail!("unexpected selected Native item: {other:?}"),
+            }
+        }
+        assert_eq!(accepted_ir_count, 15);
+        assert_eq!(qualification_count, 3);
+        assert!(relation_statement.is_some());
+        let relation_evidence = relation_evidence
+            .ok_or_else(|| anyhow::anyhow!("relation evidence was not selected"))?;
+        assert!(
+            relation_evidence.contains("nir1:evidence:codex:nir1-alice"),
+            "relation evidence: {relation_evidence}"
+        );
+        assert!(
+            relation_evidence.contains("nir1:evidence:codex:nir1-bob"),
+            "relation evidence: {relation_evidence}"
+        );
+        assert_eq!(selected_snapshot, packed.selected_items());
+
+        let relabeled = read_and_pack_native_a2_context(
+            &db,
+            NativeNir1PackingRequest {
+                project_id: "default-project".into(),
+                revision_id: revision_id.clone(),
+                query_scene_id: "a3-future".into(),
+                budget_tokens: 100_000,
+                purpose: PackingPurpose::Writing,
+                // The legacy request field is intentionally irrelevant to
+                // typed group identity, including when it is empty.
+                atomic_group: String::new(),
+                raw_items: vec![NativeNir1RawContextItem {
+                    id: "typed-packing-raw".into(),
+                    text: "Raw context".into(),
+                    tokens: 1,
+                }],
+            },
+        )?;
+        assert_eq!(relabeled.selected_items(), packed.selected_items());
+        assert_eq!(relabeled.binding(), packed.binding());
+
+        let typed_group_count = 3;
+        let boundary_raw_count = MAX_PACKING_ITEMS - 5 * typed_group_count;
+        let raw_items_for = |count: usize| {
+            (0..count)
+                .map(|index| NativeNir1RawContextItem {
+                    id: format!("boundary-raw-{index}"),
+                    text: "boundary raw".into(),
+                    tokens: 1,
+                })
+                .collect::<Vec<_>>()
+        };
+        let boundary = read_and_pack_native_a2_context(
+            &db,
+            NativeNir1PackingRequest {
+                project_id: "default-project".into(),
+                revision_id: revision_id.clone(),
+                query_scene_id: "a3-future".into(),
+                budget_tokens: 100_000,
+                purpose: PackingPurpose::Writing,
+                atomic_group: String::new(),
+                raw_items: raw_items_for(boundary_raw_count),
+            },
+        )?;
+        assert_eq!(boundary.selected_ids.len(), MAX_PACKING_ITEMS);
+        assert!(boundary.omitted_ids.is_empty());
+        assert_eq!(boundary.selected_items().len(), MAX_PACKING_ITEMS);
+
+        let over_limit_error = read_and_pack_native_a2_context(
+            &db,
+            NativeNir1PackingRequest {
+                project_id: "default-project".into(),
+                revision_id: revision_id.clone(),
+                query_scene_id: "a3-future".into(),
+                budget_tokens: 100_000,
+                purpose: PackingPurpose::Writing,
+                atomic_group: String::new(),
+                raw_items: raw_items_for(boundary_raw_count + 1),
+            },
+        )
+        .expect_err("the 513-item projected request must fail before adaptation");
+        assert!(over_limit_error
+            .to_string()
+            .contains("projected item count 513 exceeds MAX_PACKING_ITEMS 512"));
+
+        let budget_limited = read_and_pack_native_a2_context(
+            &db,
+            NativeNir1PackingRequest {
+                project_id: "default-project".into(),
+                revision_id: revision_id.clone(),
+                query_scene_id: "a3-future".into(),
+                budget_tokens: 1,
+                purpose: PackingPurpose::Writing,
+                atomic_group: "caller-supplied-label".into(),
+                raw_items: vec![NativeNir1RawContextItem {
+                    id: "typed-packing-raw".into(),
+                    text: "Raw context".into(),
+                    tokens: 1,
+                }],
+            },
+        )?;
+        assert_eq!(budget_limited.selected_ids, vec!["typed-packing-raw"]);
+        assert_eq!(budget_limited.omitted_ids.len(), 15);
+        assert_eq!(budget_limited.used_tokens, 1);
+
+        append_typed_decision(
+            &db,
+            &run_id,
+            &json!({
+                "proposalId": proposal_id,
+                "revisionId": revision_id,
+            }),
+            "rejected",
+        )?;
+        let drifted = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision_current(conn, "default-project", &run_id)
+        })?;
+        assert!(matches!(
+            drifted,
+            Nir1EntityRelationRevisionCurrentRead::Unavailable { .. }
+        ));
+        assert_eq!(packed.selected_items(), selected_snapshot.as_slice());
+        assert_eq!(
+            packed.binding().revision_id(),
+            packed.binding().revision().revision_id
+        );
+        assert!(read_and_pack_native_a2_context(
+            &db,
+            NativeNir1PackingRequest {
+                project_id: "default-project".into(),
+                revision_id,
+                query_scene_id: "a3-future".into(),
+                budget_tokens: 100_000,
+                purpose: PackingPurpose::Writing,
+                atomic_group: "caller-supplied-label".into(),
+                raw_items: vec![NativeNir1RawContextItem {
+                    id: "typed-packing-raw".into(),
+                    text: "Raw context".into(),
+                    tokens: 1,
+                }],
+            },
+        )
+        .is_err());
+        Ok(())
+    }
+
+    fn pack_decision_metadata_fixture(
+        decision_json: Value,
+        created_by: Option<String>,
+    ) -> anyhow::Result<(crate::narrative_extraction::NativeNir1PackedContext, String)> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        run_incremental_freshness_cycle(&db)?;
+
+        let prepared = prepare_nir1_entity_relation_revision(
+            &db,
+            Nir1EntityRelationRevisionPrepareRequest {
+                project_id: "default-project".into(),
+                scene_id: "nir1".into(),
+                proposal_key: Some("nir1:packing:decision-metadata".into()),
+                entity_ids: vec!["nir1-alice".into(), "nir1-bob".into()],
+                relation_ids: vec!["nir1-edge".into()],
+            },
+        )?;
+        let run_id = prepared["runId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("decision metadata run id missing"))?
+            .to_owned();
+        let (proposal_id, revision_id) = match db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision_current(conn, "default-project", &run_id)
+        })? {
+            Nir1EntityRelationRevisionCurrentRead::Draft(revision) => {
+                (revision.proposal_id.clone(), revision.revision_id.clone())
+            }
+            other => anyhow::bail!("decision metadata preparation was not a draft: {other:?}"),
+        };
+
+        narrative_extraction_append_human_decision(
+            &db,
+            AppendDecisionPayload {
+                run_id,
+                project_id: "default-project".into(),
+                proposal_id,
+                revision_id: revision_id.clone(),
+                decision: "approved".into(),
+                decision_json: Some(decision_json),
+                created_by,
+            },
+        )?;
+
+        let packed = read_and_pack_native_a2_context(
+            &db,
+            NativeNir1PackingRequest {
+                project_id: "default-project".into(),
+                revision_id: revision_id.clone(),
+                query_scene_id: "a3-future".into(),
+                budget_tokens: 100_000,
+                purpose: PackingPurpose::Writing,
+                atomic_group: String::new(),
+                raw_items: vec![NativeNir1RawContextItem {
+                    id: "decision-metadata-raw".into(),
+                    text: "Raw context".into(),
+                    tokens: 1,
+                }],
+            },
+        )?;
+        Ok((packed, revision_id))
+    }
+
+    #[test]
+    fn native_a2_packing_accepts_empty_created_by_and_preserves_object_metadata_bytes(
+    ) -> anyhow::Result<()> {
+        let (packed, revision_id) = pack_decision_metadata_fixture(
+            json!({"reviewerNote": "empty creator"}),
+            Some("".into()),
+        )?;
+        assert!(!packed.selected_items().is_empty());
+        assert_eq!(packed.binding().revision_id(), revision_id);
+        assert_eq!(
+            packed.binding().decision().decision_json(),
+            r#"{"reviewerNote":"empty creator"}"#
+        );
+        assert_eq!(packed.binding().decision().created_by(), "");
+        assert_eq!(
+            packed.binding().decision().override_field_paths_json(),
+            "[]"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_a3_packing_accepts_array_decision_json_and_preserves_metadata_bytes(
+    ) -> anyhow::Result<()> {
+        let (packed, revision_id) =
+            pack_decision_metadata_fixture(json!([]), Some("renderer-reviewer".into()))?;
+        assert!(!packed.selected_items().is_empty());
+        assert_eq!(packed.binding().revision_id(), revision_id);
+        assert_eq!(packed.binding().decision().decision_json(), "[]");
+        assert_eq!(
+            packed.binding().decision().created_by(),
+            "renderer-reviewer"
+        );
+        assert_eq!(
+            packed.binding().decision().override_field_paths_json(),
+            "[]"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_a2_preserves_duplicate_relation_refs_but_deduplicates_material_projection(
+    ) -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        run_incremental_freshness_cycle(&db)?;
+
+        let mut request = request(&db);
+        request.proposal_key = "nir1:packing:duplicate-relation-evidence".into();
+        request.bundle.relations[0].evidence_ids = vec!["nir1-evidence-alice".into(); 1_000];
+        let created = create_nir1_entity_relation_revision(&db, request)?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+
+        let packed = read_and_pack_native_a2_context(
+            &db,
+            NativeNir1PackingRequest {
+                project_id: "default-project".into(),
+                revision_id: created["revisionId"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("duplicate-evidence revision id missing"))?
+                    .into(),
+                query_scene_id: "a3-future".into(),
+                budget_tokens: 100_000,
+                purpose: PackingPurpose::Writing,
+                atomic_group: String::new(),
+                raw_items: vec![NativeNir1RawContextItem {
+                    id: "duplicate-evidence-raw".into(),
+                    text: "Raw context".into(),
+                    tokens: 1,
+                }],
+            },
+        )?;
+
+        let mut relation_statement = None;
+        let mut relation_evidence = None;
+        for selected in packed.selected_items() {
+            if let ContextItemKind::AcceptedIr { id, text, .. } = selected.item() {
+                assert!(selected.candidate_binding().is_some());
+                if id.contains(":relation:") && id.ends_with(":statement") {
+                    relation_statement = Some(text.as_str());
+                }
+                if id.contains(":relation:") && id.ends_with(":evidence") {
+                    relation_evidence = Some(text.as_str());
+                }
+            }
+        }
+        let relation_statement = relation_statement
+            .ok_or_else(|| anyhow::anyhow!("repeated relation Statement was not selected"))?;
+        let relation_statement: Value = serde_json::from_str(relation_statement)?;
+        let relation_ids = relation_statement["relation"]["evidenceIds"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("relation Statement evidenceIds are not an array"))?;
+        assert_eq!(relation_ids.len(), 1_000);
+        assert!(relation_ids
+            .iter()
+            .all(|id| id.as_str() == Some("nir1-evidence-alice")));
+        let projected_material = relation_statement["materialEvidence"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("relation materialEvidence is not an array"))?;
+        assert_eq!(projected_material.len(), 1);
+        assert_eq!(projected_material[0]["evidenceRef"], "nir1-evidence-alice");
+
+        let relation_evidence = relation_evidence
+            .ok_or_else(|| anyhow::anyhow!("repeated relation Evidence item was not selected"))?;
+        let relation_evidence: Value = serde_json::from_str(relation_evidence)?;
+        let projected_evidence = relation_evidence["materialEvidence"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("relation Evidence materialEvidence is not an array"))?;
+        assert_eq!(projected_evidence.len(), 1);
+        assert_eq!(projected_evidence[0]["evidenceRef"], "nir1-evidence-alice");
+        Ok(())
+    }
+
+    #[test]
+    fn native_a2_budget_rejects_repeated_relation_large_endpoint_evidence() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        run_incremental_freshness_cycle(&db)?;
+
+        let relation_ids = (0..100)
+            .map(|index| format!("nir1-fanout-edge-{index:03}"))
+            .collect::<Vec<_>>();
+        let large_endpoint_quote = "A".repeat(600_000);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries SET summary = ?1
+                   WHERE id = 'nir1-alice' AND project_id = 'default-project'",
+                [&large_endpoint_quote],
+            )?;
+            for relation_id in &relation_ids {
+                conn.execute(
+                    "INSERT INTO codex_relations
+                        (id, project_id, from_codex_id, to_codex_id, relation_type,
+                         directionality, version, updated_at)
+                     VALUES (?1, 'default-project', 'nir1-alice', 'nir1-bob',
+                             'knows', 'directed', 1, '2026-09-12T00:00:00Z')",
+                    [relation_id],
+                )?;
+            }
+            Ok(())
+        })?;
+
+        let prepared = prepare_nir1_entity_relation_revision(
+            &db,
+            Nir1EntityRelationRevisionPrepareRequest {
+                project_id: "default-project".into(),
+                scene_id: "nir1".into(),
+                proposal_key: Some("nir1:packing:large-relation-fanout".into()),
+                entity_ids: vec!["nir1-alice".into(), "nir1-bob".into()],
+                relation_ids,
+            },
+        )?;
+        let run_id = prepared["runId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("large fan-out run id missing"))?
+            .to_owned();
+        let (proposal_id, revision_id) = match db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision_current(conn, "default-project", &run_id)
+        })? {
+            Nir1EntityRelationRevisionCurrentRead::Draft(revision) => {
+                (revision.proposal_id.clone(), revision.revision_id.clone())
+            }
+            other => anyhow::bail!("large fan-out revision was not a draft: {other:?}"),
+        };
+        narrative_extraction_append_human_decision(
+            &db,
+            AppendDecisionPayload {
+                run_id,
+                project_id: "default-project".into(),
+                proposal_id,
+                revision_id: revision_id.clone(),
+                decision: "approved".into(),
+                decision_json: None,
+                created_by: Some("renderer-reviewer".into()),
+            },
+        )?;
+
+        let error = read_and_pack_native_a2_context(
+            &db,
+            NativeNir1PackingRequest {
+                project_id: "default-project".into(),
+                revision_id,
+                query_scene_id: "a3-future".into(),
+                budget_tokens: 100_000,
+                purpose: PackingPurpose::Writing,
+                atomic_group: String::new(),
+                raw_items: vec![NativeNir1RawContextItem {
+                    id: "large-fanout-raw".into(),
+                    text: "Raw context".into(),
+                    tokens: 1,
+                }],
+            },
+        )
+        .expect_err("511 projected items with repeated large Evidence must hit the byte envelope");
+        assert!(
+            error.to_string().contains(&format!(
+                "MAX_PACKING_INPUT_BYTES {MAX_PACKING_INPUT_BYTES}"
+            )),
+            "expected the Native byte envelope, got: {error:#}"
+        );
+        assert!(
+            !error.to_string().contains("projected item count 511"),
+            "the 511-item request should pass the item-count preflight: {error:#}"
+        );
         Ok(())
     }
 
