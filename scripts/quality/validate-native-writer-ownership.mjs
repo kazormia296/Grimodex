@@ -42,6 +42,11 @@ const ALLOWED_PATH_FRAGMENTS = [
   "workspace_schema.rs",
   // Runtime performance fixtures seed multiple protected aggregates directly.
   "runtime_performance_seed.rs",
+  // NIR-1 B's opt-in file-backed capacity fixture is a diagnostic builder,
+  // not a production writer. It seeds protected roots only to create a
+  // disposable measurement database, so keep it outside runtime ownership
+  // scanning without granting it any writer authority.
+  "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
 ];
 
 /**
