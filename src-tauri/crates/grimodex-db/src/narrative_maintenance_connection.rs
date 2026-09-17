@@ -1057,14 +1057,22 @@ mod tests {
         let owner = try_lock_narrative_maintenance(&db)
             .expect("try lock")
             .expect("available after release");
+        let (foreground_waiting_tx, foreground_waiting_rx) = mpsc::channel();
         let foreground_db = Arc::clone(&db);
-        let foreground = thread::spawn(move || foreground_db.with_conn(|_| Ok(())));
-        for _ in 0..1000 {
-            if db.foreground_connection_waiting() {
-                break;
-            }
-            thread::yield_now();
-        }
+        let foreground = thread::spawn(move || {
+            // Publish the foreground arrival before entering the real
+            // blocking acquisition path. The owner is still held, so this
+            // waiter remains observable until maintenance releases it.
+            let _waiter =
+                ForegroundConnectionWaiter::new(&foreground_db.foreground_connection_waiters);
+            foreground_waiting_tx
+                .send(())
+                .expect("foreground waiter signal");
+            foreground_db.with_conn(|_| Ok(()))
+        });
+        foreground_waiting_rx
+            .recv()
+            .expect("foreground waiter published");
         assert!(db.foreground_connection_waiting());
         drop(owner);
         foreground
