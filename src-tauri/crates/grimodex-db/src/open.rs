@@ -852,9 +852,15 @@ pub fn open_workspace_sync_traced(
     open_workspace_sync_traced_with_pre_swap(ws_state, gs_path, path, trace, on_swapped, None)
 }
 
-/// Traced open with a hook run while `open_lock` is still held immediately
-/// before the authority publish. Native main uses this narrow admission point
-/// to close the maintenance-attempt/workspace-swap race.
+/// Traced open with a hook run while `open_lock` is still held before the
+/// opener can remove or publish an authority. Native main uses this narrow
+/// admission point to close the maintenance-attempt/workspace-swap race.
+///
+/// The hook must run before [`QuiescedSamePath::begin`]. Restore-only
+/// outcomes return before the normal authority-publish point below and may
+/// remove the old authority while entering Safe Mode or RecoveryRequired. A
+/// caller that needs to close another process-local admission gate therefore
+/// cannot wait until the normal publish path.
 pub fn open_workspace_sync_traced_with_pre_swap(
     ws_state: &WorkspaceState,
     gs_path: &GlobalSettingsPath,
@@ -914,6 +920,10 @@ fn open_workspace_sync_impl(
         .switching
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let _switching_guard = SwitchingGuard(&ws_state.switching);
+
+    if let Some(before_swap) = before_swap.as_mut() {
+        before_swap()?;
+    }
 
     let mut quiesced = trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
         QuiescedSamePath::begin(ws_state, &ws_path)
@@ -1023,10 +1033,6 @@ fn open_workspace_sync_impl(
         ws_path.clone(),
         opened.lease,
     ));
-
-    if let Some(before_swap) = before_swap.as_mut() {
-        before_swap()?;
-    }
 
     // Final authority publish under the existing switching guard.
     let swap_span = trace.begin_span(NativeWorkspaceOpenSpanName::WorkspaceSwapLock);

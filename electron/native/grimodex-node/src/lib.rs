@@ -1086,7 +1086,22 @@ fn recover_workspace_open_lock_after_panic(
 /// swap until the exact old-authority Run is drained.
 fn close_narrative_maintenance_for_workspace_swap(
     state: &Arc<AppState>,
-) -> std::result::Result<(), AppError> {
+) -> std::result::Result<bool, AppError> {
+    // Safe Mode and RecoveryRequired deliberately leave admission closed while
+    // no live authority exists. A subsequent valid open is the operation that
+    // repairs that state, so treating an already-closed gate as a second close
+    // would make recovery permanently reject itself. It is safe to reuse the
+    // closed state only after checking that no attempt has appeared behind it.
+    let already_closed = state
+        .narrative_maintenance_recovery_gate
+        .maintenance_admission_is_closed();
+    if already_closed {
+        state
+            .narrative_maintenance_recovery_gate
+            .assert_no_active_attempts()
+            .map_err(AppError::Anyhow)?;
+        return Ok(false);
+    }
     state
         .narrative_maintenance_recovery_gate
         .close_for_workspace_swap()
@@ -1135,7 +1150,7 @@ fn close_narrative_maintenance_for_workspace_swap(
             Err(reopen_error) => Err(reopen_error),
         };
     }
-    Ok(())
+    Ok(true)
 }
 
 /// RAII fallback for the narrow interval in which workspace open/restore has
@@ -1170,6 +1185,16 @@ impl NarrativeMaintenanceAdmissionReopenGuard {
             self.disarm();
         }
         result
+    }
+
+    /// Reopen only when this guard owns the close. Restore-only outcomes keep
+    /// admission closed until a later valid open succeeds; an error during
+    /// that recovery attempt must not reopen the gate accidentally.
+    fn reopen_if_armed(&mut self) -> std::result::Result<(), AppError> {
+        if !self.armed {
+            return Ok(());
+        }
+        self.reopen()
     }
 }
 
@@ -6046,12 +6071,16 @@ impl Backend {
             let mut admission_guard =
                 NarrativeMaintenanceAdmissionReopenGuard::new(Arc::clone(&state));
             let mut before_swap = || {
-                close_narrative_maintenance_for_workspace_swap(&state)?;
-                admission_guard.arm();
+                let owns_close = close_narrative_maintenance_for_workspace_swap(&state)?;
+                if owns_close {
+                    admission_guard.arm();
+                }
                 #[cfg(test)]
-                state
-                    .narrative_maintenance_recovery_gate
-                    .panic_after_admission_close_for_test();
+                if owns_close {
+                    state
+                        .narrative_maintenance_recovery_gate
+                        .panic_after_admission_close_for_test();
+                }
                 Ok(())
             };
             let opened_result = catch_unwind(AssertUnwindSafe(|| {
@@ -6078,13 +6107,13 @@ impl Backend {
                     // authority publication. Reopen against whichever old
                     // binding is still active so a failed open cannot strand
                     // all future maintenance begins behind a closed gate.
-                    match admission_guard.reopen() {
+                    match admission_guard.reopen_if_armed() {
                         Ok(()) => Err(error),
                         Err(reopen_error) => Err(reopen_error),
                     }
                 }
                 Err(_) => {
-                    let reopen_result = admission_guard.reopen();
+                    let reopen_result = admission_guard.reopen_if_armed();
                     match reopen_result {
                         Ok(()) => match recover_workspace_open_lock_after_panic(&state) {
                             Ok(()) => Err(AppError::Anyhow(anyhow::anyhow!(
@@ -6271,12 +6300,16 @@ impl Backend {
         run_blocking(move || {
             let mut admission_guard =
                 NarrativeMaintenanceAdmissionReopenGuard::new(Arc::clone(&state));
-            close_narrative_maintenance_for_workspace_swap(&state)?;
-            admission_guard.arm();
+            let owns_close = close_narrative_maintenance_for_workspace_swap(&state)?;
+            if owns_close {
+                admission_guard.arm();
+            }
             #[cfg(test)]
-            state
-                .narrative_maintenance_recovery_gate
-                .panic_after_admission_close_for_test();
+            if owns_close {
+                state
+                    .narrative_maintenance_recovery_gate
+                    .panic_after_admission_close_for_test();
+            }
             let state_for_hook = Arc::clone(&state);
             let workspace_binding = active_workspace_path(&state.ws)
                 .ok()
@@ -6304,7 +6337,7 @@ impl Backend {
             let restore_result = match restore_result {
                 Ok(result) => result,
                 Err(_) => {
-                    admission_guard.reopen()?;
+                    admission_guard.reopen_if_armed()?;
                     recover_workspace_open_lock_after_panic(&state)?;
                     return Err(AppError::Anyhow(anyhow::anyhow!(
                         "NEX_WORKSPACE_RESTORE_PANIC: workspace restore panicked"
@@ -12425,9 +12458,11 @@ mod narrative_maintenance_admission_unwind_tests {
             narrative_maintenance_binding_for_authority(&backend.state, &authority)
         };
         backend
-            .state
-            .narrative_maintenance_recovery_gate
-            .register_attempt("active-open-attempt", &binding)
+            .begin_narrative_maintenance_attempt(
+                "active-open-attempt".to_string(),
+                serde_json::to_value(&binding).expect("binding JSON"),
+            )
+            .await
             .expect("register active attempt");
 
         let candidate = root.join("replacement");
@@ -12446,10 +12481,17 @@ mod narrative_maintenance_admission_unwind_tests {
                 .maintenance_admission_is_closed(),
             "rejected open must leave production admission open"
         );
-        backend
-            .state
-            .narrative_maintenance_recovery_gate
-            .release_attempt("active-open-attempt");
+        let terminal: serde_json::Value = serde_json::from_str(
+            &backend
+                .cancel_narrative_maintenance_attempt(
+                    "active-open-attempt".to_string(),
+                    "open-rejected".to_string(),
+                )
+                .await
+                .expect("cancel rejected-open attempt"),
+        )
+        .expect("terminal receipt JSON");
+        assert_eq!(terminal["state"], "interrupted");
 
         drop(backend);
         let _ = std::fs::remove_dir_all(root);
@@ -12645,10 +12687,6 @@ mod native_open_restore_only_tests {
             )
             .expect("app state"),
         );
-        state
-            .narrative_maintenance_recovery_gate
-            .close_for_workspace_swap()
-            .expect("close admission");
         let backend = Backend {
             state: Arc::clone(&state),
         };
@@ -12667,12 +12705,65 @@ mod native_open_restore_only_tests {
             .narrative_maintenance_recovery_gate
             .maintenance_admission_is_closed());
 
+        // The restore-only result intentionally leaves the gate closed. A
+        // later valid open must be able to consume that closed state, publish
+        // the new authority, and reopen admission for the next maintenance
+        // attempt.
+        {
+            let database =
+                Database::new(&workspace.join("grimodex.db")).expect("open Safe Mode database");
+            database
+                .with_conn(|conn| {
+                    conn.pragma_update(None, "user_version", grimodex_core::SCHEMA_VERSION)?;
+                    Ok::<_, anyhow::Error>(())
+                })
+                .expect("restore current schema version");
+        }
+        let reopened = backend
+            .open_workspace(workspace.to_string_lossy().into_owned())
+            .await
+            .expect("valid open after Safe Mode");
+        let reopened: serde_json::Value = serde_json::from_str(&reopened).expect("ready JSON");
+        assert!(matches!(
+            reopened["status"].as_str(),
+            Some("ready" | "migrated")
+        ));
+        assert!(!state
+            .narrative_maintenance_recovery_gate
+            .maintenance_admission_is_closed());
+        let binding: serde_json::Value = serde_json::from_str(
+            &backend
+                .get_narrative_maintenance_workspace_binding()
+                .expect("read reopened binding")
+                .expect("reopened binding"),
+        )
+        .expect("reopened binding JSON");
+        let begin: serde_json::Value = serde_json::from_str(
+            &backend
+                .begin_narrative_maintenance_attempt("post-safe-mode-reopen".to_string(), binding)
+                .await
+                .expect("begin maintenance after Safe Mode recovery"),
+        )
+        .expect("maintenance begin JSON");
+        assert_eq!(begin["status"], "open");
+        let terminal: serde_json::Value = serde_json::from_str(
+            &backend
+                .cancel_narrative_maintenance_attempt(
+                    "post-safe-mode-reopen".to_string(),
+                    "closed".to_string(),
+                )
+                .await
+                .expect("cancel maintenance after Safe Mode recovery"),
+        )
+        .expect("maintenance terminal JSON");
+        assert_eq!(terminal["connectionReusable"], true);
+
         drop(backend);
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn production_open_preserves_recovery_required_without_reopening_admission() {
+    #[tokio::test]
+    async fn production_open_preserves_recovery_required_without_reopening_admission() {
         let root = std::env::temp_dir().join(format!(
             "grimodex-node-open-recovery-required-{}-{}",
             std::process::id(),
@@ -12708,6 +12799,31 @@ mod native_open_restore_only_tests {
         assert!(state
             .narrative_maintenance_recovery_gate
             .maintenance_admission_is_closed());
+
+        // RecoveryRequired is also a restore-only binding. Once the recovery
+        // target has been repaired on disk, the next valid open must consume
+        // the intentionally closed admission and make the live binding usable
+        // again.
+        let workspace = root.join("workspace");
+        let database = Database::new(&workspace.join("grimodex.db")).expect("recovery database");
+        database.migrate().expect("migrate recovery database");
+        drop(database);
+        let backend = Backend {
+            state: Arc::clone(&state),
+        };
+        let reopened = backend
+            .open_workspace(workspace.to_string_lossy().into_owned())
+            .await
+            .expect("valid open after RecoveryRequired");
+        let reopened: serde_json::Value = serde_json::from_str(&reopened).expect("ready JSON");
+        assert!(matches!(
+            reopened["status"].as_str(),
+            Some("ready" | "migrated")
+        ));
+        assert!(!state
+            .narrative_maintenance_recovery_gate
+            .maintenance_admission_is_closed());
+        drop(backend);
         let _ = std::fs::remove_dir_all(root);
     }
 }
