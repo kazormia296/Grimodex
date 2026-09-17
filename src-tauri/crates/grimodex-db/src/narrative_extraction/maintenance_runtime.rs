@@ -2018,12 +2018,9 @@ pub(crate) fn discover_before_cutover_maintenance_work_with_coordinates_and_cont
                 )?;
                 chained.check(GraphWorkStage::Coverage)?;
                 if latest_completed_rebuild.is_none() {
-                    return Ok(Some(DesiredWork::new_with_epoch(
-                        project_id.clone(),
-                        AutomaticRunKind::Verify,
-                        format!("{VERIFY_WORK_KEY_PREFIX}{current_epoch_id}"),
-                        Some(current_epoch_id.clone()),
-                        "before-cutover",
+                    return Ok(Some(before_cutover_verify_work(
+                        &project_id,
+                        &current_epoch_id,
                     )?));
                 }
                 if latest_completed_rebuild.as_ref().is_some_and(|run| {
@@ -2323,15 +2320,7 @@ pub(crate) fn discover_durable_maintenance_work_in_tx_with_control(
                 control,
             ) {
                 Ok(report) => report,
-                Err(error)
-                    if is_validation_terminated(&error)
-                        || error
-                            .to_string()
-                            .contains("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED")
-                        || error
-                            .to_string()
-                            .contains("NIR1_MAINTENANCE_CONNECTION_UNUSABLE") =>
-                {
+                Err(error) if is_maintenance_control_or_cleanup_error(&error) => {
                     return Err(error);
                 }
                 Err(_) => return Ok(Some(verify_work(project_id, &current_epoch_id, reason)?)),
@@ -3407,6 +3396,14 @@ fn project_ledger_selector_manual_intervention(
     work: &WorkKey,
     error: &anyhow::Error,
 ) -> anyhow::Result<()> {
+    // Connection ownership and lifecycle stop signals are process-local
+    // scheduling outcomes.  They must remain retryable at the caller and can
+    // never be converted into a durable selector Finding, even if a wrapped
+    // operation/cleanup error reaches this helper through a future recovery
+    // path.
+    if is_maintenance_control_or_cleanup_error(error) {
+        anyhow::bail!("{error:#}");
+    }
     let code = match explicit_failure_code(&error.to_string()) {
         Some("NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS") => "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS",
         _ => "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID",
@@ -3555,20 +3552,22 @@ fn dispatch_enabled_work(
 /// must not enter the adapter-disabled Deferred lane or the delivery-failure
 /// retry budget.
 pub(crate) fn is_transient_maintenance_preemption(error: &anyhow::Error) -> bool {
-    let message = error.to_string();
-    message.starts_with("NEX_MAINTENANCE_CONNECTION_PREEMPTED")
-        || message.contains("NEX_VALIDATION_TERMINATED:foreground-preempted")
+    error_chain_contains(error, "NEX_MAINTENANCE_CONNECTION_PREEMPTED")
+        || error_chain_contains(error, "NEX_VALIDATION_TERMINATED:foreground-preempted")
 }
 
 fn is_maintenance_control_or_cleanup_error(error: &anyhow::Error) -> bool {
     is_transient_maintenance_preemption(error)
         || is_validation_terminated(error)
-        || error
-            .to_string()
-            .contains("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED")
-        || error
-            .to_string()
-            .contains("NIR1_MAINTENANCE_CONNECTION_UNUSABLE")
+        || error_chain_contains(error, "NEX_VALIDATION_TERMINATED:")
+        || error_chain_contains(error, "NEX_MAINTENANCE_ATTEMPT_CANCELLED")
+        || error_chain_contains(error, "NIR1_MAINTENANCE_CONNECTION_")
+}
+
+fn error_chain_contains(error: &anyhow::Error, marker: &str) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().contains(marker))
 }
 
 /// Trigger vocabulary consumed by the pure desired-work planner.
@@ -3735,14 +3734,22 @@ pub fn plan_maintenance_trigger(trigger: &MaintenanceTrigger) -> anyhow::Result<
             // Verify owns the conditional Rebuild decision. Rust discovers
             // that follow-up from the durable report; callers never enqueue
             // Rebuild speculatively before the first Verify.
-            planned.push(verify_work(
-                project_id,
-                semantic_epoch_id,
-                "before-cutover",
-            )?);
+            planned.push(before_cutover_verify_work(project_id, semantic_epoch_id)?);
         }
     }
     Ok(planned)
+}
+
+/// Construct the legacy BeforeCutover fallback item.  A clean completed
+/// Verify can make durable discovery return no work; the trigger fallback must
+/// still schedule that first Verify when no current Rebuild outcome exists.
+/// Keeping this constructor shared with the pure trigger planner prevents the
+/// controlled no-wait path from drifting into a Rebuild-only or no-op route.
+fn before_cutover_verify_work(
+    project_id: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<DesiredWork> {
+    verify_work(project_id, semantic_epoch_id, "before-cutover")
 }
 
 fn verify_work(
@@ -4837,6 +4844,66 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })
         .expect("seed current epoch");
+        db
+    }
+
+    fn open_clean_before_cutover_db() -> Database {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-current', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed BeforeCutover project");
+
+        // Let the production Verify writer seal the exact clean outcome and
+        // skip evidence used by durable discovery. The Backfill marker is
+        // inserted afterward so Verify is the reusable latest phase while the
+        // legacy boundary is already crossed.
+        run_dependency_verify_for_project(&db, "project-1").expect("seed reusable clean Verify");
+        db.with_conn(|conn| {
+            let backfill_spec =
+                json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
+            let backfill_outcome = json!({
+                "maintenancePhase": "backfill-complete",
+                "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+                "semanticEpochId": "epoch-current",
+                "summary": {
+                    "epoch_created": true,
+                    "contributions_created": 0,
+                    "edges_created": 0,
+                    "applications_without_run_id": 0
+                }
+            });
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json,
+                     spec_digest, status, coverage_json, outcome_summary_json,
+                     created_at, completed_at, run_kind, semantic_epoch_id,
+                     work_key)
+                 VALUES ('backfill-complete', 'project-1', 'maintenance', '{}',
+                         ?1, 'sha256:backfill', 'completed', '{}', ?2,
+                         '2026-01-01T00:00:00.000Z',
+                         '2026-01-01T00:00:00.000Z', 'backfill', 'epoch-current', ?3)",
+                params![
+                    backfill_spec.to_string(),
+                    backfill_outcome.to_string(),
+                    LEGACY_BACKFILL_WORK_KEY,
+                ],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed completed Backfill marker");
         db
     }
 
@@ -6777,6 +6844,154 @@ mod tests {
         config.ci = "true".to_string();
         config.owner_token = "forged-owner".to_string();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn wrapped_preemption_is_propagated_before_selector_projection() {
+        let db = open_pending_recovery_db();
+        let work = recovery_work(AutomaticRunKind::RebuildDerived, "epoch-current");
+        let messages = [
+            "NEX_MAINTENANCE_CONNECTION_PREEMPTED: maintenance connection is busy",
+            "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: NEX_MAINTENANCE_CONNECTION_PREEMPTED: maintenance connection is busy; NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed",
+            "outer operation failed: NEX_VALIDATION_TERMINATED:foreground-preempted: foreground waiter arrived",
+        ];
+
+        for message in messages {
+            let error = anyhow::anyhow!(message);
+            assert!(
+                is_transient_maintenance_preemption(&error),
+                "wrapped preemption was not classified as transient: {message}"
+            );
+            assert!(is_maintenance_control_or_cleanup_error(&error));
+            let projection_error = project_ledger_selector_manual_intervention(&db, &work, &error)
+                .expect_err("transient contention must not project a selector Finding");
+            assert!(
+                is_maintenance_control_or_cleanup_error(&projection_error),
+                "projection guard changed the transient error: {projection_error:#}"
+            );
+        }
+
+        let finding_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count selector findings");
+        assert_eq!(finding_count, 0);
+    }
+
+    #[test]
+    fn controlled_discovery_propagates_stop_without_fallback_or_finding() {
+        let db = open_pending_recovery_db();
+        let should_stop = || {
+            Err(crate::narrative_extraction::validation_terminated(
+                crate::narrative_extraction::ValidationTerminationReason::ForegroundPreempted,
+                "foreground waiter owns the next maintenance handoff",
+            ))
+        };
+        let no_op = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+        let no_op_run = |_run_id: &str| Ok::<_, anyhow::Error>(());
+        let no_op_finalize = |_work_key: &str| Ok::<_, anyhow::Error>(());
+        let control = MaintenanceCycleControl {
+            should_stop: &should_stop,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &no_op_run,
+            grant_finalize: &no_op_finalize,
+            register_work: &no_op,
+            work_started: &no_op,
+            work_completed: &no_op,
+            work_noop_completed: &no_op,
+            work_deferred: &no_op,
+        };
+
+        let error = discover_durable_maintenance_work_with_coordinates_and_control(
+            &db,
+            "project-1",
+            "durable-wake",
+            None,
+            &control,
+        )
+        .expect_err("controlled stop must escape discovery");
+        assert!(is_maintenance_control_or_cleanup_error(&error));
+
+        let finding_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count discovery findings");
+        assert_eq!(finding_count, 0);
+    }
+
+    #[test]
+    fn before_cutover_without_completed_rebuild_matches_legacy_verify_schedule() {
+        let trigger = MaintenanceTrigger::BeforeCutover {
+            project_id: "project-1".to_string(),
+            semantic_epoch_id: "epoch-current".to_string(),
+        };
+        let legacy = plan_maintenance_trigger(&trigger).expect("legacy BeforeCutover plan");
+        let controlled = before_cutover_verify_work("project-1", "epoch-current")
+            .expect("controlled BeforeCutover fallback");
+
+        assert_eq!(legacy, vec![controlled.clone()]);
+        assert_eq!(controlled.run_kind, AutomaticRunKind::Verify);
+        assert_eq!(controlled.work_key, "dependency-verify:epoch-current");
+        assert_eq!(
+            controlled.semantic_epoch_id.as_deref(),
+            Some("epoch-current")
+        );
+        assert_eq!(controlled.reasons, vec!["before-cutover"]);
+    }
+
+    #[test]
+    fn controlled_before_cutover_requeues_verify_after_reusable_clean_verify() {
+        let db = open_clean_before_cutover_db();
+        let legacy =
+            discover_before_cutover_maintenance_work_with_coordinates(&db, "project-1", None)
+                .expect("legacy BeforeCutover discovery");
+
+        let should_stop = || Ok::<_, anyhow::Error>(());
+        let no_op = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+        let no_op_run = |_run_id: &str| Ok::<_, anyhow::Error>(());
+        let no_op_finalize = |_work_key: &str| Ok::<_, anyhow::Error>(());
+        let control = MaintenanceCycleControl {
+            should_stop: &should_stop,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &no_op_run,
+            grant_finalize: &no_op_finalize,
+            register_work: &no_op,
+            work_started: &no_op,
+            work_completed: &no_op,
+            work_noop_completed: &no_op,
+            work_deferred: &no_op,
+        };
+        let controlled = discover_before_cutover_maintenance_work_with_coordinates_and_control(
+            &db,
+            "project-1",
+            None,
+            &control,
+        )
+        .expect("controlled BeforeCutover discovery");
+
+        assert_eq!(legacy, controlled);
+        let work = controlled.expect("BeforeCutover must schedule Verify");
+        assert_eq!(work.run_kind, AutomaticRunKind::Verify);
+        assert_eq!(work.work_key, "dependency-verify:epoch-current");
+        assert_eq!(work.reasons, vec!["before-cutover"]);
     }
 
     #[test]
