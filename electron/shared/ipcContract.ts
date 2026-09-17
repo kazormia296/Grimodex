@@ -6649,16 +6649,16 @@ function requireNir1PackingRequest(args: CommandArgs): CommandArgs {
       );
     }
     const item = value as CommandArgs;
+    const allowedItemKeys = new Set(["kind", "id", "text", "tokens"]);
+    for (const key of Object.keys(item)) {
+      if (!allowedItemKeys.has(key)) {
+        throw new Error(
+          `invalid args \`payload.items[${index}].${key}\` for command \`${command}\`: unknown field`,
+        );
+      }
+    }
     const kind = requireNonEmptyString(item, "kind", command);
-    if (
-      ![
-        "raw",
-        "acceptedIr",
-        "graphEvidence",
-        "authorDeclared",
-        "unreviewedForReview",
-      ].includes(kind)
-    ) {
+    if (kind !== "raw") {
       throw new Error(
         `invalid args \`payload.items[${index}].kind\` for command \`${command}\`: unsupported context kind`,
       );
@@ -6674,12 +6674,7 @@ function requireNir1PackingRequest(args: CommandArgs): CommandArgs {
         `invalid args \`payload.items[${index}].tokens\` for command \`${command}\`: expected a positive integer`,
       );
     }
-    return kind === "raw"
-      ? base
-      : {
-          ...base,
-          atomicGroup: requireNonEmptyString(item, "atomicGroup", command),
-        };
+    return base;
   });
   return { budgetTokens, items };
 }

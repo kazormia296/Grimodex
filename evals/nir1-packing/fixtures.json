@@ -1,0 +1,403 @@
+{
+  "version": 1,
+  "suiteId": "nir1-packing-d1",
+  "execution": {
+    "seed": "nir1-d1-fixed-seed-v1",
+    "liveModelCalls": 0,
+    "budget": {
+      "contextWindowTokens": 64,
+      "systemTokens": 8,
+      "historyTokens": 4,
+      "toolTokens": 4,
+      "responseReservationTokens": 8
+    },
+    "predeclaredImprovement": {
+      "slot": "qualifiedEvidence",
+      "baseline": 0,
+      "candidateTarget": 1
+    },
+    "qualificationProvenance": "fixture-only-a2-current-reader",
+    "qualificationOutputs": {
+      "current": {
+        "source": "fixture-only-a2-current-reader",
+        "status": "current",
+        "decision": "approved",
+        "revisionId": "fixture-revision-current",
+        "materialBasisDigest": "fixture-material-current",
+        "sourceKey": "fixture-source-current",
+        "sourceRevisionToken": "fixture-source-revision-current",
+        "dependencyId": "fixture-dependency-current",
+        "evidenceRef": "fixture-evidence-current",
+        "evidenceQuoteDigest": "fixture-quote-current",
+        "freshness": {
+          "semanticEpochId": "fixture-epoch-current",
+          "dependencySetDigest": "fixture-dependencies-current",
+          "declarationSetId": "fixture-declarations-current",
+          "declarationSetDigest": "fixture-declaration-digest-current"
+        },
+        "decisionId": "fixture-decision-current"
+      },
+      "stale": {
+        "source": "fixture-only-a2-current-reader",
+        "status": "stale",
+        "decision": "approved",
+        "revisionId": "fixture-revision-stale",
+        "materialBasisDigest": "fixture-material-stale",
+        "sourceKey": "fixture-source-stale",
+        "sourceRevisionToken": "fixture-source-revision-stale",
+        "dependencyId": "fixture-dependency-stale",
+        "evidenceRef": "fixture-evidence-stale",
+        "evidenceQuoteDigest": "fixture-quote-stale",
+        "freshness": {
+          "semanticEpochId": "fixture-epoch-stale",
+          "dependencySetDigest": "fixture-dependencies-stale",
+          "declarationSetId": "fixture-declarations-stale",
+          "declarationSetDigest": "fixture-declaration-digest-stale"
+        },
+        "decisionId": "fixture-decision-stale"
+      },
+      "decision-rejected": {
+        "source": "fixture-only-a2-current-reader",
+        "status": "current",
+        "decision": "rejected",
+        "revisionId": "fixture-revision-rejected",
+        "materialBasisDigest": "fixture-material-rejected",
+        "sourceKey": "fixture-source-rejected",
+        "sourceRevisionToken": "fixture-source-revision-rejected",
+        "dependencyId": "fixture-dependency-rejected",
+        "evidenceRef": "fixture-evidence-rejected",
+        "evidenceQuoteDigest": "fixture-quote-rejected",
+        "freshness": {
+          "semanticEpochId": "fixture-epoch-rejected",
+          "dependencySetDigest": "fixture-dependencies-rejected",
+          "declarationSetId": "fixture-declarations-rejected",
+          "declarationSetDigest": "fixture-declaration-digest-rejected"
+        },
+        "decisionId": "fixture-decision-rejected"
+      },
+      "evidence-missing": {
+        "source": "fixture-only-a2-current-reader",
+        "status": "current",
+        "decision": "approved",
+        "revisionId": "fixture-revision-no-evidence",
+        "materialBasisDigest": "fixture-material-no-evidence",
+        "sourceKey": "fixture-source-no-evidence",
+        "sourceRevisionToken": "fixture-source-revision-no-evidence",
+        "dependencyId": "fixture-dependency-no-evidence",
+        "evidenceRef": "",
+        "evidenceQuoteDigest": "",
+        "freshness": {
+          "semanticEpochId": "fixture-epoch-no-evidence",
+          "dependencySetDigest": "fixture-dependencies-no-evidence",
+          "declarationSetId": "fixture-declarations-no-evidence",
+          "declarationSetDigest": "fixture-declaration-digest-no-evidence"
+        },
+        "decisionId": "fixture-decision-no-evidence"
+      }
+    }
+  },
+  "cases": [
+    {
+      "caseId": "P-01",
+      "workspaceId": "nir1-p01-workspace",
+      "conversationId": "nir1-p01-conversation",
+      "artifactNamespace": "nir1-packing/p01",
+      "qualificationRef": "current",
+      "input": [
+        {"id": "p01-raw", "kind": "raw", "text": "The lantern stayed lit.", "tokens": 4},
+        {"id": "p01-ir-statement", "kind": "accepted-ir", "atomicGroup": "p01-ir", "atomicPart": "statement", "text": "Lantern remains lit.", "tokens": 3},
+        {"id": "p01-ir-negation", "kind": "accepted-ir", "atomicGroup": "p01-ir", "atomicPart": "negation", "text": "It is not extinguished.", "tokens": 4},
+        {"id": "p01-ir-attribution", "kind": "accepted-ir", "atomicGroup": "p01-ir", "atomicPart": "attribution", "text": "Narrator observation.", "tokens": 2},
+        {"id": "p01-ir-evidence", "kind": "accepted-ir", "atomicGroup": "p01-ir", "atomicPart": "evidence", "text": "The lantern stayed lit.", "tokens": 4},
+        {"id": "p01-ir-qualification", "kind": "accepted-ir", "atomicGroup": "p01-ir", "atomicPart": "qualification", "text": "human-approved", "tokens": 1}
+      ],
+      "expected": {
+        "requiredIds": ["p01-raw"],
+        "selectedIds": ["p01-raw", "p01-ir-statement", "p01-ir-negation", "p01-ir-attribution", "p01-ir-evidence", "p01-ir-qualification"],
+        "prohibitedIds": [],
+        "proseOrder": ["p01-raw", "p01-ir-statement", "p01-ir-negation", "p01-ir-attribution", "p01-ir-evidence", "p01-ir-qualification"]
+      }
+    },
+    {
+      "caseId": "P-02",
+      "workspaceId": "nir1-p02-workspace",
+      "conversationId": "nir1-p02-conversation",
+      "artifactNamespace": "nir1-packing/p02",
+      "qualificationRef": "current",
+      "input": [
+        {"id": "p02-raw", "kind": "raw", "text": "Mira crossed the bridge.", "tokens": 4},
+        {"id": "p02-ir-statement", "kind": "accepted-ir", "atomicGroup": "p02-ir", "atomicPart": "statement", "text": "Mira crosses bridge.", "tokens": 3},
+        {"id": "p02-ir-negation", "kind": "accepted-ir", "atomicGroup": "p02-ir", "atomicPart": "negation", "text": "She is not on the bank.", "tokens": 5},
+        {"id": "p02-ir-attribution", "kind": "accepted-ir", "atomicGroup": "p02-ir", "atomicPart": "attribution", "text": "Scene narration.", "tokens": 2},
+        {"id": "p02-ir-evidence", "kind": "accepted-ir", "atomicGroup": "p02-ir", "atomicPart": "evidence", "text": "Mira crossed the bridge.", "tokens": 4},
+        {"id": "p02-ir-qualification", "kind": "accepted-ir", "atomicGroup": "p02-ir", "atomicPart": "qualification", "text": "human-approved", "tokens": 1},
+        {"id": "p02-other-scope", "kind": "graph-evidence", "atomicGroup": "p02-other", "atomicPart": "statement", "text": "Mira visits the harbor.", "tokens": 4, "qualificationRef": "stale"},
+        {"id": "p02-other-negation", "kind": "graph-evidence", "atomicGroup": "p02-other", "atomicPart": "negation", "text": "Mira does not stay on the bridge.", "tokens": 5, "qualificationRef": "stale"},
+        {"id": "p02-other-attribution", "kind": "graph-evidence", "atomicGroup": "p02-other", "atomicPart": "attribution", "text": "Out-of-scope note.", "tokens": 2, "qualificationRef": "stale"},
+        {"id": "p02-other-evidence", "kind": "graph-evidence", "atomicGroup": "p02-other", "atomicPart": "evidence", "text": "Mira visits the harbor.", "tokens": 4, "qualificationRef": "stale"},
+        {"id": "p02-other-qualification", "kind": "graph-evidence", "atomicGroup": "p02-other", "atomicPart": "qualification", "text": "stale-scope", "tokens": 1, "qualificationRef": "stale"}
+      ],
+      "expected": {
+        "requiredIds": ["p02-raw"],
+        "selectedIds": ["p02-raw", "p02-ir-statement", "p02-ir-negation", "p02-ir-attribution", "p02-ir-evidence", "p02-ir-qualification"],
+        "prohibitedIds": ["p02-other-scope"],
+        "rejectedGroups": ["p02-other"],
+        "proseOrder": ["p02-raw", "p02-ir-statement", "p02-ir-negation", "p02-ir-attribution", "p02-ir-evidence", "p02-ir-qualification"]
+      }
+    },
+    {
+      "caseId": "P-03",
+      "workspaceId": "nir1-p03-workspace",
+      "conversationId": "nir1-p03-conversation",
+      "artifactNamespace": "nir1-packing/p03",
+      "qualificationRef": "current",
+      "input": [
+        {"id": "p03-raw", "kind": "raw", "text": "Earlier, Ivo kept the key.", "tokens": 5},
+        {"id": "p03-history", "kind": "author-declared", "atomicGroup": "p03-history", "atomicPart": "statement", "text": "History note.", "tokens": 2},
+        {"id": "p03-history-negation", "kind": "author-declared", "atomicGroup": "p03-history", "atomicPart": "negation", "text": "No later handoff is recorded.", "tokens": 5},
+        {"id": "p03-history-attribution", "kind": "author-declared", "atomicGroup": "p03-history", "atomicPart": "attribution", "text": "Author note.", "tokens": 2},
+        {"id": "p03-history-evidence", "kind": "author-declared", "atomicGroup": "p03-history", "atomicPart": "evidence", "text": "Ivo kept the key.", "tokens": 4},
+        {"id": "p03-history-qualification", "kind": "author-declared", "atomicGroup": "p03-history", "atomicPart": "qualification", "text": "author-declared", "tokens": 1}
+      ],
+      "expected": {
+        "requiredIds": ["p03-raw"],
+        "selectedIds": ["p03-raw", "p03-history", "p03-history-negation", "p03-history-attribution", "p03-history-evidence", "p03-history-qualification"],
+        "prohibitedIds": [],
+        "proseOrder": ["p03-raw", "p03-history", "p03-history-negation", "p03-history-attribution", "p03-history-evidence", "p03-history-qualification"]
+      }
+    },
+    {
+      "caseId": "P-04",
+      "workspaceId": "nir1-p04-workspace",
+      "conversationId": "nir1-p04-conversation",
+      "artifactNamespace": "nir1-packing/p04",
+      "qualificationRef": "current",
+      "input": [
+        {"id": "p04-raw", "kind": "raw", "text": "The witness signed the log.", "tokens": 5},
+        {"id": "p04-evidence-statement", "kind": "graph-evidence", "atomicGroup": "p04-evidence", "atomicPart": "statement", "text": "Witness signed log.", "tokens": 3},
+        {"id": "p04-evidence-negation", "kind": "graph-evidence", "atomicGroup": "p04-evidence", "atomicPart": "negation", "text": "The signature is not a rumor.", "tokens": 5},
+        {"id": "p04-evidence-attribution", "kind": "graph-evidence", "atomicGroup": "p04-evidence", "atomicPart": "attribution", "text": "Witness record.", "tokens": 2},
+        {"id": "p04-evidence-evidence", "kind": "graph-evidence", "atomicGroup": "p04-evidence", "atomicPart": "evidence", "text": "The witness signed the log.", "tokens": 5},
+        {"id": "p04-evidence-qualification", "kind": "graph-evidence", "atomicGroup": "p04-evidence", "atomicPart": "qualification", "text": "evidence-qualified", "tokens": 1}
+      ],
+      "expected": {
+        "requiredIds": ["p04-raw"],
+        "selectedIds": ["p04-raw", "p04-evidence-statement", "p04-evidence-negation", "p04-evidence-attribution", "p04-evidence-evidence", "p04-evidence-qualification"],
+        "prohibitedIds": [],
+        "proseOrder": ["p04-raw", "p04-evidence-statement", "p04-evidence-negation", "p04-evidence-attribution", "p04-evidence-evidence", "p04-evidence-qualification"]
+      }
+    },
+    {
+      "caseId": "P-05",
+      "workspaceId": "nir1-p05-workspace",
+      "conversationId": "nir1-p05-conversation",
+      "artifactNamespace": "nir1-packing/p05",
+      "qualificationRef": "current",
+      "input": [
+        {"id": "p05-raw", "kind": "raw", "text": "Nora entered the archive.", "tokens": 4},
+        {"id": "p05-in-scope-statement", "kind": "accepted-ir", "atomicGroup": "p05-in-scope", "atomicPart": "statement", "text": "Nora enters archive.", "tokens": 3},
+        {"id": "p05-in-scope-negation", "kind": "accepted-ir", "atomicGroup": "p05-in-scope", "atomicPart": "negation", "text": "She is not outside.", "tokens": 4},
+        {"id": "p05-in-scope-attribution", "kind": "accepted-ir", "atomicGroup": "p05-in-scope", "atomicPart": "attribution", "text": "Scene narration.", "tokens": 2},
+        {"id": "p05-in-scope-evidence", "kind": "accepted-ir", "atomicGroup": "p05-in-scope", "atomicPart": "evidence", "text": "Nora entered the archive.", "tokens": 4},
+        {"id": "p05-in-scope-qualification", "kind": "accepted-ir", "atomicGroup": "p05-in-scope", "atomicPart": "qualification", "text": "human-approved", "tokens": 1},
+        {"id": "p05-out-scope-statement", "kind": "graph-evidence", "atomicGroup": "p05-out-scope", "atomicPart": "statement", "text": "Nora will sail tomorrow.", "tokens": 4, "qualificationRef": "decision-rejected"},
+        {"id": "p05-out-scope-negation", "kind": "graph-evidence", "atomicGroup": "p05-out-scope", "atomicPart": "negation", "text": "Nora is not in the archive.", "tokens": 5, "qualificationRef": "decision-rejected"},
+        {"id": "p05-out-scope-attribution", "kind": "graph-evidence", "atomicGroup": "p05-out-scope", "atomicPart": "attribution", "text": "Future note.", "tokens": 2, "qualificationRef": "decision-rejected"},
+        {"id": "p05-out-scope-evidence", "kind": "graph-evidence", "atomicGroup": "p05-out-scope", "atomicPart": "evidence", "text": "Nora will sail tomorrow.", "tokens": 4, "qualificationRef": "decision-rejected"},
+        {"id": "p05-out-scope-qualification", "kind": "graph-evidence", "atomicGroup": "p05-out-scope", "atomicPart": "qualification", "text": "rejected-decision", "tokens": 1, "qualificationRef": "decision-rejected"}
+      ],
+      "expected": {
+        "requiredIds": ["p05-raw"],
+        "selectedIds": ["p05-raw", "p05-in-scope-statement", "p05-in-scope-negation", "p05-in-scope-attribution", "p05-in-scope-evidence", "p05-in-scope-qualification"],
+        "prohibitedIds": ["p05-out-scope-statement"],
+        "rejectedGroups": ["p05-out-scope"],
+        "proseOrder": ["p05-raw", "p05-in-scope-statement", "p05-in-scope-negation", "p05-in-scope-attribution", "p05-in-scope-evidence", "p05-in-scope-qualification"]
+      }
+    },
+    {
+      "caseId": "P-06",
+      "workspaceId": "nir1-p06-workspace",
+      "conversationId": "nir1-p06-conversation",
+      "artifactNamespace": "nir1-packing/p06",
+      "qualificationRef": "current",
+      "input": [
+        {"id": "p06-raw", "kind": "raw", "text": "This chapter belongs to Lio.", "tokens": 5},
+        {"id": "p06-owned-statement", "kind": "accepted-ir", "atomicGroup": "p06-owned", "atomicPart": "statement", "text": "Lio owns chapter.", "tokens": 3},
+        {"id": "p06-owned-negation", "kind": "accepted-ir", "atomicGroup": "p06-owned", "atomicPart": "negation", "text": "It is not assigned to Ren.", "tokens": 5},
+        {"id": "p06-owned-attribution", "kind": "accepted-ir", "atomicGroup": "p06-owned", "atomicPart": "attribution", "text": "Workspace owner.", "tokens": 2},
+        {"id": "p06-owned-evidence", "kind": "accepted-ir", "atomicGroup": "p06-owned", "atomicPart": "evidence", "text": "This chapter belongs to Lio.", "tokens": 5},
+        {"id": "p06-owned-qualification", "kind": "accepted-ir", "atomicGroup": "p06-owned", "atomicPart": "qualification", "text": "human-approved", "tokens": 1},
+        {"id": "p06-foreign-statement", "kind": "graph-evidence", "atomicGroup": "p06-foreign", "atomicPart": "statement", "text": "Ren owns a different chapter.", "tokens": 5, "qualificationRef": "evidence-missing"},
+        {"id": "p06-foreign-negation", "kind": "graph-evidence", "atomicGroup": "p06-foreign", "atomicPart": "negation", "text": "It is not Lio's chapter.", "tokens": 5, "qualificationRef": "evidence-missing"},
+        {"id": "p06-foreign-attribution", "kind": "graph-evidence", "atomicGroup": "p06-foreign", "atomicPart": "attribution", "text": "Foreign workspace note.", "tokens": 3, "qualificationRef": "evidence-missing"},
+        {"id": "p06-foreign-evidence", "kind": "graph-evidence", "atomicGroup": "p06-foreign", "atomicPart": "evidence", "text": "Ren owns a different chapter.", "tokens": 5, "qualificationRef": "evidence-missing"},
+        {"id": "p06-foreign-qualification", "kind": "graph-evidence", "atomicGroup": "p06-foreign", "atomicPart": "qualification", "text": "missing-evidence", "tokens": 1, "qualificationRef": "evidence-missing"}
+      ],
+      "expected": {
+        "requiredIds": ["p06-raw"],
+        "selectedIds": ["p06-raw", "p06-owned-statement", "p06-owned-negation", "p06-owned-attribution", "p06-owned-evidence", "p06-owned-qualification"],
+        "prohibitedIds": ["p06-foreign-statement"],
+        "rejectedGroups": ["p06-foreign"],
+        "proseOrder": ["p06-raw", "p06-owned-statement", "p06-owned-negation", "p06-owned-attribution", "p06-owned-evidence", "p06-owned-qualification"]
+      }
+    },
+    {
+      "caseId": "P-07",
+      "workspaceId": "nir1-p07-workspace",
+      "conversationId": "nir1-p07-conversation",
+      "artifactNamespace": "nir1-packing/p07",
+      "qualificationRef": "current",
+      "input": [
+        {"id": "p07-raw", "kind": "raw", "text": "At 08:14, the bell rang.", "tokens": 5},
+        {"id": "p07-quote-statement", "kind": "graph-evidence", "atomicGroup": "p07-quote", "atomicPart": "statement", "text": "Bell rang at 08:14.", "tokens": 4},
+        {"id": "p07-quote-negation", "kind": "graph-evidence", "atomicGroup": "p07-quote", "atomicPart": "negation", "text": "The time is not approximate.", "tokens": 5},
+        {"id": "p07-quote-attribution", "kind": "graph-evidence", "atomicGroup": "p07-quote", "atomicPart": "attribution", "text": "Scene clock.", "tokens": 2},
+        {"id": "p07-quote-evidence", "kind": "graph-evidence", "atomicGroup": "p07-quote", "atomicPart": "evidence", "text": "At 08:14, the bell rang.", "tokens": 5},
+        {"id": "p07-quote-qualification", "kind": "graph-evidence", "atomicGroup": "p07-quote", "atomicPart": "qualification", "text": "exact-quote", "tokens": 1}
+      ],
+      "expected": {
+        "requiredIds": ["p07-raw"],
+        "selectedIds": ["p07-raw", "p07-quote-statement", "p07-quote-negation", "p07-quote-attribution", "p07-quote-evidence", "p07-quote-qualification"],
+        "prohibitedIds": [],
+        "proseOrder": ["p07-raw", "p07-quote-statement", "p07-quote-negation", "p07-quote-attribution", "p07-quote-evidence", "p07-quote-qualification"]
+      }
+    },
+    {
+      "caseId": "P-08",
+      "workspaceId": "nir1-p08-workspace",
+      "conversationId": "nir1-p08-conversation",
+      "artifactNamespace": "nir1-packing/p08",
+      "qualificationRef": "current",
+      "input": [
+        {"id": "p08-raw", "kind": "raw", "text": "The signed ledger is in the vault.", "tokens": 7},
+        {"id": "p08-approved-statement", "kind": "accepted-ir", "atomicGroup": "p08-approved", "atomicPart": "statement", "text": "Signed ledger is in vault.", "tokens": 5},
+        {"id": "p08-approved-negation", "kind": "accepted-ir", "atomicGroup": "p08-approved", "atomicPart": "negation", "text": "It is not an unsigned copy.", "tokens": 5},
+        {"id": "p08-approved-attribution", "kind": "accepted-ir", "atomicGroup": "p08-approved", "atomicPart": "attribution", "text": "Archivist record.", "tokens": 2},
+        {"id": "p08-approved-evidence", "kind": "accepted-ir", "atomicGroup": "p08-approved", "atomicPart": "evidence", "text": "The signed ledger is in the vault.", "tokens": 7},
+        {"id": "p08-approved-qualification", "kind": "accepted-ir", "atomicGroup": "p08-approved", "atomicPart": "qualification", "text": "human-approved", "tokens": 1}
+      ],
+      "expected": {
+        "requiredIds": ["p08-raw"],
+        "selectedIds": ["p08-raw", "p08-approved-statement", "p08-approved-negation", "p08-approved-attribution", "p08-approved-evidence", "p08-approved-qualification"],
+        "prohibitedIds": [],
+        "proseOrder": ["p08-raw", "p08-approved-statement", "p08-approved-negation", "p08-approved-attribution", "p08-approved-evidence", "p08-approved-qualification"]
+      }
+    },
+    {
+      "caseId": "P-09",
+      "workspaceId": "nir1-p09-workspace",
+      "conversationId": "nir1-p09-conversation",
+      "artifactNamespace": "nir1-packing/p09",
+      "qualificationRef": "current",
+      "input": [
+        {"id": "p09-raw", "kind": "raw", "text": "Many pages separate the two entries.", "tokens": 6},
+        {"id": "p09-long-statement", "kind": "graph-evidence", "atomicGroup": "p09-long", "atomicPart": "statement", "text": "The two entries refer to one route.", "tokens": 7},
+        {"id": "p09-long-negation", "kind": "graph-evidence", "atomicGroup": "p09-long", "atomicPart": "negation", "text": "They are not unrelated routes.", "tokens": 5},
+        {"id": "p09-long-attribution", "kind": "graph-evidence", "atomicGroup": "p09-long", "atomicPart": "attribution", "text": "Cross-scene evidence.", "tokens": 2},
+        {"id": "p09-long-evidence", "kind": "graph-evidence", "atomicGroup": "p09-long", "atomicPart": "evidence", "text": "Many pages separate the two entries.", "tokens": 6},
+        {"id": "p09-long-qualification", "kind": "graph-evidence", "atomicGroup": "p09-long", "atomicPart": "qualification", "text": "evidence-qualified", "tokens": 1}
+      ],
+      "expected": {
+        "requiredIds": ["p09-raw"],
+        "selectedIds": ["p09-raw", "p09-long-statement", "p09-long-negation", "p09-long-attribution", "p09-long-evidence", "p09-long-qualification"],
+        "prohibitedIds": [],
+        "proseOrder": ["p09-raw", "p09-long-statement", "p09-long-negation", "p09-long-attribution", "p09-long-evidence", "p09-long-qualification"]
+      }
+    },
+    {
+      "caseId": "P-10",
+      "workspaceId": "nir1-p10-workspace",
+      "conversationId": "nir1-p10-conversation",
+      "artifactNamespace": "nir1-packing/p10",
+      "qualificationRef": "current",
+      "input": [
+        {"id": "p10-raw", "kind": "raw", "text": "The seal is intact.", "tokens": 4},
+        {"id": "p10-cached-statement", "kind": "accepted-ir", "atomicGroup": "p10-cached", "atomicPart": "statement", "text": "Seal remains intact.", "tokens": 3},
+        {"id": "p10-cached-negation", "kind": "accepted-ir", "atomicGroup": "p10-cached", "atomicPart": "negation", "text": "It is not broken.", "tokens": 4},
+        {"id": "p10-cached-attribution", "kind": "accepted-ir", "atomicGroup": "p10-cached", "atomicPart": "attribution", "text": "Inspection record.", "tokens": 2},
+        {"id": "p10-cached-evidence", "kind": "accepted-ir", "atomicGroup": "p10-cached", "atomicPart": "evidence", "text": "The seal is intact.", "tokens": 4},
+        {"id": "p10-cached-qualification", "kind": "accepted-ir", "atomicGroup": "p10-cached", "atomicPart": "qualification", "text": "human-approved", "tokens": 1}
+      ],
+      "cacheBinding": {
+        "scopeToken": "scope-p10-a",
+        "sourceToken": "source-p10-a",
+        "revisionId": "revision-p10-a",
+        "decisionId": "decision-p10-a",
+        "freshnessToken": "fresh-p10-a",
+        "indexGeneration": "index-p10-a"
+      },
+      "expected": {
+        "requiredIds": ["p10-raw"],
+        "selectedIds": ["p10-raw", "p10-cached-statement", "p10-cached-negation", "p10-cached-attribution", "p10-cached-evidence", "p10-cached-qualification"],
+        "prohibitedIds": [],
+        "proseOrder": ["p10-raw", "p10-cached-statement", "p10-cached-negation", "p10-cached-attribution", "p10-cached-evidence", "p10-cached-qualification"],
+        "cacheMustReevaluateOn": ["scopeToken", "sourceToken", "revisionId", "decisionId", "freshnessToken", "indexGeneration"]
+      }
+    },
+    {
+      "caseId": "P-11",
+      "workspaceId": "nir1-p11-workspace",
+      "conversationId": "nir1-p11-conversation",
+      "artifactNamespace": "nir1-packing/p11",
+      "qualificationRef": "current",
+      "input": [
+        {"id": "p11-raw", "kind": "raw", "text": "The map was copied by hand.", "tokens": 6},
+        {"id": "p11-group-statement", "kind": "accepted-ir", "atomicGroup": "p11-group", "atomicPart": "statement", "text": "Map is hand copied.", "tokens": 4},
+        {"id": "p11-group-negation", "kind": "accepted-ir", "atomicGroup": "p11-group", "atomicPart": "negation", "text": "It is not a printed map.", "tokens": 5},
+        {"id": "p11-group-attribution", "kind": "accepted-ir", "atomicGroup": "p11-group", "atomicPart": "attribution", "text": "Cartographer note.", "tokens": 2},
+        {"id": "p11-group-evidence", "kind": "accepted-ir", "atomicGroup": "p11-group", "atomicPart": "evidence", "text": "The map was copied by hand.", "tokens": 6},
+        {"id": "p11-group-qualification", "kind": "accepted-ir", "atomicGroup": "p11-group", "atomicPart": "qualification", "text": "human-approved", "tokens": 1},
+        {"id": "p11-incomplete", "kind": "graph-evidence", "atomicGroup": "p11-incomplete", "atomicPart": "statement", "text": "A second map exists.", "tokens": 4, "qualificationRef": "stale"},
+        {"id": "p11-incomplete-negation", "kind": "graph-evidence", "atomicGroup": "p11-incomplete", "atomicPart": "negation", "text": "It is not the hand copied map.", "tokens": 6, "qualificationRef": "stale"},
+        {"id": "p11-incomplete-attribution", "kind": "graph-evidence", "atomicGroup": "p11-incomplete", "atomicPart": "attribution", "text": "Unrelated map note.", "tokens": 3, "qualificationRef": "stale"},
+        {"id": "p11-incomplete-evidence", "kind": "graph-evidence", "atomicGroup": "p11-incomplete", "atomicPart": "evidence", "text": "A second map exists.", "tokens": 4, "qualificationRef": "stale"},
+        {"id": "p11-incomplete-qualification", "kind": "graph-evidence", "atomicGroup": "p11-incomplete", "atomicPart": "qualification", "text": "stale-map", "tokens": 1, "qualificationRef": "stale"}
+      ],
+      "expected": {
+        "requiredIds": ["p11-raw"],
+        "selectedIds": ["p11-raw", "p11-group-statement", "p11-group-negation", "p11-group-attribution", "p11-group-evidence", "p11-group-qualification"],
+        "prohibitedIds": ["p11-incomplete"],
+        "rejectedGroups": ["p11-incomplete"],
+        "proseOrder": ["p11-raw", "p11-group-statement", "p11-group-negation", "p11-group-attribution", "p11-group-evidence", "p11-group-qualification"]
+      }
+    },
+    {
+      "caseId": "P-12",
+      "workspaceId": "nir1-p12-workspace",
+      "conversationId": "nir1-p12-conversation",
+      "artifactNamespace": "nir1-packing/p12",
+      "qualificationRef": "current",
+      "input": [
+        {"id": "p12-raw", "kind": "raw", "text": "The north gate opened.", "tokens": 4},
+        {"id": "p12-evidence-statement", "kind": "graph-evidence", "atomicGroup": "p12-evidence", "atomicPart": "statement", "text": "North gate opened.", "tokens": 5},
+        {"id": "p12-evidence-negation", "kind": "graph-evidence", "atomicGroup": "p12-evidence", "atomicPart": "negation", "text": "It is not the south gate.", "tokens": 10},
+        {"id": "p12-evidence-attribution", "kind": "graph-evidence", "atomicGroup": "p12-evidence", "atomicPart": "attribution", "text": "Gatekeeper record.", "tokens": 2},
+        {"id": "p12-evidence-evidence", "kind": "graph-evidence", "atomicGroup": "p12-evidence", "atomicPart": "evidence", "text": "The north gate opened.", "tokens": 18},
+        {"id": "p12-evidence-qualification", "kind": "graph-evidence", "atomicGroup": "p12-evidence", "atomicPart": "qualification", "text": "evidence-qualified", "tokens": 1}
+        ,{"id": "p12-distractor-statement", "kind": "accepted-ir", "atomicGroup": "p12-distractor", "atomicPart": "statement", "text": "A sealed side gate remains.", "tokens": 2}
+        ,{"id": "p12-distractor-negation", "kind": "accepted-ir", "atomicGroup": "p12-distractor", "atomicPart": "negation", "text": "The side gate is not open.", "tokens": 2}
+        ,{"id": "p12-distractor-attribution", "kind": "accepted-ir", "atomicGroup": "p12-distractor", "atomicPart": "attribution", "text": "Archive record.", "tokens": 2}
+        ,{"id": "p12-distractor-evidence", "kind": "accepted-ir", "atomicGroup": "p12-distractor", "atomicPart": "evidence", "text": "A sealed side gate remains.", "tokens": 2}
+        ,{"id": "p12-distractor-qualification", "kind": "accepted-ir", "atomicGroup": "p12-distractor", "atomicPart": "qualification", "text": "human-approved", "tokens": 2}
+      ],
+      "expected": {
+        "requiredIds": ["p12-raw"],
+          "selectedIds": ["p12-raw", "p12-evidence-statement", "p12-evidence-negation", "p12-evidence-attribution", "p12-evidence-evidence", "p12-evidence-qualification"],
+        "prohibitedIds": [],
+          "proseOrder": ["p12-raw", "p12-evidence-statement", "p12-evidence-negation", "p12-evidence-attribution", "p12-evidence-evidence", "p12-evidence-qualification"],
+          "baseline": {
+            "selectedIds": ["p12-raw", "p12-evidence-attribution", "p12-evidence-evidence", "p12-evidence-qualification", "p12-distractor-statement", "p12-distractor-negation", "p12-distractor-attribution", "p12-distractor-evidence", "p12-distractor-qualification"],
+            "proseOrder": ["p12-raw", "p12-evidence-attribution", "p12-evidence-evidence", "p12-evidence-qualification", "p12-distractor-statement", "p12-distractor-negation", "p12-distractor-attribution", "p12-distractor-evidence", "p12-distractor-qualification"],
+            "usedTokens": 35
+          },
+        "improvement": {
+          "slot": "qualifiedEvidence",
+          "groupIds": ["p12-evidence"],
+          "provenance": "fixture-only",
+          "baseline": 0,
+          "candidate": 1
+        }
+      }
+    }
+  ]
+}

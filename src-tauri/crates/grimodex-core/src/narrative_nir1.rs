@@ -1,8 +1,8 @@
 //! Typed, request-local NIR-1 L6--L8 primitives.
 //!
-//! This module deliberately contains no database or renderer policy.  Native
-//! callers use it after they have read the authoritative Scope/Revision
-//! snapshot; the types make it impossible for a Graph or Packing result to
+//! This module deliberately contains no database, renderer, or authority
+//! policy.  Callers provide request-local candidates after their own boundary
+//! checks; the types make it impossible for a Graph or Packing result to
 //! silently manufacture an identity, discard its Evidence, or exceed the
 //! semantic limits fixed by the execution plan.
 
@@ -34,6 +34,43 @@ pub const MAX_GRAPH_RECORDS: usize = 512;
 pub const MAX_GRAPH_INPUT_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_PACKING_ITEMS: usize = 512;
 pub const MAX_PACKING_INPUT_BYTES: usize = 2 * 1024 * 1024;
+
+/// Deterministic Rust mirror of the existing ContextBuilder live estimator.
+///
+/// The DB-only reader path has no access to the renderer's tiktoken instance,
+/// so it uses the already established `estimateTokens` contract: each CJK
+/// code point costs one unit and the remaining UTF-16 units cost one unit per
+/// three, rounded up. Keeping this implementation byte-for-byte equivalent
+/// to that fallback prevents compact Japanese or JSON text from collapsing to
+/// a single token in a request-local packing decision.
+pub fn estimate_nir1_context_tokens(text: &str) -> usize {
+    let units = text.encode_utf16().collect::<Vec<_>>();
+    let mut cjk_count = 0usize;
+    let mut index = 0usize;
+    while index < units.len() {
+        let unit = units[index];
+        let is_bmp_cjk = (0x3000..=0x30ff).contains(&unit)
+            || (0x3400..=0x9fff).contains(&unit)
+            || (0xf900..=0xfaff).contains(&unit)
+            || (0xff00..=0xffef).contains(&unit);
+        if is_bmp_cjk {
+            cjk_count += 1;
+        } else if (0xd840..=0xd87f).contains(&unit)
+            && units
+                .get(index + 1)
+                .is_some_and(|low| (0xdc00..=0xdfff).contains(low))
+        {
+            cjk_count += 1;
+            index += 1;
+        }
+        index += 1;
+    }
+    (units
+        .len()
+        .saturating_add(cjk_count.saturating_mul(2))
+        .saturating_add(2))
+        / 3
+}
 
 /// One of the three Scope axes that can be used by the initial reader
 /// profile.  `Any` remains purpose-bound; it is not a wildcard query identity.
@@ -786,6 +823,318 @@ impl ContextItemKind {
             Self::UnreviewedForReview { .. } => 1,
         }
     }
+}
+
+/// Semantic parts that must travel as one context unit.  The wire-facing
+/// `ContextItemKind` remains a compatibility envelope; candidate packing uses
+/// this explicit part marker after a typed candidate adapter has run.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum AtomicPart {
+    Statement,
+    Negation,
+    Attribution,
+    Evidence,
+    Qualification,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackingPurpose {
+    Writing,
+    Review,
+}
+
+const REQUIRED_ATOMIC_PARTS: [AtomicPart; 5] = [
+    AtomicPart::Statement,
+    AtomicPart::Negation,
+    AtomicPart::Attribution,
+    AtomicPart::Evidence,
+    AtomicPart::Qualification,
+];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CandidateContextItem {
+    item: ContextItemKind,
+    atomic_part: Option<AtomicPart>,
+    candidate_binding: Option<[u8; 32]>,
+}
+
+impl CandidateContextItem {
+    /// Read the adapter-owned item without exposing a mutable field or a
+    /// constructor that could move its binding onto foreign content.
+    pub fn item(&self) -> &ContextItemKind {
+        &self.item
+    }
+
+    /// Read the immutable semantic part assigned by the adapter.
+    pub fn atomic_part(&self) -> Option<AtomicPart> {
+        self.atomic_part
+    }
+
+    /// Read the immutable candidate binding, if this item carries one.
+    pub fn candidate_binding(&self) -> Option<&[u8; 32]> {
+        self.candidate_binding.as_ref()
+    }
+}
+
+/// Adapt an IR or graph candidate with a deterministic group binding.
+///
+/// The core crate is deliberately authority-free: `candidate_binding` is only
+/// an opaque equality key used to keep one complete group coherent.  It does
+/// not claim that the item was read, approved, fresh, or otherwise authorized.
+/// Database code that has a stronger contract must validate it before calling
+/// this pure adapter.  Synthetic fixtures may use this function because the
+/// resulting type is only a candidate input to the selector.
+pub fn adapt_candidate_context_item(
+    item: ContextItemKind,
+    atomic_part: AtomicPart,
+    candidate_binding: [u8; 32],
+) -> Result<CandidateContextItem, Nir1ContractError> {
+    match item {
+        ContextItemKind::AcceptedIr { .. } | ContextItemKind::GraphEvidence { .. } => {}
+        _ => {
+            return Err(Nir1ContractError::Packing(
+                "only accepted-ir and graph-evidence may use a candidate binding".into(),
+            ))
+        }
+    }
+    if candidate_binding.iter().all(|byte| *byte == 0) {
+        return Err(Nir1ContractError::Packing(
+            "candidate binding must be non-zero".into(),
+        ));
+    }
+    Ok(CandidateContextItem {
+        item,
+        atomic_part: Some(atomic_part),
+        candidate_binding: Some(candidate_binding),
+    })
+}
+
+pub fn adapt_raw_context_item(
+    item: ContextItemKind,
+) -> Result<CandidateContextItem, Nir1ContractError> {
+    if !matches!(item, ContextItemKind::Raw { .. }) {
+        return Err(Nir1ContractError::Packing(
+            "Raw adapter requires a Raw context item".into(),
+        ));
+    }
+    Ok(CandidateContextItem {
+        item,
+        atomic_part: None,
+        candidate_binding: None,
+    })
+}
+
+pub fn adapt_declared_context_item(
+    item: ContextItemKind,
+    atomic_part: AtomicPart,
+) -> Result<CandidateContextItem, Nir1ContractError> {
+    if !matches!(
+        item,
+        ContextItemKind::AuthorDeclared { .. } | ContextItemKind::UnreviewedForReview { .. }
+    ) {
+        return Err(Nir1ContractError::Packing(
+            "declared adapter requires author-declared or unreviewed context".into(),
+        ));
+    }
+    Ok(CandidateContextItem {
+        item,
+        atomic_part: Some(atomic_part),
+        candidate_binding: None,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CandidatePackingRequest {
+    pub budget_tokens: usize,
+    pub purpose: PackingPurpose,
+    pub items: Vec<CandidateContextItem>,
+}
+
+#[derive(Clone, Debug)]
+struct CandidatePackingGroup {
+    group_id: String,
+    first_index: usize,
+    kind: Option<u8>,
+    candidate_binding: Option<[u8; 32]>,
+    parts: HashSet<AtomicPart>,
+    indexes: Vec<usize>,
+    tokens: usize,
+    invalid: bool,
+}
+
+fn candidate_kind(item: &ContextItemKind) -> u8 {
+    match item {
+        ContextItemKind::Raw { .. } => 5,
+        // Candidate packing's canonical rank is shared with the TypeScript
+        // selector: a complete Graph/Evidence unit outranks an Accepted IR
+        // unit, while equal ranks retain input order.
+        ContextItemKind::GraphEvidence { .. } => 4,
+        ContextItemKind::AcceptedIr { .. } => 3,
+        ContextItemKind::AuthorDeclared { .. } => 2,
+        ContextItemKind::UnreviewedForReview { .. } => 1,
+    }
+}
+
+fn candidate_kind_requires_binding(item: &ContextItemKind) -> bool {
+    matches!(
+        item,
+        ContextItemKind::AcceptedIr { .. } | ContextItemKind::GraphEvidence { .. }
+    )
+}
+
+/// Pure D1 selector.  It only accepts candidates produced by the adapters
+/// above, keeps Raw items required, and considers each complete semantic group
+/// as one atomic budget unit.  Rejected incomplete groups are omitted in their
+/// entirety so no partial statement/negation/attribution/Evidence/label leaks
+/// into a prompt.
+pub fn pack_candidate_context(
+    request: CandidatePackingRequest,
+) -> Result<PackedContext, Nir1ContractError> {
+    if request.budget_tokens == 0 || request.items.len() > MAX_PACKING_ITEMS {
+        return Err(Nir1ContractError::Packing(
+            "budget or item count is outside the bounded envelope".into(),
+        ));
+    }
+    let mut ids = HashSet::new();
+    let mut groups: HashMap<&str, CandidatePackingGroup> = HashMap::new();
+    let mut selected = HashSet::new();
+    let mut used_tokens = 0usize;
+    let mut has_raw = false;
+    let mut input_bytes = 0usize;
+    for (index, candidate) in request.items.iter().enumerate() {
+        let (id, text, tokens, group) = candidate.item.fields();
+        input_bytes = input_bytes
+            .saturating_add(id.len())
+            .saturating_add(text.len())
+            .saturating_add(group.map_or(0, str::len));
+        if id.trim().is_empty() || text.is_empty() || tokens == 0 || !ids.insert(id) {
+            return Err(Nir1ContractError::Packing(
+                "each candidate needs a unique id, text, and positive token count".into(),
+            ));
+        }
+        if let ContextItemKind::Raw { .. } = &candidate.item {
+            if candidate.atomic_part.is_some() || candidate.candidate_binding.is_some() {
+                return Err(Nir1ContractError::Packing(
+                    "Raw candidates cannot carry atomic or qualification metadata".into(),
+                ));
+            }
+            if used_tokens.saturating_add(tokens) > request.budget_tokens {
+                return Err(Nir1ContractError::Packing(
+                    "required Raw context does not fit the budget".into(),
+                ));
+            }
+            used_tokens = used_tokens.saturating_add(tokens);
+            selected.insert(index);
+            has_raw = true;
+            continue;
+        }
+
+        let Some(group_id) = group.filter(|value| !value.trim().is_empty()) else {
+            continue;
+        };
+        let entry = groups
+            .entry(group_id)
+            .or_insert_with(|| CandidatePackingGroup {
+                group_id: group_id.to_owned(),
+                first_index: index,
+                kind: Some(candidate_kind(&candidate.item)),
+                candidate_binding: candidate.candidate_binding,
+                parts: HashSet::new(),
+                indexes: Vec::new(),
+                tokens: 0,
+                invalid: false,
+            });
+        entry.indexes.push(index);
+        entry.tokens = entry.tokens.saturating_add(tokens);
+        let Some(part) = candidate.atomic_part else {
+            entry.invalid = true;
+            continue;
+        };
+        let valid_binding = if candidate_kind_requires_binding(&candidate.item) {
+            candidate.candidate_binding.is_some()
+        } else {
+            candidate.candidate_binding.is_none()
+        };
+        if !valid_binding {
+            entry.invalid = true;
+        }
+        if entry.kind != Some(candidate_kind(&candidate.item))
+            || entry.parts.contains(&part)
+            || entry
+                .candidate_binding
+                .as_ref()
+                .zip(candidate.candidate_binding.as_ref())
+                .is_some_and(|(left, right)| left != right)
+        {
+            entry.invalid = true;
+        }
+        if entry.candidate_binding.is_none() && candidate.candidate_binding.is_some() {
+            entry.candidate_binding = candidate.candidate_binding;
+        }
+        entry.parts.insert(part);
+    }
+    if input_bytes > MAX_PACKING_INPUT_BYTES {
+        return Err(Nir1ContractError::Packing(
+            "packing input exceeds the request memory envelope".into(),
+        ));
+    }
+    if !has_raw {
+        return Err(Nir1ContractError::Packing(
+            "at least one required Raw context item is needed".into(),
+        ));
+    }
+    let mut candidates = groups
+        .into_values()
+        .filter(|group| {
+            let interleaved = group.indexes.windows(2).any(|window| {
+                window[1] > window[0] + 1
+                    && request.items[window[0] + 1..window[1]]
+                        .iter()
+                        .any(|item| item.item.fields().3 != Some(group.group_id.as_str()))
+            });
+            !group.invalid
+                && group.kind.is_some()
+                && group.parts.len() == REQUIRED_ATOMIC_PARTS.len()
+                && group.indexes.len() == REQUIRED_ATOMIC_PARTS.len()
+                && REQUIRED_ATOMIC_PARTS
+                    .iter()
+                    .all(|part| group.parts.contains(part))
+                && !interleaved
+                && !(request.purpose == PackingPurpose::Writing && group.kind == Some(1))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .kind
+            .cmp(&left.kind)
+            .then_with(|| left.first_index.cmp(&right.first_index))
+    });
+    for group in candidates {
+        if used_tokens.saturating_add(group.tokens) <= request.budget_tokens {
+            used_tokens = used_tokens.saturating_add(group.tokens);
+            selected.extend(group.indexes);
+        }
+    }
+    let selected_ids = request
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| selected.contains(index))
+        .map(|(_, candidate)| candidate.item.fields().0.to_string())
+        .collect::<Vec<_>>();
+    let omitted_ids = request
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !selected.contains(index))
+        .map(|(_, candidate)| candidate.item.fields().0.to_string())
+        .collect::<Vec<_>>();
+    Ok(PackedContext {
+        selected_ids,
+        omitted_ids,
+        used_tokens,
+        remaining_tokens: request.budget_tokens.saturating_sub(used_tokens),
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

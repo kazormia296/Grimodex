@@ -33,17 +33,112 @@ pub enum RevisionEligibilityRead {
 // including within this crate; #[non_exhaustive] would only restrict outsiders.
 #[allow(clippy::manual_non_exhaustive)]
 pub struct RevisionEligibilitySnapshot {
-    pub revision_id: String,
+    pub(super) revision_id: String,
     /// Snapshot document/evidence aliases are scoped to this original Run.
-    pub owning_run_id: String,
-    pub proposal_id: String,
-    pub envelope_digest: String,
-    pub current_decision_id: String,
-    pub query_context: RetrievalQueryContext,
-    pub canonical_freshness: RevisionFreshnessSnapshot,
-    pub document: ChronicleRetrievalDocument,
-    pub evidence: Vec<MaterialEvidenceEntry>,
+    pub(super) owning_run_id: String,
+    pub(super) proposal_id: String,
+    pub(super) envelope_digest: String,
+    pub(super) current_decision: RevisionEligibilityDecision,
+    pub(super) material_basis_digest: String,
+    pub(super) dependency_ids: Vec<String>,
+    pub(super) query_context: RetrievalQueryContext,
+    pub(super) canonical_freshness: RevisionFreshnessSnapshot,
+    pub(super) document: ChronicleRetrievalDocument,
+    pub(super) evidence: Vec<MaterialEvidenceEntry>,
     pub(super) _verified: (),
+}
+
+impl RevisionEligibilitySnapshot {
+    pub fn revision_id(&self) -> &str {
+        &self.revision_id
+    }
+
+    pub fn owning_run_id(&self) -> &str {
+        &self.owning_run_id
+    }
+
+    pub fn proposal_id(&self) -> &str {
+        &self.proposal_id
+    }
+
+    pub fn envelope_digest(&self) -> &str {
+        &self.envelope_digest
+    }
+
+    pub fn current_decision_id(&self) -> &str {
+        self.current_decision.id()
+    }
+
+    pub fn material_basis_digest(&self) -> &str {
+        &self.material_basis_digest
+    }
+
+    pub fn dependency_ids(&self) -> &[String] {
+        &self.dependency_ids
+    }
+
+    pub fn query_context(&self) -> &RetrievalQueryContext {
+        &self.query_context
+    }
+
+    pub fn canonical_freshness(&self) -> &RevisionFreshnessSnapshot {
+        &self.canonical_freshness
+    }
+
+    pub fn document(&self) -> &ChronicleRetrievalDocument {
+        &self.document
+    }
+
+    pub fn evidence(&self) -> &[MaterialEvidenceEntry] {
+        &self.evidence
+    }
+
+    pub fn current_decision(&self) -> &RevisionEligibilityDecision {
+        &self.current_decision
+    }
+}
+
+/// The exact current Decision row consumed by the A2 reader. It is transient
+/// reader output, not a new persisted authority or wire schema.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevisionEligibilityDecision {
+    pub(super) id: String,
+    pub(super) revision_id: String,
+    pub(super) decision: String,
+    pub(super) decision_json: String,
+    pub(super) actor_kind: String,
+    pub(super) actor_id: String,
+    pub(super) authority_scope: Option<String>,
+}
+
+impl RevisionEligibilityDecision {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn revision_id(&self) -> &str {
+        &self.revision_id
+    }
+
+    pub fn decision(&self) -> &str {
+        &self.decision
+    }
+
+    pub fn decision_json(&self) -> &str {
+        &self.decision_json
+    }
+
+    pub fn actor_kind(&self) -> &str {
+        &self.actor_kind
+    }
+
+    pub fn actor_id(&self) -> &str {
+        &self.actor_id
+    }
+
+    pub fn authority_scope(&self) -> Option<&str> {
+        self.authority_scope.as_deref()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

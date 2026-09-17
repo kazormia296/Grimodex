@@ -4,6 +4,12 @@ use rusqlite::{params, Connection, OptionalExtension};
 pub(super) struct CurrentRevision {
     pub proposal_id: String,
     pub decision_id: String,
+    pub decision_revision_id: String,
+    pub decision: String,
+    pub decision_json: String,
+    pub actor_kind: String,
+    pub actor_id: String,
+    pub authority_scope: Option<String>,
     pub envelope_digest: String,
     pub envelope_json: String,
     pub payload_json: String,
@@ -42,7 +48,7 @@ pub(super) fn read(
     }
     let latest = conn
         .query_row(
-            "SELECT id,revision_id,decision,actor_kind,actor_id,authority_scope
+            "SELECT id,revision_id,decision,decision_json,actor_kind,actor_id,authority_scope
          FROM narrative_proposal_decisions WHERE proposal_id=?1
          ORDER BY created_at DESC,id DESC LIMIT 1",
             [&proposal],
@@ -53,12 +59,14 @@ pub(super) fn read(
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
                     r.get::<_, String>(4)?,
-                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, Option<String>>(6)?,
                 ))
             },
         )
         .optional()?;
-    let Some((decision_id, decided_revision, decision, actor_kind, actor_id, scope)) = latest
+    let Some((decision_id, decided_revision, decision, decision_json, actor_kind, actor_id, scope)) =
+        latest
     else {
         return Ok(None);
     };
@@ -74,6 +82,12 @@ pub(super) fn read(
     Ok(Some(CurrentRevision {
         proposal_id: proposal,
         decision_id,
+        decision_revision_id: decided_revision,
+        decision,
+        decision_json,
+        actor_kind,
+        actor_id,
+        authority_scope: scope,
         envelope_digest: digest,
         envelope_json: envelope,
         payload_json: payload,

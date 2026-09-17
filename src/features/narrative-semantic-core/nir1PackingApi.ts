@@ -1,23 +1,11 @@
 import { invoke } from "@/lib/tauri";
 
-export type Nir1PackingItem =
-  | {
-      readonly kind: "raw";
-      readonly id: string;
-      readonly text: string;
-      readonly tokens: number;
-    }
-  | {
-      readonly kind:
-        | "acceptedIr"
-        | "graphEvidence"
-        | "authorDeclared"
-        | "unreviewedForReview";
-      readonly id: string;
-      readonly text: string;
-      readonly tokens: number;
-      readonly atomicGroup: string;
-    };
+export type Nir1PackingItem = {
+  readonly kind: "raw";
+  readonly id: string;
+  readonly text: string;
+  readonly tokens: number;
+};
 
 export interface Nir1PackingRequest {
   readonly budgetTokens: number;

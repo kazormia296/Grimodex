@@ -269,6 +269,7 @@ requirements:
       - src/features/codex/codexEntityRelationReviewApi.ts
       - src/features/codex/useCodexEntityRelationReview.ts
       - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.ts
+      - src/features/narrative-semantic-core/nir1PackingApi.ts
       - src/lib/tauri.ts
       - electron/native/grimodex-node/index.d.ts
       - electron/native/grimodex-node/src/lib.rs
@@ -338,6 +339,15 @@ requirements:
       - src/features/chat/semanticRerankerApply.ts
       - src/features/chat/semanticRerankerShadow.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
+      - evals/nir1-packing/fixtures.json
+      - scripts/quality/nir1-packing/contract.mjs
+      - scripts/quality/nir1-packing/runner.mjs
+      - scripts/quality/nir1-packing/scorer.mjs
+      - src/features/ai-context/nir1Packing.ts
+      - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission/types.rs
       - experiments/lfm25-encoder-phase0/data/public/gate2/chunk-qrels.json
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/reranker_gate2.py
       - src/features/impact-review/narrowingCore.ts
@@ -361,6 +371,12 @@ requirements:
       - src/features/chat/semanticRerankerApply.test.ts
       - src/features/chat/semanticRerankerShadow.test.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
+      - scripts/quality/nir1-packing/contract.test.mjs
+      - scripts/quality/nir1-packing/runner.test.mjs
+      - scripts/quality/nir1-packing/scorer.test.mjs
+      - src/features/ai-context/nir1Packing.test.ts
+      - src-tauri/crates/grimodex-core/tests/narrative_nir1.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_nir1_retrieval_admission.rs
       - experiments/lfm25-encoder-phase0/tests/test_reranker_gate2.py
       - src/features/impact-review/narrowing.test.ts
       - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
@@ -415,7 +431,12 @@ requirements:
       - electron/native/grimodex-node/index.d.ts
       - electron/native/grimodex-node/src/lib.rs
       - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_nir1.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission/types.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_nir1_retrieval_admission.rs
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/quality-workflow.test.mjs
@@ -438,7 +459,13 @@ requirements:
       - electron/main/ipc.test.ts
       - electron/main/profileEgress.test.ts
       - electron/shared/nir1EntityRelationIpcContract.test.ts
+      - electron/shared/nir1GraphIpcContract.test.ts
+      - src/features/narrative-semantic-core/nir1PackingApi.test.ts
       - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/quality/nir1-packing/contract.test.mjs
+      - scripts/quality/nir1-packing/runner.test.mjs
+      - scripts/quality/nir1-packing/scorer.test.mjs
+      - src/features/ai-context/nir1Packing.test.ts
     heavyTests:
       - src-tauri/src/commands/post_effect.rs
       - src/features/codex/candidateJudgment.live.test.ts
@@ -689,6 +716,11 @@ requirements:
       - policies/narrative/schemas/narrative-ir-contract.schema.json
       - policies/narrative/schemas/narrative-finding-contract.schema.json
       - src/features/narrative-semantic-core/contracts/index.ts
+      - src/features/ai-context/nir1Packing.ts
+      - evals/nir1-packing/fixtures.json
+      - scripts/quality/nir1-packing/contract.mjs
+      - scripts/quality/nir1-packing/runner.mjs
+      - scripts/quality/nir1-packing/scorer.mjs
       - src/features/narrative-semantic-core/contracts/scopeV2.ts
       - src/features/narrative-semantic-core/contracts/narrativeIr.ts
       - src/features/narrative-semantic-core/contracts/scopeRelation.ts
@@ -770,6 +802,7 @@ requirements:
       - src/features/codex/useCodexEntityRelationReview.ts
       - src/features/codex/components/CodexTypedRelationsSection.tsx
       - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.ts
+      - src/features/narrative-semantic-core/nir1PackingApi.ts
       - src/lib/tauri.ts
       - electron/main/ipc.ts
       - electron/main/profileEgress.ts
@@ -789,6 +822,10 @@ requirements:
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/validate-narrative-ir-contract.test.mjs
+      - scripts/quality/nir1-packing/contract.test.mjs
+      - scripts/quality/nir1-packing/runner.test.mjs
+      - scripts/quality/nir1-packing/scorer.test.mjs
+      - src/features/ai-context/nir1Packing.test.ts
       - scripts/quality/validate-scope-authority-basis-policy.test.mjs
       - src/features/narrative-semantic-core/contracts/mutationAuthority.test.ts
       - src/features/narrative-semantic-core/contracts/stateVocabulary.test.ts
@@ -836,11 +873,13 @@ requirements:
       - src/features/codex/useCodexEntityRelationReview.test.tsx
       - src/features/codex/components/CodexTypedRelationsSection.test.tsx
       - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.test.ts
+      - src/features/narrative-semantic-core/nir1PackingApi.test.ts
       - src/lib/tauri.electron.test.ts
       - electron/main/ipc.test.ts
       - electron/main/profileEgress.test.ts
       - electron/shared/ipcContract.test.ts
       - electron/shared/nir1EntityRelationIpcContract.test.ts
+      - electron/shared/nir1GraphIpcContract.test.ts
       - electron/scripts/product-journey-shards.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
     heavyTests:
@@ -977,12 +1016,17 @@ requirements:
       - scripts/quality/run-live-model-qualification.mjs
       - evals/qualifications/live-models.yaml
       - evals/fixtures/routing.yaml
+      - evals/nir1-packing/fixtures.json
+      - scripts/quality/nir1-packing/runner.mjs
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/eval-fixtures.test.mjs
+      - scripts/quality/nir1-packing/contract.test.mjs
+      - scripts/quality/nir1-packing/runner.test.mjs
+      - scripts/quality/nir1-packing/scorer.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
@@ -1035,6 +1079,11 @@ requirements:
       - evals/qualifications/live-models.yaml
       - evals/qualifications/schemas/live-model-qualification-v1.schema.json
       - evals/impact-map.yaml
+      - evals/nir1-packing/fixtures.json
+      - scripts/quality/nir1-packing/contract.mjs
+      - scripts/quality/nir1-packing/runner.mjs
+      - scripts/quality/nir1-packing/scorer.mjs
+      - src/features/ai-context/nir1Packing.ts
       - electron/scripts/narrative-maintenance-product-journeys.mjs
       - electron/scripts/codex-entity-relation-product-journey.mjs
       - electron/scripts/product-journey-catalog.mjs
@@ -1067,6 +1116,10 @@ requirements:
       - scripts/local-ci-process-supervisor.test.mjs
       - scripts/ci-pause.test.mjs
       - scripts/quality/quality-workflow.test.mjs
+      - scripts/quality/nir1-packing/contract.test.mjs
+      - scripts/quality/nir1-packing/runner.test.mjs
+      - scripts/quality/nir1-packing/scorer.test.mjs
+      - src/features/ai-context/nir1Packing.test.ts
       - scripts/quality/impact-map.test.mjs
       - scripts/quality/certify-gate-b2.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs

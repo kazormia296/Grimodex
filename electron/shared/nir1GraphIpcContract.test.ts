@@ -46,7 +46,7 @@ describe("NIR-1 bounded graph IPC contract", () => {
     expect(nir1GraphQuery).not.toHaveBeenCalled();
   });
 
-  it("strips packing payload extras and preserves atomic group fields", async () => {
+  it("rejects renderer self-qualified packing input before Native dispatch", async () => {
     const nir1PackContext = vi.fn().mockResolvedValue(
       JSON.stringify({
         selectedIds: ["raw:scene"],
@@ -68,7 +68,6 @@ describe("NIR-1 bounded graph IPC contract", () => {
               id: "raw:scene",
               text: "Raw",
               tokens: 8,
-              rendererOnly: true,
             },
             {
               kind: "acceptedIr",
@@ -83,27 +82,67 @@ describe("NIR-1 bounded graph IPC contract", () => {
       { backend, shell: {} as never },
     );
 
+    expect(result.ok).toBe(false);
+    expect(nir1PackContext).not.toHaveBeenCalled();
+  });
+
+  it("rejects qualification metadata on a Raw renderer item", async () => {
+    const nir1PackContext = vi.fn();
+    const result = await dispatchInvoke(
+      "nir1_pack_context",
+      {
+        payload: {
+          budgetTokens: 8,
+          items: [
+            {
+              kind: "raw",
+              id: "raw:scene",
+              text: "Raw",
+              tokens: 8,
+              atomicGroup: "renderer-supplied",
+            },
+          ],
+        },
+      },
+      { backend: { nir1PackContext } as unknown as NapiBackendLike, shell: {} as never },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(nir1PackContext).not.toHaveBeenCalled();
+  });
+
+  it("forwards a plain Raw packing request to Native", async () => {
+    const nir1PackContext = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        selectedIds: ["raw:scene"],
+        omittedIds: [],
+        usedTokens: 8,
+        remainingTokens: 0,
+      }),
+    );
+    const result = await dispatchInvoke(
+      "nir1_pack_context",
+      {
+        payload: {
+          budgetTokens: 8,
+          items: [{ kind: "raw", id: "raw:scene", text: "Raw", tokens: 8 }],
+        },
+      },
+      { backend: { nir1PackContext } as unknown as NapiBackendLike, shell: {} as never },
+    );
+
     expect(result).toEqual({
       ok: true,
       value: {
         selectedIds: ["raw:scene"],
-        omittedIds: ["ir:alice"],
+        omittedIds: [],
         usedTokens: 8,
         remainingTokens: 0,
       },
     });
     expect(nir1PackContext).toHaveBeenCalledExactlyOnceWith({
       budgetTokens: 8,
-      items: [
-        { kind: "raw", id: "raw:scene", text: "Raw", tokens: 8 },
-        {
-          kind: "acceptedIr",
-          id: "ir:alice",
-          text: "Alice",
-          tokens: 4,
-          atomicGroup: "ir:alice:unit",
-        },
-      ],
+      items: [{ kind: "raw", id: "raw:scene", text: "Raw", tokens: 8 }],
     });
   });
 
