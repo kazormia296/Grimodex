@@ -6,10 +6,21 @@
 
 use anyhow::{ensure, Result};
 use grimodex_db::narrative_extraction::nir1_capacity_diagnostics::measure_capacity;
+use grimodex_db::narrative_extraction::nir1_capacity_fixtures::build_fixture_from_manifest;
 use std::path::Path;
 
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
+    if args.get(1).is_some_and(|arg| arg == "fixture") {
+        ensure!(
+            args.len() == 5,
+            "usage: nir1-material-capacity fixture <manifest> <case-id> <output.db>"
+        );
+        let result =
+            build_fixture_from_manifest(Path::new(&args[2]), &args[3], Path::new(&args[4]))?;
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
     ensure!(
         (3..=4).contains(&args.len()),
         "usage: nir1-material-capacity <database> <fixture-id> [project-id]"

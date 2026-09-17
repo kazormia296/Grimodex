@@ -143,6 +143,8 @@ pub use revision_eligibility::{
 pub mod material_roster;
 #[cfg(feature = "nir1-material-diagnostics")]
 pub mod nir1_capacity_diagnostics;
+#[cfg(feature = "nir1-material-diagnostics")]
+pub mod nir1_capacity_fixtures;
 mod repository;
 mod restore_rebuild;
 mod scope_authority_runtime;
