@@ -856,10 +856,14 @@ fn read_revision_input_stats(
         .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
     let envelope_bytes = usize::try_from(envelope_bytes)
         .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
-    let total = payload_bytes
-        .checked_add(envelope_bytes)
-        .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
-    if total > REVISION_INPUT_BYTE_LIMIT {
+    // The 2 MiB contract is the semantic bundle admission enforced by the
+    // A2 reader.  The persisted envelope carries basis and provenance JSON in
+    // addition to that bundle, so payload and envelope may legitimately sum
+    // above 2 MiB even when the bundle remains within its contract.  Guard
+    // each stored component independently before the A2 reader allocates both
+    // strings; never turn serialization overhead into a false ineligible
+    // Revision by applying the semantic limit to their sum.
+    if !persisted_revision_components_within_limit(payload_bytes, envelope_bytes) {
         return Ok(None);
     }
     if let Some(admission) = admission {
@@ -939,6 +943,13 @@ fn read_revision_input_stats(
         return Ok(None);
     }
     Ok(Some(RevisionInputStats { material_records }))
+}
+
+fn persisted_revision_components_within_limit(
+    payload_bytes: usize,
+    envelope_bytes: usize,
+) -> bool {
+    payload_bytes <= REVISION_INPUT_BYTE_LIMIT && envelope_bytes <= REVISION_INPUT_BYTE_LIMIT
 }
 
 /// Confirm that the sealed payload names exactly the material Sources bound by
@@ -2022,6 +2033,22 @@ fn evaluate_graph_edge(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persisted_revision_components_are_guarded_independently() {
+        assert!(persisted_revision_components_within_limit(
+            REVISION_INPUT_BYTE_LIMIT,
+            REVISION_INPUT_BYTE_LIMIT,
+        ));
+        assert!(!persisted_revision_components_within_limit(
+            REVISION_INPUT_BYTE_LIMIT + 1,
+            0,
+        ));
+        assert!(!persisted_revision_components_within_limit(
+            0,
+            REVISION_INPUT_BYTE_LIMIT + 1,
+        ));
+    }
 
     struct StopAt(GraphWorkStage);
 

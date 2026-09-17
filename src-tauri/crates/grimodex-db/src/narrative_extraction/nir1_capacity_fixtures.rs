@@ -1097,7 +1097,7 @@ fn partition_materials(total: usize, revisions: usize) -> Result<Vec<usize>> {
 mod tests {
     use super::*;
     use crate::narrative_extraction::nir1_capacity_diagnostics::{
-        measure_capacity_mode, CapacityDiagnosticMode,
+        measure_capacity_mode, CapacityDiagnosticMode, PER_REVISION_INPUT_BYTE_LIMIT,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1196,6 +1196,37 @@ mod tests {
         assert_eq!(fs::read(&output)?, original);
         remove_fixture_copy(&output)?;
         remove_fixture_copy(&copy)?;
+        Ok(())
+    }
+
+    #[test]
+    fn byte_heavy_fixture_keeps_each_persisted_revision_component_within_the_admission() -> Result<()>
+    {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../evals/nir1-capacity/manifest.v1.json");
+        let output = temp_path("byte-heavy");
+        let result = build_fixture_from_manifest(&manifest, "Q2044/byte-heavy", &output)?;
+        assert_eq!(result.observed.counts.qualified_material_records, 2044);
+        assert_eq!(result.observed.counts.qualified_revisions, 4);
+
+        let conn = Connection::open_with_flags(&output, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let (payload_bytes, envelope_bytes, combined_bytes): (i64, i64, i64) = conn.query_row(
+            "SELECT MAX(length(CAST(payload_json AS BLOB))),
+                    MAX(length(CAST(reconciliation_envelope_json AS BLOB))),
+                    MIN(length(CAST(payload_json AS BLOB))
+                      + length(CAST(reconciliation_envelope_json AS BLOB)))
+               FROM narrative_proposal_revisions",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let payload_bytes = usize::try_from(payload_bytes)?;
+        let envelope_bytes = usize::try_from(envelope_bytes)?;
+        let combined_bytes = usize::try_from(combined_bytes)?;
+        assert!(payload_bytes <= PER_REVISION_INPUT_BYTE_LIMIT);
+        assert!(envelope_bytes <= PER_REVISION_INPUT_BYTE_LIMIT);
+        assert!(combined_bytes > PER_REVISION_INPUT_BYTE_LIMIT);
+
+        remove_fixture_copy(&output)?;
         Ok(())
     }
 
