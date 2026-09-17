@@ -395,7 +395,6 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
   const maybeEvict = (attempt: MutableAttempt): void => {
     if (
       attempt.terminal === null ||
-      attempt.terminalSource !== "native" ||
       attempt.nativeRegistrationPending ||
       attempt.ownerCount > 0 ||
       attempt.waiters.length > 0
@@ -453,6 +452,7 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
     attempt.terminal = receipt;
     attempt.terminalSource = "local";
     for (const waiter of attempt.waiters.splice(0)) waiter(receipt);
+    maybeEvict(attempt);
     return receipt;
   };
 
@@ -557,6 +557,9 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
     },
 
     async requestStop(attemptId, reason) {
+      assertAttemptId(attemptId);
+      const cached = terminalReceipts.get(attemptId);
+      if (cached) return cached;
       const attempt = requireAttempt(attemptId);
       if (attempt.terminal) return attempt.terminal;
       if (attempt.state === "finalize-granted") {
@@ -602,6 +605,14 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
     },
 
     adoptTerminalReceipt(attemptId, receipt) {
+      assertAttemptId(attemptId);
+      const cached = terminalReceipts.get(attemptId);
+      if (cached) {
+        if (JSON.stringify(cached) !== JSON.stringify(receipt)) {
+          throw new Error("maintenance terminal receipt cache mismatch");
+        }
+        return cached;
+      }
       const attempt = requireAttempt(attemptId);
       if (receipt.attemptId !== attemptId) {
         throw new Error("maintenance terminal receipt attemptId mismatch");
@@ -649,6 +660,7 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
       attempt.terminal = receipt;
       attempt.terminalSource = "native";
       for (const waiter of attempt.waiters.splice(0)) waiter(receipt);
+      maybeEvict(attempt);
       return receipt;
     },
 

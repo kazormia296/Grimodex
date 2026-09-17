@@ -1439,19 +1439,10 @@ export function createNarrativeMaintenanceScheduler(
           // result. Fetch that authoritative receipt through the idempotent
           // cancel endpoint so local state cannot replace per-work outcomes
           // or cleanup facts with a placeholder.
-          const cancel = backend?.cancelNarrativeMaintenanceAttempt;
-          if (typeof cancel !== "function") {
-            throw new Error("NEX_MAINTENANCE_ATTEMPT_LIFECYCLE_UNAVAILABLE");
-          }
-          const parsedReceipt = parseNarrativeMaintenanceTerminalReceipt(
-            await cancel.call(backend, cycleAttemptId, "closed"),
-          );
-          assertReusableTerminalReceipt(parsedReceipt);
-          activeAttemptController.adoptTerminalReceipt(
+          const parsedReceipt = await cancelAttemptById(
             cycleAttemptId,
-            parsedReceipt,
+            "closed",
           );
-          nativeAttemptIds.delete(cycleAttemptId);
           nativeReceiptAdopted = true;
           terminalReceiptFailure = null;
           if (parsedReceipt.state === "interrupted") {
@@ -1568,17 +1559,7 @@ export function createNarrativeMaintenanceScheduler(
             interruptedCycle || attemptSnapshot.state === "stop-requested";
           settleAttempt("interrupted");
         }
-        if (interruptedCycle) {
-          for (const work of backendBatch) requeueWork(work);
-          for (const projectId of sendingWakeProjects) {
-            const wakeKey = scopedWakeKey(projectId, cycleBinding);
-            durableWakeProjects.set(wakeKey, {
-              projectId,
-              workspaceBinding: cycleBinding,
-            });
-          }
-          shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
-        } else if (deferredCycle) {
+        if (deferredCycle) {
           for (const work of backendBatch) {
             requeueWork(work);
             deferredWorkKeys.add(scopedWorkKey(work));
@@ -1597,6 +1578,16 @@ export function createNarrativeMaintenanceScheduler(
           // Do not schedule this project again until a new explicit request
           // clears its park.  This is a typed non-ACK, not a retry failure.
           shouldSchedule = false;
+        } else if (interruptedCycle) {
+          for (const work of backendBatch) requeueWork(work);
+          for (const projectId of sendingWakeProjects) {
+            const wakeKey = scopedWakeKey(projectId, cycleBinding);
+            durableWakeProjects.set(wakeKey, {
+              projectId,
+              workspaceBinding: cycleBinding,
+            });
+          }
+          shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
         } else if (workspaceMismatch) {
           for (const work of backendBatch) {
             requeueWork(work);

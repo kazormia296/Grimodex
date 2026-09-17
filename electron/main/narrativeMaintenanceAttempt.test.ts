@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createNarrativeMaintenanceAttemptController,
+  NARRATIVE_MAINTENANCE_MAX_TERMINAL_RECEIPTS,
   parseNarrativeMaintenanceBeginReceipt,
   parseNarrativeMaintenanceTerminalReceipt,
   type NarrativeMaintenanceAttemptController,
@@ -80,6 +81,7 @@ describe("narrative maintenance attempt linearization", () => {
   it("preserves completed work when a later work is interrupted", async () => {
     const attempts = controller();
     attempts.begin("attempt-c", binding);
+    attempts.retainOwner("attempt-c");
     attempts.addWork("attempt-c", "work-a");
     attempts.addWork("attempt-c", "work-b");
     attempts.markWorkStarted("attempt-c", "work-a");
@@ -90,8 +92,10 @@ describe("narrative maintenance attempt linearization", () => {
       { workKey: "work-a", status: "succeeded" },
       { workKey: "work-b", status: "succeeded" },
     ]);
+    attempts.releaseOwner("attempt-c");
 
     attempts.begin("attempt-d", binding);
+    attempts.retainOwner("attempt-d");
     attempts.addWork("attempt-d", "work-a");
     attempts.addWork("attempt-d", "work-b");
     attempts.markWorkStarted("attempt-d", "work-a");
@@ -103,6 +107,7 @@ describe("narrative maintenance attempt linearization", () => {
       { workKey: "work-a", status: "interrupted" },
       { workKey: "work-b", status: "not-started" },
     ]);
+    attempts.releaseOwner("attempt-d");
   });
 
   it("settles begin/cancel without a native work and rejects binding reuse", async () => {
@@ -114,13 +119,14 @@ describe("narrative maintenance attempt linearization", () => {
       connectionReusable: true,
     });
     expect(() => attempts.begin("attempt-e", { ...binding, generation: 8 })).toThrow(
-      /binding conflict/,
+      /binding conflict|terminally cached/,
     );
   });
 
   it("waits for a Native receipt before terminalizing an empty Native-owned attempt", async () => {
     const attempts = controller();
     attempts.begin("attempt-native-empty", binding);
+    attempts.retainOwner("attempt-native-empty");
     attempts.markNativeOwned("attempt-native-empty");
 
     const cancellation = attempts.requestStop(
@@ -151,6 +157,7 @@ describe("narrative maintenance attempt linearization", () => {
     ).toEqual(receipt);
     await expect(cancellation).resolves.toEqual(receipt);
     expect(attempts.snapshot("attempt-native-empty")?.state).toBe("succeeded");
+    attempts.releaseOwner("attempt-native-empty");
   });
 
   it("keeps an empty attempt pending while Native begin registration is unresolved", async () => {
@@ -222,6 +229,68 @@ describe("narrative maintenance attempt linearization", () => {
     expect(attempts.snapshot("attempt-evict")).toBeNull();
     await expect(attempts.waitForTerminal("attempt-evict")).resolves.toEqual(
       receipt,
+    );
+    expect(attempts.adoptTerminalReceipt("attempt-evict", receipt)).toBe(
+      receipt,
+    );
+  });
+
+  it("returns the exact cached receipt for a late same-id stop", async () => {
+    const attempts = controller();
+    attempts.begin("attempt-cached-stop", binding);
+    attempts.retainOwner("attempt-cached-stop");
+    attempts.markNativeOwned("attempt-cached-stop");
+    const receipt = parseNarrativeMaintenanceTerminalReceipt({
+      schemaVersion: 1,
+      attemptId: "attempt-cached-stop",
+      state: "interrupted",
+      stopReason: "closed",
+      generation: binding.generation,
+      workspaceBinding: binding,
+      publishedGeneration: null,
+      works: [],
+      cleanup: { status: "clean" },
+      connectionReusable: true,
+    });
+
+    const firstStop = attempts.requestStop("attempt-cached-stop", "closed");
+    attempts.adoptTerminalReceipt("attempt-cached-stop", receipt);
+    attempts.releaseOwner("attempt-cached-stop");
+
+    await expect(firstStop).resolves.toBe(receipt);
+    await expect(
+      attempts.requestStop("attempt-cached-stop", "closed"),
+    ).resolves.toBe(receipt);
+  });
+
+  it("bounds local terminal records while preserving an admitted waiter", async () => {
+    const attempts = controller();
+    attempts.begin("attempt-admitted-waiter", binding);
+    const admittedWaiter = attempts.waitForTerminal("attempt-admitted-waiter");
+    const admittedReceipt = attempts.settle("attempt-admitted-waiter", {
+      state: "interrupted",
+    });
+    await expect(admittedWaiter).resolves.toBe(admittedReceipt);
+
+    for (
+      let index = 0;
+      index < NARRATIVE_MAINTENANCE_MAX_TERMINAL_RECEIPTS + 44;
+      index += 1
+    ) {
+      const attemptId = `attempt-local-${index}`;
+      attempts.begin(attemptId, binding);
+      attempts.retainOwner(attemptId);
+      attempts.settle(attemptId, { state: "interrupted" });
+      attempts.releaseOwner(attemptId);
+    }
+
+    const newestId = `attempt-local-${NARRATIVE_MAINTENANCE_MAX_TERMINAL_RECEIPTS + 43}`;
+    await expect(attempts.waitForTerminal(newestId)).resolves.toMatchObject({
+      attemptId: newestId,
+      state: "interrupted",
+    });
+    expect(() => attempts.waitForTerminal("attempt-local-0")).toThrow(
+      /unknown maintenance attempt/,
     );
   });
 

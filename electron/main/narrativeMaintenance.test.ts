@@ -1340,7 +1340,8 @@ describe("narrative maintenance scheduler", () => {
       }),
     );
     await expect(beginRequest).resolves.toBeUndefined();
-    await expect(cancellation).resolves.toMatchObject({
+    const firstReceipt = await cancellation;
+    expect(firstReceipt).toMatchObject({
       attemptId: "attempt-direct-cancel",
       state: "interrupted",
     });
@@ -1348,6 +1349,63 @@ describe("narrative maintenance scheduler", () => {
       "attempt-direct-cancel",
       "closed",
     );
+    const secondReceipt = await scheduler.cancelNarrativeMaintenanceAttempt?.(
+      "attempt-direct-cancel",
+      "closed",
+    );
+    expect(secondReceipt).toBe(firstReceipt);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("shares one Native cancel when cycle completion races workspace quiescence", async () => {
+    const binding = { authorityId: "authority-cancel-race", generation: 16 };
+    const cancelReceipt = deferred<string>();
+    const begin = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        status: "open",
+        attemptId,
+        authorityId: binding.authorityId,
+        generation: binding.generation,
+      }),
+    );
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(acceptedCycle());
+    const cancel = vi.fn((_attemptId: string) => cancelReceipt.promise);
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt: begin,
+      cancelNarrativeMaintenanceAttempt: cancel,
+    });
+    scheduler.request(
+      work("project-cancel-race", "backfill", "backfill:v2", "open"),
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+
+    const quiescing = scheduler.quiesceForWorkspaceSwitch?.();
+    await Promise.resolve();
+    expect(cancel).toHaveBeenCalledOnce();
+
+    const attemptId = cancel.mock.calls[0]?.[0];
+    cancelReceipt.resolve(
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "succeeded",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: binding.generation,
+        works: [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
+    await expect(quiescing).resolves.toBeDefined();
   });
 
   it("resumes retained backlog only through the newest quiesce lease", async () => {
