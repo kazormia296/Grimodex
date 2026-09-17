@@ -3158,6 +3158,13 @@ impl NarrativeMaintenanceAttemptGuard {
         Ok(receipt.state == "succeeded")
     }
 
+    fn close_work_registration(&self) -> anyhow::Result<()> {
+        self.state
+            .narrative_maintenance_attempts
+            .close_work_registration(&self.attempt_id)?;
+        Ok(())
+    }
+
     fn mark_cleanup_clean(&mut self, state: &AppState) -> anyhow::Result<()> {
         state.narrative_maintenance_attempts.set_cleanup_outcome(
             &self.attempt_id,
@@ -4188,6 +4195,13 @@ impl Backend {
                     attempt_control.as_ref(),
                 )
             })?;
+            if let Some(guard) = attempt_guard.as_ref() {
+                // Dynamic discovery remains open until the shared cycle has
+                // returned.  Only now may an all-success work set acquire the
+                // attempt-level finalization state; a repeated effective key
+                // discovered after an earlier commit must remain cancellable.
+                guard.close_work_registration().map_err(AppError::Anyhow)?;
+            }
             // Do not perform the post-cycle workspace revalidation or
             // recovery-success bookkeeping after a stop has linearized.
             should_stop()?;
@@ -5615,6 +5629,10 @@ impl Backend {
                     .close_for_workspace_swap()
                     .map_err(AppError::Anyhow)?;
                 admission_guard.arm();
+                #[cfg(test)]
+                state
+                    .narrative_maintenance_recovery_gate
+                    .panic_after_admission_close_for_test();
                 Ok(())
             };
             let opened_result = open_workspace_sync_traced_with_pre_swap(
@@ -5855,6 +5873,10 @@ impl Backend {
                 .close_for_workspace_swap()
                 .map_err(AppError::Anyhow)?;
             admission_guard.arm();
+            #[cfg(test)]
+            state
+                .narrative_maintenance_recovery_gate
+                .panic_after_admission_close_for_test();
             let state_for_hook = Arc::clone(&state);
             let workspace_binding = active_workspace_path(&state.ws)
                 .ok()
@@ -11552,6 +11574,7 @@ mod narrative_maintenance_admission_unwind_tests {
     use super::*;
     use grimodex_db::state::{ActiveWorkspace, WorkspaceAuthority};
     use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
     fn backend_with_active_workspace(label: &str) -> (Backend, std::path::PathBuf) {
@@ -11693,6 +11716,121 @@ mod narrative_maintenance_admission_unwind_tests {
             .state
             .narrative_maintenance_recovery_gate
             .release_attempt("active-open-attempt");
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn production_open_panic_after_close_reopens_binding_and_switching() {
+        let (backend, root) = backend_with_active_workspace("open-panic");
+        let before = backend
+            .get_narrative_maintenance_workspace_binding()
+            .expect("read binding before open")
+            .expect("active binding before open");
+        let before_identity = active_database(&backend.state.ws)
+            .expect("active authority before open")
+            .identity();
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .arm_panic_after_admission_close_for_test();
+
+        let error = backend
+            .open_workspace(root.join("replacement").to_string_lossy().into_owned())
+            .await
+            .expect_err("injected open panic must reject the invoke");
+        assert!(
+            !error.to_string().is_empty(),
+            "panic must surface as an error"
+        );
+        assert!(!backend.state.ws.switching.load(Ordering::SeqCst));
+        assert!(
+            !backend
+                .state
+                .narrative_maintenance_recovery_gate
+                .maintenance_admission_is_closed(),
+            "open panic must reopen production admission"
+        );
+        let after_authority = active_database(&backend.state.ws).expect("surviving authority");
+        assert_eq!(after_authority.identity(), before_identity);
+        drop(after_authority);
+        let after = backend
+            .get_narrative_maintenance_workspace_binding()
+            .expect("read binding after open panic")
+            .expect("active binding after open panic");
+        assert_eq!(after, before);
+        let binding: MaintenanceWorkspaceBinding = serde_json::from_str(&after).expect("binding");
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .register_attempt("post-open-panic-begin", &binding)
+            .expect("subsequent begin after open panic");
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .release_attempt("post-open-panic-begin");
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn production_restore_panic_after_close_reopens_binding_and_switching() {
+        let (backend, root) = backend_with_active_workspace("restore-panic");
+        let before = backend
+            .get_narrative_maintenance_workspace_binding()
+            .expect("read binding before restore")
+            .expect("active binding before restore");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let before_identity = authority.identity();
+        let backups_dir = root.join("workspace/backups");
+        std::fs::create_dir_all(&backups_dir).expect("backups directory");
+        let backup_name = "grimodex-maintenance-panic.db";
+        authority
+            .db()
+            .backup_to(&backups_dir.join(backup_name))
+            .expect("restore candidate");
+        drop(authority);
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .arm_panic_after_admission_close_for_test();
+
+        let error = backend
+            .restore_backup(backup_name.to_string())
+            .await
+            .expect_err("injected restore panic must reject the invoke");
+        assert!(
+            !error.to_string().is_empty(),
+            "panic must surface as an error"
+        );
+        assert!(!backend.state.ws.switching.load(Ordering::SeqCst));
+        assert!(
+            !backend
+                .state
+                .narrative_maintenance_recovery_gate
+                .maintenance_admission_is_closed(),
+            "restore panic must reopen production admission"
+        );
+        let after_authority = active_database(&backend.state.ws).expect("surviving authority");
+        assert_eq!(after_authority.identity(), before_identity);
+        drop(after_authority);
+        let after = backend
+            .get_narrative_maintenance_workspace_binding()
+            .expect("read binding after restore panic")
+            .expect("active binding after restore panic");
+        assert_eq!(after, before);
+        let binding: MaintenanceWorkspaceBinding = serde_json::from_str(&after).expect("binding");
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .register_attempt("post-restore-panic-begin", &binding)
+            .expect("subsequent begin after restore panic");
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .release_attempt("post-restore-panic-begin");
 
         drop(backend);
         let _ = std::fs::remove_dir_all(root);

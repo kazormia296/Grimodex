@@ -121,6 +121,8 @@ struct NarrativeMaintenanceRecoveryState {
     /// admission check and authority publication.  Attempt registration must
     /// use this same mutex so a begin cannot slip into that gap.
     maintenance_admission_closed: bool,
+    #[cfg(test)]
+    panic_after_admission_close: bool,
 }
 
 pub struct NarrativeMaintenanceRecoveryGate {
@@ -509,12 +511,43 @@ impl Default for NarrativeMaintenanceRecoveryGate {
                 recovered_work_keys: HashSet::new(),
                 active_attempts: HashMap::new(),
                 maintenance_admission_closed: false,
+                #[cfg(test)]
+                panic_after_admission_close: false,
             }),
         }
     }
 }
 
 impl NarrativeMaintenanceRecoveryGate {
+    #[cfg(test)]
+    pub fn arm_panic_after_admission_close_for_test(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.panic_after_admission_close = true;
+    }
+
+    /// Test-only failpoint used through the production open/restore owners.
+    /// The flag is consumed under the same mutex as admission closure so the
+    /// injected panic is strictly after the close and cannot leak into a
+    /// later test or workspace generation.
+    #[cfg(test)]
+    pub fn panic_after_admission_close_for_test(&self) {
+        let should_panic = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let should_panic = state.panic_after_admission_close;
+            state.panic_after_admission_close = false;
+            should_panic
+        };
+        if should_panic {
+            panic!("injected post-admission-close workspace swap panic");
+        }
+    }
+
     /// Register a process-local attempt before it can touch the pinned
     /// authority. Workspace open/restore checks this same gate immediately
     /// before swapping authorities.
@@ -792,12 +825,22 @@ struct NarrativeMaintenanceAttemptEntry {
     state: NarrativeMaintenanceAttemptState,
     stop_reason: Option<String>,
     running: bool,
+    /// The shared cycle owns discovery until it explicitly closes this
+    /// admission.  A work can finish while discovery is still able to enqueue
+    /// a repeated effective key; such a finish must not grant the attempt's
+    /// final success yet.
+    work_registration_open: bool,
     works: Vec<NarrativeMaintenanceWorkTerminal>,
     /// Work identities whose final durable success transaction has acquired
     /// the cancellation linearization point.  Cancellation may stop other
     /// work, but it cannot rewrite one of these identities after its owner
     /// commits.
-    finalize_grants: HashSet<String>,
+    /// One entry is retained for every queue execution, even when multiple
+    /// executions share the same canonical key.  Rediscovery can enqueue an
+    /// effective key again before the cycle ends; collapsing by key would let
+    /// the first success finalize the attempt while the later execution is
+    /// still pending.
+    finalize_grants: HashSet<usize>,
     cleanup: NarrativeMaintenanceCleanupOutcome,
     connection_reusable: bool,
     terminal: Option<NarrativeMaintenanceTerminalReceipt>,
@@ -851,6 +894,7 @@ impl NarrativeMaintenanceAttemptRegistry {
                 state: NarrativeMaintenanceAttemptState::Open,
                 stop_reason: None,
                 running: false,
+                work_registration_open: false,
                 works: Vec::new(),
                 finalize_grants: HashSet::new(),
                 cleanup: NarrativeMaintenanceCleanupOutcome {
@@ -886,6 +930,7 @@ impl NarrativeMaintenanceAttemptRegistry {
             "NEX_MAINTENANCE_ATTEMPT_CANCELLED: attempt cancellation was accepted before work started"
         );
         entry.running = true;
+        entry.work_registration_open = true;
         // A running attempt must prove cleanup before its terminal receipt is
         // reusable.  The owner upgrades this to clean only after the actual
         // Database connection has been checked at the end of the cycle.
@@ -894,6 +939,7 @@ impl NarrativeMaintenanceAttemptRegistry {
             error: Some("maintenance cleanup has not completed".to_string()),
         };
         entry.connection_reusable = false;
+        entry.finalize_grants.clear();
         entry.works = work_keys
             .into_iter()
             .map(|work_key| NarrativeMaintenanceWorkTerminal {
@@ -920,11 +966,9 @@ impl NarrativeMaintenanceAttemptRegistry {
         let work = entry
             .works
             .iter_mut()
-            .find(|work| work.work_key == work_key)
+            .find(|work| work.work_key == work_key && work.status == "not-started")
             .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"))?;
-        if work.status == "not-started" {
-            work.status = "running".to_string();
-        }
+        work.status = "running".to_string();
         Ok(())
     }
 
@@ -971,9 +1015,10 @@ impl NarrativeMaintenanceAttemptRegistry {
                 && entry.state != NarrativeMaintenanceAttemptState::FinalizeGranted,
             "NEX_MAINTENANCE_ATTEMPT_CANCELLED: follow-up registration is closed"
         );
-        if entry.works.iter().any(|work| work.work_key == work_key) {
-            return Ok(());
-        }
+        anyhow::ensure!(
+            entry.work_registration_open,
+            "NEX_MAINTENANCE_ATTEMPT_FINALIZE_CLOSED: work discovery is already closed"
+        );
         entry.works.push(NarrativeMaintenanceWorkTerminal {
             work_key: work_key.to_string(),
             status: "not-started".to_string(),
@@ -993,7 +1038,9 @@ impl NarrativeMaintenanceAttemptRegistry {
         if entry.terminal.is_some() {
             return Ok(false);
         }
-        if entry.state == NarrativeMaintenanceAttemptState::StopRequested {
+        if entry.state == NarrativeMaintenanceAttemptState::StopRequested
+            || entry.work_registration_open
+        {
             return Ok(false);
         }
         entry.state = NarrativeMaintenanceAttemptState::FinalizeGranted;
@@ -1017,11 +1064,18 @@ impl NarrativeMaintenanceAttemptRegistry {
         {
             return Ok(false);
         }
-        anyhow::ensure!(
-            entry.works.iter().any(|work| work.work_key == work_key),
-            "NEX_MAINTENANCE_WORK_UNKNOWN: work is not registered for this attempt"
-        );
-        entry.finalize_grants.insert(work_key.to_string());
+        let execution_index = entry
+            .works
+            .iter()
+            .enumerate()
+            .find(|(index, work)| {
+                work.work_key == work_key
+                    && work.status == "running"
+                    && !entry.finalize_grants.contains(index)
+            })
+            .map(|(index, _)| index)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"))?;
+        entry.finalize_grants.insert(execution_index);
         Ok(true)
     }
 
@@ -1051,18 +1105,26 @@ impl NarrativeMaintenanceAttemptRegistry {
         let entry = state
             .get_mut(attempt_id)
             .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
-        let granted = entry.finalize_grants.remove(work_key);
+        let granted_index = entry
+            .finalize_grants
+            .iter()
+            .copied()
+            .find(|index| entry.works[*index].work_key == work_key);
+        let granted = granted_index.is_some();
         anyhow::ensure!(
             granted || entry.state != NarrativeMaintenanceAttemptState::StopRequested,
             "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won at work boundary"
         );
+        let execution_index = granted_index
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"))?;
+        entry.finalize_grants.remove(&execution_index);
         let work = entry
             .works
-            .iter_mut()
-            .find(|work| work.work_key == work_key)
+            .get_mut(execution_index)
             .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"))?;
         work.status = "succeeded".to_string();
         if entry.finalize_grants.is_empty()
+            && !entry.work_registration_open
             && entry
                 .works
                 .iter()
@@ -1071,6 +1133,36 @@ impl NarrativeMaintenanceAttemptRegistry {
             entry.state = NarrativeMaintenanceAttemptState::FinalizeGranted;
         }
         Ok(())
+    }
+
+    /// Close the shared cycle's discovery queue.  This is the only point at
+    /// which an otherwise fully successful set of work executions may acquire
+    /// the attempt-level finalization state.  Keeping registration open until
+    /// the cycle returns handles Verify -> Rebuild -> Verify and epochless
+    /// rediscovery that arrives after an earlier item's durable commit.
+    pub fn close_work_registration(&self, attempt_id: &str) -> anyhow::Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get_mut(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        anyhow::ensure!(
+            entry.terminal.is_none(),
+            "NEX_MAINTENANCE_ATTEMPT_TERMINAL: attempt already settled"
+        );
+        entry.work_registration_open = false;
+        if entry.state != NarrativeMaintenanceAttemptState::StopRequested
+            && entry.finalize_grants.is_empty()
+            && entry
+                .works
+                .iter()
+                .all(|candidate| candidate.status == "succeeded")
+        {
+            entry.state = NarrativeMaintenanceAttemptState::FinalizeGranted;
+        }
+        Ok(entry.state == NarrativeMaintenanceAttemptState::FinalizeGranted)
     }
 
     fn receipt_for(
@@ -1126,6 +1218,11 @@ impl NarrativeMaintenanceAttemptRegistry {
             }
             let accepted_success =
                 succeeded && entry.state == NarrativeMaintenanceAttemptState::FinalizeGranted;
+            // An owner that exits through panic/error without reporting its
+            // granted execution must not leave the registry permanently
+            // waiting.  The durable transaction did not report success, so
+            // the in-flight execution is represented as interrupted below.
+            entry.finalize_grants.clear();
             let status = if accepted_success {
                 "succeeded"
             } else {
@@ -1172,6 +1269,14 @@ impl NarrativeMaintenanceAttemptRegistry {
             // than manufacturing an interruption while the final transaction
             // is still being recovered.
             if entry.state == NarrativeMaintenanceAttemptState::FinalizeGranted {
+                return Ok(None);
+            }
+            if !entry.finalize_grants.is_empty() {
+                // A final transaction is already in flight. Stop later queue
+                // instances, but let the granted owner mark its durable
+                // success before the terminal receipt is built.
+                entry.state = NarrativeMaintenanceAttemptState::StopRequested;
+                entry.stop_reason = Some(reason.to_string());
                 return Ok(None);
             }
             if entry.state != NarrativeMaintenanceAttemptState::FinalizeGranted {
@@ -1820,6 +1925,9 @@ mod tests {
                 ["work-one".to_string(), "work-two".to_string()],
             )
             .expect("start");
+        registry
+            .mark_work_started("attempt-one", "work-one")
+            .expect("dequeue work one");
         assert!(registry
             .grant_work_finalize("attempt-one", "work-one")
             .expect("grant work one"));
@@ -1844,12 +1952,18 @@ mod tests {
         registry
             .start("attempt-two", ["work-one".to_string()])
             .expect("start two");
+        registry
+            .mark_work_started("attempt-two", "work-one")
+            .expect("dequeue work two");
         assert!(registry
             .grant_work_finalize("attempt-two", "work-one")
             .expect("grant work two"));
         registry
             .mark_work_succeeded("attempt-two", "work-one")
             .expect("complete work two");
+        assert!(registry
+            .close_work_registration("attempt-two")
+            .expect("close work discovery"));
         assert!(registry
             .request_cancel("attempt-two", "late-cancel")
             .expect("late cancel")
@@ -1874,6 +1988,9 @@ mod tests {
         registry
             .register_work("attempt-followup", "phase-two")
             .expect("register followup");
+        registry
+            .mark_work_started("attempt-followup", "phase-one")
+            .expect("dequeue phase one");
         registry
             .grant_work_finalize("attempt-followup", "phase-one")
             .expect("grant phase one");
@@ -1911,6 +2028,9 @@ mod tests {
             .mark_work_started("attempt-followup-running", "phase-two")
             .expect("start dynamic phase");
         registry
+            .mark_work_started("attempt-followup-running", "phase-one")
+            .expect("start initial phase");
+        registry
             .grant_work_finalize("attempt-followup-running", "phase-one")
             .expect("grant initial phase");
         registry
@@ -1926,6 +2046,62 @@ mod tests {
             .expect("interrupt dynamic phase");
         assert_eq!(receipt.state, "interrupted");
         assert_eq!(receipt.works[0].status, "succeeded");
+        assert_eq!(receipt.works[1].status, "interrupted");
+    }
+
+    #[test]
+    fn repeated_effective_key_is_tracked_as_two_executions() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-repeated-key".to_string(),
+            generation: 6,
+        };
+        let key = "narrative-maintenance:v1/dependency-verify/project-1/work:epoch-current";
+        registry
+            .begin("attempt-repeated-key", &binding)
+            .expect("begin");
+        registry
+            .start("attempt-repeated-key", std::iter::empty::<String>())
+            .expect("start");
+        registry
+            .register_work("attempt-repeated-key", key)
+            .expect("register first execution");
+
+        registry
+            .mark_work_started("attempt-repeated-key", key)
+            .expect("start first execution");
+        assert!(registry
+            .grant_work_finalize("attempt-repeated-key", key)
+            .expect("grant first execution"));
+        registry
+            .mark_work_succeeded("attempt-repeated-key", key)
+            .expect("complete first execution");
+
+        // The first success must not close the attempt while discovery is
+        // still able to enqueue the same effective key.  Register the
+        // rediscovered queue instance after the first durable commit, then
+        // cancel before its final transaction obtains a grant.
+        registry
+            .register_work("attempt-repeated-key", key)
+            .expect("register rediscovered execution");
+        registry
+            .mark_work_started("attempt-repeated-key", key)
+            .expect("start second execution");
+        assert!(registry
+            .request_cancel("attempt-repeated-key", "cancel-before-second-finalize")
+            .expect("cancel second execution")
+            .is_none());
+        assert!(!registry
+            .grant_work_finalize("attempt-repeated-key", key)
+            .expect("second finalization is denied"));
+        let receipt = registry
+            .settle("attempt-repeated-key", false, None)
+            .expect("settle repeated-key interruption");
+        assert_eq!(receipt.state, "interrupted");
+        assert_eq!(receipt.works.len(), 2);
+        assert_eq!(receipt.works[0].work_key, key);
+        assert_eq!(receipt.works[0].status, "succeeded");
+        assert_eq!(receipt.works[1].work_key, key);
         assert_eq!(receipt.works[1].status, "interrupted");
     }
 
@@ -1977,6 +2153,9 @@ mod tests {
             .start("attempt-empty-wake", std::iter::empty::<String>())
             .expect("start empty durable wake");
         assert!(registry
+            .close_work_registration("attempt-empty-wake")
+            .expect("close empty durable wake discovery"));
+        assert!(registry
             .grant_finalize("attempt-empty-wake")
             .expect("finalize empty wake"));
         let receipt = registry
@@ -2013,6 +2192,9 @@ mod tests {
         registry
             .mark_work_succeeded("attempt-effective-epoch", effective)
             .expect("complete normalized epoch identity");
+        assert!(registry
+            .close_work_registration("attempt-effective-epoch")
+            .expect("close normalized epoch discovery"));
         let receipt = registry
             .settle("attempt-effective-epoch", true, Some(binding.generation))
             .expect("settle normalized epoch identity");
@@ -2049,6 +2231,8 @@ mod tests {
                 recovered_work_keys: HashSet::new(),
                 active_attempts: HashMap::new(),
                 maintenance_admission_closed: false,
+                #[cfg(test)]
+                panic_after_admission_close: false,
             }),
         };
         let first_rollover = near_max.mark_workspace_swapped();
@@ -2065,6 +2249,8 @@ mod tests {
                 recovered_work_keys: HashSet::new(),
                 active_attempts: HashMap::new(),
                 maintenance_admission_closed: false,
+                #[cfg(test)]
+                panic_after_admission_close: false,
             }),
         };
         let at_max_rollover = at_max.mark_workspace_swapped();
