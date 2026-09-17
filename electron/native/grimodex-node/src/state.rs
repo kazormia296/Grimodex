@@ -2961,6 +2961,9 @@ mod tests {
         assert!(registry
             .close_work_registration("attempt-no-op")
             .expect("close discovery"));
+        assert!(registry
+            .arm_finalize_success("attempt-no-op")
+            .expect("arm no-op final success"));
         let receipt = registry
             .settle("attempt-no-op", true, Some(binding.generation))
             .expect("settle no-op");
