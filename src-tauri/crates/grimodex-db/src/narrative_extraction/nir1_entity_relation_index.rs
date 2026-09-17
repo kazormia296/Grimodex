@@ -699,7 +699,9 @@ fn read_eligibility_source_bounded(
             admission.ensure_current(conn)?;
         }
         let mut statement = conn.prepare(
-            "SELECT DISTINCT proposal.current_revision_id
+            "SELECT DISTINCT
+                    length(CAST(proposal.current_revision_id AS BLOB)),
+                    proposal.current_revision_id
                FROM narrative_proposal_sets proposal_set
                JOIN narrative_extraction_runs extraction_run
                  ON extraction_run.id = proposal_set.run_id
@@ -723,7 +725,22 @@ fn read_eligibility_source_bounded(
         ])?;
         let mut page = Vec::with_capacity(GRAPH_SOURCE_PAGE_SIZE as usize);
         while let Some(row) = rows.next()? {
-            page.push(row.get::<_, String>(0)?);
+            // Check the caller-owned stop boundary and the scalar byte length
+            // before asking rusqlite to allocate the current revision ID.
+            // Dangling pointers are still scanned by keyset order, but an
+            // oversized value cannot become a Rust String merely to discover
+            // that it has no backing Revision row.
+            check_graph_work(&mut control, GraphWorkStage::Row)?;
+            if let Some(admission) = admission {
+                admission.ensure_current(conn)?;
+            }
+            let revision_id_bytes = usize::try_from(row.get::<_, i64>(0)?)
+                .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
+            ensure!(
+                revision_id_bytes <= REVISION_INPUT_BYTE_LIMIT,
+                "NIR1_GRAPH_ROSTER_INPUT_LIMIT"
+            );
+            page.push(row.get::<_, String>(1)?);
         }
         if page.is_empty() {
             break;
@@ -733,7 +750,6 @@ fn read_eligibility_source_bounded(
             // is the keyset boundary that prevents an all-ineligible page
             // from being mistaken for end-of-input.
             cursor = revision_id.clone();
-            check_graph_work(&mut control, GraphWorkStage::Row)?;
             if let Some(admission) = admission {
                 admission.ensure_current(conn)?;
             }
@@ -1441,7 +1457,8 @@ pub(crate) fn is_registered_with_control(
     Ok(matches!(read_internal(conn, project, true, true, Some(control))?, BindingRead::Registered(_)))
 }
 
-/// Check whether the exact Graph binding is structurally registered and live.
+/// Check whether the exact Graph binding is completely registered and live
+/// across the whole project.
 pub fn is_complete_registered(conn: &Connection, project: &str, key: &str) -> Result<bool> {
     let mut control = NeverStopGraphWorkControl;
     is_complete_registered_with_control(conn, project, key, &mut control)

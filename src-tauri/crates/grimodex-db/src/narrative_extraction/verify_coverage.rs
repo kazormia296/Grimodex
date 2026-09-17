@@ -427,10 +427,10 @@ pub(crate) fn verify_application_revision_artifact_references_with_control(
 /// metadata `index_key` must equal the D1 `consumer_key` and freshness
 /// `consumer_key`; metadata `generation` must equal the active sealed D1
 /// head's `producer_generation`; and metadata `dependency_set_digest` must
-/// equal the active sealed D1 declaration set's digest. A structurally
-/// registered binding is removed from reserved counts even when its live
-/// source, epoch, Freshness, or dirty flag requires a rebuild; mixed unknown
-/// rows stay visible. Live usability remains a separate producer check.
+/// equal the active sealed D1 declaration set's digest. Only a complete,
+/// whole-project Graph registration is removed from reserved counts; a dirty
+/// or otherwise stale binding remains visible as incomplete evidence. Live
+/// usability remains a separate producer check.
 pub(crate) fn verify_semantic_index_checks(
     conn: &Connection,
     project_id: &str,
@@ -511,7 +511,7 @@ pub(crate) fn verify_semantic_index_checks_with_control(
         }
     }
     check_control(control, GraphWorkStage::Coverage)?;
-    if super::nir1_entity_relation_index::is_registered_with_control(
+    if super::nir1_entity_relation_index::is_complete_registered_with_control(
         conn,
         project_id,
         super::nir1_entity_relation_index::INDEX_KEY,

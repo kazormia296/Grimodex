@@ -7309,8 +7309,16 @@ mod tests {
         let (digest_check, generation_check) = db.with_read_transaction(|conn| {
             super::super::verify_coverage::verify_semantic_index_checks(conn, "default-project")
         })?;
-        assert!(digest_check.is_consistent());
-        assert!(generation_check.is_consistent());
+        assert!(
+            !digest_check.is_consistent(),
+            "a post-Decision dirty Graph must remain visible to Verify"
+        );
+        assert!(
+            !generation_check.is_consistent(),
+            "a post-Decision dirty Graph must remain visible to Verify"
+        );
+        assert!(!digest_check.incomplete.is_empty());
+        assert!(!generation_check.incomplete.is_empty());
         let report = db.with_read_transaction(|conn| {
             super::super::restore_rebuild::verify_narrative_dependency_graph_for_project(
                 conn,
@@ -7419,6 +7427,7 @@ mod tests {
             .map_err(Into::into)
         })?;
         assert_eq!(source_metadata, (1, 1));
+        assert_graph_verify_reports_dirty(&db)?;
         let source_error = db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
             let error = match nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
@@ -7504,6 +7513,7 @@ mod tests {
             .map_err(Into::into)
         })?;
         assert_eq!(scope_metadata, (1, 1));
+        assert_graph_verify_reports_dirty(&db)?;
         let scope_error = db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
             let error = match nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
@@ -8924,6 +8934,23 @@ mod tests {
         Ok(())
     }
 
+    fn assert_graph_verify_reports_dirty(db: &crate::Database) -> anyhow::Result<()> {
+        let (digest_check, generation_check) = db.with_read_transaction(|conn| {
+            super::super::verify_coverage::verify_semantic_index_checks(conn, "default-project")
+        })?;
+        assert!(
+            !digest_check.is_consistent(),
+            "a dirty Graph must remain visible to Verify coverage"
+        );
+        assert!(
+            !generation_check.is_consistent(),
+            "a dirty Graph must remain visible to Verify coverage"
+        );
+        assert!(!digest_check.incomplete.is_empty());
+        assert!(!generation_check.incomplete.is_empty());
+        Ok(())
+    }
+
     #[derive(Debug, PartialEq)]
     struct GraphSurfaceSnapshot(Vec<Vec<Vec<rusqlite::types::Value>>>);
 
@@ -9946,7 +9973,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_prepare_skips_oversized_current_revision_id_before_owned_read() -> anyhow::Result<()>
+    fn graph_prepare_rejects_oversized_current_revision_id_before_owned_read() -> anyhow::Result<()>
     {
         let (db, runtime, created) = published_graph_fixture()?;
         let proposal_id = created["proposalId"]
@@ -9963,16 +9990,51 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })?;
 
-        let _snapshot = match db.with_read_transaction(|conn| {
+        struct StopAtRow;
+
+        impl nir1_entity_relation_index::GraphWorkControl for StopAtRow {
+            fn check(
+                &mut self,
+                stage: nir1_entity_relation_index::GraphWorkStage,
+            ) -> anyhow::Result<()> {
+                if stage == nir1_entity_relation_index::GraphWorkStage::Row {
+                    return Err(crate::narrative_extraction::source_revision::validation_terminated(
+                        crate::narrative_extraction::source_revision::ValidationTerminationReason::Cancelled,
+                        "controlled stop before current revision ID allocation",
+                    ));
+                }
+                Ok(())
+            }
+        }
+
+        let control_error = match db.with_read_transaction(|conn| {
+            let mut control = StopAtRow;
+            nir1_entity_relation_index::read_eligibility_source_with_control(
+                conn,
+                "default-project",
+                &mut control,
+            )
+        }) {
+            Ok(_) => anyhow::bail!("Graph source read must observe the controlled Row stop"),
+            Err(error) => error,
+        };
+        assert!(
+            crate::narrative_extraction::source_revision::is_validation_terminated(&control_error),
+            "control cancellation must propagate before ID allocation: {control_error}"
+        );
+
+        let size_error = match db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         }) {
-            Ok(snapshot) => snapshot,
-            Err(error) => return Err(error),
+            Ok(_) => anyhow::bail!("an oversized dangling revision ID must be rejected"),
+            Err(error) => error,
         };
-        let source = db.with_read_transaction(|conn| {
-            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
-        })?;
-        assert!(source.roster.is_empty());
+        assert!(
+            size_error
+                .to_string()
+                .contains("NIR1_GRAPH_ROSTER_INPUT_LIMIT"),
+            "size admission must reject before owned read: {size_error}"
+        );
         Ok(())
     }
 
