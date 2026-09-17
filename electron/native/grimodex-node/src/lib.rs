@@ -42,9 +42,7 @@ use napi::JsFunction;
 use napi_derive::napi;
 
 use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
-use grimodex_core::narrative_nir1::{
-    ENTITY_RELATION_INDEX_KEY, ENTITY_RELATION_PRODUCER,
-};
+use grimodex_core::narrative_nir1::{ENTITY_RELATION_INDEX_KEY, ENTITY_RELATION_PRODUCER};
 use grimodex_db::agent_writes;
 use grimodex_db::ai_audit::{sanitize_diagnostic_credentials, AppendAiAuditEvent};
 use grimodex_db::backup_restore::{list_backups, restore_backup_core};
@@ -119,9 +117,7 @@ use grimodex_db::{with_db_state, AppError, BatchStatement, Database, RepairInteg
 
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
-use state::{
-    AppState, EventQueue, EventTsfn, NarrativeMaintenanceCleanupOutcome,
-};
+use state::{AppState, EventQueue, EventTsfn, NarrativeMaintenanceCleanupOutcome};
 use uuid::Uuid;
 
 const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
@@ -164,10 +160,7 @@ fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
 /// Read the durable NIR-1 Graph publication generation from the live
 /// authority. The workspace recovery generation is a different, process-local
 /// identity and must never be used as a Graph publication receipt.
-fn narrative_nir1_graph_generation(
-    db: &Database,
-    project_id: &str,
-) -> anyhow::Result<Option<u64>> {
+fn narrative_nir1_graph_generation(db: &Database, project_id: &str) -> anyhow::Result<Option<u64>> {
     db.with_conn(|conn| {
         let generation: Option<i64> = conn.query_row(
             "SELECT MAX(generation)
@@ -176,7 +169,11 @@ fn narrative_nir1_graph_generation(
                 AND index_key = ?2
                 AND dirty_cache_flag = 0
                 AND producer_id = ?3",
-            [project_id, ENTITY_RELATION_INDEX_KEY, ENTITY_RELATION_PRODUCER],
+            [
+                project_id,
+                ENTITY_RELATION_INDEX_KEY,
+                ENTITY_RELATION_PRODUCER,
+            ],
             |row| row.get(0),
         )?;
         generation
@@ -1158,9 +1155,7 @@ fn close_narrative_maintenance_for_workspace_swap(
                     ),
                     Ok(true)
                 ) {
-                    state
-                        .narrative_maintenance_preempted_runs
-                        .remove(&run_id);
+                    state.narrative_maintenance_preempted_runs.remove(&run_id);
                     removed_any = true;
                 }
             }
@@ -3326,13 +3321,11 @@ impl NarrativeMaintenanceAttemptGuard {
     }
 
     fn finalize_interrupted(&mut self) -> anyhow::Result<()> {
-        self.state
-            .narrative_maintenance_attempts
-            .settle(
-                &self.attempt_id,
-                false,
-                self.published_generation_value(),
-            )?;
+        self.state.narrative_maintenance_attempts.settle(
+            &self.attempt_id,
+            false,
+            self.published_generation_value(),
+        )?;
         self.finalized = true;
         Ok(())
     }
@@ -3429,9 +3422,7 @@ fn deferred_narrative_maintenance_result(
     attempt_guard: Option<&mut NarrativeMaintenanceAttemptGuard>,
 ) -> std::result::Result<String, AppError> {
     if let Some(guard) = attempt_guard {
-        guard
-            .mark_cleanup_clean(state)
-            .map_err(AppError::Anyhow)?;
+        guard.mark_cleanup_clean(state).map_err(AppError::Anyhow)?;
         guard.finalize_interrupted().map_err(AppError::Anyhow)?;
         return Ok(serde_json::json!({
             "status": "accepted",

@@ -149,11 +149,7 @@ pub struct NarrativeMaintenancePreemptedRunRegistry {
 const MAX_PREEMPTED_MAINTENANCE_RUNS: usize = 256;
 
 impl NarrativeMaintenancePreemptedRunRegistry {
-    pub fn defer(
-        &self,
-        run_id: &str,
-        binding: &MaintenanceWorkspaceBinding,
-    ) -> anyhow::Result<()> {
+    pub fn defer(&self, run_id: &str, binding: &MaintenanceWorkspaceBinding) -> anyhow::Result<()> {
         let mut pending = self
             .pending
             .lock()
@@ -2149,7 +2145,8 @@ impl AppState {
                 reranker_resource_root,
             )),
             narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate::default(),
-            narrative_maintenance_preempted_runs: NarrativeMaintenancePreemptedRunRegistry::default(),
+            narrative_maintenance_preempted_runs: NarrativeMaintenancePreemptedRunRegistry::default(
+            ),
             narrative_maintenance_attempts: NarrativeMaintenanceAttemptRegistry::default(),
             narrative_maintenance_ci_seam: NarrativeMaintenanceCiSeamState::default(),
             narrative_maintenance_foreground_barrier:
