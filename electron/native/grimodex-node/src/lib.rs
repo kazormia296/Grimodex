@@ -29,6 +29,7 @@ mod state;
 #[cfg(test)]
 mod test_link_stubs;
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
@@ -41,6 +42,9 @@ use napi::JsFunction;
 use napi_derive::napi;
 
 use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
+use grimodex_core::narrative_nir1::{
+    ENTITY_RELATION_INDEX_KEY, ENTITY_RELATION_PRODUCER,
+};
 use grimodex_db::agent_writes;
 use grimodex_db::ai_audit::{sanitize_diagnostic_credentials, AppendAiAuditEvent};
 use grimodex_db::backup_restore::{list_backups, restore_backup_core};
@@ -155,6 +159,58 @@ fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
         }
     }
     format!("authority:{}", authority.identity())
+}
+
+/// Read the durable NIR-1 Graph publication generation from the live
+/// authority. The workspace recovery generation is a different, process-local
+/// identity and must never be used as a Graph publication receipt.
+fn narrative_nir1_graph_generation(
+    db: &Database,
+    project_id: &str,
+) -> anyhow::Result<Option<u64>> {
+    db.with_conn(|conn| {
+        let generation: Option<i64> = conn.query_row(
+            "SELECT MAX(generation)
+               FROM narrative_semantic_index_metadata
+              WHERE project_id = ?1
+                AND index_key = ?2
+                AND dirty_cache_flag = 0
+                AND producer_id = ?3",
+            [project_id, ENTITY_RELATION_INDEX_KEY, ENTITY_RELATION_PRODUCER],
+            |row| row.get(0),
+        )?;
+        generation
+            .map(|generation| {
+                anyhow::ensure!(
+                    generation > 0,
+                    "NEX_NIR1_GRAPH_GENERATION_INVALID: publication generation must be positive"
+                );
+                u64::try_from(generation).map_err(anyhow::Error::from)
+            })
+            .transpose()
+    })
+}
+
+/// Preserve the greatest newly observed Graph publication generation. A
+/// later interrupted work item must not erase an earlier committed publish.
+fn record_narrative_nir1_graph_publication(
+    signal: &AtomicU64,
+    before: Option<u64>,
+    after: Option<u64>,
+) {
+    let Some(after) = after else {
+        return;
+    };
+    if before.is_some_and(|before| after <= before) {
+        return;
+    }
+    signal.fetch_max(after, std::sync::atomic::Ordering::AcqRel);
+}
+
+fn is_narrative_maintenance_preemption(error: &impl std::fmt::Display) -> bool {
+    let message = error.to_string();
+    message.starts_with("NEX_MAINTENANCE_CONNECTION_PREEMPTED")
+        || message.contains("NEX_VALIDATION_TERMINATED:foreground-preempted")
 }
 
 fn is_expected_c2zc_cutover_not_ready(error: &anyhow::Error) -> bool {
@@ -1081,21 +1137,35 @@ fn close_narrative_maintenance_for_workspace_swap(
         let binding = state
             .narrative_maintenance_recovery_gate
             .binding_for_authority(&narrative_authority_id(&authority));
-        for run_id in state
-            .narrative_maintenance_preempted_runs
-            .pending_for_binding(&binding)
-        {
-            if matches!(
-                grimodex_db::narrative_extraction::try_cancel_preempted_maintenance_run(
-                    authority.db(),
-                    &run_id,
-                    "NEX_MAINTENANCE_CONNECTION_PREEMPTED: draining before workspace swap",
-                ),
-                Ok(true)
-            ) {
-                state
-                    .narrative_maintenance_preempted_runs
-                    .remove(&run_id);
+        // Admission is already closed, so no new owner can add another
+        // pending Run. Repeat the exact-binding drain until a pass makes no
+        // progress, then perform the final process-local recheck immediately
+        // before the authority swap.
+        loop {
+            let pending = state
+                .narrative_maintenance_preempted_runs
+                .pending_for_binding(&binding);
+            if pending.is_empty() {
+                break;
+            }
+            let mut removed_any = false;
+            for run_id in pending {
+                if matches!(
+                    grimodex_db::narrative_extraction::try_cancel_preempted_maintenance_run(
+                        authority.db(),
+                        &run_id,
+                        "NEX_MAINTENANCE_CONNECTION_PREEMPTED: draining before workspace swap",
+                    ),
+                    Ok(true)
+                ) {
+                    state
+                        .narrative_maintenance_preempted_runs
+                        .remove(&run_id);
+                    removed_any = true;
+                }
+            }
+            if !removed_any {
+                break;
             }
         }
     }
@@ -3212,7 +3282,7 @@ struct NarrativeMaintenanceAttemptGuard {
 }
 
 impl NarrativeMaintenanceAttemptGuard {
-    fn new(state: Arc<AppState>, attempt_id: String, _published_generation: u64) -> Self {
+    fn new(state: Arc<AppState>, attempt_id: String) -> Self {
         Self {
             state,
             attempt_id,
@@ -3249,7 +3319,7 @@ impl NarrativeMaintenanceAttemptGuard {
         let receipt = self.state.narrative_maintenance_attempts.settle(
             &self.attempt_id,
             granted,
-            granted.then(|| self.published_generation_value()).flatten(),
+            self.published_generation_value(),
         )?;
         self.finalized = true;
         Ok(receipt.state == "succeeded")
@@ -3336,7 +3406,7 @@ impl Drop for NarrativeMaintenanceAttemptGuard {
             self.cleanup_reusable = match self.state.narrative_maintenance_attempts.settle(
                 &self.attempt_id,
                 false,
-                None,
+                self.published_generation_value(),
             ) {
                 Ok(receipt) => {
                     self.cleanup_reusable
@@ -3352,6 +3422,27 @@ impl Drop for NarrativeMaintenanceAttemptGuard {
                 .release_attempt(&self.attempt_id);
         }
     }
+}
+
+fn deferred_narrative_maintenance_result(
+    state: &AppState,
+    attempt_guard: Option<&mut NarrativeMaintenanceAttemptGuard>,
+) -> std::result::Result<String, AppError> {
+    if let Some(guard) = attempt_guard {
+        guard
+            .mark_cleanup_clean(state)
+            .map_err(AppError::Anyhow)?;
+        guard.finalize_interrupted().map_err(AppError::Anyhow)?;
+        return Ok(serde_json::json!({
+            "status": "accepted",
+            "hasMore": true,
+            "preempted": true,
+        })
+        .to_string());
+    }
+    Err(AppError::Anyhow(anyhow::anyhow!(
+        "NEX_MAINTENANCE_CONNECTION_PREEMPTED: cleanup remains owned by the foreground connection"
+    )))
 }
 
 async fn settle_profile_egress_startup(state: &Arc<AppState>) -> Result<String> {
@@ -3926,7 +4017,7 @@ impl Backend {
                 }
             };
             let mut attempt_guard = if let Some(attempt_id) = attempt_id {
-                let binding = request.workspace_binding.as_ref().ok_or_else(|| {
+                request.workspace_binding.as_ref().ok_or_else(|| {
                     AppError::Anyhow(anyhow::anyhow!(
                         "NEX_MAINTENANCE_ATTEMPT_BINDING_MISSING: attempt requires workspaceBinding"
                     ))
@@ -3951,7 +4042,6 @@ impl Backend {
                 Some(NarrativeMaintenanceAttemptGuard::new(
                     Arc::clone(&state),
                     attempt_id,
-                    binding.generation,
                 ))
             } else {
                 None
@@ -4036,25 +4126,15 @@ impl Backend {
                         .narrative_maintenance_preempted_runs
                         .remove(&run_id),
                     false => {
-                        if let Some(guard) = attempt_guard.as_mut() {
-                            // No maintenance connection was acquired for this
-                            // attempt. The pending Run owner is still a
-                            // separate quiescence blocker, but this attempt's
-                            // connection cleanup is clean and must not cause
-                            // quarantine/reopen on its own.
-                            guard
-                                .mark_cleanup_clean(&state)
-                                .map_err(AppError::Anyhow)?;
-                            guard.finalize_interrupted().map_err(AppError::Anyhow)?;
-                            return Ok(serde_json::json!({
-                                "status": "accepted",
-                                "hasMore": true,
-                            })
-                            .to_string());
-                        }
-                        return Err(AppError::Anyhow(anyhow::anyhow!(
-                            "NEX_MAINTENANCE_CONNECTION_PREEMPTED: cleanup remains owned by the foreground connection"
-                        )));
+                        // No maintenance connection was acquired for this
+                        // attempt. The pending Run owner is still a
+                        // separate quiescence blocker, but this attempt's
+                        // connection cleanup is clean and must not cause
+                        // quarantine/reopen on its own.
+                        return deferred_narrative_maintenance_result(
+                            &state,
+                            attempt_guard.as_mut(),
+                        );
                     }
                 }
             }
@@ -4269,11 +4349,20 @@ impl Backend {
                     None
                 } else if let Some(binding) = request.workspace_binding.as_ref() {
                     let durable =
-                        narrative_extraction::find_running_foreground_system_work_run(
+                        match narrative_extraction::find_running_foreground_system_work_run(
                             authority.db(),
                             config,
                             binding,
-                        )?;
+                        ) {
+                            Ok(durable) => durable,
+                            Err(error) if is_narrative_maintenance_preemption(&error) => {
+                                return deferred_narrative_maintenance_result(
+                                    &state,
+                                    attempt_guard.as_mut(),
+                                )
+                            }
+                            Err(error) => return Err(AppError::Anyhow(error)),
+                        };
                     match (
                         config.product_journey_barrier_id.as_deref(),
                         config.correlation.as_deref(),
@@ -4320,6 +4409,8 @@ impl Backend {
             let published_generation_signal_for_control = attempt_guard
                 .as_ref()
                 .map(NarrativeMaintenanceAttemptGuard::published_generation_signal);
+            let graph_generation_before_work: Arc<Mutex<HashMap<String, Option<u64>>>> =
+                Arc::new(Mutex::new(HashMap::new()));
             let should_stop = || -> anyhow::Result<()> {
                 if let Some(attempt_id) = attempt_id_for_control.as_deref() {
                     let signalled = stop_signal_for_control
@@ -4340,13 +4431,24 @@ impl Backend {
             let work_completed =
                 |item: &grimodex_db::narrative_extraction::DesiredWork| -> anyhow::Result<()> {
                     if let Some(attempt_id) = attempt_id_for_control.as_deref() {
+                        let work_key = item.canonical_key();
                         state_for_control
                             .narrative_maintenance_attempts
-                            .mark_work_succeeded(attempt_id, &item.canonical_key())?;
+                            .mark_work_succeeded(attempt_id, &work_key)?;
                         if let Some(signal) = published_generation_signal_for_control.as_ref() {
-                            signal.store(
-                                request_binding.generation,
-                                std::sync::atomic::Ordering::Release,
+                            let before = graph_generation_before_work
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .remove(&work_key)
+                                .flatten();
+                            let after = narrative_nir1_graph_generation(
+                                authority.db(),
+                                &item.project_id,
+                            )?;
+                            record_narrative_nir1_graph_publication(
+                                signal,
+                                before,
+                                after,
                             );
                         }
                     }
@@ -4355,18 +4457,28 @@ impl Backend {
             let work_noop_completed =
                 |item: &grimodex_db::narrative_extraction::DesiredWork| -> anyhow::Result<()> {
                     if let Some(attempt_id) = attempt_id_for_control.as_deref() {
+                        let work_key = item.canonical_key();
                         state_for_control
                             .narrative_maintenance_attempts
-                            .mark_work_completed(attempt_id, &item.canonical_key())?;
+                            .mark_work_completed(attempt_id, &work_key)?;
+                        graph_generation_before_work
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove(&work_key);
                     }
                     Ok(())
                 };
             let work_deferred =
                 |item: &grimodex_db::narrative_extraction::DesiredWork| -> anyhow::Result<()> {
                     if let Some(attempt_id) = attempt_id_for_control.as_deref() {
+                        let work_key = item.canonical_key();
                         state_for_control
                             .narrative_maintenance_attempts
-                            .mark_work_deferred(attempt_id, &item.canonical_key())?;
+                            .mark_work_deferred(attempt_id, &work_key)?;
+                        graph_generation_before_work
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove(&work_key);
                     }
                     Ok(())
                 };
@@ -4399,9 +4511,16 @@ impl Backend {
             let work_started =
                 |item: &grimodex_db::narrative_extraction::DesiredWork| -> anyhow::Result<()> {
                     if let Some(attempt_id) = attempt_id_for_control.as_deref() {
+                        let work_key = item.canonical_key();
+                        let before =
+                            narrative_nir1_graph_generation(authority.db(), &item.project_id)?;
+                        graph_generation_before_work
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .insert(work_key.clone(), before);
                         state_for_control
                             .narrative_maintenance_attempts
-                            .mark_work_started(attempt_id, &item.canonical_key())?;
+                            .mark_work_started(attempt_id, &work_key)?;
                     }
                     Ok(())
                 };
@@ -4435,26 +4554,15 @@ impl Backend {
             };
             let result = match cycle_result {
                 Ok(result) => result,
-                Err(error)
-                    if error
-                        .to_string()
-                        .starts_with("NEX_MAINTENANCE_CONNECTION_PREEMPTED") =>
-                {
-                    if let Some(guard) = attempt_guard.as_mut() {
-                        guard
-                            .mark_cleanup_clean(&state)
-                            .map_err(AppError::Anyhow)?;
-                        guard.finalize_interrupted().map_err(AppError::Anyhow)?;
-                        return Ok(
-                            serde_json::json!({
-                                "status": "accepted",
-                                "hasMore": true,
-                                "preempted": true,
-                            })
-                            .to_string(),
-                        );
-                    }
-                    return Err(AppError::Anyhow(error));
+                Err(error) if is_narrative_maintenance_preemption(&error) => {
+                    return if attempt_guard.is_some() {
+                        deferred_narrative_maintenance_result(
+                            &state,
+                            attempt_guard.as_mut(),
+                        )
+                    } else {
+                        Err(AppError::Anyhow(error))
+                    };
                 }
                 Err(error) => return Err(AppError::Anyhow(error)),
             };
@@ -4474,18 +4582,28 @@ impl Backend {
             // cycle as an ACK: a late cycle pinned to a replaced workspace
             // must not mark the global recovery gate recovered or remember a
             // foreground barrier for the new workspace.
-            let Some(current_workspace) = revalidate_narrative_workspace_after_cycle(
+            let current_workspace = match revalidate_narrative_workspace_after_cycle(
                 &state,
                 Arc::clone(&authority),
                 vec![current_snapshot.authority],
                 request_binding,
                 || {},
-            )? else {
-                return Ok(serde_json::json!({
-                    "status": "workspace-unavailable",
-                    "reason": "maintenance-workspace-changed-during-cycle",
-                })
-                .to_string());
+            ) {
+                Ok(Some(current_workspace)) => current_workspace,
+                Ok(None) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                        "reason": "maintenance-workspace-changed-during-cycle",
+                    })
+                    .to_string())
+                }
+                Err(error) if is_narrative_maintenance_preemption(&error) => {
+                    return deferred_narrative_maintenance_result(
+                        &state,
+                        attempt_guard.as_mut(),
+                    )
+                }
+                Err(error) => return Err(error),
             };
             let current_authority = &current_workspace.authority;
             if matches!(
@@ -4494,13 +4612,22 @@ impl Backend {
             ) {
                 if let Some(config) = ci_config.as_ref() {
                     if config.product_journey_barrier_id.is_some() && config.correlation.is_some() {
-                        if let Some(barrier) =
-                            narrative_extraction::find_running_foreground_system_work_run(
+                        let barrier =
+                            match narrative_extraction::find_running_foreground_system_work_run(
                                 current_authority.db(),
                                 config,
                                 request_binding,
-                            )?
-                        {
+                            ) {
+                                Ok(barrier) => barrier,
+                                Err(error) if is_narrative_maintenance_preemption(&error) => {
+                                    return deferred_narrative_maintenance_result(
+                                        &state,
+                                        attempt_guard.as_mut(),
+                                    )
+                                }
+                                Err(error) => return Err(AppError::Anyhow(error)),
+                            };
+                        if let Some(barrier) = barrier {
                             state
                                 .narrative_maintenance_foreground_barrier
                                 .remember(barrier)?;
@@ -4533,7 +4660,12 @@ impl Backend {
                 result.status,
                 MaintenanceCycleStatus::Accepted | MaintenanceCycleStatus::Coalesced
             ) {
+                // Cancellation remains admissible until this final
+                // process-local bookkeeping has begun. Do not acknowledge a
+                // key for a cycle whose owner has already been stopped.
+                should_stop()?;
                 for item in &normalized_work {
+                    should_stop()?;
                     // Mark the epoch-normalized identity the cycle actually
                     // recovered. If normalization fails, marking is skipped
                     // fail-closed: the key stays in StartupRecovery.
@@ -4547,6 +4679,12 @@ impl Backend {
                                 .mark_recovered_for_binding(request_binding, &recovered_key);
                         }
                         Err(error) => {
+                            if is_narrative_maintenance_preemption(&error) {
+                                return deferred_narrative_maintenance_result(
+                                    &state,
+                                    attempt_guard.as_mut(),
+                                );
+                            }
                             tracing::warn!(
                                 target: "narrative.maintenance",
                                 %error,
@@ -4586,14 +4724,7 @@ impl Backend {
             Ok(json)
             })();
             match operation_result {
-                Err(error)
-                    if error
-                        .to_string()
-                        .starts_with("NEX_MAINTENANCE_CONNECTION_PREEMPTED")
-                        || error
-                            .to_string()
-                            .contains("NEX_VALIDATION_TERMINATED:foreground-preempted") =>
-                {
+                Err(error) if is_narrative_maintenance_preemption(&error) => {
                     Ok(serde_json::json!({
                         "status": "accepted",
                         "hasMore": true,

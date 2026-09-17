@@ -678,23 +678,27 @@ impl NarrativeMaintenanceRecoveryGate {
         Ok(())
     }
 
-    /// Atomically close maintenance admission and require that no attempt is
-    /// active.  The workspace opener calls this while holding its open lock,
-    /// immediately before publishing a replacement authority.
+    /// Atomically close maintenance admission before checking active attempts.
+    /// The workspace opener calls this while holding its open lock,
+    /// immediately before publishing a replacement authority.  An active
+    /// attempt rolls the close back while still holding this mutex so a
+    /// failed swap does not strand admission closed.
     pub fn close_for_workspace_swap(&self) -> anyhow::Result<()> {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         anyhow::ensure!(
-            state.active_attempts.is_empty(),
-            "NEX_MAINTENANCE_ATTEMPT_ACTIVE: workspace swap requires a terminal maintenance receipt"
-        );
-        anyhow::ensure!(
             !state.maintenance_admission_closed,
             "NEX_MAINTENANCE_ADMISSION_CLOSED: workspace swap admission is already closed"
         );
         state.maintenance_admission_closed = true;
+        if !state.active_attempts.is_empty() {
+            state.maintenance_admission_closed = false;
+            anyhow::bail!(
+                "NEX_MAINTENANCE_ATTEMPT_ACTIVE: workspace swap requires a terminal maintenance receipt"
+            );
+        }
         Ok(())
     }
 
@@ -2404,6 +2408,27 @@ mod tests {
     }
 
     #[test]
+    fn active_swap_rejection_rolls_back_admission_after_close_check() {
+        let gate = NarrativeMaintenanceRecoveryGate::default();
+        let binding = gate.binding_for_authority("authority-active");
+        gate.register_attempt("active-attempt", &binding)
+            .expect("register active attempt");
+
+        let error = gate
+            .close_for_workspace_swap()
+            .expect_err("active attempt must reject the swap");
+        assert!(error.to_string().contains("ATTEMPT_ACTIVE"));
+        assert!(
+            !gate.maintenance_admission_is_closed(),
+            "a rejected swap must not strand the live workspace closed"
+        );
+        gate.register_attempt("second-attempt", &binding)
+            .expect("admission remains open after the rejected swap");
+        gate.release_attempt("second-attempt");
+        gate.release_attempt("active-attempt");
+    }
+
+    #[test]
     fn stale_swap_reopen_keeps_admission_closed() {
         let gate = NarrativeMaintenanceRecoveryGate::default();
         let old_binding = gate.binding_for_authority("authority-old");
@@ -2414,6 +2439,34 @@ mod tests {
             .expect_err("old binding cannot reopen a replacement workspace");
         assert!(error.to_string().contains("BINDING_MISMATCH"));
         assert!(gate.maintenance_admission_is_closed());
+    }
+
+    #[test]
+    fn pending_preempted_runs_require_exact_binding_drain() {
+        let registry = NarrativeMaintenancePreemptedRunRegistry::default();
+        let old_binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-old".to_string(),
+            generation: 1,
+        };
+        let new_binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-new".to_string(),
+            generation: 2,
+        };
+        registry
+            .defer("run-old", &old_binding)
+            .expect("defer old-authority run");
+        registry
+            .defer("run-new", &new_binding)
+            .expect("defer new-authority run");
+        assert_eq!(
+            registry.pending_for_binding(&old_binding),
+            vec!["run-old".to_string()]
+        );
+        assert!(registry.assert_empty().is_err());
+        registry.remove("run-old");
+        assert!(registry.assert_empty().is_err());
+        registry.remove("run-new");
+        registry.assert_empty().expect("all pending owners drained");
     }
 
     #[test]
@@ -2473,10 +2526,11 @@ mod tests {
             .request_cancel("attempt-two", "late-cancel")
             .expect("late cancel")
             .is_none());
-        let success = registry
-            .settle("attempt-two", true, Some(1))
-            .expect("settle successful attempt");
-        assert_eq!(success.state, "succeeded");
+        let interrupted = registry
+            .settle("attempt-two", false, Some(8))
+            .expect("settle after late cancel");
+        assert_eq!(interrupted.state, "interrupted");
+        assert_eq!(interrupted.published_generation, Some(8));
     }
 
     #[test]
