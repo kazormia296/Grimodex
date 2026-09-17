@@ -739,6 +739,138 @@ describe("narrative maintenance scheduler", () => {
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
   });
 
+  it("uses bounded delivery retry for a generic Native error with an interrupted receipt", async () => {
+    const binding = { authorityId: "authority-sqlite-full", generation: 1 };
+    const canonicalWorkKey =
+      "narrative-maintenance:v1/backfill/project-sqlite-full/backfill:v2";
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValue(new Error("SQLITE_FULL: database or disk is full"));
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [
+          {
+            workKey: canonicalWorkKey,
+            status: "failed",
+            error: "SQLITE_FULL: database or disk is full",
+          },
+        ],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
+    const recordNarrativeMaintenanceDeliveryFailure = vi
+      .fn()
+      .mockResolvedValue({
+        status: "accepted",
+        receiptId: "sqlite-full-delivery-failure",
+      });
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+      recordNarrativeMaintenanceDeliveryFailure,
+    });
+
+    scheduler.request(
+      work("project-sqlite-full", "backfill", "backfill:v2", "open"),
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+    // An interrupted terminal receipt from cleanup must not become the 10 ms
+    // cancellation loop when the Native operation itself failed.
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+    for (let retry = 0; retry < NARRATIVE_MAINTENANCE_MAX_RETRIES; retry += 1) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
+    );
+    expect(recordNarrativeMaintenanceDeliveryFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "project-sqlite-full",
+        workspaceBinding: binding,
+        error: expect.stringContaining("SQLITE_FULL"),
+      }),
+    );
+  });
+
+  it("keeps an explicit preemption result on the bounded cancellation path", async () => {
+    const binding = { authorityId: "authority-preempted", generation: 2 };
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "accepted",
+        hasMore: true,
+        preempted: true,
+      })
+      .mockResolvedValue(acceptedCycle());
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    let cancelCount = 0;
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      cancelCount += 1;
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: cancelCount === 1 ? "interrupted" : "succeeded",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration:
+          cancelCount === 1 ? null : binding.generation,
+        works: [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    });
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+    });
+
+    scheduler.request(
+      work("project-preempted", "backfill", "backfill:v2", "open"),
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledTimes(2);
+  });
+
   it("renders only a canonical requeued transient failure as a bounded warning", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()

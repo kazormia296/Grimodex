@@ -97,7 +97,7 @@ export interface NarrativeMaintenanceDeliveryFailure {
  * deliver the original trigger.
  */
 export type NarrativeMaintenanceCycleResult =
-  | { status: "accepted"; hasMore: boolean }
+  | { status: "accepted"; hasMore: boolean; preempted?: boolean }
   | { status: "workspace-unavailable"; reason?: string }
   /**
    * All items coalesced onto an already running/pending Run. This is a
@@ -658,7 +658,11 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
   const value = raw as Record<string, unknown>;
   if (typeof value.status === "string") {
     if (value.status === "accepted" && typeof value.hasMore === "boolean") {
-      return { status: "accepted", hasMore: value.hasMore };
+      return {
+        status: "accepted",
+        hasMore: value.hasMore,
+        ...(value.preempted === true ? { preempted: true } : {}),
+      };
     }
     if (value.status === "workspace-unavailable") {
       return {
@@ -733,21 +737,51 @@ const NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE =
   "NEX_MAINTENANCE_TRANSIENT";
 const NARRATIVE_VERIFY_GRAPH_STATE_CHANGED_FAILURE_CODE =
   "NEX_VERIFY_GRAPH_STATE_CHANGED";
+const NARRATIVE_MAINTENANCE_ATTEMPT_CANCELLED_CODE =
+  "NEX_MAINTENANCE_ATTEMPT_CANCELLED";
+const NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE =
+  "NEX_MAINTENANCE_CONNECTION_PREEMPTED";
+
+function errorMessage(error: unknown): string | null {
+  return error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : null;
+}
 
 function hasExactFailureCode(message: string | null, code: string): boolean {
   return message === code || message?.startsWith(`${code}:`) === true;
 }
 
 function isCanonicalTransientFailure(error: unknown): boolean {
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : null;
+  const message = errorMessage(error);
   return (
     hasExactFailureCode(message, NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE) ||
     hasExactFailureCode(message, NARRATIVE_VERIFY_GRAPH_STATE_CHANGED_FAILURE_CODE)
+  );
+}
+
+function isControlledMaintenanceInterruption(error: unknown): boolean {
+  const message = errorMessage(error);
+  return (
+    hasExactFailureCode(message, NARRATIVE_MAINTENANCE_ATTEMPT_CANCELLED_CODE) ||
+    message?.startsWith(NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE) ===
+      true ||
+    message?.includes("NEX_VALIDATION_TERMINATED:foreground-preempted") === true
+  );
+}
+
+function isWorkspaceBindingMismatchError(error: unknown): boolean {
+  const message = errorMessage(error)?.toLowerCase() ?? "";
+  return (
+    message.includes("nex_maintenance_attempt_binding_mismatch") ||
+    message.includes("native maintenance begin receipt binding mismatch") ||
+    message.includes("maintenance-workspace-binding-mismatch") ||
+    message.includes("maintenance-workspace-snapshot-changed") ||
+    message.includes("stale workspace") ||
+    message.includes("old workspace generation") ||
+    message.includes("workspace generation changed")
   );
 }
 
@@ -1212,11 +1246,13 @@ export function createNarrativeMaintenanceScheduler(
 
   const cancelActiveAttempt = async (
     reason: NarrativeMaintenanceStopReason,
-  ): Promise<void> => {
+  ): Promise<
+    Awaited<ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>> | undefined
+  > => {
     const attemptId =
       activeAttemptId ?? pendingAttemptBegins.keys().next().value ?? null;
-    if (typeof attemptId !== "string") return;
-    await cancelAttemptById(attemptId, reason);
+    if (typeof attemptId !== "string") return undefined;
+    return cancelAttemptById(attemptId, reason);
   };
 
   const runCycle = async (): Promise<void> => {
@@ -1335,6 +1371,9 @@ export function createNarrativeMaintenanceScheduler(
       typeof backend?.cancelNarrativeMaintenanceAttempt === "function";
     const cycleAttemptId = lifecycleEnabled ? randomUUID() : null;
     let nativeReceiptAdopted = false;
+    let nativeTerminalReceipt:
+      | Awaited<ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>>
+      | null = null;
     try {
       if (cycleAttemptId && cycleBinding) {
         await beginAttempt(cycleAttemptId, cycleBinding, backendBatch);
@@ -1360,6 +1399,8 @@ export function createNarrativeMaintenanceScheduler(
       // the catch path requeues the exact batch and wake scope.
       const cycleResult = normalizeCycleResult(result);
       settledCycleResult = cycleResult;
+      interruptedCycle =
+        cycleResult.status === "accepted" && cycleResult.preempted === true;
       lastHasMore =
         (cycleResult.status === "accepted" ||
           cycleResult.status === "coalesced") &&
@@ -1443,11 +1484,23 @@ export function createNarrativeMaintenanceScheduler(
             cycleAttemptId,
             "closed",
           );
+          nativeTerminalReceipt = parsedReceipt;
           nativeReceiptAdopted = true;
           terminalReceiptFailure = null;
           if (parsedReceipt.state === "interrupted") {
-            interruptedCycle = true;
-            throw new Error("NEX_MAINTENANCE_ATTEMPT_CANCELLED");
+            interruptedCycle =
+              interruptedCycle || parsedReceipt.stopReason !== null;
+            if (interruptedCycle) {
+              throw new Error("NEX_MAINTENANCE_ATTEMPT_CANCELLED");
+            }
+            const receiptErrors = parsedReceipt.works
+              .map((work) => work.error)
+              .filter((error): error is string => error !== undefined);
+            throw new Error(
+              receiptErrors.length > 0
+                ? `native maintenance attempt returned interrupted terminal receipt: ${receiptErrors.join("; ")}`
+                : "native maintenance attempt returned interrupted terminal receipt",
+            );
           }
         } else if (!activeAttemptController.grantFinalize(cycleAttemptId)) {
           interruptedCycle = true;
@@ -1521,17 +1574,29 @@ export function createNarrativeMaintenanceScheduler(
       }
     } catch (error) {
       if (!disposed) {
+        const attemptSnapshotBeforeCleanup = cycleAttemptId
+          ? activeAttemptController.snapshot(cycleAttemptId)
+          : null;
+        const cancellationRequestedBeforeFailure =
+          interruptedCycle ||
+          isControlledMaintenanceInterruption(error) ||
+          attemptSnapshotBeforeCleanup?.state === "stop-requested";
+        workspaceMismatch =
+          workspaceMismatch || isWorkspaceBindingMismatchError(error);
         const nativeAttemptActive =
           nativeAttemptIds.has(cycleAttemptId ?? "") &&
           cycleAttemptId !== null &&
           activeAttemptId === cycleAttemptId;
         if (nativeAttemptActive && !nativeReceiptAdopted) {
           try {
-            await cancelActiveAttempt("closed");
+            nativeTerminalReceipt = await cancelActiveAttempt("closed");
             nativeReceiptAdopted = true;
-            const nativeSnapshot =
-              activeAttemptController.snapshot(cycleAttemptId);
-            interruptedCycle = nativeSnapshot?.state === "interrupted";
+            const receiptConfirmsCancellation =
+              nativeTerminalReceipt?.state === "interrupted" &&
+              nativeTerminalReceipt.stopReason !== null &&
+              cancellationRequestedBeforeFailure;
+            interruptedCycle =
+              cancellationRequestedBeforeFailure || receiptConfirmsCancellation;
           } catch (receiptError) {
             // Keep the Native-backed attempt unresolved when cleanup cannot be
             // proven. A local interrupted placeholder would hide the missing
@@ -1556,7 +1621,9 @@ export function createNarrativeMaintenanceScheduler(
           attemptSnapshot.state !== "succeeded"
         ) {
           interruptedCycle =
-            interruptedCycle || attemptSnapshot.state === "stop-requested";
+            interruptedCycle ||
+            cancellationRequestedBeforeFailure ||
+            attemptSnapshot.state === "stop-requested";
           settleAttempt("interrupted");
         }
         if (deferredCycle) {
@@ -1977,7 +2044,6 @@ export function createNarrativeMaintenanceScheduler(
           "native maintenance discovery returned no workspace binding",
         );
       }
-      quiescing = false;
       enqueue(work, normalizedBinding);
     },
     requestManyWithBinding(workItems, binding): void {
@@ -1987,7 +2053,6 @@ export function createNarrativeMaintenanceScheduler(
           "native maintenance discovery returned no workspace binding",
         );
       }
-      quiescing = false;
       // Validate the complete native discovery result before the first queue
       // mutation. A malformed later page/item therefore cannot leave a
       // partial batch behind.
