@@ -718,6 +718,8 @@ requirements:
       - src/features/narrative-semantic-core/contracts/index.ts
       - src/features/ai-context/nir1Packing.ts
       - evals/nir1-packing/fixtures.json
+      - src/features/codex/context/nir1RevealParity.test.ts
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/reveal-cases.json
       - scripts/quality/nir1-packing/contract.mjs
       - scripts/quality/nir1-packing/runner.mjs
       - scripts/quality/nir1-packing/scorer.mjs
@@ -867,6 +869,7 @@ requirements:
       - scripts/quality/quality-workflow.test.mjs
       - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
       - src/features/codex/CodexEntityRelationReviewDialog.test.tsx
+      - src/features/codex/context/nir1RevealParity.test.ts
       - src/features/codex/CodexEntityRelationReviewDialog.integration.test.tsx
       - src/features/codex/CodexEntityRelationRevisionReviewPanel.test.tsx
       - src/features/codex/codexEntityRelationReviewApi.test.ts
