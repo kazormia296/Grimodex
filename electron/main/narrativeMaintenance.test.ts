@@ -1244,4 +1244,100 @@ describe("narrative maintenance scheduler", () => {
       wakeProjectIds: [],
     });
   });
+
+  it("linearizes begin registration before dispose cancellation", async () => {
+    const binding = { authorityId: "authority-attempt", generation: 11 };
+    const begin = deferred<string>();
+    const cancel = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: "closed",
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
+    const runNarrativeMaintenanceCycle = vi.fn();
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      beginNarrativeMaintenanceAttempt: vi.fn(() => begin.promise),
+      cancelNarrativeMaintenanceAttempt: cancel,
+      runNarrativeMaintenanceCycle,
+    };
+    const { scheduler } = createScheduler(backend);
+    scheduler.request(work("project-attempt", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    const disposing = scheduler.dispose();
+    await Promise.resolve();
+    expect(cancel).not.toHaveBeenCalled();
+
+    begin.resolve(JSON.stringify({ status: "open" }));
+    await expect(disposing).resolves.toBeUndefined();
+    expect(cancel.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(cancel.mock.calls[0]?.[0]).toEqual(expect.any(String));
+    expect(cancel.mock.calls[0]?.[0]).not.toBe("UNKNOWN");
+    expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+  });
+
+  it("retains the Native attempt when cleanup is not reusable", async () => {
+    const binding = { authorityId: "authority-unusable", generation: 12 };
+    const failedReceipt = (attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: "closed",
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [],
+        cleanup: { status: "failed", error: "rollback failed" },
+        connectionReusable: false,
+      });
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify({ status: "accepted", hasMore: false }));
+    const cleanReceipt = (attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: "closed",
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    const cancel = vi
+      .fn()
+      .mockImplementationOnce(failedReceipt)
+      .mockImplementationOnce(failedReceipt)
+      .mockImplementationOnce(failedReceipt)
+      .mockImplementation(cleanReceipt);
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      beginNarrativeMaintenanceAttempt: vi
+        .fn()
+        .mockResolvedValue(JSON.stringify({ status: "open" })),
+      cancelNarrativeMaintenanceAttempt: cancel,
+      runNarrativeMaintenanceCycle,
+    };
+    const { scheduler } = createScheduler(backend);
+    scheduler.request(work("project-unusable", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.runAllTimersAsync();
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(scheduler.getQuiescenceState?.().inFlight).toBe(false);
+    await expect(scheduler.dispose()).rejects.toThrow(/CONNECTION_UNUSABLE|rollback failed/i);
+    expect(cancel.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
 });

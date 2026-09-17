@@ -296,9 +296,11 @@ pub use maintenance_runtime::{
     complete_foreground_system_work_run, find_running_foreground_system_work_run,
     find_running_foreground_system_work_slot, run_system_work_cycle,
     run_system_work_cycle_with_modes, run_system_work_cycle_with_modes_and_config,
-    run_system_work_cycle_with_modes_and_config_and_foreground_owner, ForegroundSystemWorkRun,
-    MaintenanceCycleRequest, MaintenanceCycleResult, MaintenanceCycleStatus,
-    MaintenanceWorkRequest, MaintenanceWorkspaceBinding, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
+    run_system_work_cycle_with_modes_and_config_and_foreground_owner,
+    run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control,
+    ForegroundSystemWorkRun, MaintenanceCycleControl, MaintenanceCycleRequest,
+    MaintenanceCycleResult, MaintenanceCycleStatus, MaintenanceWorkRequest,
+    MaintenanceWorkspaceBinding, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
 };
 #[allow(unused_imports)]
 pub(crate) use publish_runtime::{
@@ -324,7 +326,8 @@ pub use terminal_failure::{
 // `pub` (not `pub(crate)`): called directly from
 // `electron/native/grimodex-node/src/lib.rs`, a different crate.
 pub use legacy_backfill::{
-    bootstrap_legacy_dependency_backfill_for_project, get_backfill_status_for_project,
+    bootstrap_legacy_dependency_backfill_for_project,
+    bootstrap_legacy_dependency_backfill_for_project_with_control, get_backfill_status_for_project,
     inject_legacy_backfill_fault_for_project, inject_legacy_backfill_fault_for_work,
     BackfillStatus, BackfillSummary, LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
 };
@@ -337,8 +340,10 @@ pub use restore_rebuild::{
     ack_maintenance_wakes, canonical_verify_outcome_digest, durable_graph_state_digest,
     ensure_restore_epochs_for_workspace, list_pending_maintenance_wakes,
     production_verify_check_coverage, rebuild_narrative_derived_state_for_project,
+    rebuild_narrative_derived_state_for_project_with_control,
     record_maintenance_delivery_failure_wake, run_dependency_verify_for_project,
     run_dependency_verify_for_project_with_coordinates,
+    run_dependency_verify_for_project_with_coordinates_and_control,
     verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
     PendingMaintenanceWake, RebuildDerivedStateOutcome, RebuildDerivedStateSummary,
     RebuildShadowVerificationSummary, VerifyRunOutcome,

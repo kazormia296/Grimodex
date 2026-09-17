@@ -1189,6 +1189,27 @@ impl MaintenanceCycleResult {
     }
 }
 
+/// Optional process-local control for a bounded maintenance cycle. The
+/// callbacks are invoked only at Rust work boundaries; they never become a
+/// durable authority or a renderer-facing contract. `should_stop` is checked
+/// before a work item, before its adapter dispatch, and before final cycle
+/// publication. `work_completed` is called only after those checks have
+/// passed, so an item interrupted during its adapter remains requeueable.
+pub struct MaintenanceCycleControl<'a> {
+    pub should_stop: &'a dyn Fn() -> anyhow::Result<()>,
+    /// Acquire the process-local finalization grant for one canonical work
+    /// key.  The route owner invokes this while its final success transaction
+    /// is open, immediately before the durable terminal write.
+    pub grant_finalize: &'a dyn Fn(&str) -> anyhow::Result<()>,
+    /// Register dynamically discovered work before it is queued, so a later
+    /// work transition in this cycle cannot outrun the attempt registry.
+    pub register_work: &'a dyn Fn(&DesiredWork) -> anyhow::Result<()>,
+    /// Mark only the dequeued work as running; queued follow-ups remain
+    /// `not-started` in the terminal receipt.
+    pub work_started: &'a dyn Fn(&DesiredWork) -> anyhow::Result<()>,
+    pub work_completed: &'a dyn Fn(&DesiredWork) -> anyhow::Result<()>,
+}
+
 impl MaintenanceCycleRequest {
     /// Validate and coalesce the wire request before any DB write.  Keeping
     /// this validation in shared Rust as well as the TS scheduler prevents a
@@ -2355,6 +2376,31 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
     foreground_owner: Option<&ForegroundSystemWorkRun>,
 ) -> anyhow::Result<MaintenanceCycleResult> {
+    run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+        db,
+        request,
+        mode_for,
+        ci_config,
+        foreground_owner,
+        None,
+    )
+}
+
+/// Execute a cycle with an optional process-local cancellation/completion
+/// control. Existing callers use the owner function above and retain the
+/// same behavior; Native maintenance supplies this control so cancellation
+/// reaches the actual Rust work loop before another durable phase starts.
+pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+    db: &Database,
+    request: &MaintenanceCycleRequest,
+    mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
+    foreground_owner: Option<&ForegroundSystemWorkRun>,
+    control: Option<&MaintenanceCycleControl<'_>>,
+) -> anyhow::Result<MaintenanceCycleResult> {
+    if let Some(control) = control {
+        (control.should_stop)()?;
+    }
     let effective_coordinates = effective_maintenance_coordinates(ci_config)?;
     if let Some(binding) = request.workspace_binding.as_ref() {
         binding.validate()?;
@@ -2428,7 +2474,29 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
     // project after the current cycle has projected the error, so suppress
     // only the final automatic rediscovery pass for it.
     let mut selector_halted_projects = BTreeSet::new();
+    let check_stop = || -> anyhow::Result<()> {
+        if let Some(control) = control {
+            (control.should_stop)()?;
+        }
+        Ok(())
+    };
+    let mark_completed = |item: &DesiredWork| -> anyhow::Result<()> {
+        if let Some(control) = control {
+            (control.work_completed)(item)?;
+        }
+        Ok(())
+    };
+    let enqueue_discovered = |queue: &mut std::collections::VecDeque<DesiredWork>,
+                              item: DesiredWork|
+     -> anyhow::Result<()> {
+        if let Some(control) = control {
+            (control.register_work)(&item)?;
+        }
+        queue.push_back(item);
+        Ok(())
+    };
     while let Some(item) = queue.pop_front() {
+        check_stop()?;
         project_ids.insert(item.project_id.clone());
         // Bound both actual adapter dispatch and dequeue/recovery progress.
         // Follow-up discovery can enqueue more work without incrementing the
@@ -2456,6 +2524,9 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
             semantic_epoch_id: recovery_work.semantic_epoch_id.clone(),
             ..item.clone()
         };
+        if let Some(control) = control {
+            (control.work_started)(&effective_item)?;
+        }
 
         let foreground_run_is_held = if let Some(owned) = foreground_owned_run.as_ref() {
             if !foreground_owned_run_matches_work(owned, &item)? {
@@ -2475,6 +2546,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
         if foreground_run_is_held {
             // The exact marked Run is still durable and running. Do not feed
             // it back through StartupRecovery before the N-API cycle ACK.
+            mark_completed(&effective_item)?;
             continue;
         }
 
@@ -2506,7 +2578,8 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                         // The completed Verify was handled, and discovery
                         // handed the cycle to a different canonical phase.
                         handled_non_coalesced = true;
-                        queue.push_back(next);
+                        enqueue_discovered(&mut queue, next)?;
+                        mark_completed(&effective_item)?;
                         continue;
                     }
                     Some(_) => {
@@ -2519,6 +2592,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                         // No follow-up remains: the completed Verify itself
                         // was the handled item in this cycle.
                         handled_non_coalesced = true;
+                        mark_completed(&effective_item)?;
                         continue;
                     }
                 }
@@ -2532,6 +2606,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                 handled_non_coalesced = true;
                 terminal_halted_work.insert(recovery_work_key);
                 selector_halted_projects.insert(recovery_work.project_id.clone());
+                mark_completed(&effective_item)?;
                 continue;
             }
             Err(error) => return Err(error),
@@ -2540,6 +2615,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
             RecoveryAction::CoalescedRunning { .. } | RecoveryAction::CoalescedPending { .. } => {
                 coalesced_active = true;
                 has_more = true;
+                mark_completed(&effective_item)?;
                 continue;
             }
             RecoveryAction::SkipCompleted { .. } => {
@@ -2553,9 +2629,10 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                         maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
                     )? {
-                        queue.push_back(next);
+                        enqueue_discovered(&mut queue, next)?;
                     }
                 }
+                mark_completed(&effective_item)?;
                 continue;
             }
             RecoveryAction::ManualIntervention { code } => {
@@ -2572,6 +2649,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                 )?;
                 handled_non_coalesced = true;
                 terminal_halted_work.insert(recovery_work_key);
+                mark_completed(&effective_item)?;
                 continue;
             }
             RecoveryAction::RecoverInterrupted { .. }
@@ -2606,6 +2684,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                             handled_non_coalesced = true;
                             terminal_halted_work.insert(recovery_work_key);
                             selector_halted_projects.insert(recovery_work.project_id.clone());
+                            mark_completed(&effective_item)?;
                             continue;
                         }
                     };
@@ -2631,6 +2710,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                                     )?;
                                     handled_non_coalesced = true;
                                     terminal_halted_work.insert(recovery_work_key);
+                                    mark_completed(&effective_item)?;
                                     continue;
                                 }
                             }
@@ -2643,6 +2723,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                             )?;
                             handled_non_coalesced = true;
                             terminal_halted_work.insert(recovery_work_key);
+                            mark_completed(&effective_item)?;
                             continue;
                         }
                     }
@@ -2672,6 +2753,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                                     terminal_halted_work.insert(recovery_work_key);
                                     selector_halted_projects
                                         .insert(recovery_work.project_id.clone());
+                                    mark_completed(&effective_item)?;
                                     continue;
                                 }
                             }
@@ -2694,11 +2776,13 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                             // (it committed before the batch failure); hand
                             // the cycle its real next phase.
                             handled_non_coalesced = true;
-                            queue.push_back(next);
+                            enqueue_discovered(&mut queue, next)?;
+                            mark_completed(&effective_item)?;
                             continue;
                         }
                         None => {
                             handled_non_coalesced = true;
+                            mark_completed(&effective_item)?;
                             continue;
                         }
                         Some(_) => {
@@ -2728,8 +2812,9 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                         maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
                     )? {
-                        queue.push_back(next);
+                        enqueue_discovered(&mut queue, next)?;
                     }
+                    mark_completed(&effective_item)?;
                     continue;
                 }
                 let marker = if foreground_marker_available {
@@ -2743,8 +2828,24 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                     None
                 };
                 with_system_work_marker(marker.clone(), || {
-                    dispatch_enabled_work(db, &item, Some(&effective_coordinates))
+                    check_stop()?;
+                    dispatch_enabled_work(db, &item, Some(&effective_coordinates), control)
                 })?;
+                // A stop that arrived during the adapter keeps this item
+                // uncompleted; recovery will reconcile any durable commit.
+                check_stop()?;
+                // Register the next phase before marking this item complete.
+                // The per-work completion transition may close the attempt
+                // when this was the final registered item.
+                if let Some(next) = discover_durable_maintenance_work_with_coordinates(
+                    db,
+                    &item.project_id,
+                    maintenance_rediscovery_reason(&item),
+                    Some(&effective_coordinates),
+                )? {
+                    enqueue_discovered(&mut queue, next)?;
+                }
+                mark_completed(&effective_item)?;
                 if let (Some(expected_marker), Some(config), Some(binding)) = (
                     marker.as_ref(),
                     ci_config.as_ref(),
@@ -2766,18 +2867,11 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                     foreground_marker_available = false;
                 }
                 dispatched_any = true;
-                if let Some(next) = discover_durable_maintenance_work_with_coordinates(
-                    db,
-                    &item.project_id,
-                    maintenance_rediscovery_reason(&item),
-                    Some(&effective_coordinates),
-                )? {
-                    queue.push_back(next);
-                }
             }
         }
     }
 
+    check_stop()?;
     has_more |= !queue.is_empty();
     if !has_more {
         for project_id in project_ids {
@@ -2798,6 +2892,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
             }
         }
     }
+    check_stop()?;
     Ok(
         if !dispatched_any && coalesced_active && !handled_non_coalesced {
             MaintenanceCycleResult::coalesced(has_more)
@@ -2971,12 +3066,13 @@ fn dispatch_enabled_work(
     db: &Database,
     item: &DesiredWork,
     coordinates: Option<&MaintenanceContractCoordinates>,
+    control: Option<&MaintenanceCycleControl<'_>>,
 ) -> anyhow::Result<()> {
     validate_dispatch_contract(item)?;
     // This adapter uses the exact Database supplied by the live
     // WorkspaceAuthority. It owns its transaction phases but never opens a
     // second filesystem connection.
-    super::maintenance_route_registry::dispatch_enabled_work(db, item, coordinates)
+    super::maintenance_route_registry::dispatch_enabled_work(db, item, coordinates, control)
 }
 
 /// Trigger vocabulary consumed by the pure desired-work planner.

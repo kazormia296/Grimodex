@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createNarrativeMaintenanceAttemptController,
+  parseNarrativeMaintenanceTerminalReceipt,
   type NarrativeMaintenanceAttemptController,
 } from "./narrativeMaintenanceAttempt.js";
 
@@ -90,5 +91,40 @@ describe("narrative maintenance attempt linearization", () => {
     expect(() => attempts.begin("attempt-e", { ...binding, generation: 8 })).toThrow(
       /binding conflict/,
     );
+  });
+
+  it("parses the Native state wire field and binds cleanup to the exact workspace", () => {
+    const receipt = parseNarrativeMaintenanceTerminalReceipt(
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId: "attempt-native",
+        state: "interrupted",
+        stopReason: "cancelled",
+        generation: 7,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [{ workKey: "work-a", status: "interrupted" }],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
+    expect(receipt.state).toBe("interrupted");
+    expect(receipt.workspaceBinding).toEqual(binding);
+
+    const attempts = controller();
+    attempts.begin("attempt-native", binding);
+    expect(() =>
+      attempts.adoptTerminalReceipt("attempt-native", {
+        ...receipt,
+        workspaceBinding: { authorityId: "other", generation: 8 },
+      }),
+    ).toThrow(/binding mismatch/);
+    expect(() =>
+      parseNarrativeMaintenanceTerminalReceipt({
+        ...receipt,
+        cleanup: { status: "failed", error: "rollback" },
+        connectionReusable: false,
+      }),
+    ).not.toThrow();
   });
 });

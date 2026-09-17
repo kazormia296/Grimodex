@@ -7,7 +7,9 @@
 //! source-code call-graph scan.
 
 use crate::narrative_extraction::maintenance_contracts::MaintenanceContractCoordinates;
-use crate::narrative_extraction::maintenance_runtime::{AutomaticRunKind, DesiredWork};
+use crate::narrative_extraction::maintenance_runtime::{
+    AutomaticRunKind, DesiredWork, MaintenanceCycleControl,
+};
 use crate::Database;
 
 /// Version of the native automatic maintenance route registry contract.
@@ -24,8 +26,12 @@ pub struct MaintenanceRouteDescriptor {
     pub run_kind: AutomaticRunKind,
 }
 
-type DispatchAdapter =
-    fn(&Database, &DesiredWork, Option<&MaintenanceContractCoordinates>) -> anyhow::Result<()>;
+type DispatchAdapter = for<'a> fn(
+    &Database,
+    &DesiredWork,
+    Option<&MaintenanceContractCoordinates>,
+    Option<&MaintenanceCycleControl<'a>>,
+) -> anyhow::Result<()>;
 
 #[derive(Clone, Copy)]
 struct RouteEntry {
@@ -96,6 +102,7 @@ pub(crate) fn dispatch_enabled_work(
     db: &Database,
     item: &DesiredWork,
     coordinates: Option<&MaintenanceContractCoordinates>,
+    control: Option<&MaintenanceCycleControl<'_>>,
 ) -> anyhow::Result<()> {
     let entry = ROUTE_REGISTRY
         .iter()
@@ -106,15 +113,21 @@ pub(crate) fn dispatch_enabled_work(
                 item.run_kind
             )
         })?;
-    (entry.dispatch)(db, item, coordinates)
+    (entry.dispatch)(db, item, coordinates, control)
 }
 
 fn dispatch_backfill(
     db: &Database,
     item: &DesiredWork,
     _coordinates: Option<&MaintenanceContractCoordinates>,
+    control: Option<&MaintenanceCycleControl<'_>>,
 ) -> anyhow::Result<()> {
-    super::bootstrap_legacy_dependency_backfill_for_project(db, &item.project_id)?;
+    super::bootstrap_legacy_dependency_backfill_for_project_with_control(
+        db,
+        &item.project_id,
+        control,
+        &item.canonical_key(),
+    )?;
     Ok(())
 }
 
@@ -122,11 +135,14 @@ fn dispatch_verify(
     db: &Database,
     item: &DesiredWork,
     coordinates: Option<&MaintenanceContractCoordinates>,
+    control: Option<&MaintenanceCycleControl<'_>>,
 ) -> anyhow::Result<()> {
-    super::restore_rebuild::run_dependency_verify_for_project_with_coordinates(
+    super::restore_rebuild::run_dependency_verify_for_project_with_coordinates_and_control(
         db,
         &item.project_id,
         coordinates,
+        control,
+        &item.canonical_key(),
     )?;
     Ok(())
 }
@@ -135,9 +151,14 @@ fn dispatch_rebuild_derived(
     db: &Database,
     item: &DesiredWork,
     _coordinates: Option<&MaintenanceContractCoordinates>,
+    control: Option<&MaintenanceCycleControl<'_>>,
 ) -> anyhow::Result<()> {
-    match super::restore_rebuild::rebuild_narrative_derived_state_for_project(db, &item.project_id)?
-    {
+    match super::restore_rebuild::rebuild_narrative_derived_state_for_project_with_control(
+        db,
+        &item.project_id,
+        control,
+        &item.canonical_key(),
+    )? {
         super::restore_rebuild::RebuildDerivedStateOutcome::AlreadyRunning { .. }
         | super::restore_rebuild::RebuildDerivedStateOutcome::Ran { .. } => Ok(()),
     }

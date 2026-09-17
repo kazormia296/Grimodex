@@ -568,6 +568,18 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
     db: &Database,
     project_id: &str,
 ) -> anyhow::Result<LegacyBackfillBootstrapOutcome> {
+    bootstrap_legacy_dependency_backfill_for_project_with_control(db, project_id, None, "")
+}
+
+/// Backfill owner with a process-local stop check supplied by the bounded
+/// maintenance cycle. The check is evaluated before phase 2 and again inside
+/// the terminal success transaction; no durable schema is involved.
+pub fn bootstrap_legacy_dependency_backfill_for_project_with_control(
+    db: &Database,
+    project_id: &str,
+    control: Option<&super::maintenance_runtime::MaintenanceCycleControl<'_>>,
+    work_key: &str,
+) -> anyhow::Result<LegacyBackfillBootstrapOutcome> {
     let now = grimodex_core::now_rfc3339_millis();
 
     let (run_id, reused) = db.with_conn(|conn| {
@@ -609,13 +621,24 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
         return Ok(LegacyBackfillBootstrapOutcome::AlreadyRun { run_id });
     }
 
+    if let Some(control) = control {
+        (control.should_stop)()?;
+    }
+
     let transform_result = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             backfill_project_semantic_build_graph_in_tx_for_run(conn, project_id, &now, &run_id)
         })
     });
 
-    let finalize_result = finalize_legacy_backfill_run(db, project_id, &run_id, &transform_result);
+    let finalize_result = finalize_legacy_backfill_run_with_control(
+        db,
+        project_id,
+        &run_id,
+        &transform_result,
+        control,
+        work_key,
+    );
     if let Err(finalize_error) = finalize_result {
         return Err(anyhow::anyhow!(
             "legacy dependency backfill: failed to finalize run '{run_id}' with durable terminal evidence: {finalize_error}"
@@ -684,8 +707,25 @@ fn finalize_legacy_backfill_run(
     run_id: &str,
     transform_result: &anyhow::Result<BackfillSummary>,
 ) -> anyhow::Result<()> {
+    finalize_legacy_backfill_run_with_control(db, project_id, run_id, transform_result, None, "")
+}
+
+fn finalize_legacy_backfill_run_with_control(
+    db: &Database,
+    project_id: &str,
+    run_id: &str,
+    transform_result: &anyhow::Result<BackfillSummary>,
+    control: Option<&super::maintenance_runtime::MaintenanceCycleControl<'_>>,
+    work_key: &str,
+) -> anyhow::Result<()> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            if let Some(control) = control {
+                (control.should_stop)()?;
+                if transform_result.is_ok() {
+                    (control.grant_finalize)(work_key)?;
+                }
+            }
             finalize_legacy_backfill_run_in_tx(conn, project_id, run_id, None, transform_result)
         })
     })

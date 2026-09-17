@@ -71,18 +71,18 @@ use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
     self, AttentionDisposition, GetNarrativeBackfillStatusPayload, IsRunResumableForReviewPayload,
     LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
-    ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, MaintenanceCycleRequest,
-    MaintenanceCycleStatus, MaintenanceWorkspaceBinding, NarrativeMaintenanceAttentionClearPayload,
-    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceCiConfig,
-    NarrativeMaintenanceCiFault, NarrativeMaintenanceCiTrigger,
+    ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, MaintenanceCycleControl,
+    MaintenanceCycleRequest, MaintenanceCycleStatus, MaintenanceWorkspaceBinding,
+    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
+    NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiFault, NarrativeMaintenanceCiTrigger,
     NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
     RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
     RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
     VerifyNarrativeDependencyGraphPayload,
 };
 use grimodex_db::open::{
-    open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
-    NativeWorkspaceOpenTrace,
+    open_workspace_sync_traced_with_pre_swap, NativeWorkspaceOpenResult,
+    NativeWorkspaceOpenSpanName, NativeWorkspaceOpenTrace,
 };
 use grimodex_db::plot_threads::{
     self, PlotDeletePayload, PlotThreadBranchCreatePayload, PlotThreadBranchPatch,
@@ -114,7 +114,7 @@ use grimodex_db::{with_db_state, AppError, BatchStatement, Database, RepairInteg
 
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
-use state::{AppState, EventQueue, EventTsfn};
+use state::{AppState, EventQueue, EventTsfn, NarrativeMaintenanceCleanupOutcome};
 use uuid::Uuid;
 
 const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
@@ -1005,6 +1005,28 @@ fn narrative_maintenance_binding_for_authority(
     state
         .narrative_maintenance_recovery_gate
         .binding_for_authority(&narrative_authority_id(authority))
+}
+
+/// Reopen maintenance admission after a workspace open/restore path exits.
+/// The binding is resolved from the authority that actually remains active,
+/// so an error before publication restores the old binding while a successful
+/// replacement restores the new generation.
+fn reopen_narrative_maintenance_admission(
+    state: &Arc<AppState>,
+) -> std::result::Result<(), AppError> {
+    let binding = match active_database(&state.ws) {
+        Ok(authority) => Some(
+            state
+                .narrative_maintenance_recovery_gate
+                .binding_for_authority(&narrative_authority_id(&authority)),
+        ),
+        Err(AppError::NoWorkspace) => None,
+        Err(error) => return Err(error),
+    };
+    state
+        .narrative_maintenance_recovery_gate
+        .reopen_admission(binding.as_ref())
+        .map_err(AppError::Anyhow)
 }
 
 /// Foreground extraction binding. `authority_id` may intentionally survive a
@@ -3040,15 +3062,18 @@ pub struct Backend {
 }
 
 /// Drop guard for a process-local maintenance attempt. Any early return,
-/// workspace mismatch, adapter error, or panic path settles as interrupted
-/// and releases the recovery gate. The only success path must explicitly pass
-/// through `finalize_success`, which linearizes cancellation against the
-/// final result.
+/// workspace mismatch, adapter error, or panic path settles as interrupted.
+/// The recovery gate is released only after the pinned connection proves
+/// reusable; otherwise the attempt remains a fail-closed quarantine marker.
+/// The only success path must explicitly pass through `finalize_success`,
+/// which linearizes cancellation against the final result.
 struct NarrativeMaintenanceAttemptGuard {
     state: Arc<AppState>,
     attempt_id: String,
     published_generation: u64,
+    authority: Option<PinnedWorkspaceDb>,
     finalized: bool,
+    cleanup_reusable: bool,
 }
 
 impl NarrativeMaintenanceAttemptGuard {
@@ -3057,8 +3082,14 @@ impl NarrativeMaintenanceAttemptGuard {
             state,
             attempt_id,
             published_generation,
+            authority: None,
             finalized: false,
+            cleanup_reusable: false,
         }
+    }
+
+    fn bind_authority(&mut self, authority: PinnedWorkspaceDb) {
+        self.authority = Some(authority);
     }
 
     fn finalize_success(&mut self) -> anyhow::Result<bool> {
@@ -3072,21 +3103,89 @@ impl NarrativeMaintenanceAttemptGuard {
             granted.then_some(self.published_generation),
         )?;
         self.finalized = true;
-        Ok(receipt.status == "succeeded")
+        Ok(receipt.state == "succeeded")
+    }
+
+    fn mark_cleanup_clean(&mut self, state: &AppState) -> anyhow::Result<()> {
+        state.narrative_maintenance_attempts.set_cleanup_outcome(
+            &self.attempt_id,
+            NarrativeMaintenanceCleanupOutcome {
+                status: "clean".to_string(),
+                error: None,
+            },
+            true,
+        )?;
+        self.cleanup_reusable = true;
+        Ok(())
     }
 }
 
 impl Drop for NarrativeMaintenanceAttemptGuard {
     fn drop(&mut self) {
         if !self.finalized {
-            let _ = self
-                .state
-                .narrative_maintenance_attempts
-                .settle(&self.attempt_id, false, None);
+            // Cancellation and adapter errors still have to prove that the
+            // exact pinned connection returned to autocommit before the
+            // recovery gate can be released.  This is deliberately scoped to
+            // the owner guard: nested readers do not mutate connection-wide
+            // settings or publish their own terminal receipt.
+            if let Some(authority) = self.authority.as_ref() {
+                match authority.db().with_conn(|conn| {
+                    anyhow::ensure!(
+                        conn.is_autocommit(),
+                        "NEX_MAINTENANCE_CONNECTION_NOT_REUSABLE: connection remains in a transaction"
+                    );
+                    Ok::<_, anyhow::Error>(())
+                }) {
+                    Ok(()) => {
+                        if self
+                            .state
+                            .narrative_maintenance_attempts
+                            .set_cleanup_outcome(
+                                &self.attempt_id,
+                                NarrativeMaintenanceCleanupOutcome {
+                                    status: "clean".to_string(),
+                                    error: None,
+                                },
+                                true,
+                            )
+                            .is_ok()
+                        {
+                            self.cleanup_reusable = true;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = self
+                            .state
+                            .narrative_maintenance_attempts
+                            .set_cleanup_outcome(
+                                &self.attempt_id,
+                                NarrativeMaintenanceCleanupOutcome {
+                                    status: "failed".to_string(),
+                                    error: Some(error.to_string()),
+                                },
+                                false,
+                            );
+                    }
+                }
+            }
+            self.cleanup_reusable = match self.state.narrative_maintenance_attempts.settle(
+                &self.attempt_id,
+                false,
+                None,
+            ) {
+                Ok(receipt) => {
+                    self.cleanup_reusable
+                        && receipt.cleanup.status == "clean"
+                        && receipt.connection_reusable
+                }
+                Err(_) => false,
+            };
         }
-        self.state
-            .narrative_maintenance_recovery_gate
-            .release_attempt(&self.attempt_id);
+        if self.cleanup_reusable {
+            self.state
+                .narrative_maintenance_recovery_gate
+                .release_attempt(&self.attempt_id);
+        }
     }
 }
 
@@ -3519,6 +3618,11 @@ impl Backend {
             from_wire("workspaceBinding", workspace_binding).map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let _open_guard = state
+                .ws
+                .open_lock
+                .lock()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
             let authority = active_database(&state.ws)?;
             let authority_id = narrative_authority_id(&authority);
             let current_binding = state
@@ -3532,9 +3636,18 @@ impl Backend {
             state
                 .narrative_maintenance_recovery_gate
                 .register_attempt(&attempt_id, &binding)?;
-            state
+            if let Err(error) = state
                 .narrative_maintenance_attempts
-                .begin(&attempt_id, &binding)?;
+                .begin(&attempt_id, &binding)
+            {
+                // Keep the recovery admission and the attempt registry
+                // linearized: a failed process-local begin must not strand an
+                // active-attempt entry that blocks the next workspace swap.
+                state
+                    .narrative_maintenance_recovery_gate
+                    .release_attempt(&attempt_id);
+                return Err(AppError::Anyhow(error));
+            }
             Ok(serde_json::json!({
                 "status": "open",
                 "attemptId": attempt_id,
@@ -3569,9 +3682,15 @@ impl Backend {
                 .await
                 .map_err(|error| Error::from_reason(error.to_string()))?,
         };
-        self.state
-            .narrative_maintenance_recovery_gate
-            .release_attempt(&attempt_id);
+        // A terminal receipt with failed cleanup is deliberately kept in the
+        // recovery gate.  Releasing it would allow workspace swap or a later
+        // foreground operation to reuse a connection whose transaction or
+        // connection settings were not proven restored.
+        if receipt.cleanup.status == "clean" && receipt.connection_reusable {
+            self.state
+                .narrative_maintenance_recovery_gate
+                .release_attempt(&attempt_id);
+        }
         serde_json::to_string(&receipt).map_err(|error| Error::from_reason(error.to_string()))
     }
 
@@ -3601,13 +3720,29 @@ impl Backend {
                 object.remove("attemptId");
             }
             let request: MaintenanceCycleRequest = from_wire("payload", request_payload)?;
+            let normalized_work = match
+                narrative_extraction::preflight_maintenance_cycle_request(&request)
+            {
+                Ok(work) => work,
+                Err(error) => {
+                    if let Some(attempt_id) = attempt_id.as_deref() {
+                        let _ = state
+                            .narrative_maintenance_attempts
+                            .settle(attempt_id, false, None);
+                        state
+                            .narrative_maintenance_recovery_gate
+                            .release_attempt(attempt_id);
+                    }
+                    return Err(AppError::Anyhow(error));
+                }
+            };
             let mut attempt_guard = if let Some(attempt_id) = attempt_id {
                 let binding = request.workspace_binding.as_ref().ok_or_else(|| {
                     AppError::Anyhow(anyhow::anyhow!(
                         "NEX_MAINTENANCE_ATTEMPT_BINDING_MISSING: attempt requires workspaceBinding"
                     ))
                 })?;
-                let work_keys = request.work.iter().map(|item| item.work_key.clone());
+                let work_keys = normalized_work.iter().map(|item| item.canonical_key());
                 if let Err(error) = state
                     .narrative_maintenance_attempts
                     .start(&attempt_id, work_keys)
@@ -3625,8 +3760,6 @@ impl Backend {
             } else {
                 None
             };
-            let normalized_work = narrative_extraction::preflight_maintenance_cycle_request(&request)
-                .map_err(AppError::Anyhow)?;
             let authority = match active_database(&state.ws) {
                 Ok(authority) => authority,
                 Err(
@@ -3639,6 +3772,9 @@ impl Backend {
                 }
                 Err(error) => return Err(error),
             };
+            if let Some(guard) = attempt_guard.as_mut() {
+                guard.bind_authority(Arc::clone(&authority));
+            }
             let authority_id = narrative_authority_id(&authority);
             let Some(request_binding) = request.workspace_binding.as_ref() else {
                 return Ok(serde_json::json!({
@@ -3916,17 +4052,87 @@ impl Backend {
             } else {
                 None
             };
-            let result = narrative_extraction::run_system_work_cycle_with_modes_and_config_and_foreground_owner(
-                authority.db(),
-                &request,
-                |item| {
-                    state
-                        .narrative_maintenance_recovery_gate
-                        .mode_for_binding(request_binding, &item.canonical_key())
-                },
-                ci_config.as_ref(),
-                foreground_owner.as_ref(),
-            )?;
+            let attempt_id_for_control =
+                attempt_guard.as_ref().map(|guard| guard.attempt_id.clone());
+            let state_for_control = Arc::clone(&state);
+            let should_stop = || -> anyhow::Result<()> {
+                if let Some(attempt_id) = attempt_id_for_control.as_deref() {
+                    if state_for_control
+                        .narrative_maintenance_attempts
+                        .stop_requested(attempt_id)?
+                    {
+                        anyhow::bail!(
+                            "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation requested at a Rust work boundary"
+                        );
+                    }
+                }
+                Ok(())
+            };
+            let work_completed =
+                |item: &grimodex_db::narrative_extraction::DesiredWork| -> anyhow::Result<()> {
+                    if let Some(attempt_id) = attempt_id_for_control.as_deref() {
+                        state_for_control
+                            .narrative_maintenance_attempts
+                            .mark_work_succeeded(attempt_id, &item.canonical_key())?;
+                    }
+                    Ok(())
+                };
+            let grant_finalize = |work_key: &str| -> anyhow::Result<()> {
+                if let Some(attempt_id) = attempt_id_for_control.as_deref() {
+                    let granted = state_for_control
+                        .narrative_maintenance_attempts
+                        .grant_work_finalize(attempt_id, work_key)?;
+                    anyhow::ensure!(
+                        granted,
+                        "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won before work finalization"
+                    );
+                }
+                Ok(())
+            };
+            let register_work =
+                |item: &grimodex_db::narrative_extraction::DesiredWork| -> anyhow::Result<()> {
+                    if let Some(attempt_id) = attempt_id_for_control.as_deref() {
+                        state_for_control
+                            .narrative_maintenance_attempts
+                            .register_work(attempt_id, &item.canonical_key())?;
+                    }
+                    Ok(())
+                };
+            let work_started =
+                |item: &grimodex_db::narrative_extraction::DesiredWork| -> anyhow::Result<()> {
+                    if let Some(attempt_id) = attempt_id_for_control.as_deref() {
+                        state_for_control
+                            .narrative_maintenance_attempts
+                            .mark_work_started(attempt_id, &item.canonical_key())?;
+                    }
+                    Ok(())
+                };
+            let attempt_control = attempt_id_for_control.as_ref().map(|_| {
+                MaintenanceCycleControl {
+                    should_stop: &should_stop,
+                    grant_finalize: &grant_finalize,
+                    register_work: &register_work,
+                    work_started: &work_started,
+                    work_completed: &work_completed,
+                }
+            });
+            let result = authority.db().with_background_connection_priority(|| {
+                narrative_extraction::run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+                    authority.db(),
+                    &request,
+                    |item| {
+                        state
+                            .narrative_maintenance_recovery_gate
+                            .mode_for_binding(request_binding, &item.canonical_key())
+                    },
+                    ci_config.as_ref(),
+                    foreground_owner.as_ref(),
+                    attempt_control.as_ref(),
+                )
+            })?;
+            // Do not perform the post-cycle workspace revalidation or
+            // recovery-success bookkeeping after a stop has linearized.
+            should_stop()?;
             // Backfill/Verify/Rebuild progress through several transactions,
             // so the workspace can be switched mid-cycle. Re-resolve the
             // active authority under the open lock before treating this
@@ -3935,7 +4141,7 @@ impl Backend {
             // foreground barrier for the new workspace.
             let Some(current_workspace) = revalidate_narrative_workspace_after_cycle(
                 &state,
-                authority,
+                Arc::clone(&authority),
                 vec![current_snapshot.authority],
                 request_binding,
                 || {},
@@ -3968,6 +4174,20 @@ impl Backend {
                 }
             }
             let json = serde_json::to_string(&result).map_err(anyhow::Error::from)?;
+            if let Some(guard) = attempt_guard.as_mut() {
+                // A successful adapter return is not itself cleanup proof.
+                // Check the actual pinned connection after all owned work and
+                // serialization have completed; the guard remains failed
+                // closed if this health check cannot be established.
+                authority.db().with_conn(|conn| {
+                    anyhow::ensure!(
+                        conn.is_autocommit(),
+                        "NEX_MAINTENANCE_CONNECTION_NOT_REUSABLE: connection remains in a transaction"
+                    );
+                    Ok::<_, anyhow::Error>(())
+                })?;
+                guard.mark_cleanup_clean(&state).map_err(AppError::Anyhow)?;
+            }
             // Only a fully validated, serialized, and completed cycle
             // advances the recovery boundary. Invalid wire data or a failed
             // adapter keeps the next attempt in StartupRecovery for each
@@ -5329,12 +5549,19 @@ impl Backend {
             {
                 return (trace, Err(AppError::Anyhow(error)));
             }
-            let result = match open_workspace_sync_traced(
+            let mut before_swap = || {
+                state
+                    .narrative_maintenance_recovery_gate
+                    .close_for_workspace_swap()
+                    .map_err(AppError::Anyhow)
+            };
+            let result = match open_workspace_sync_traced_with_pre_swap(
                 &state.ws,
                 &state.gs,
                 &path,
                 &mut trace,
                 &mut on_swapped,
+                Some(&mut before_swap),
             ) {
                 Ok(opened) => {
                     // Safe Mode / RecoveryRequired return before the shared
@@ -5348,27 +5575,41 @@ impl Backend {
                             .profile_egress
                             .bind_recovery_workspace(Some(path.clone()));
                     }
-                    let serialize_span =
-                        trace.begin_span(NativeWorkspaceOpenSpanName::SerializeEvent);
-                    state.events.emit(
-                        "workspace:opened",
-                        serde_json::json!({
-                            "path": path,
-                            "restoreOnly": restore_only,
-                        }),
-                    );
-                    match serde_json::to_string(&opened) {
-                        Ok(json) => {
-                            trace.finish_span(serialize_span);
-                            Ok(json)
+                    match reopen_narrative_maintenance_admission(&state) {
+                        Ok(()) => {
+                            let serialize_span =
+                                trace.begin_span(NativeWorkspaceOpenSpanName::SerializeEvent);
+                            state.events.emit(
+                                "workspace:opened",
+                                serde_json::json!({
+                                    "path": path,
+                                    "restoreOnly": restore_only,
+                                }),
+                            );
+                            match serde_json::to_string(&opened) {
+                                Ok(json) => {
+                                    trace.finish_span(serialize_span);
+                                    Ok(json)
+                                }
+                                Err(error) => {
+                                    trace.fail_span(serialize_span);
+                                    Err(AppError::Anyhow(anyhow::Error::from(error)))
+                                }
+                            }
                         }
-                        Err(error) => {
-                            trace.fail_span(serialize_span);
-                            Err(AppError::Anyhow(anyhow::Error::from(error)))
-                        }
+                        Err(error) => Err(error),
                     }
                 }
-                Err(error) => Err(error),
+                Err(error) => {
+                    // The pre-swap admission close also covers errors before
+                    // authority publication. Reopen against whichever old
+                    // binding is still active so a failed open cannot strand
+                    // all future maintenance begins behind a closed gate.
+                    match reopen_narrative_maintenance_admission(&state) {
+                        Ok(()) => Err(error),
+                        Err(reopen_error) => Err(reopen_error),
+                    }
+                }
             };
             (trace, result)
         })
@@ -5545,13 +5786,13 @@ impl Backend {
         run_blocking(move || {
             state
                 .narrative_maintenance_recovery_gate
-                .assert_no_active_attempts()
+                .close_for_workspace_swap()
                 .map_err(AppError::Anyhow)?;
             let state_for_hook = Arc::clone(&state);
             let workspace_binding = active_workspace_path(&state.ws)
                 .ok()
                 .map(|path| path.to_string_lossy().into_owned());
-            restore_backup_core(&state.ws, &file_name, move || {
+            let restore_result = restore_backup_core(&state.ws, &file_name, move || {
                 rotate_ime_workspace(&state_for_hook);
                 state_for_hook
                     .profile_egress
@@ -5568,7 +5809,9 @@ impl Backend {
                 state_for_hook
                     .narrative_maintenance_recovery_gate
                     .mark_workspace_swapped();
-            })?;
+            });
+            reopen_narrative_maintenance_admission(&state)?;
+            restore_result?;
             let path = active_workspace_path(&state.ws)?;
             state.events.emit(
                 "workspace:opened",

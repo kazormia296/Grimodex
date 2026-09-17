@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   createNarrativeMaintenanceAttemptController,
+  parseNarrativeMaintenanceTerminalReceipt,
   type NarrativeMaintenanceStopReason,
 } from "./narrativeMaintenanceAttempt.js";
 
@@ -874,8 +875,10 @@ export function createNarrativeMaintenanceScheduler(
   let disposed = false;
   let inFlight = false;
   let inFlightPromise: Promise<void> | null = null;
+  let pendingAttemptBegin: Promise<void> | null = null;
   let quiescing = false;
   let activeAttemptId: string | null = null;
+  let terminalReceiptFailure: Error | null = null;
   const activeAttemptController = createNarrativeMaintenanceAttemptController();
   let cycleGeneration = 0;
   let mutationRevision = 0;
@@ -1013,20 +1016,37 @@ export function createNarrativeMaintenanceScheduler(
     }
   };
 
-  const beginAttempt = async (
+  const registerAttempt = async (
     attemptId: string,
     binding: NarrativeMaintenanceWorkspaceBinding,
-    workItems: readonly NarrativeMaintenanceWork[],
   ): Promise<void> => {
-    activeAttemptController.begin(attemptId, binding);
-    for (const work of workItems) {
-      activeAttemptController.addWork(attemptId, work.workKey);
-      activeAttemptController.markWorkStarted(attemptId, work.workKey);
+    if (activeAttemptId !== null && activeAttemptId !== attemptId) {
+      throw new Error(
+        "NEX_MAINTENANCE_ATTEMPT_ACTIVE: another maintenance attempt is already active",
+      );
     }
-    activeAttemptId = attemptId;
     const begin = backend?.beginNarrativeMaintenanceAttempt;
-    if (typeof begin === "function") {
-      await begin.call(backend, attemptId, binding);
+    const registration = (async () => {
+      if (typeof begin === "function") {
+        await begin.call(backend, attemptId, binding);
+      }
+      // Publish the active id only after Native has accepted the binding. A
+      // workspace switch/dispose waiting on this registration can then issue
+      // cancellation against a known Native attempt, never an UNKNOWN id.
+      activeAttemptId = attemptId;
+    })();
+    pendingAttemptBegin = registration;
+    try {
+      await registration;
+    } catch (error) {
+      // Native did not publish a usable registration.  Settle the local
+      // placeholder only for this pre-registration failure; once Native has
+      // accepted the attempt, all later terminalization must come from its
+      // receipt.
+      activeAttemptController.settle(attemptId, { state: "interrupted" });
+      throw error;
+    } finally {
+      if (pendingAttemptBegin === registration) pendingAttemptBegin = null;
     }
   };
 
@@ -1044,21 +1064,42 @@ export function createNarrativeMaintenanceScheduler(
     });
   };
 
+  const assertReusableTerminalReceipt = (
+    receipt: Awaited<
+      ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>
+    >,
+  ): void => {
+    if (receipt.cleanup.status !== "clean" || !receipt.connectionReusable) {
+      throw new Error(
+        "NEX_MAINTENANCE_CONNECTION_UNUSABLE: maintenance cleanup did not make the Native connection reusable",
+      );
+    }
+  };
+
   const cancelActiveAttempt = async (
     reason: NarrativeMaintenanceStopReason,
   ): Promise<void> => {
     const attemptId = activeAttemptId;
     if (!attemptId) return;
     const cancel = backend?.cancelNarrativeMaintenanceAttempt;
-    const nativeCancellation =
-      typeof cancel === "function"
-        ? Promise.resolve(cancel.call(backend, attemptId, reason))
-        : Promise.resolve(undefined);
     const localCancellation = activeAttemptController.requestStop(
       attemptId,
       reason,
     );
-    await Promise.all([nativeCancellation, localCancellation]);
+    const nativeReceipt =
+      typeof cancel === "function"
+        ? await cancel.call(backend, attemptId, reason)
+        : undefined;
+    if (nativeReceipt !== undefined) {
+      const parsedReceipt = parseNarrativeMaintenanceTerminalReceipt(nativeReceipt);
+      assertReusableTerminalReceipt(parsedReceipt);
+      activeAttemptController.adoptTerminalReceipt(
+        attemptId,
+        parsedReceipt,
+      );
+      terminalReceiptFailure = null;
+    }
+    await localCancellation;
   };
 
   const runCycle = async (): Promise<void> => {
@@ -1173,12 +1214,17 @@ export function createNarrativeMaintenanceScheduler(
     const lifecycleEnabled =
       cycleBinding !== undefined &&
       cycleBinding !== null &&
-      (typeof backend?.beginNarrativeMaintenanceAttempt === "function" ||
-        typeof backend?.cancelNarrativeMaintenanceAttempt === "function");
+      typeof backend?.beginNarrativeMaintenanceAttempt === "function" &&
+      typeof backend?.cancelNarrativeMaintenanceAttempt === "function";
     const cycleAttemptId = lifecycleEnabled ? randomUUID() : null;
+    let nativeReceiptAdopted = false;
     try {
       if (cycleAttemptId && cycleBinding) {
         await beginAttempt(cycleAttemptId, cycleBinding, backendBatch);
+        if (disposed || quiescing) {
+          interruptedCycle = true;
+          throw new Error("NEX_MAINTENANCE_ATTEMPT_CANCELLED");
+        }
       }
       // N-API class methods must be invoked through backend to preserve self.
       const result = await method.call(backend, {
@@ -1271,12 +1317,36 @@ export function createNarrativeMaintenanceScheduler(
         );
       }
       if (cycleAttemptId) {
-        if (!activeAttemptController.grantFinalize(cycleAttemptId)) {
+        if (lifecycleEnabled) {
+          // Native has already settled its attempt before returning the cycle
+          // result. Fetch that authoritative receipt through the idempotent
+          // cancel endpoint so local state cannot replace per-work outcomes
+          // or cleanup facts with a placeholder.
+          const cancel = backend?.cancelNarrativeMaintenanceAttempt;
+          if (typeof cancel !== "function") {
+            throw new Error("NEX_MAINTENANCE_ATTEMPT_LIFECYCLE_UNAVAILABLE");
+          }
+          const parsedReceipt = parseNarrativeMaintenanceTerminalReceipt(
+            await cancel.call(backend, cycleAttemptId, "closed"),
+          );
+          assertReusableTerminalReceipt(parsedReceipt);
+          activeAttemptController.adoptTerminalReceipt(
+            cycleAttemptId,
+            parsedReceipt,
+          );
+          nativeReceiptAdopted = true;
+          terminalReceiptFailure = null;
+          if (parsedReceipt.state === "interrupted") {
+            interruptedCycle = true;
+            throw new Error("NEX_MAINTENANCE_ATTEMPT_CANCELLED");
+          }
+        } else if (!activeAttemptController.grantFinalize(cycleAttemptId)) {
           interruptedCycle = true;
           settleAttempt("interrupted");
           throw new Error("NEX_MAINTENANCE_ATTEMPT_CANCELLED");
+        } else {
+          settleAttempt("succeeded", cycleBinding?.generation ?? null);
         }
-        settleAttempt("succeeded", cycleBinding?.generation ?? null);
       }
       if (cycleResult.status === "accepted" && !disposed) {
         try {
@@ -1334,10 +1404,37 @@ export function createNarrativeMaintenanceScheduler(
       }
     } catch (error) {
       if (!disposed) {
+        const nativeAttemptActive =
+          lifecycleEnabled &&
+          cycleAttemptId !== null &&
+          activeAttemptId === cycleAttemptId;
+        if (nativeAttemptActive && !nativeReceiptAdopted) {
+          try {
+            await cancelActiveAttempt("closed");
+            nativeReceiptAdopted = true;
+            const nativeSnapshot = activeAttemptController.snapshot(
+              cycleAttemptId,
+            );
+            interruptedCycle = nativeSnapshot?.state === "interrupted";
+          } catch (receiptError) {
+            // Keep the Native-backed attempt unresolved when cleanup cannot be
+            // proven. A local interrupted placeholder would hide the missing
+            // terminal receipt and let workspace shutdown race the owner.
+            warn(
+              "[narrative-maintenance] Native terminal receipt unavailable after cycle failure:",
+              receiptError,
+            );
+            terminalReceiptFailure =
+              receiptError instanceof Error
+                ? receiptError
+                : new Error(String(receiptError));
+          }
+        }
         const attemptSnapshot = cycleAttemptId
           ? activeAttemptController.snapshot(cycleAttemptId)
           : null;
         if (
+          !nativeAttemptActive &&
           attemptSnapshot &&
           attemptSnapshot.state !== "interrupted" &&
           attemptSnapshot.state !== "succeeded"
@@ -1529,7 +1626,7 @@ export function createNarrativeMaintenanceScheduler(
     } finally {
       sharedCoordinator?.release(claimedProjects);
       inFlight = false;
-      if (cycleAttemptId) {
+      if (cycleAttemptId && !lifecycleEnabled) {
         const attemptSnapshot = activeAttemptController.snapshot(cycleAttemptId);
         if (
           attemptSnapshot &&
@@ -1539,12 +1636,16 @@ export function createNarrativeMaintenanceScheduler(
           settleAttempt("interrupted");
         }
       }
-      if (activeAttemptId === cycleAttemptId) {
+      if (
+        activeAttemptId === cycleAttemptId &&
+        (!lifecycleEnabled || nativeReceiptAdopted)
+      ) {
         activeAttemptId = null;
       }
       noteMutation();
       if (
         !disposed &&
+        terminalReceiptFailure === null &&
         !haltForProcessInterruption &&
         (shouldSchedule || hasRunnablePendingWork() || hasRunnableWake())
       ) {
@@ -1617,14 +1718,34 @@ export function createNarrativeMaintenanceScheduler(
     }
   };
 
+  const beginAttempt = async (
+    attemptId: string,
+    binding: NarrativeMaintenanceWorkspaceBinding,
+    workItems: readonly NarrativeMaintenanceWork[],
+  ): Promise<void> => {
+    activeAttemptController.begin(attemptId, binding);
+    for (const work of workItems) {
+      const identity = canonicalNarrativeMaintenanceWorkKey(work);
+      activeAttemptController.addWork(attemptId, identity);
+    }
+    await registerAttempt(attemptId, binding);
+  };
+
   const quiesceForWorkspaceSwitch = async (): Promise<void> => {
     if (disposed) return;
     quiescing = true;
     clearTimer();
     clearCoordinatorWait();
+    const pendingBegin = pendingAttemptBegin;
+    if (pendingBegin) {
+      await pendingBegin.catch(() => undefined);
+    }
     await cancelActiveAttempt("workspace-generation-changed");
     const running = inFlightPromise;
     if (running) await running;
+    if (terminalReceiptFailure) {
+      throw terminalReceiptFailure;
+    }
   };
 
   const enqueue = (
@@ -1747,21 +1868,33 @@ export function createNarrativeMaintenanceScheduler(
         throw new Error("native maintenance attempt binding is unavailable");
       }
       activeAttemptController.begin(attemptId, normalizedBinding);
-      const begin = backend?.beginNarrativeMaintenanceAttempt;
-      if (typeof begin !== "function") return undefined;
-      return begin.call(backend, attemptId, normalizedBinding);
+      await registerAttempt(attemptId, normalizedBinding);
+      return undefined;
     },
 
     async cancelNarrativeMaintenanceAttempt(attemptId, reason) {
       const cancel = backend?.cancelNarrativeMaintenanceAttempt;
-      const nativeReceipt =
-        typeof cancel === "function"
-          ? await cancel.call(backend, attemptId, reason)
-          : undefined;
-      const localReceipt = await activeAttemptController.requestStop(
+      const localCancellation = activeAttemptController.requestStop(
         attemptId,
         reason,
       );
+      const nativeRawReceipt =
+        typeof cancel === "function"
+          ? await cancel.call(backend, attemptId, reason)
+          : undefined;
+      const nativeReceipt =
+        nativeRawReceipt === undefined
+          ? undefined
+          : (() => {
+              const parsedReceipt =
+                parseNarrativeMaintenanceTerminalReceipt(nativeRawReceipt);
+              assertReusableTerminalReceipt(parsedReceipt);
+              return activeAttemptController.adoptTerminalReceipt(
+                attemptId,
+                parsedReceipt,
+              );
+            })();
+      const localReceipt = await localCancellation;
       return nativeReceipt ?? localReceipt;
     },
 

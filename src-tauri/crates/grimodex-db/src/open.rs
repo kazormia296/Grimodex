@@ -835,6 +835,7 @@ pub fn open_workspace_sync(
         &mut trace,
         &mut traced_hook,
         &mut prepare_wal,
+        None,
     )
 }
 
@@ -848,8 +849,30 @@ pub fn open_workspace_sync_traced(
     trace: &mut NativeWorkspaceOpenTrace,
     on_swapped: &mut dyn FnMut(&mut NativeWorkspaceOpenTrace),
 ) -> Result<WorkspaceOpenOutcome, AppError> {
+    open_workspace_sync_traced_with_pre_swap(ws_state, gs_path, path, trace, on_swapped, None)
+}
+
+/// Traced open with a hook run while `open_lock` is still held immediately
+/// before the authority publish. Native main uses this narrow admission point
+/// to close the maintenance-attempt/workspace-swap race.
+pub fn open_workspace_sync_traced_with_pre_swap(
+    ws_state: &WorkspaceState,
+    gs_path: &GlobalSettingsPath,
+    path: &str,
+    trace: &mut NativeWorkspaceOpenTrace,
+    on_swapped: &mut dyn FnMut(&mut NativeWorkspaceOpenTrace),
+    before_swap: Option<&mut dyn FnMut() -> Result<(), AppError>>,
+) -> Result<WorkspaceOpenOutcome, AppError> {
     let mut prepare_wal = crate::open_wal::prepare_wal_for_open;
-    open_workspace_sync_impl(ws_state, gs_path, path, trace, on_swapped, &mut prepare_wal)
+    open_workspace_sync_impl(
+        ws_state,
+        gs_path,
+        path,
+        trace,
+        on_swapped,
+        &mut prepare_wal,
+        before_swap,
+    )
 }
 
 fn open_workspace_sync_impl(
@@ -861,6 +884,7 @@ fn open_workspace_sync_impl(
     prepare_wal: &mut dyn FnMut(
         &Database,
     ) -> anyhow::Result<crate::open_wal::OpenWalPreparationOutcome>,
+    mut before_swap: Option<&mut dyn FnMut() -> Result<(), AppError>>,
 ) -> Result<WorkspaceOpenOutcome, AppError> {
     // open 自体を直列化 (併走 migrate の check-then-act / 二重
     // VACUUM INTO 防止)。ロック順序は open_lock → inner → write_lock
@@ -999,6 +1023,10 @@ fn open_workspace_sync_impl(
         ws_path.clone(),
         opened.lease,
     ));
+
+    if let Some(before_swap) = before_swap.as_mut() {
+        before_swap()?;
+    }
 
     // Final authority publish under the existing switching guard.
     let swap_span = trace.begin_span(NativeWorkspaceOpenSpanName::WorkspaceSwapLock);
@@ -1291,10 +1319,8 @@ mod tests {
 
     #[test]
     fn newest_backup_age_ignores_content_addressed_alias_when_mixed_with_timestamp_backup() {
-        let dir = std::env::temp_dir().join(format!(
-            "grimodex-auto-backup-age-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("grimodex-auto-backup-age-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let alias = format!(
             "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
@@ -1660,6 +1686,7 @@ mod tests {
             &mut trace,
             &mut on_swapped,
             &mut prepare_wal,
+            None,
         );
         let error = result.expect_err("restoration failure must fail open");
         assert!(error

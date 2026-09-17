@@ -45,6 +45,7 @@ export interface NarrativeMaintenanceTerminalReceipt {
   readonly state: "interrupted" | "succeeded";
   readonly stopReason: NarrativeMaintenanceStopReason | null;
   readonly generation: number;
+  readonly workspaceBinding: NarrativeMaintenanceAttemptBinding;
   readonly publishedGeneration: number | null;
   readonly works: readonly NarrativeMaintenanceWorkTerminal[];
   readonly cleanup: NarrativeMaintenanceCleanupOutcome;
@@ -87,11 +88,122 @@ export interface NarrativeMaintenanceAttemptController {
       readonly errorByWorkKey?: ReadonlyMap<string, string>;
     },
   ): NarrativeMaintenanceTerminalReceipt;
+  /**
+   * Bind the Native terminal receipt to this main-side attempt.  Native owns
+   * cleanup/reusability facts; main must not replace them with a local
+   * cancellation placeholder.
+   */
+  adoptTerminalReceipt(
+    attemptId: string,
+    receipt: NarrativeMaintenanceTerminalReceipt,
+  ): NarrativeMaintenanceTerminalReceipt;
   snapshot(attemptId: string): NarrativeMaintenanceAttemptSnapshot | null;
   waitForTerminal(
     attemptId: string,
   ): Promise<NarrativeMaintenanceTerminalReceipt>;
   activeAttemptIds(): readonly string[];
+}
+
+const stopReasons = new Set<NarrativeMaintenanceStopReason>([
+  "cancelled",
+  "timeout",
+  "closed",
+  "workspace-generation-changed",
+  "foreground-preempted",
+]);
+
+/** Parse the Native JSON receipt before it can affect main-side state. */
+export function parseNarrativeMaintenanceTerminalReceipt(
+  raw: unknown,
+): NarrativeMaintenanceTerminalReceipt {
+  let value: unknown = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      throw new Error("native maintenance terminal receipt is not JSON");
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("native maintenance terminal receipt is invalid");
+  }
+  const record = value as Record<string, unknown>;
+  const state = record.state;
+  const stopReason = record.stopReason;
+  const generation = record.generation;
+  const works = record.works;
+  const cleanup = record.cleanup;
+  if (
+    record.schemaVersion !== 1 ||
+    typeof record.attemptId !== "string" ||
+    (state !== "interrupted" && state !== "succeeded") ||
+    (stopReason !== null &&
+      (typeof stopReason !== "string" || !stopReasons.has(stopReason as NarrativeMaintenanceStopReason))) ||
+    !Number.isSafeInteger(generation) ||
+    (generation as number) <= 0 ||
+    !record.workspaceBinding ||
+    typeof record.workspaceBinding !== "object" ||
+    typeof (record.workspaceBinding as Record<string, unknown>).authorityId !== "string" ||
+    !Number.isSafeInteger(
+      (record.workspaceBinding as Record<string, unknown>).generation,
+    ) ||
+    ((record.workspaceBinding as Record<string, unknown>).generation as number) <= 0 ||
+    (record.publishedGeneration !== null &&
+      (!Number.isSafeInteger(record.publishedGeneration) ||
+        (record.publishedGeneration as number) <= 0)) ||
+    !Array.isArray(works) ||
+    !cleanup ||
+    typeof cleanup !== "object" ||
+    ((cleanup as Record<string, unknown>).status !== "clean" &&
+      (cleanup as Record<string, unknown>).status !== "failed") ||
+    typeof record.connectionReusable !== "boolean"
+  ) {
+    throw new Error("native maintenance terminal receipt is invalid");
+  }
+  const parsedWorks = works.map((rawWork) => {
+    if (!rawWork || typeof rawWork !== "object" || Array.isArray(rawWork)) {
+      throw new Error("native maintenance terminal work is invalid");
+    }
+    const work = rawWork as Record<string, unknown>;
+    if (
+      typeof work.workKey !== "string" ||
+      (work.status !== "succeeded" &&
+        work.status !== "interrupted" &&
+        work.status !== "not-started" &&
+        work.status !== "failed") ||
+      (work.error !== undefined && typeof work.error !== "string")
+    ) {
+      throw new Error("native maintenance terminal work is invalid");
+    }
+    return {
+      workKey: work.workKey,
+      status: work.status,
+      ...(work.error !== undefined ? { error: work.error } : {}),
+    } as NarrativeMaintenanceWorkTerminal;
+  });
+  const cleanupRecord = cleanup as Record<string, unknown>;
+  return {
+    schemaVersion: 1,
+    attemptId: record.attemptId as string,
+    state,
+    stopReason: (stopReason ?? null) as NarrativeMaintenanceStopReason | null,
+    generation: generation as number,
+    workspaceBinding: {
+      authorityId: (record.workspaceBinding as Record<string, unknown>)
+        .authorityId as string,
+      generation: (record.workspaceBinding as Record<string, unknown>)
+        .generation as number,
+    },
+    publishedGeneration: (record.publishedGeneration ?? null) as number | null,
+    works: parsedWorks,
+    cleanup: {
+      status: cleanupRecord.status as "clean" | "failed",
+      ...(typeof cleanupRecord.error === "string"
+        ? { error: cleanupRecord.error }
+        : {}),
+    },
+    connectionReusable: record.connectionReusable as boolean,
+  };
 }
 
 interface MutableWorkTerminal {
@@ -175,6 +287,10 @@ function makeTerminalReceipt(
     state,
     stopReason: attempt.stopReason,
     generation: attempt.generation,
+    workspaceBinding: {
+      authorityId: attempt.authorityId,
+      generation: attempt.generation,
+    },
     publishedGeneration,
     works,
     cleanup,
@@ -318,6 +434,44 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
 
     settle(attemptId, outcome) {
       return settle(requireAttempt(attemptId), outcome);
+    },
+
+    adoptTerminalReceipt(attemptId, receipt) {
+      const attempt = requireAttempt(attemptId);
+      if (receipt.attemptId !== attemptId) {
+        throw new Error("maintenance terminal receipt attemptId mismatch");
+      }
+      if (receipt.generation !== attempt.generation) {
+        throw new Error("maintenance terminal receipt generation mismatch");
+      }
+      if (
+        receipt.workspaceBinding.authorityId !== attempt.authorityId ||
+        receipt.workspaceBinding.generation !== attempt.generation
+      ) {
+        throw new Error("maintenance terminal receipt binding mismatch");
+      }
+      if (attempt.terminal) return attempt.terminal;
+      attempt.state = receipt.state;
+      attempt.stopReason = receipt.stopReason;
+      for (const terminalWork of receipt.works) {
+        const work = attempt.works.get(terminalWork.workKey);
+        if (work) {
+          work.status = terminalWork.status;
+          if (terminalWork.error !== undefined) work.error = terminalWork.error;
+          continue;
+        }
+        attempt.works.set(terminalWork.workKey, {
+          workKey: terminalWork.workKey,
+          status: terminalWork.status,
+          started: terminalWork.status !== "not-started",
+          ...(terminalWork.error !== undefined
+            ? { error: terminalWork.error }
+            : {}),
+        });
+      }
+      attempt.terminal = receipt;
+      for (const waiter of attempt.waiters.splice(0)) waiter(receipt);
+      return receipt;
     },
 
     snapshot(attemptId) {

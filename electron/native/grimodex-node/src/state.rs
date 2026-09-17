@@ -117,6 +117,10 @@ struct NarrativeMaintenanceRecoveryState {
     authority_id: Option<String>,
     recovered_work_keys: HashSet<String>,
     active_attempts: HashMap<String, MaintenanceWorkspaceBinding>,
+    /// Closed while the shared workspace opener is between its final
+    /// admission check and authority publication.  Attempt registration must
+    /// use this same mutex so a begin cannot slip into that gap.
+    maintenance_admission_closed: bool,
 }
 
 pub struct NarrativeMaintenanceRecoveryGate {
@@ -504,6 +508,7 @@ impl Default for NarrativeMaintenanceRecoveryGate {
                 authority_id: None,
                 recovered_work_keys: HashSet::new(),
                 active_attempts: HashMap::new(),
+                maintenance_admission_closed: false,
             }),
         }
     }
@@ -524,6 +529,10 @@ impl NarrativeMaintenanceRecoveryGate {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        anyhow::ensure!(
+            !state.maintenance_admission_closed,
+            "NEX_MAINTENANCE_ADMISSION_CLOSED: workspace swap is closing maintenance admission"
+        );
         anyhow::ensure!(
             state.authority_id.as_deref() == Some(binding.authority_id.as_str())
                 && state.workspace_generation == binding.generation,
@@ -563,6 +572,61 @@ impl NarrativeMaintenanceRecoveryGate {
             "NEX_MAINTENANCE_ATTEMPT_ACTIVE: workspace swap requires a terminal maintenance receipt"
         );
         Ok(())
+    }
+
+    /// Atomically close maintenance admission and require that no attempt is
+    /// active.  The workspace opener calls this while holding its open lock,
+    /// immediately before publishing a replacement authority.
+    pub fn close_for_workspace_swap(&self) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        anyhow::ensure!(
+            state.active_attempts.is_empty(),
+            "NEX_MAINTENANCE_ATTEMPT_ACTIVE: workspace swap requires a terminal maintenance receipt"
+        );
+        anyhow::ensure!(
+            !state.maintenance_admission_closed,
+            "NEX_MAINTENANCE_ADMISSION_CLOSED: workspace swap admission is already closed"
+        );
+        state.maintenance_admission_closed = true;
+        Ok(())
+    }
+
+    /// Reopen maintenance admission after the opener has either published a
+    /// replacement binding or returned before publication.  The expected
+    /// binding is checked under the same mutex so an old-generation caller
+    /// cannot reopen a new workspace's admission.
+    pub fn reopen_admission(
+        &self,
+        binding: Option<&MaintenanceWorkspaceBinding>,
+    ) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        anyhow::ensure!(
+            state.active_attempts.is_empty(),
+            "NEX_MAINTENANCE_ATTEMPT_ACTIVE: cannot reopen admission while an attempt is active"
+        );
+        if let Some(binding) = binding {
+            anyhow::ensure!(
+                state.authority_id.as_deref() == Some(binding.authority_id.as_str())
+                    && state.workspace_generation == binding.generation,
+                "NEX_MAINTENANCE_ATTEMPT_BINDING_MISMATCH: admission reopen binding is stale"
+            );
+        }
+        state.maintenance_admission_closed = false;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn maintenance_admission_is_closed(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| state.maintenance_admission_closed)
+            .unwrap_or(true)
     }
 
     /// Atomically bind a live authority identity to its recovery generation.
@@ -701,9 +765,12 @@ pub struct NarrativeMaintenanceWorkTerminal {
 pub struct NarrativeMaintenanceTerminalReceipt {
     pub schema_version: u8,
     pub attempt_id: String,
-    pub status: String,
+    /// Wire-level terminal state.  Keep this aligned with the main-process
+    /// receipt parser; the internal attempt registry still uses its own enum.
+    pub state: String,
     pub stop_reason: Option<String>,
     pub generation: u64,
+    pub workspace_binding: MaintenanceWorkspaceBinding,
     pub published_generation: Option<u64>,
     pub works: Vec<NarrativeMaintenanceWorkTerminal>,
     pub cleanup: NarrativeMaintenanceCleanupOutcome,
@@ -726,6 +793,13 @@ struct NarrativeMaintenanceAttemptEntry {
     stop_reason: Option<String>,
     running: bool,
     works: Vec<NarrativeMaintenanceWorkTerminal>,
+    /// Work identities whose final durable success transaction has acquired
+    /// the cancellation linearization point.  Cancellation may stop other
+    /// work, but it cannot rewrite one of these identities after its owner
+    /// commits.
+    finalize_grants: HashSet<String>,
+    cleanup: NarrativeMaintenanceCleanupOutcome,
+    connection_reusable: bool,
     terminal: Option<NarrativeMaintenanceTerminalReceipt>,
     notify: Arc<Notify>,
 }
@@ -778,6 +852,12 @@ impl NarrativeMaintenanceAttemptRegistry {
                 stop_reason: None,
                 running: false,
                 works: Vec::new(),
+                finalize_grants: HashSet::new(),
+                cleanup: NarrativeMaintenanceCleanupOutcome {
+                    status: "clean".to_string(),
+                    error: None,
+                },
+                connection_reusable: true,
                 terminal: None,
                 notify: Arc::new(Notify::new()),
             },
@@ -806,6 +886,14 @@ impl NarrativeMaintenanceAttemptRegistry {
             "NEX_MAINTENANCE_ATTEMPT_CANCELLED: attempt cancellation was accepted before work started"
         );
         entry.running = true;
+        // A running attempt must prove cleanup before its terminal receipt is
+        // reusable.  The owner upgrades this to clean only after the actual
+        // Database connection has been checked at the end of the cycle.
+        entry.cleanup = NarrativeMaintenanceCleanupOutcome {
+            status: "failed".to_string(),
+            error: Some("maintenance cleanup has not completed".to_string()),
+        };
+        entry.connection_reusable = false;
         entry.works = work_keys
             .into_iter()
             .map(|work_key| NarrativeMaintenanceWorkTerminal {
@@ -814,9 +902,83 @@ impl NarrativeMaintenanceAttemptRegistry {
                 error: None,
             })
             .collect();
-        for work in &mut entry.works {
+        Ok(())
+    }
+
+    pub fn mark_work_started(&self, attempt_id: &str, work_key: &str) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get_mut(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        anyhow::ensure!(
+            entry.state != NarrativeMaintenanceAttemptState::StopRequested,
+            "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won before work start"
+        );
+        let work = entry
+            .works
+            .iter_mut()
+            .find(|work| work.work_key == work_key)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"))?;
+        if work.status == "not-started" {
             work.status = "running".to_string();
         }
+        Ok(())
+    }
+
+    pub fn set_cleanup_outcome(
+        &self,
+        attempt_id: &str,
+        outcome: NarrativeMaintenanceCleanupOutcome,
+        connection_reusable: bool,
+    ) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get_mut(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        anyhow::ensure!(
+            entry.terminal.is_none(),
+            "NEX_MAINTENANCE_ATTEMPT_TERMINAL: attempt already settled"
+        );
+        entry.cleanup = outcome;
+        entry.connection_reusable = connection_reusable;
+        Ok(())
+    }
+
+    /// Add one canonical follow-up discovered by the shared cycle.  The
+    /// registration happens before the item enters the queue, so a prior
+    /// work's success cannot close the attempt while this same cycle still
+    /// owns another phase.
+    pub fn register_work(&self, attempt_id: &str, work_key: &str) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get_mut(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        anyhow::ensure!(
+            entry.terminal.is_none(),
+            "NEX_MAINTENANCE_ATTEMPT_TERMINAL: attempt already settled"
+        );
+        anyhow::ensure!(
+            entry.state != NarrativeMaintenanceAttemptState::StopRequested
+                && entry.state != NarrativeMaintenanceAttemptState::FinalizeGranted,
+            "NEX_MAINTENANCE_ATTEMPT_CANCELLED: follow-up registration is closed"
+        );
+        if entry.works.iter().any(|work| work.work_key == work_key) {
+            return Ok(());
+        }
+        entry.works.push(NarrativeMaintenanceWorkTerminal {
+            work_key: work_key.to_string(),
+            status: "not-started".to_string(),
+            error: None,
+        });
         Ok(())
     }
 
@@ -838,6 +1000,79 @@ impl NarrativeMaintenanceAttemptRegistry {
         Ok(true)
     }
 
+    /// Acquire the per-work finalization grant immediately before the owning
+    /// adapter commits its terminal success transaction.  The registry mutex
+    /// is the cancellation linearization point: once this returns true,
+    /// request_cancel waits for the owner to mark the work terminal.
+    pub fn grant_work_finalize(&self, attempt_id: &str, work_key: &str) -> anyhow::Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get_mut(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        if entry.terminal.is_some()
+            || entry.state == NarrativeMaintenanceAttemptState::StopRequested
+        {
+            return Ok(false);
+        }
+        anyhow::ensure!(
+            entry.works.iter().any(|work| work.work_key == work_key),
+            "NEX_MAINTENANCE_WORK_UNKNOWN: work is not registered for this attempt"
+        );
+        entry.finalize_grants.insert(work_key.to_string());
+        Ok(true)
+    }
+
+    pub fn stop_requested(&self, attempt_id: &str) -> anyhow::Result<bool> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        Ok(matches!(
+            entry.state,
+            NarrativeMaintenanceAttemptState::StopRequested
+                | NarrativeMaintenanceAttemptState::Interrupted
+        ))
+    }
+
+    /// Mark one exact canonical work identity after its Rust adapter and
+    /// final boundary checks have completed. A concurrent stop wins the
+    /// linearization, so the current item remains requeueable.
+    pub fn mark_work_succeeded(&self, attempt_id: &str, work_key: &str) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get_mut(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        let granted = entry.finalize_grants.remove(work_key);
+        anyhow::ensure!(
+            granted || entry.state != NarrativeMaintenanceAttemptState::StopRequested,
+            "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won at work boundary"
+        );
+        let work = entry
+            .works
+            .iter_mut()
+            .find(|work| work.work_key == work_key)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"))?;
+        work.status = "succeeded".to_string();
+        if entry.finalize_grants.is_empty()
+            && entry
+                .works
+                .iter()
+                .all(|candidate| candidate.status == "succeeded")
+        {
+            entry.state = NarrativeMaintenanceAttemptState::FinalizeGranted;
+        }
+        Ok(())
+    }
+
     fn receipt_for(
         entry: &NarrativeMaintenanceAttemptEntry,
         status: &str,
@@ -856,16 +1091,17 @@ impl NarrativeMaintenanceAttemptRegistry {
         NarrativeMaintenanceTerminalReceipt {
             schema_version: 1,
             attempt_id: String::new(),
-            status: status.to_string(),
+            state: status.to_string(),
             stop_reason: entry.stop_reason.clone(),
             generation: entry.generation,
+            workspace_binding: MaintenanceWorkspaceBinding {
+                authority_id: entry.authority_id.clone(),
+                generation: entry.generation,
+            },
             published_generation,
             works,
-            cleanup: NarrativeMaintenanceCleanupOutcome {
-                status: "clean".to_string(),
-                error: None,
-            },
-            connection_reusable: true,
+            cleanup: entry.cleanup.clone(),
+            connection_reusable: entry.connection_reusable,
         }
     }
 
@@ -931,6 +1167,13 @@ impl NarrativeMaintenanceAttemptRegistry {
             if let Some(receipt) = entry.terminal.clone() {
                 return Ok(Some(receipt));
             }
+            // FinalizeGranted is the commit-side linearization point. The
+            // cancellation request must observe that terminal result rather
+            // than manufacturing an interruption while the final transaction
+            // is still being recovered.
+            if entry.state == NarrativeMaintenanceAttemptState::FinalizeGranted {
+                return Ok(None);
+            }
             if entry.state != NarrativeMaintenanceAttemptState::FinalizeGranted {
                 entry.state = NarrativeMaintenanceAttemptState::StopRequested;
                 entry.stop_reason = Some(reason.to_string());
@@ -959,7 +1202,21 @@ impl NarrativeMaintenanceAttemptRegistry {
         attempt_id: &str,
     ) -> anyhow::Result<NarrativeMaintenanceTerminalReceipt> {
         loop {
+            // Register the notification before the second terminal check. A
+            // terminal transition between the first check and registration
+            // then either wakes this future or is observed by the recheck.
             let notify = {
+                let state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let entry = state.get(attempt_id).ok_or_else(|| {
+                    anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}")
+                })?;
+                Arc::clone(&entry.notify)
+            };
+            let notified = notify.notified();
+            {
                 let state = self
                     .state
                     .lock()
@@ -970,9 +1227,8 @@ impl NarrativeMaintenanceAttemptRegistry {
                 if let Some(receipt) = entry.terminal.clone() {
                     return Ok(receipt);
                 }
-                Arc::clone(&entry.notify)
-            };
-            notify.notified().await;
+            }
+            notified.await;
         }
     }
 }
@@ -1522,6 +1778,154 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_swap_closes_begin_admission_atomically() {
+        let gate = NarrativeMaintenanceRecoveryGate::default();
+        let binding = gate.binding_for_authority("authority-one");
+        gate.close_for_workspace_swap().expect("close admission");
+        let error = gate
+            .register_attempt("attempt-after-close", &binding)
+            .expect_err("begin must observe the closed swap admission");
+        assert!(error.to_string().contains("ADMISSION_CLOSED"));
+        gate.reopen_admission(Some(&binding))
+            .expect("reopen admission");
+        gate.register_attempt("attempt-after-reopen", &binding)
+            .expect("begin after replacement binding");
+        gate.release_attempt("attempt-after-reopen");
+    }
+
+    #[test]
+    fn stale_swap_reopen_keeps_admission_closed() {
+        let gate = NarrativeMaintenanceRecoveryGate::default();
+        let old_binding = gate.binding_for_authority("authority-old");
+        gate.close_for_workspace_swap().expect("close admission");
+        gate.mark_workspace_swapped();
+        let error = gate
+            .reopen_admission(Some(&old_binding))
+            .expect_err("old binding cannot reopen a replacement workspace");
+        assert!(error.to_string().contains("BINDING_MISMATCH"));
+        assert!(gate.maintenance_admission_is_closed());
+    }
+
+    #[test]
+    fn per_work_finalize_grant_preserves_prior_success_and_late_cancel() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-one".to_string(),
+            generation: 1,
+        };
+        registry.begin("attempt-one", &binding).expect("begin");
+        registry
+            .start(
+                "attempt-one",
+                ["work-one".to_string(), "work-two".to_string()],
+            )
+            .expect("start");
+        assert!(registry
+            .grant_work_finalize("attempt-one", "work-one")
+            .expect("grant work one"));
+        registry
+            .mark_work_started("attempt-one", "work-two")
+            .expect("start work two");
+        assert!(registry
+            .request_cancel("attempt-one", "cancelled")
+            .expect("cancel request")
+            .is_none());
+        registry
+            .mark_work_succeeded("attempt-one", "work-one")
+            .expect("granted work may finish after cancel");
+        let receipt = registry
+            .settle("attempt-one", false, None)
+            .expect("interrupt remaining work");
+        assert_eq!(receipt.state, "interrupted");
+        assert_eq!(receipt.works[0].status, "succeeded");
+        assert_eq!(receipt.works[1].status, "interrupted");
+
+        registry.begin("attempt-two", &binding).expect("begin two");
+        registry
+            .start("attempt-two", ["work-one".to_string()])
+            .expect("start two");
+        assert!(registry
+            .grant_work_finalize("attempt-two", "work-one")
+            .expect("grant work two"));
+        registry
+            .mark_work_succeeded("attempt-two", "work-one")
+            .expect("complete work two");
+        assert!(registry
+            .request_cancel("attempt-two", "late-cancel")
+            .expect("late cancel")
+            .is_none());
+        let success = registry
+            .settle("attempt-two", true, Some(1))
+            .expect("settle successful attempt");
+        assert_eq!(success.state, "succeeded");
+    }
+
+    #[test]
+    fn dynamic_followup_is_registered_before_last_work_closes_attempt() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-followup".to_string(),
+            generation: 2,
+        };
+        registry.begin("attempt-followup", &binding).expect("begin");
+        registry
+            .start("attempt-followup", ["phase-one".to_string()])
+            .expect("start");
+        registry
+            .register_work("attempt-followup", "phase-two")
+            .expect("register followup");
+        registry
+            .grant_work_finalize("attempt-followup", "phase-one")
+            .expect("grant phase one");
+        registry
+            .mark_work_succeeded("attempt-followup", "phase-one")
+            .expect("complete phase one");
+        assert!(registry
+            .request_cancel("attempt-followup", "cancel-before-phase-two")
+            .expect("cancel followup")
+            .is_none());
+        let receipt = registry
+            .settle("attempt-followup", false, None)
+            .expect("interrupt phase two");
+        assert_eq!(receipt.works[0].status, "succeeded");
+        assert_eq!(receipt.works[1].status, "not-started");
+    }
+
+    #[test]
+    fn terminal_receipt_preserves_failed_cleanup_and_non_reusable_connection() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-cleanup".to_string(),
+            generation: 3,
+        };
+        registry.begin("attempt-cleanup", &binding).expect("begin");
+        registry
+            .start("attempt-cleanup", ["work".to_string()])
+            .expect("start");
+        registry
+            .set_cleanup_outcome(
+                "attempt-cleanup",
+                NarrativeMaintenanceCleanupOutcome {
+                    status: "failed".to_string(),
+                    error: Some("hook reset failed".to_string()),
+                },
+                false,
+            )
+            .expect("record cleanup failure");
+        assert!(registry
+            .request_cancel("attempt-cleanup", "closed")
+            .expect("request cancel")
+            .is_none());
+        let receipt = registry
+            .settle("attempt-cleanup", false, None)
+            .expect("settle");
+        assert_eq!(receipt.state, "interrupted");
+        assert_eq!(receipt.cleanup.status, "failed");
+        assert!(!receipt.connection_reusable);
+        assert_eq!(receipt.workspace_binding, binding);
+    }
+
+    #[test]
     fn maintenance_generation_is_safe_and_rolls_over_without_zero() {
         const MAX_SAFE_GENERATION: u64 = (1u64 << 53) - 1;
         let gate = NarrativeMaintenanceRecoveryGate::default();
@@ -1548,6 +1952,7 @@ mod tests {
                 authority_id: None,
                 recovered_work_keys: HashSet::new(),
                 active_attempts: HashMap::new(),
+                maintenance_admission_closed: false,
             }),
         };
         let first_rollover = near_max.mark_workspace_swapped();
@@ -1563,6 +1968,7 @@ mod tests {
                 authority_id: None,
                 recovered_work_keys: HashSet::new(),
                 active_attempts: HashMap::new(),
+                maintenance_admission_closed: false,
             }),
         };
         let at_max_rollover = at_max.mark_workspace_swapped();
