@@ -1926,6 +1926,64 @@ mod tests {
     }
 
     #[test]
+    fn empty_native_wake_can_finalize_without_fabricating_local_work() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-empty-wake".to_string(),
+            generation: 4,
+        };
+        registry
+            .begin("attempt-empty-wake", &binding)
+            .expect("begin");
+        registry
+            .start("attempt-empty-wake", std::iter::empty::<String>())
+            .expect("start empty durable wake");
+        assert!(registry
+            .grant_finalize("attempt-empty-wake")
+            .expect("finalize empty wake"));
+        let receipt = registry
+            .settle("attempt-empty-wake", true, Some(binding.generation))
+            .expect("settle empty wake");
+        assert_eq!(receipt.state, "succeeded");
+        assert!(receipt.works.is_empty());
+        assert_eq!(receipt.generation, binding.generation);
+    }
+
+    #[test]
+    fn effective_epoch_identity_is_registered_before_native_start() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-effective-epoch".to_string(),
+            generation: 5,
+        };
+        registry
+            .begin("attempt-effective-epoch", &binding)
+            .expect("begin");
+        registry
+            .start("attempt-effective-epoch", std::iter::empty::<String>())
+            .expect("start with wire roster deferred");
+        let effective = "narrative-maintenance:v1/dependency-verify/project-1/work:epoch-current";
+        registry
+            .register_work("attempt-effective-epoch", effective)
+            .expect("register normalized epoch identity");
+        registry
+            .mark_work_started("attempt-effective-epoch", effective)
+            .expect("start normalized epoch identity");
+        assert!(registry
+            .grant_work_finalize("attempt-effective-epoch", effective)
+            .expect("grant normalized epoch identity"));
+        registry
+            .mark_work_succeeded("attempt-effective-epoch", effective)
+            .expect("complete normalized epoch identity");
+        let receipt = registry
+            .settle("attempt-effective-epoch", true, Some(binding.generation))
+            .expect("settle normalized epoch identity");
+        assert_eq!(receipt.works.len(), 1);
+        assert_eq!(receipt.works[0].work_key, effective);
+        assert_eq!(receipt.works[0].status, "succeeded");
+    }
+
+    #[test]
     fn maintenance_generation_is_safe_and_rolls_over_without_zero() {
         const MAX_SAFE_GENERATION: u64 = (1u64 << 53) - 1;
         let gate = NarrativeMaintenanceRecoveryGate::default();

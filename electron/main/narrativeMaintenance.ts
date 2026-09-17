@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   createNarrativeMaintenanceAttemptController,
+  parseNarrativeMaintenanceBeginReceipt,
   parseNarrativeMaintenanceTerminalReceipt,
   type NarrativeMaintenanceStopReason,
 } from "./narrativeMaintenanceAttempt.js";
@@ -878,6 +879,12 @@ export function createNarrativeMaintenanceScheduler(
   let pendingAttemptBegin: Promise<void> | null = null;
   let quiescing = false;
   let activeAttemptId: string | null = null;
+  // The presence of Native lifecycle methods is only a capability.  An
+  // attempt becomes Native-owned after the exact begin acknowledgement has
+  // bound its id and workspace generation.  Local test doubles and legacy
+  // backends continue through the process-local fallback without being able
+  // to fabricate a Native terminal receipt.
+  const nativeAttemptIds = new Set<string>();
   let terminalReceiptFailure: Error | null = null;
   const activeAttemptController = createNarrativeMaintenanceAttemptController();
   let cycleGeneration = 0;
@@ -1028,7 +1035,20 @@ export function createNarrativeMaintenanceScheduler(
     const begin = backend?.beginNarrativeMaintenanceAttempt;
     const registration = (async () => {
       if (typeof begin === "function") {
-        await begin.call(backend, attemptId, binding);
+        const rawReceipt = await begin.call(backend, attemptId, binding);
+        if (rawReceipt !== undefined) {
+          const receipt = parseNarrativeMaintenanceBeginReceipt(rawReceipt);
+          if (
+            receipt.attemptId !== attemptId ||
+            receipt.authorityId !== binding.authorityId ||
+            receipt.generation !== binding.generation
+          ) {
+            throw new Error(
+              "native maintenance begin receipt binding mismatch",
+            );
+          }
+          nativeAttemptIds.add(attemptId);
+        }
       }
       // Publish the active id only after Native has accepted the binding. A
       // workspace switch/dispose waiting on this registration can then issue
@@ -1044,6 +1064,7 @@ export function createNarrativeMaintenanceScheduler(
       // accepted the attempt, all later terminalization must come from its
       // receipt.
       activeAttemptController.settle(attemptId, { state: "interrupted" });
+      nativeAttemptIds.delete(attemptId);
       throw error;
     } finally {
       if (pendingAttemptBegin === registration) pendingAttemptBegin = null;
@@ -1087,7 +1108,7 @@ export function createNarrativeMaintenanceScheduler(
       reason,
     );
     const nativeReceipt =
-      typeof cancel === "function"
+      nativeAttemptIds.has(attemptId) && typeof cancel === "function"
         ? await cancel.call(backend, attemptId, reason)
         : undefined;
     if (nativeReceipt !== undefined) {
@@ -1317,7 +1338,7 @@ export function createNarrativeMaintenanceScheduler(
         );
       }
       if (cycleAttemptId) {
-        if (lifecycleEnabled) {
+        if (nativeAttemptIds.has(cycleAttemptId)) {
           // Native has already settled its attempt before returning the cycle
           // result. Fetch that authoritative receipt through the idempotent
           // cancel endpoint so local state cannot replace per-work outcomes
@@ -1405,7 +1426,7 @@ export function createNarrativeMaintenanceScheduler(
     } catch (error) {
       if (!disposed) {
         const nativeAttemptActive =
-          lifecycleEnabled &&
+          nativeAttemptIds.has(cycleAttemptId ?? "") &&
           cycleAttemptId !== null &&
           activeAttemptId === cycleAttemptId;
         if (nativeAttemptActive && !nativeReceiptAdopted) {
@@ -1638,9 +1659,10 @@ export function createNarrativeMaintenanceScheduler(
       }
       if (
         activeAttemptId === cycleAttemptId &&
-        (!lifecycleEnabled || nativeReceiptAdopted)
+        (!nativeAttemptIds.has(cycleAttemptId ?? "") || nativeReceiptAdopted)
       ) {
         activeAttemptId = null;
+        if (cycleAttemptId) nativeAttemptIds.delete(cycleAttemptId);
       }
       noteMutation();
       if (
@@ -1879,7 +1901,7 @@ export function createNarrativeMaintenanceScheduler(
         reason,
       );
       const nativeRawReceipt =
-        typeof cancel === "function"
+        nativeAttemptIds.has(attemptId) && typeof cancel === "function"
           ? await cancel.call(backend, attemptId, reason)
           : undefined;
       const nativeReceipt =
@@ -1894,6 +1916,7 @@ export function createNarrativeMaintenanceScheduler(
                 parsedReceipt,
               );
             })();
+      if (nativeReceipt !== undefined) nativeAttemptIds.delete(attemptId);
       const localReceipt = await localCancellation;
       return nativeReceipt ?? localReceipt;
     },

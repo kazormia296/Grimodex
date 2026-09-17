@@ -33,6 +33,7 @@ import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
 import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
+import { createNarrativeMaintenanceQuitFinalizer } from "./narrativeMaintenanceShutdown.js";
 import type { NarrativeMaintenanceTriggerCoordinator } from "./narrativeMaintenanceTriggers.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
@@ -534,40 +535,17 @@ if (!gotSingleInstanceLock) {
     if (!shouldDisableNarrativeFreshnessForLaunch(narrativeMaintenanceCiSeam)) {
       narrativeFreshness.start();
     }
-    let quitFinalizationStarted = false;
-    let quitCleanupComplete = false;
-    let quitFailureCount = 0;
-    app.on("will-quit", (event) => {
-      // close veto を通過して終了が確定してから、maintenanceのNative
-      // terminal receiptを待って同期 cleanupへ進む。disposeをfire-and-forget
-      // にすると、旧generationの作業が残ったままNative swap/終了へ進む。
-      if (quitCleanupComplete) return;
-      event.preventDefault();
-      if (quitFinalizationStarted) return;
-      quitFinalizationStarted = true;
-      void (async () => {
-        try {
-          await narrativeMaintenance?.dispose();
-        } catch (error) {
-          quitFailureCount += 1;
-          console.error(
-            "[grimodex-electron] narrative maintenance shutdown failed:",
-            error,
-          );
-          // Do not report an ordinary successful quit while Native has not
-          // produced a reusable terminal receipt. Allow bounded retries; if
-          // the owner remains unrecoverable, use an explicit fatal exit so
-          // the failure is visible rather than silently dropping the attempt.
-          if (quitFailureCount < 3) {
-            quitFinalizationStarted = false;
-            return;
-          }
-          console.error(
-            "[grimodex-electron] maintenance shutdown could not be proven after bounded retries; exiting fatally",
-          );
-          app.exit(1);
-          return;
-        }
+    const quitFinalizer = createNarrativeMaintenanceQuitFinalizer({
+      dispose: async () => {
+        await narrativeMaintenance?.dispose();
+      },
+      error: (error) => {
+        console.error(
+          "[grimodex-electron] narrative maintenance shutdown failed:",
+          error,
+        );
+      },
+      complete: () => {
         vivliostyle.disposeAll();
         updater.dispose();
         licenseValidation.dispose();
@@ -577,9 +555,21 @@ if (!gotSingleInstanceLock) {
         cliAi.disposeAll();
         void codexApp.dispose();
         void externalMount.disposeAll();
-        quitCleanupComplete = true;
-        app.quit();
-      })();
+      },
+      quit: () => app.quit(),
+      exit: (code) => {
+        console.error(
+          "[grimodex-electron] maintenance shutdown could not be proven after bounded retries; exiting fatally",
+        );
+        app.exit(code);
+      },
+    });
+    app.on("will-quit", (event) => {
+      // The finalizer vetoes the current quit synchronously, then waits for a
+      // validated Native terminal receipt before releasing the rest of the
+      // process teardown. Reentrant will-quit events only observe the same
+      // in-flight barrier.
+      void quitFinalizer(event);
     });
     // API キー保管（バッチ3a）: safeStorage 暗号化 + ai-keys.json。has/save/delete は
     // shell ハンドラ、チャット送信のキー解決は dispatchInvoke へ secrets として注入。

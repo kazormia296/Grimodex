@@ -66,6 +66,13 @@ export interface NarrativeMaintenanceAttemptBinding {
   readonly generation: number;
 }
 
+export interface NarrativeMaintenanceBeginReceipt {
+  readonly status: "open";
+  readonly attemptId: string;
+  readonly authorityId: string;
+  readonly generation: number;
+}
+
 export interface NarrativeMaintenanceAttemptController {
   begin(
     attemptId: string,
@@ -203,6 +210,45 @@ export function parseNarrativeMaintenanceTerminalReceipt(
         : {}),
     },
     connectionReusable: record.connectionReusable as boolean,
+  };
+}
+
+/**
+ * Parse the Native begin acknowledgement.  A function existing on a test
+ * double or legacy backend is not proof that Native owns the attempt; only
+ * this exact binding acknowledgement establishes that ownership.
+ */
+export function parseNarrativeMaintenanceBeginReceipt(
+  raw: unknown,
+): NarrativeMaintenanceBeginReceipt {
+  let value: unknown = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      throw new Error("native maintenance begin receipt is not JSON");
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("native maintenance begin receipt is invalid");
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.status !== "open" ||
+    typeof record.attemptId !== "string" ||
+    record.attemptId.trim().length === 0 ||
+    typeof record.authorityId !== "string" ||
+    record.authorityId.trim().length === 0 ||
+    !Number.isSafeInteger(record.generation) ||
+    (record.generation as number) <= 0
+  ) {
+    throw new Error("native maintenance begin receipt is invalid");
+  }
+  return {
+    status: "open",
+    attemptId: record.attemptId,
+    authorityId: record.authorityId,
+    generation: record.generation as number,
   };
 }
 

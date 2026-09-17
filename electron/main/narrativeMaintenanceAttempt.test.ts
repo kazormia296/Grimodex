@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createNarrativeMaintenanceAttemptController,
+  parseNarrativeMaintenanceBeginReceipt,
   parseNarrativeMaintenanceTerminalReceipt,
   type NarrativeMaintenanceAttemptController,
 } from "./narrativeMaintenanceAttempt.js";
@@ -13,6 +14,30 @@ function controller(): NarrativeMaintenanceAttemptController {
 }
 
 describe("narrative maintenance attempt linearization", () => {
+  it("accepts a Native begin receipt only when it carries the exact binding", () => {
+    expect(
+      parseNarrativeMaintenanceBeginReceipt({
+        status: "open",
+        attemptId: "attempt-native",
+        authorityId: binding.authorityId,
+        generation: binding.generation,
+      }),
+    ).toEqual({
+      status: "open",
+      attemptId: "attempt-native",
+      authorityId: binding.authorityId,
+      generation: binding.generation,
+    });
+    expect(() =>
+      parseNarrativeMaintenanceBeginReceipt({
+        status: "open",
+        attemptId: "attempt-native",
+        authorityId: binding.authorityId,
+        generation: binding.generation + 1,
+      }),
+    ).not.toThrow();
+  });
+
   it("keeps run creation open until the finalization transition", async () => {
     const attempts = controller();
     attempts.begin("attempt-a", binding);

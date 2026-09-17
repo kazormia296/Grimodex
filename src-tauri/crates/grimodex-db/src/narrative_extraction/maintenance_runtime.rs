@@ -2525,6 +2525,12 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
             ..item.clone()
         };
         if let Some(control) = control {
+            // The durable planner may normalize a stale or epoch-less request
+            // to a different canonical identity.  Register that exact
+            // identity before marking it running; the Native attempt registry
+            // must never be asked to start an identity that was only present
+            // in the wire request.
+            (control.register_work)(&effective_item)?;
             (control.work_started)(&effective_item)?;
         }
 
@@ -2831,19 +2837,32 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                     check_stop()?;
                     dispatch_enabled_work(db, &item, Some(&effective_coordinates), control)
                 })?;
-                // A stop that arrived during the adapter keeps this item
-                // uncompleted; recovery will reconcile any durable commit.
-                check_stop()?;
                 // Register the next phase before marking this item complete.
                 // The per-work completion transition may close the attempt
                 // when this was the final registered item.
-                if let Some(next) = discover_durable_maintenance_work_with_coordinates(
+                let next = match discover_durable_maintenance_work_with_coordinates(
                     db,
                     &item.project_id,
                     maintenance_rediscovery_reason(&item),
                     Some(&effective_coordinates),
-                )? {
-                    enqueue_discovered(&mut queue, next)?;
+                ) {
+                    Ok(next) => next,
+                    Err(error) => {
+                        // The adapter's final success transaction already
+                        // acquired the per-work finalize grant.  Preserve
+                        // that durable success even when cancellation or a
+                        // discovery read arrives immediately afterwards.
+                        mark_completed(&effective_item)?;
+                        return Err(error);
+                    }
+                };
+                if let Some(next) = next {
+                    if let Err(error) = enqueue_discovered(&mut queue, next) {
+                        // See the discovery-error case above: the current
+                        // work has already crossed its finalization boundary.
+                        mark_completed(&effective_item)?;
+                        return Err(error);
+                    }
                 }
                 mark_completed(&effective_item)?;
                 if let (Some(expected_marker), Some(config), Some(binding)) = (

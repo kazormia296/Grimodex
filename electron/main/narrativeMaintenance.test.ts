@@ -1248,6 +1248,7 @@ describe("narrative maintenance scheduler", () => {
   it("linearizes begin registration before dispose cancellation", async () => {
     const binding = { authorityId: "authority-attempt", generation: 11 };
     const begin = deferred<string>();
+    let begunAttemptId: string | undefined;
     const cancel = vi.fn((attemptId: string) =>
       JSON.stringify({
         schemaVersion: 1,
@@ -1265,7 +1266,10 @@ describe("narrative maintenance scheduler", () => {
     const runNarrativeMaintenanceCycle = vi.fn();
     const backend = {
       getNarrativeMaintenanceWorkspaceBinding: () => binding,
-      beginNarrativeMaintenanceAttempt: vi.fn(() => begin.promise),
+      beginNarrativeMaintenanceAttempt: vi.fn((attemptId: string) => {
+        begunAttemptId = attemptId;
+        return begin.promise;
+      }),
       cancelNarrativeMaintenanceAttempt: cancel,
       runNarrativeMaintenanceCycle,
     };
@@ -1277,12 +1281,75 @@ describe("narrative maintenance scheduler", () => {
     await Promise.resolve();
     expect(cancel).not.toHaveBeenCalled();
 
-    begin.resolve(JSON.stringify({ status: "open" }));
+    // Native ownership is established only by the exact begin binding ack.
+    // The deferred response also exercises the begin-vs-dispose linearization.
+    begin.resolve(
+      JSON.stringify({
+        status: "open",
+        attemptId: begunAttemptId,
+        authorityId: binding.authorityId,
+        generation: binding.generation,
+      }),
+    );
     await expect(disposing).resolves.toBeUndefined();
     expect(cancel.mock.calls.length).toBeGreaterThanOrEqual(1);
     expect(cancel.mock.calls[0]?.[0]).toEqual(expect.any(String));
     expect(cancel.mock.calls[0]?.[0]).not.toBe("UNKNOWN");
     expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+  });
+
+  it("keeps an empty Native durable wake Native-owned", async () => {
+    const binding = { authorityId: "authority-empty-wake", generation: 13 };
+    let cycleCount = 0;
+    const begin = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    const runNarrativeMaintenanceCycle = vi.fn((_payload) => {
+      cycleCount += 1;
+      return Promise.resolve(
+        JSON.stringify({ status: "accepted", hasMore: cycleCount === 1 }),
+      );
+    });
+    const cancel = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "succeeded",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: binding.generation,
+        works: [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      beginNarrativeMaintenanceAttempt: begin,
+      cancelNarrativeMaintenanceAttempt: cancel,
+      runNarrativeMaintenanceCycle,
+    };
+    const { scheduler } = createScheduler(backend);
+    scheduler.request(work("project-empty-wake", "backfill", "wake", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0]).toMatchObject({
+      work: [],
+      wakeProjectIds: ["project-empty-wake"],
+      workspaceBinding: binding,
+    });
+    expect(cancel).toHaveBeenCalledTimes(2);
+    expect(scheduler.getQuiescenceState?.().inFlight).toBe(false);
   });
 
   it("retains the Native attempt when cleanup is not reusable", async () => {
@@ -1326,7 +1393,14 @@ describe("narrative maintenance scheduler", () => {
       getNarrativeMaintenanceWorkspaceBinding: () => binding,
       beginNarrativeMaintenanceAttempt: vi
         .fn()
-        .mockResolvedValue(JSON.stringify({ status: "open" })),
+        .mockImplementation((attemptId: string, receivedBinding) =>
+          JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: receivedBinding.authorityId,
+            generation: receivedBinding.generation,
+          }),
+        ),
       cancelNarrativeMaintenanceAttempt: cancel,
       runNarrativeMaintenanceCycle,
     };
