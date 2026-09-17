@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -32,7 +33,7 @@ function makeWorkspace(selectedFixture = fixtureId) {
   return { directory, fixtureDirectory, outputDirectory, sourceDb };
 }
 
-function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, malformed = false, timeout = false } = {}) {
+function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, malformed = false, timeout = false, leakyDescendant = false } = {}) {
   const fixtureCounts = {
     [fixtureId]: { candidateRevisions: 3, qualifiedRevisions: 3, rejectedRevisions: 0, entityRecords: 255, relationRecords: 3, evidenceRecords: 255, qualifiedMaterialRecords: 513, rosterRecords: 513, dependencyEdges: null, reportRecords: null },
     "Q2044/evidence-shared": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, reportRecords: null },
@@ -44,11 +45,13 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
   if (mismatchField) counts[mismatchField] = Number(counts[mismatchField]) - 1;
   return [
     "#!/usr/bin/env node",
+    'import { spawn } from "node:child_process";',
     'import { writeFileSync } from "node:fs";',
     "const database = process.argv[2];",
     "const fixtureId = process.argv[3];",
     "const projectId = process.argv[4] ?? null;",
     timeout ? "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);" : "",
+    leakyDescendant ? "const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit' }); descendant.unref();" : "",
     mutate ? "writeFileSync(database, `mutated-main-${process.pid}`);" : "",
     mutate ? "writeFileSync(`${database}-wal`, `mutated-wal-${process.pid}`);" : "",
     mutate ? "writeFileSync(`${database}-shm`, `mutated-shm-${process.pid}`);" : "",
@@ -217,6 +220,25 @@ test("child timeout is bounded and reports the fixture/run context", () => {
       },
     );
     assert.ok(Date.now() - started < 1000, "TERM-resistant child must be bounded by TERM/KILL escalation");
+  } finally {
+    rmSync(workspace.directory, { recursive: true, force: true });
+  }
+});
+
+test("inherited child pipes are a terminal lifecycle failure and stay bounded", () => {
+  const workspace = makeWorkspace();
+  try {
+    const binary = makeChild(workspace.directory, { leakyDescendant: true });
+    const started = Date.now();
+    assert.throws(
+      () => runProbe(workspace, binary, ["--fixture", fixtureId, "--runs", "5", "--timeout-ms", "100", "--kill-grace-ms", "40"]),
+      (error) => {
+        assert.match(error.stderr, /lifecycle failure: .*output streams did not close/);
+        assert.equal(existsSync(path.join(workspace.outputDirectory, "capacity-report.json")), false);
+        return true;
+      },
+    );
+    assert.ok(Date.now() - started < 1000, "inherited pipes must not extend the owner beyond its bound");
   } finally {
     rmSync(workspace.directory, { recursive: true, force: true });
   }

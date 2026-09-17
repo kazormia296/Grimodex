@@ -572,6 +572,9 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
       if (settled) return;
       settled = true;
       clearTimers();
+      for (const stream of [child?.stdout, child?.stderr]) {
+        if (stream && !stream.destroyed) stream.destroy();
+      }
       resolve({
         status: exitInfo?.status ?? null,
         signal: exitInfo?.signal ?? null,
@@ -589,6 +592,19 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
     };
 
     const sendSignal = (signal) => {
+      const pid = child?.pid;
+      if (process.platform !== "win32" && Number.isInteger(pid) && pid > 0) {
+        try {
+          // A detached child owns its process group. Signalling the group
+          // also reaps descendants which may have inherited our output pipes.
+          process.kill(-pid, signal);
+          return true;
+        } catch (error) {
+          if (error.code !== "ESRCH") {
+            stderr += `\nfailed to send ${signal} to process group: ${error.message}`;
+          }
+        }
+      }
       try {
         return child?.kill(signal) === true;
       } catch (error) {
@@ -605,6 +621,7 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
       }
       if (streamTimer === null) {
         streamTimer = setTimeout(() => {
+          killSent = sendSignal("SIGKILL") || killSent;
           finish({
             lifecycleError: new Error(
               `${context} exited but its output streams did not close within ${terminationGraceMs}ms`,
@@ -617,6 +634,7 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
     try {
       child = spawn(path.resolve(binary), childArgs, {
         stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
         windowsHide: true,
       });
     } catch (error) {
@@ -661,6 +679,7 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
         killSent = sendSignal("SIGKILL");
         killTimer = setTimeout(() => {
           if (settled || exitInfo !== null) return;
+          killSent = sendSignal("SIGKILL") || killSent;
           finish({
             lifecycleError: new Error(
               `${context} did not exit after SIGKILL within ${terminationGraceMs}ms`,
@@ -673,11 +692,11 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
 }
 
 function childFailureMessage(child, context, binary, timeoutMs) {
-  if (child.error?.code === "ETIMEDOUT" || child.timedOut) {
-    return `${context} timed out after ${timeoutMs}ms (binary ${binary})`;
-  }
   if (child.lifecycleError) {
     return `${context} lifecycle failure: ${child.lifecycleError.message}`;
+  }
+  if (child.error?.code === "ETIMEDOUT" || child.timedOut) {
+    return `${context} timed out after ${timeoutMs}ms (binary ${binary})`;
   }
   if (child.error) return `${context} could not start: ${child.error.message}`;
   const status = child.status === null ? "no exit status" : `exit status ${child.status}`;
@@ -740,6 +759,7 @@ async function runChild({
   if (
     !child ||
     child.error ||
+    child.lifecycleError ||
     child.status !== 0 ||
     child.signal !== null ||
     child.timedOut ||
