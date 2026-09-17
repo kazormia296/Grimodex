@@ -1190,6 +1190,51 @@ impl Drop for NarrativeMaintenanceAdmissionReopenGuard {
     }
 }
 
+/// Finish the structured result from the shared workspace opener. Restore-only
+/// outcomes deliberately leave `WorkspaceState` without a Database authority;
+/// they therefore bind the recovery target and preserve the outcome directly,
+/// while Ready/Migrated outcomes reopen maintenance against their new binding.
+fn finish_workspace_open_success(
+    state: &AppState,
+    path: &str,
+    opened: grimodex_db::recovery::WorkspaceOpenOutcome,
+    trace: &mut NativeWorkspaceOpenTrace,
+    admission_guard: &mut NarrativeMaintenanceAdmissionReopenGuard,
+) -> std::result::Result<String, AppError> {
+    let restore_only = opened.is_restore_only();
+    if restore_only {
+        state
+            .profile_egress
+            .bind_recovery_workspace(Some(path.to_string()));
+        // The shared opener intentionally leaves SafeMode/RecoveryRequired
+        // without a live authority.  Keep the maintenance admission closed
+        // for that restore-only binding; dropping an armed guard must not
+        // reopen it as an unwind fallback.
+        admission_guard.disarm();
+    } else {
+        admission_guard.reopen()?;
+    }
+
+    let serialize_span = trace.begin_span(NativeWorkspaceOpenSpanName::SerializeEvent);
+    state.events.emit(
+        "workspace:opened",
+        serde_json::json!({
+            "path": path,
+            "restoreOnly": restore_only,
+        }),
+    );
+    match serde_json::to_string(&opened) {
+        Ok(json) => {
+            trace.finish_span(serialize_span);
+            Ok(json)
+        }
+        Err(error) => {
+            trace.fail_span(serialize_span);
+            Err(AppError::Anyhow(anyhow::Error::from(error)))
+        }
+    }
+}
+
 /// Foreground extraction binding. `authority_id` may intentionally survive a
 /// cloned/restored Workspace, and the recovery `generation` rotates just after
 /// authority publication. The process-local authority instance therefore
@@ -6021,43 +6066,13 @@ impl Backend {
             }));
             drop(before_swap);
             let result = match opened_result {
-                Ok(Ok(opened)) => {
-                    // Safe Mode / RecoveryRequired return before the shared
-                    // authority-swap hook by design. Bind that restore target
-                    // explicitly before emitting the event, otherwise main
-                    // would issue identities for this path while Native still
-                    // retained the previous workspace (or None).
-                    let restore_only = opened.is_restore_only();
-                    if restore_only {
-                        state
-                            .profile_egress
-                            .bind_recovery_workspace(Some(path.clone()));
-                    }
-                    match admission_guard.reopen() {
-                        Ok(()) => {
-                            let serialize_span =
-                                trace.begin_span(NativeWorkspaceOpenSpanName::SerializeEvent);
-                            state.events.emit(
-                                "workspace:opened",
-                                serde_json::json!({
-                                    "path": path,
-                                    "restoreOnly": restore_only,
-                                }),
-                            );
-                            match serde_json::to_string(&opened) {
-                                Ok(json) => {
-                                    trace.finish_span(serialize_span);
-                                    Ok(json)
-                                }
-                                Err(error) => {
-                                    trace.fail_span(serialize_span);
-                                    Err(AppError::Anyhow(anyhow::Error::from(error)))
-                                }
-                            }
-                        }
-                        Err(error) => Err(error),
-                    }
-                }
+                Ok(Ok(opened)) => finish_workspace_open_success(
+                    &state,
+                    &path,
+                    opened,
+                    &mut trace,
+                    &mut admission_guard,
+                ),
                 Ok(Err(error)) => {
                     // The pre-swap admission close also covers errors before
                     // authority publication. Reopen against whichever old
@@ -12571,6 +12586,128 @@ mod narrative_maintenance_admission_unwind_tests {
         .await;
 
         drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod native_open_restore_only_tests {
+    use super::*;
+    use grimodex_db::recovery::SafeModeSession;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    fn restore_only_state(root: &Path, error_code: Option<&str>) -> Arc<AppState> {
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace directory");
+        let state = Arc::new(
+            AppState::new(
+                &root.to_string_lossy(),
+                &root.join("resources").to_string_lossy(),
+            )
+            .expect("app state"),
+        );
+        let session = SafeModeSession::from_workspace(
+            workspace,
+            "WORKSPACE_SAFE_MODE: native restore-only regression".to_string(),
+            error_code.map(str::to_string),
+            None,
+        )
+        .expect("restore-only session");
+        state.ws.safe_mode.enter(session).expect("enter Safe Mode");
+        state
+    }
+
+    #[tokio::test]
+    async fn production_open_returns_safe_mode_without_reopening_admission() {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-open-safe-mode-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("test root");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace directory");
+        let database = Database::new(&workspace.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.pragma_update(None, "user_version", grimodex_core::SCHEMA_VERSION + 1)?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("newer schema fixture");
+        drop(database);
+
+        let state = Arc::new(
+            AppState::new(
+                &root.to_string_lossy(),
+                &root.join("resources").to_string_lossy(),
+            )
+            .expect("app state"),
+        );
+        state
+            .narrative_maintenance_recovery_gate
+            .close_for_workspace_swap()
+            .expect("close admission");
+        let backend = Backend {
+            state: Arc::clone(&state),
+        };
+
+        let result = backend
+            .open_workspace(workspace.to_string_lossy().into_owned())
+            .await
+            .expect("Safe Mode is a structured open outcome");
+        let result: serde_json::Value = serde_json::from_str(&result).expect("Safe Mode JSON");
+        assert_eq!(result["status"], "safe-mode");
+        assert!(result["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("newer")));
+        assert!(state.ws.safe_mode.is_active());
+        assert!(state
+            .narrative_maintenance_recovery_gate
+            .maintenance_admission_is_closed());
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn production_open_preserves_recovery_required_without_reopening_admission() {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-open-recovery-required-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let state = restore_only_state(&root, Some("MIGRATION_REOPEN_FAILED"));
+        state
+            .narrative_maintenance_recovery_gate
+            .close_for_workspace_swap()
+            .expect("close admission");
+        let mut trace = NativeWorkspaceOpenTrace::new(false);
+        let mut admission_guard = NarrativeMaintenanceAdmissionReopenGuard::new(Arc::clone(&state));
+        let path = root.join("workspace");
+        let result = finish_workspace_open_success(
+            &state,
+            &path.to_string_lossy(),
+            grimodex_db::recovery::WorkspaceOpenOutcome::RecoveryRequired {
+                reason: "WORKSPACE_SAFE_MODE: migration failed after live replace".to_string(),
+                error_code: "MIGRATION_REOPEN_FAILED".to_string(),
+                snapshot_id: Some("rc_snapshot".to_string()),
+                candidates: Vec::new(),
+            },
+            &mut trace,
+            &mut admission_guard,
+        )
+        .expect("RecoveryRequired is a structured open outcome");
+        let result: serde_json::Value =
+            serde_json::from_str(&result).expect("RecoveryRequired JSON");
+        assert_eq!(result["status"], "recovery-required");
+        assert_eq!(result["errorCode"], "MIGRATION_REOPEN_FAILED");
+        assert_eq!(result["snapshotId"], "rc_snapshot");
+        assert!(state.ws.safe_mode.is_active());
+        assert!(state
+            .narrative_maintenance_recovery_gate
+            .maintenance_admission_is_closed());
         let _ = std::fs::remove_dir_all(root);
     }
 }
