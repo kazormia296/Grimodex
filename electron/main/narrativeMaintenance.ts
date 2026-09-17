@@ -44,6 +44,16 @@ export interface NarrativeMaintenanceWorkspaceBinding {
   generation: number;
 }
 
+/**
+ * Main-owned lease for a workspace switch quiescence transition.  A lease
+ * can resume retained backlog only while it is still the newest switch owner;
+ * an older overlapping switch therefore cannot reopen work behind a newer
+ * transition.
+ */
+export interface NarrativeMaintenanceQuiesceLease {
+  resume(): void;
+}
+
 interface PendingNarrativeMaintenanceWork extends NarrativeMaintenanceWork {
   /**
    * Queue-only metadata; never serialized into a Rust work item. The `null`
@@ -176,7 +186,9 @@ export interface NarrativeMaintenanceScheduler {
     timerScheduled: boolean;
   };
   /** Stop scheduling, cancel the active attempt, and await its terminal receipt. */
-  quiesceForWorkspaceSwitch?(): Promise<void>;
+  quiesceForWorkspaceSwitch?(): Promise<
+    NarrativeMaintenanceQuiesceLease | undefined | void
+  >;
   beginNarrativeMaintenanceAttempt?(
     attemptId: string,
     workspaceBinding: NarrativeMaintenanceWorkspaceBinding,
@@ -876,8 +888,10 @@ export function createNarrativeMaintenanceScheduler(
   let disposed = false;
   let inFlight = false;
   let inFlightPromise: Promise<void> | null = null;
-  let pendingAttemptBegin: Promise<void> | null = null;
+  const pendingAttemptBegins = new Map<string, Promise<void>>();
   let quiescing = false;
+  let quiesceOwnerGeneration = 0;
+  let quiesceTransition: Promise<void> | null = null;
   let activeAttemptId: string | null = null;
   // The presence of Native lifecycle methods is only a capability.  An
   // attempt becomes Native-owned after the exact begin acknowledgement has
@@ -885,6 +899,8 @@ export function createNarrativeMaintenanceScheduler(
   // backends continue through the process-local fallback without being able
   // to fabricate a Native terminal receipt.
   const nativeAttemptIds = new Set<string>();
+  const ownedAttemptIds = new Set<string>();
+  const cancellationFlights = new Map<string, Promise<unknown>>();
   let terminalReceiptFailure: Error | null = null;
   const activeAttemptController = createNarrativeMaintenanceAttemptController();
   let cycleGeneration = 0;
@@ -939,9 +955,13 @@ export function createNarrativeMaintenanceScheduler(
       timer = null;
       const cycle = runCycle();
       inFlightPromise = cycle;
-      void cycle.finally(() => {
-        if (inFlightPromise === cycle) inFlightPromise = null;
-      });
+      void cycle
+        .finally(() => {
+          if (inFlightPromise === cycle) inFlightPromise = null;
+        })
+        .catch((error: unknown) => {
+          warn("[narrative-maintenance] cycle promise rejected:", error);
+        });
     }, delayMs);
   };
 
@@ -1027,12 +1047,18 @@ export function createNarrativeMaintenanceScheduler(
     attemptId: string,
     binding: NarrativeMaintenanceWorkspaceBinding,
   ): Promise<void> => {
-    if (activeAttemptId !== null && activeAttemptId !== attemptId) {
+    if (
+      (activeAttemptId !== null && activeAttemptId !== attemptId) ||
+      [...pendingAttemptBegins.keys()].some((id) => id !== attemptId)
+    ) {
       throw new Error(
         "NEX_MAINTENANCE_ATTEMPT_ACTIVE: another maintenance attempt is already active",
       );
     }
     const begin = backend?.beginNarrativeMaintenanceAttempt;
+    if (typeof begin === "function") {
+      activeAttemptController.markNativeRegistrationPending(attemptId);
+    }
     const registration = (async () => {
       if (typeof begin === "function") {
         const rawReceipt = await begin.call(backend, attemptId, binding);
@@ -1049,6 +1075,8 @@ export function createNarrativeMaintenanceScheduler(
           }
           activeAttemptController.markNativeOwned(attemptId);
           nativeAttemptIds.add(attemptId);
+        } else {
+          activeAttemptController.markNativeRegistrationResolved(attemptId);
         }
       }
       // Publish the active id only after Native has accepted the binding. A
@@ -1056,7 +1084,7 @@ export function createNarrativeMaintenanceScheduler(
       // cancellation against a known Native attempt, never an UNKNOWN id.
       activeAttemptId = attemptId;
     })();
-    pendingAttemptBegin = registration;
+    pendingAttemptBegins.set(attemptId, registration);
     try {
       await registration;
     } catch (error) {
@@ -1064,11 +1092,14 @@ export function createNarrativeMaintenanceScheduler(
       // placeholder only for this pre-registration failure; once Native has
       // accepted the attempt, all later terminalization must come from its
       // receipt.
+      activeAttemptController.markNativeRegistrationResolved(attemptId);
       activeAttemptController.settle(attemptId, { state: "interrupted" });
       nativeAttemptIds.delete(attemptId);
       throw error;
     } finally {
-      if (pendingAttemptBegin === registration) pendingAttemptBegin = null;
+      if (pendingAttemptBegins.get(attemptId) === registration) {
+        pendingAttemptBegins.delete(attemptId);
+      }
     }
   };
 
@@ -1086,6 +1117,17 @@ export function createNarrativeMaintenanceScheduler(
     });
   };
 
+  const retainAttemptOwner = (attemptId: string): void => {
+    if (ownedAttemptIds.has(attemptId)) return;
+    activeAttemptController.retainOwner(attemptId);
+    ownedAttemptIds.add(attemptId);
+  };
+
+  const releaseAttemptOwner = (attemptId: string): void => {
+    if (!ownedAttemptIds.delete(attemptId)) return;
+    activeAttemptController.releaseOwner(attemptId);
+  };
+
   const assertReusableTerminalReceipt = (
     receipt: Awaited<
       ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>
@@ -1098,30 +1140,83 @@ export function createNarrativeMaintenanceScheduler(
     }
   };
 
+  const cancelAttemptById = async (
+    attemptId: string,
+    reason: NarrativeMaintenanceStopReason,
+  ): Promise<
+    Awaited<ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>>
+  > => {
+    const existingFlight = cancellationFlights.get(attemptId);
+    if (existingFlight) {
+      return (await existingFlight) as Awaited<
+        ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>
+      >;
+    }
+    const operation = (async () => {
+      const localCancellation = activeAttemptController.requestStop(
+        attemptId,
+        reason,
+      );
+      // A direct cancel may race the Native begin call.  Await this exact
+      // registration rather than consulting the scheduler's current active
+      // id, which is deliberately unpublished until the binding ACK arrives.
+      const pendingBegin = pendingAttemptBegins.get(attemptId);
+      if (pendingBegin) await pendingBegin.catch(() => undefined);
+      const cancel = backend?.cancelNarrativeMaintenanceAttempt;
+      const nativeRawReceipt =
+        nativeAttemptIds.has(attemptId) && typeof cancel === "function"
+          ? await cancel.call(backend, attemptId, reason)
+          : undefined;
+      let nativeReceipt:
+        | Awaited<ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>>
+        | undefined;
+      if (nativeRawReceipt !== undefined) {
+        const parsedReceipt =
+          parseNarrativeMaintenanceTerminalReceipt(nativeRawReceipt);
+        try {
+          assertReusableTerminalReceipt(parsedReceipt);
+        } catch (error) {
+          terminalReceiptFailure =
+            error instanceof Error ? error : new Error(String(error));
+          throw error;
+        }
+        nativeReceipt = activeAttemptController.adoptTerminalReceipt(
+          attemptId,
+          parsedReceipt,
+        );
+        nativeAttemptIds.delete(attemptId);
+        terminalReceiptFailure = null;
+      }
+      const localReceipt = await localCancellation;
+      if (
+        !inFlight &&
+        activeAttemptId === attemptId &&
+        !nativeAttemptIds.has(attemptId)
+      ) {
+        activeAttemptId = null;
+      }
+      if (!inFlight || activeAttemptId !== attemptId) {
+        releaseAttemptOwner(attemptId);
+      }
+      return nativeReceipt ?? localReceipt;
+    })();
+    cancellationFlights.set(attemptId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (cancellationFlights.get(attemptId) === operation) {
+        cancellationFlights.delete(attemptId);
+      }
+    }
+  };
+
   const cancelActiveAttempt = async (
     reason: NarrativeMaintenanceStopReason,
   ): Promise<void> => {
-    const attemptId = activeAttemptId;
-    if (!attemptId) return;
-    const cancel = backend?.cancelNarrativeMaintenanceAttempt;
-    const localCancellation = activeAttemptController.requestStop(
-      attemptId,
-      reason,
-    );
-    const nativeReceipt =
-      nativeAttemptIds.has(attemptId) && typeof cancel === "function"
-        ? await cancel.call(backend, attemptId, reason)
-        : undefined;
-    if (nativeReceipt !== undefined) {
-      const parsedReceipt = parseNarrativeMaintenanceTerminalReceipt(nativeReceipt);
-      assertReusableTerminalReceipt(parsedReceipt);
-      activeAttemptController.adoptTerminalReceipt(
-        attemptId,
-        parsedReceipt,
-      );
-      terminalReceiptFailure = null;
-    }
-    await localCancellation;
+    const attemptId =
+      activeAttemptId ?? pendingAttemptBegins.keys().next().value ?? null;
+    if (typeof attemptId !== "string") return;
+    await cancelAttemptById(attemptId, reason);
   };
 
   const runCycle = async (): Promise<void> => {
@@ -1356,6 +1451,7 @@ export function createNarrativeMaintenanceScheduler(
             cycleAttemptId,
             parsedReceipt,
           );
+          nativeAttemptIds.delete(cycleAttemptId);
           nativeReceiptAdopted = true;
           terminalReceiptFailure = null;
           if (parsedReceipt.state === "interrupted") {
@@ -1364,7 +1460,15 @@ export function createNarrativeMaintenanceScheduler(
           }
         } else if (!activeAttemptController.grantFinalize(cycleAttemptId)) {
           interruptedCycle = true;
-          settleAttempt("interrupted");
+          // A concurrent quiesce/cancel may already have adopted Native's
+          // terminal receipt.  That receipt is authoritative and cannot be
+          // replaced by a local placeholder; only the pre-receipt fallback
+          // remains eligible for local settlement here.
+          const attemptSnapshot =
+            activeAttemptController.snapshot(cycleAttemptId);
+          if (attemptSnapshot?.state === "stop-requested") {
+            settleAttempt("interrupted");
+          }
           throw new Error("NEX_MAINTENANCE_ATTEMPT_CANCELLED");
         } else {
           settleAttempt("succeeded", cycleBinding?.generation ?? null);
@@ -1434,9 +1538,8 @@ export function createNarrativeMaintenanceScheduler(
           try {
             await cancelActiveAttempt("closed");
             nativeReceiptAdopted = true;
-            const nativeSnapshot = activeAttemptController.snapshot(
-              cycleAttemptId,
-            );
+            const nativeSnapshot =
+              activeAttemptController.snapshot(cycleAttemptId);
             interruptedCycle = nativeSnapshot?.state === "interrupted";
           } catch (receiptError) {
             // Keep the Native-backed attempt unresolved when cleanup cannot be
@@ -1665,6 +1768,13 @@ export function createNarrativeMaintenanceScheduler(
         activeAttemptId = null;
         if (cycleAttemptId) nativeAttemptIds.delete(cycleAttemptId);
       }
+      if (
+        cycleAttemptId &&
+        !nativeAttemptIds.has(cycleAttemptId) &&
+        activeAttemptId !== cycleAttemptId
+      ) {
+        releaseAttemptOwner(cycleAttemptId);
+      }
       noteMutation();
       if (
         !disposed &&
@@ -1747,6 +1857,7 @@ export function createNarrativeMaintenanceScheduler(
     workItems: readonly NarrativeMaintenanceWork[],
   ): Promise<void> => {
     activeAttemptController.begin(attemptId, binding);
+    retainAttemptOwner(attemptId);
     for (const work of workItems) {
       const identity = canonicalNarrativeMaintenanceWorkKey(work);
       activeAttemptController.addWork(attemptId, identity);
@@ -1754,14 +1865,15 @@ export function createNarrativeMaintenanceScheduler(
     await registerAttempt(attemptId, binding);
   };
 
-  const quiesceForWorkspaceSwitch = async (): Promise<void> => {
-    if (disposed) return;
+  const performWorkspaceQuiesce = async (): Promise<void> => {
     quiescing = true;
     clearTimer();
     clearCoordinatorWait();
-    const pendingBegin = pendingAttemptBegin;
-    if (pendingBegin) {
-      await pendingBegin.catch(() => undefined);
+    const pendingBegins = [...pendingAttemptBegins.values()];
+    if (pendingBegins.length > 0) {
+      await Promise.all(
+        pendingBegins.map((pending) => pending.catch(() => undefined)),
+      );
     }
     await cancelActiveAttempt("workspace-generation-changed");
     const running = inFlightPromise;
@@ -1769,6 +1881,40 @@ export function createNarrativeMaintenanceScheduler(
     if (terminalReceiptFailure) {
       throw terminalReceiptFailure;
     }
+  };
+
+  const quiesceForWorkspaceSwitch = async (): Promise<
+    NarrativeMaintenanceQuiesceLease | undefined
+  > => {
+    if (disposed) return undefined;
+    const ownerGeneration = ++quiesceOwnerGeneration;
+    if (quiesceTransition === null) {
+      quiesceTransition = performWorkspaceQuiesce().finally(() => {
+        quiesceTransition = null;
+      });
+    }
+    await quiesceTransition;
+    return {
+      resume: () => {
+        if (
+          disposed ||
+          terminalReceiptFailure !== null ||
+          ownerGeneration !== quiesceOwnerGeneration ||
+          !quiescing
+        ) {
+          return;
+        }
+        quiescing = false;
+        if (
+          started &&
+          !inFlight &&
+          timer === null &&
+          (hasRunnablePendingWork() || hasRunnableWake())
+        ) {
+          schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
+        }
+      },
+    };
   };
 
   const enqueue = (
@@ -1891,39 +2037,24 @@ export function createNarrativeMaintenanceScheduler(
         throw new Error("native maintenance attempt binding is unavailable");
       }
       activeAttemptController.begin(attemptId, normalizedBinding);
-      await registerAttempt(attemptId, normalizedBinding);
+      retainAttemptOwner(attemptId);
+      try {
+        await registerAttempt(attemptId, normalizedBinding);
+      } catch (error) {
+        releaseAttemptOwner(attemptId);
+        throw error;
+      }
       return undefined;
     },
 
     async cancelNarrativeMaintenanceAttempt(attemptId, reason) {
-      const cancel = backend?.cancelNarrativeMaintenanceAttempt;
-      const localCancellation = activeAttemptController.requestStop(
-        attemptId,
-        reason,
-      );
-      const nativeRawReceipt =
-        nativeAttemptIds.has(attemptId) && typeof cancel === "function"
-          ? await cancel.call(backend, attemptId, reason)
-          : undefined;
-      const nativeReceipt =
-        nativeRawReceipt === undefined
-          ? undefined
-          : (() => {
-              const parsedReceipt =
-                parseNarrativeMaintenanceTerminalReceipt(nativeRawReceipt);
-              assertReusableTerminalReceipt(parsedReceipt);
-              return activeAttemptController.adoptTerminalReceipt(
-                attemptId,
-                parsedReceipt,
-              );
-            })();
-      if (nativeReceipt !== undefined) nativeAttemptIds.delete(attemptId);
-      const localReceipt = await localCancellation;
-      return nativeReceipt ?? localReceipt;
+      return cancelAttemptById(attemptId, reason);
     },
 
-    async quiesceForWorkspaceSwitch(): Promise<void> {
-      await quiesceForWorkspaceSwitch();
+    async quiesceForWorkspaceSwitch(): Promise<
+      NarrativeMaintenanceQuiesceLease | undefined
+    > {
+      return quiesceForWorkspaceSwitch();
     },
 
     async dispose(): Promise<void> {

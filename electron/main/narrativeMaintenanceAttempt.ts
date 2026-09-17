@@ -79,8 +79,19 @@ export interface NarrativeMaintenanceAttemptController {
     binding: NarrativeMaintenanceAttemptBinding,
   ): NarrativeMaintenanceAttemptSnapshot;
   addWork(attemptId: string, workKey: string): void;
+  /**
+   * Mark the Native begin call as pending.  A direct stop request must wait
+   * for this exact registration before it can decide whether local fallback
+   * terminalization is safe.
+   */
+  markNativeRegistrationPending(attemptId: string): void;
+  /** Resolve a pending Native begin without establishing Native ownership. */
+  markNativeRegistrationResolved(attemptId: string): void;
   /** Mark the attempt as Native-owned after the exact begin acknowledgement. */
   markNativeOwned(attemptId: string): void;
+  /** Retain/release a main-side owner of the attempt record. */
+  retainOwner(attemptId: string): void;
+  releaseOwner(attemptId: string): void;
   markWorkStarted(attemptId: string, workKey: string): void;
   requestStop(
     attemptId: string,
@@ -112,6 +123,8 @@ export interface NarrativeMaintenanceAttemptController {
   ): Promise<NarrativeMaintenanceTerminalReceipt>;
   activeAttemptIds(): readonly string[];
 }
+
+export const NARRATIVE_MAINTENANCE_MAX_TERMINAL_RECEIPTS = 256;
 
 const stopReasons = new Set<NarrativeMaintenanceStopReason>([
   "cancelled",
@@ -268,7 +281,9 @@ interface MutableAttempt {
   state: NarrativeMaintenanceAttemptState;
   stopReason: NarrativeMaintenanceStopReason | null;
   works: Map<string, MutableWorkTerminal>;
+  nativeRegistrationPending: boolean;
   nativeOwned: boolean;
+  ownerCount: number;
   terminal: NarrativeMaintenanceTerminalReceipt | null;
   terminalSource: "local" | "native" | null;
   waiters: Array<(
@@ -355,6 +370,41 @@ function makeTerminalReceipt(
  */
 export function createNarrativeMaintenanceAttemptController(): NarrativeMaintenanceAttemptController {
   const attempts = new Map<string, MutableAttempt>();
+  // Keep a small receipt cache after the owning record is evicted.  A late
+  // waiter therefore still receives the exact Native receipt even after the
+  // scheduler has released its owner reference.
+  const terminalReceipts = new Map<
+    string,
+    NarrativeMaintenanceTerminalReceipt
+  >();
+
+  const cacheTerminalReceipt = (
+    receipt: NarrativeMaintenanceTerminalReceipt,
+  ): void => {
+    terminalReceipts.delete(receipt.attemptId);
+    terminalReceipts.set(receipt.attemptId, receipt);
+    while (
+      terminalReceipts.size > NARRATIVE_MAINTENANCE_MAX_TERMINAL_RECEIPTS
+    ) {
+      const oldestAttemptId = terminalReceipts.keys().next().value;
+      if (typeof oldestAttemptId !== "string") break;
+      terminalReceipts.delete(oldestAttemptId);
+    }
+  };
+
+  const maybeEvict = (attempt: MutableAttempt): void => {
+    if (
+      attempt.terminal === null ||
+      attempt.terminalSource !== "native" ||
+      attempt.nativeRegistrationPending ||
+      attempt.ownerCount > 0 ||
+      attempt.waiters.length > 0
+    ) {
+      return;
+    }
+    attempts.delete(attempt.attemptId);
+    cacheTerminalReceipt(attempt.terminal);
+  };
 
   const requireAttempt = (attemptId: string): MutableAttempt => {
     assertAttemptId(attemptId);
@@ -410,6 +460,9 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
     begin(attemptId, binding) {
       assertAttemptId(attemptId);
       assertBinding(binding);
+      if (terminalReceipts.has(attemptId)) {
+        throw new Error("maintenance attempt id is still terminally cached");
+      }
       const existing = attempts.get(attemptId);
       if (existing) {
         if (
@@ -427,7 +480,9 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
         state: "open",
         stopReason: null,
         works: new Map(),
+        nativeRegistrationPending: false,
         nativeOwned: false,
+        ownerCount: 0,
         terminal: null,
         terminalSource: null,
         waiters: [],
@@ -451,12 +506,46 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
       }
     },
 
+    markNativeRegistrationPending(attemptId) {
+      const attempt = requireAttempt(attemptId);
+      if (attempt.terminal) {
+        throw new Error(
+          "cannot mark a terminal maintenance attempt registration-pending",
+        );
+      }
+      attempt.nativeRegistrationPending = true;
+    },
+
+    markNativeRegistrationResolved(attemptId) {
+      const attempt = requireAttempt(attemptId);
+      attempt.nativeRegistrationPending = false;
+    },
+
     markNativeOwned(attemptId) {
       const attempt = requireAttempt(attemptId);
       if (attempt.terminal) {
         throw new Error("cannot mark a terminal maintenance attempt Native-owned");
       }
+      attempt.nativeRegistrationPending = false;
       attempt.nativeOwned = true;
+    },
+
+    retainOwner(attemptId) {
+      const attempt = requireAttempt(attemptId);
+      if (attempt.terminal) {
+        throw new Error("cannot retain a terminal maintenance attempt");
+      }
+      attempt.ownerCount += 1;
+    },
+
+    releaseOwner(attemptId) {
+      const attempt = attempts.get(attemptId);
+      if (!attempt) return;
+      if (attempt.ownerCount <= 0) {
+        throw new Error("maintenance attempt owner underflow");
+      }
+      attempt.ownerCount -= 1;
+      maybeEvict(attempt);
     },
 
     markWorkStarted(attemptId, workKey) {
@@ -477,7 +566,11 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
         attempt.state = "stop-requested";
         attempt.stopReason = reason;
         // A begin/cancel race with no work has no native operation to wait on.
-        if (attempt.works.size === 0 && !attempt.nativeOwned) {
+        if (
+          attempt.works.size === 0 &&
+          !attempt.nativeOwned &&
+          !attempt.nativeRegistrationPending
+        ) {
           return settle(attempt, { state: "interrupted" });
         }
       }
@@ -494,7 +587,18 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
     },
 
     settle(attemptId, outcome) {
-      return settle(requireAttempt(attemptId), outcome);
+      const attempt = requireAttempt(attemptId);
+      if (attempt.nativeRegistrationPending) {
+        throw new Error(
+          "cannot locally terminalize a maintenance attempt while Native registration is pending",
+        );
+      }
+      if (attempt.nativeOwned) {
+        throw new Error(
+          "cannot locally terminalize a Native-owned maintenance attempt",
+        );
+      }
+      return settle(attempt, outcome);
     },
 
     adoptTerminalReceipt(attemptId, receipt) {
@@ -510,6 +614,11 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
         receipt.workspaceBinding.generation !== attempt.generation
       ) {
         throw new Error("maintenance terminal receipt binding mismatch");
+      }
+      if (!attempt.nativeOwned) {
+        throw new Error(
+          "cannot adopt a Native terminal receipt before Native begin ownership",
+        );
       }
       if (attempt.terminal) {
         if (attempt.nativeOwned && attempt.terminalSource !== "native") {
@@ -549,7 +658,13 @@ export function createNarrativeMaintenanceAttemptController(): NarrativeMaintena
     },
 
     waitForTerminal(attemptId) {
-      const attempt = requireAttempt(attemptId);
+      assertAttemptId(attemptId);
+      const cached = terminalReceipts.get(attemptId);
+      if (cached) return Promise.resolve(cached);
+      const attempt = attempts.get(attemptId);
+      if (!attempt) {
+        throw new Error(`unknown maintenance attempt: ${attemptId}`);
+      }
       if (attempt.terminal) return Promise.resolve(attempt.terminal);
       return new Promise((resolve) => attempt.waiters.push(resolve));
     },

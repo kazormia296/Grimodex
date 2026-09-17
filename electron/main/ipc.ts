@@ -55,7 +55,10 @@ import type {
   MainIssuedCallerIdentity,
   ProfileEgressGate,
 } from "./profileEgress.js";
-import type { NarrativeMaintenanceScheduler } from "./narrativeMaintenance.js";
+import type {
+  NarrativeMaintenanceQuiesceLease,
+  NarrativeMaintenanceScheduler,
+} from "./narrativeMaintenance.js";
 
 const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_create",
@@ -67,6 +70,12 @@ const MANUAL_LICENSE_COMMANDS = new Set([
   "activate_license",
   "revalidate_license",
   "deactivate_license",
+]);
+
+const WORKSPACE_SWITCH_COMMANDS = new Set([
+  "open_workspace",
+  "restore_backup",
+  "restore_recovery_candidate",
 ]);
 
 // Scan publication is an import-only canonical writer. Keep it out of the
@@ -2072,6 +2081,7 @@ export function registerIpcRouter(
         ? performance.now()
         : null;
       let workspaceOpenResult: "success" | "failure" = "failure";
+      let workspaceSwitchLease: NarrativeMaintenanceQuiesceLease | undefined;
       try {
         if (typeof cmd !== "string") {
           return {
@@ -2132,8 +2142,15 @@ export function registerIpcRouter(
           });
         let envelope: Envelope;
         try {
-          if (cmd === "open_workspace") {
-            await narrativeMaintenance?.quiesceForWorkspaceSwitch?.();
+          if (WORKSPACE_SWITCH_COMMANDS.has(cmd)) {
+            const quiesceResult =
+              await narrativeMaintenance?.quiesceForWorkspaceSwitch?.();
+            workspaceSwitchLease =
+              quiesceResult &&
+              typeof quiesceResult === "object" &&
+              typeof quiesceResult.resume === "function"
+                ? quiesceResult
+                : undefined;
           }
           envelope =
             licenseValidation && MANUAL_LICENSE_COMMANDS.has(cmd)
@@ -2245,6 +2262,20 @@ export function registerIpcRouter(
               event.sender.id,
               projectId,
               journalId,
+            );
+          }
+        }
+        if (!envelope.ok && workspaceSwitchLease) {
+          try {
+            // Restore retained maintenance backlog only when this invocation
+            // still owns the quiesce transition.  The lease itself rejects
+            // stale/overlapping resumes and remains closed after cleanup
+            // failure.
+            await workspaceSwitchLease.resume();
+          } catch (resumeError) {
+            console.warn(
+              "[narrative-maintenance] failed to resume retained backlog after workspace switch failure:",
+              resumeError,
             );
           }
         }

@@ -153,15 +153,29 @@ describe("narrative maintenance attempt linearization", () => {
     expect(attempts.snapshot("attempt-native-empty")?.state).toBe("succeeded");
   });
 
-  it("rejects a local placeholder for a Native-owned attempt", () => {
+  it("keeps an empty attempt pending while Native begin registration is unresolved", async () => {
     const attempts = controller();
-    attempts.begin("attempt-native-placeholder", binding);
-    attempts.markNativeOwned("attempt-native-placeholder");
-    attempts.settle("attempt-native-placeholder", { state: "interrupted" });
+    attempts.begin("attempt-registration-pending", binding);
+    attempts.markNativeRegistrationPending("attempt-registration-pending");
 
+    const cancellation = attempts.requestStop(
+      "attempt-registration-pending",
+      "closed",
+    );
+    let resolved = false;
+    void cancellation.then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    expect(attempts.snapshot("attempt-registration-pending")?.state).toBe(
+      "stop-requested",
+    );
+
+    attempts.markNativeOwned("attempt-registration-pending");
     const receipt = parseNarrativeMaintenanceTerminalReceipt({
       schemaVersion: 1,
-      attemptId: "attempt-native-placeholder",
+      attemptId: "attempt-registration-pending",
       state: "interrupted",
       stopReason: "closed",
       generation: binding.generation,
@@ -171,9 +185,44 @@ describe("narrative maintenance attempt linearization", () => {
       cleanup: { status: "clean" },
       connectionReusable: true,
     });
+    attempts.adoptTerminalReceipt("attempt-registration-pending", receipt);
+    await expect(cancellation).resolves.toEqual(receipt);
+  });
+
+  it("rejects a local placeholder for a Native-owned attempt", () => {
+    const attempts = controller();
+    attempts.begin("attempt-native-placeholder", binding);
+    attempts.markNativeOwned("attempt-native-placeholder");
     expect(() =>
-      attempts.adoptTerminalReceipt("attempt-native-placeholder", receipt),
-    ).toThrow(/locally terminalized/);
+      attempts.settle("attempt-native-placeholder", { state: "interrupted" }),
+    ).toThrow(/Native-owned/);
+  });
+
+  it("evicts an adopted Native terminal record after its owner releases while preserving late waiters", async () => {
+    const attempts = controller();
+    attempts.begin("attempt-evict", binding);
+    attempts.retainOwner("attempt-evict");
+    attempts.markNativeOwned("attempt-evict");
+    const receipt = parseNarrativeMaintenanceTerminalReceipt({
+      schemaVersion: 1,
+      attemptId: "attempt-evict",
+      state: "succeeded",
+      stopReason: null,
+      generation: binding.generation,
+      workspaceBinding: binding,
+      publishedGeneration: binding.generation,
+      works: [],
+      cleanup: { status: "clean" },
+      connectionReusable: true,
+    });
+    attempts.adoptTerminalReceipt("attempt-evict", receipt);
+    expect(attempts.snapshot("attempt-evict")).not.toBeNull();
+
+    attempts.releaseOwner("attempt-evict");
+    expect(attempts.snapshot("attempt-evict")).toBeNull();
+    await expect(attempts.waitForTerminal("attempt-evict")).resolves.toEqual(
+      receipt,
+    );
   });
 
   it("parses the Native state wire field and binds cleanup to the exact workspace", () => {

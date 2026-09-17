@@ -1298,6 +1298,85 @@ describe("narrative maintenance scheduler", () => {
     expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
   });
 
+  it("waits for the exact pending begin before a direct cancel reaches Native", async () => {
+    const binding = { authorityId: "authority-direct-cancel", generation: 14 };
+    const begin = deferred<string>();
+    const cancel = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: "closed",
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
+    const backend = {
+      beginNarrativeMaintenanceAttempt: vi.fn(() => begin.promise),
+      cancelNarrativeMaintenanceAttempt: cancel,
+    };
+    const { scheduler } = createScheduler(backend);
+    const beginRequest = scheduler.beginNarrativeMaintenanceAttempt?.(
+      "attempt-direct-cancel",
+      binding,
+    );
+    const cancellation = scheduler.cancelNarrativeMaintenanceAttempt?.(
+      "attempt-direct-cancel",
+      "closed",
+    );
+    await Promise.resolve();
+    expect(cancel).not.toHaveBeenCalled();
+
+    begin.resolve(
+      JSON.stringify({
+        status: "open",
+        attemptId: "attempt-direct-cancel",
+        authorityId: binding.authorityId,
+        generation: binding.generation,
+      }),
+    );
+    await expect(beginRequest).resolves.toBeUndefined();
+    await expect(cancellation).resolves.toMatchObject({
+      attemptId: "attempt-direct-cancel",
+      state: "interrupted",
+    });
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(
+      "attempt-direct-cancel",
+      "closed",
+    );
+  });
+
+  it("resumes retained backlog only through the newest quiesce lease", async () => {
+    const binding = { authorityId: "authority-resume", generation: 15 };
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(acceptedCycle());
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+    };
+    const { scheduler } = createScheduler(backend);
+    scheduler.request(
+      work("project-resume", "backfill", "backfill:v2", "open"),
+    );
+    scheduler.start();
+
+    const firstLease = await scheduler.quiesceForWorkspaceSwitch?.();
+    const secondLease = await scheduler.quiesceForWorkspaceSwitch?.();
+    expect(scheduler.getQuiescenceState?.().queueIdle).toBe(false);
+    firstLease?.resume();
+    expect(scheduler.getQuiescenceState?.().timerScheduled).toBe(false);
+    secondLease?.resume();
+    expect(scheduler.getQuiescenceState?.().timerScheduled).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+  });
+
   it("keeps an empty Native durable wake Native-owned", async () => {
     const binding = { authorityId: "authority-empty-wake", generation: 13 };
     let cycleCount = 0;

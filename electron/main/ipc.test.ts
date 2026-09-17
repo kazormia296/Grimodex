@@ -2003,6 +2003,50 @@ describe("registerIpcRouter workspace-open main trace", () => {
     expect(order).toEqual(["quiesce", "open"]);
   });
 
+  it.each([
+    {
+      command: "open_workspace",
+      args: { path: "/workspace-failure" },
+      method: "openWorkspace",
+    },
+    {
+      command: "restore_backup",
+      args: { fileName: "grimodex-20260711-120000.db" },
+      method: "restoreBackup",
+    },
+    {
+      command: "restore_recovery_candidate",
+      args: { candidateId: "rc_auto_1" },
+      method: "restoreRecoveryCandidate",
+    },
+  ] as const)(
+    "resumes retained maintenance backlog when $command fails",
+    async ({ command, args, method }) => {
+      const failingOperation = vi.fn(async () => {
+        throw new Error(`failure from ${command}`);
+      });
+      const resume = vi.fn();
+      const quiesceForWorkspaceSwitch = vi.fn(async () => ({ resume }));
+      registerIpcRouter(
+        { [method]: failingOperation } as unknown as NapiBackendLike,
+        {},
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { quiesceForWorkspaceSwitch },
+      );
+
+      const envelope = await invokeHandler()({ sender: {} }, command, args);
+
+      expect(envelope.ok).toBe(false);
+      expect(quiesceForWorkspaceSwitch).toHaveBeenCalledOnce();
+      expect(failingOperation).toHaveBeenCalledOnce();
+      expect(resume).toHaveBeenCalledOnce();
+    },
+  );
+
   it("emits one safe success summary when the dev trace is enabled", async () => {
     process.env.GRIMODEX_WORKSPACE_OPEN_TRACE = "1";
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
