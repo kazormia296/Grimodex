@@ -32,7 +32,34 @@ describe("narrative maintenance quit finalizer", () => {
     expect(exit).not.toHaveBeenCalled();
   });
 
-  it("keeps the first failure retryable and exits fatally after the bound", async () => {
+  it("retries a transient failure within one initial quit event", async () => {
+    const dispose = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("transient cleanup failed"))
+      .mockResolvedValue(undefined);
+    const complete = vi.fn();
+    const quit = vi.fn();
+    const exit = vi.fn();
+    const error = vi.fn();
+    const finalizer = createNarrativeMaintenanceQuitFinalizer({
+      dispose,
+      complete,
+      quit,
+      exit,
+      error,
+      maxAttempts: 3,
+    });
+
+    await finalizer(event());
+
+    expect(dispose).toHaveBeenCalledTimes(2);
+    expect(error).toHaveBeenCalledOnce();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(quit).toHaveBeenCalledOnce();
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it("exits fatally after the bounded retries in one quit event", async () => {
     const dispose = vi.fn().mockRejectedValue(new Error("cleanup failed"));
     const error = vi.fn();
     const quit = vi.fn();
@@ -47,15 +74,10 @@ describe("narrative maintenance quit finalizer", () => {
     });
 
     await finalizer(event());
-    expect(dispose).toHaveBeenCalledOnce();
-    expect(exit).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledOnce();
-
-    await finalizer(event());
-    await finalizer(event());
     expect(dispose).toHaveBeenCalledTimes(3);
     expect(exit).toHaveBeenCalledExactlyOnceWith(1);
     expect(quit).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(3);
   });
 
   it("does not start a second dispose for a reentrant will-quit", async () => {

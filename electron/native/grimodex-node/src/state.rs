@@ -1892,6 +1892,44 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_followup_cancel_while_running_preserves_prior_success() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-followup-running".to_string(),
+            generation: 4,
+        };
+        registry
+            .begin("attempt-followup-running", &binding)
+            .expect("begin");
+        registry
+            .start("attempt-followup-running", ["phase-one".to_string()])
+            .expect("start initial phase");
+        registry
+            .register_work("attempt-followup-running", "phase-two")
+            .expect("register dynamic phase");
+        registry
+            .mark_work_started("attempt-followup-running", "phase-two")
+            .expect("start dynamic phase");
+        registry
+            .grant_work_finalize("attempt-followup-running", "phase-one")
+            .expect("grant initial phase");
+        registry
+            .mark_work_succeeded("attempt-followup-running", "phase-one")
+            .expect("complete initial phase");
+        assert!(registry
+            .request_cancel("attempt-followup-running", "cancel-while-phase-two-running")
+            .expect("cancel dynamic phase")
+            .is_none());
+
+        let receipt = registry
+            .settle("attempt-followup-running", false, None)
+            .expect("interrupt dynamic phase");
+        assert_eq!(receipt.state, "interrupted");
+        assert_eq!(receipt.works[0].status, "succeeded");
+        assert_eq!(receipt.works[1].status, "interrupted");
+    }
+
+    #[test]
     fn terminal_receipt_preserves_failed_cleanup_and_non_reusable_connection() {
         let registry = NarrativeMaintenanceAttemptRegistry::default();
         let binding = MaintenanceWorkspaceBinding {

@@ -2419,6 +2419,24 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
         }
     }
 
+    // Keep the wire item in the queue so stale/epoch-less provenance remains
+    // available to the recovery branch, but register every effective identity
+    // before the first item can complete. Otherwise a two-item initial batch
+    // can let item one observe an apparently empty registry and close the
+    // attempt before item two has been dequeued.
+    let normalize_work_item = |item: &DesiredWork| -> anyhow::Result<DesiredWork> {
+        let recovery_work = recovery_work_key_for_item(db, item)?;
+        Ok(DesiredWork {
+            semantic_epoch_id: recovery_work.semantic_epoch_id.clone(),
+            ..item.clone()
+        })
+    };
+    if let Some(control) = control {
+        for item in &work {
+            let effective_item = normalize_work_item(item)?;
+            (control.register_work)(&effective_item)?;
+        }
+    }
     let mut queue = std::collections::VecDeque::from(work.clone());
     let mut dequeue_count = 0usize;
     let mut dispatched_any = false;
@@ -2490,7 +2508,8 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                               item: DesiredWork|
      -> anyhow::Result<()> {
         if let Some(control) = control {
-            (control.register_work)(&item)?;
+            let effective_item = normalize_work_item(&item)?;
+            (control.register_work)(&effective_item)?;
         }
         queue.push_back(item);
         Ok(())
@@ -2520,22 +2539,18 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
         // otherwise a StartupRecovery mode registered for the stale key can
         // be applied to the current-epoch key and terminalize a Run that is
         // live in this process.
-        let effective_item = DesiredWork {
-            semantic_epoch_id: recovery_work.semantic_epoch_id.clone(),
-            ..item.clone()
-        };
+        let effective_item = normalize_work_item(&item)?;
         if let Some(control) = control {
             // The durable planner may normalize a stale or epoch-less request
-            // to a different canonical identity.  Register that exact
-            // identity before marking it running; the Native attempt registry
-            // must never be asked to start an identity that was only present
-            // in the wire request.
-            (control.register_work)(&effective_item)?;
+            // to a different canonical identity. The exact identity was
+            // registered before this cycle began (or while it was enqueued as
+            // a follow-up); use that same value for start, adapter dispatch,
+            // finalization, and completion.
             (control.work_started)(&effective_item)?;
         }
 
         let foreground_run_is_held = if let Some(owned) = foreground_owned_run.as_ref() {
-            if !foreground_owned_run_matches_work(owned, &item)? {
+            if !foreground_owned_run_matches_work(owned, &effective_item)? {
                 false
             } else if let (Some(config), Some(binding)) =
                 (ci_config.as_ref(), request.workspace_binding.as_ref())
@@ -2568,7 +2583,10 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
         {
             let expected = verify_skip_expectation(
                 &item.project_id,
-                item.semantic_epoch_id.as_deref().unwrap_or_default(),
+                effective_item
+                    .semantic_epoch_id
+                    .as_deref()
+                    .unwrap_or_default(),
                 Some(&effective_coordinates),
             )?;
             let decision = db.with_conn(|conn| evaluate_completed_run_skip(conn, &expected))?;
@@ -2828,14 +2846,19 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                         request
                             .workspace_binding
                             .as_ref()
-                            .and_then(|binding| config.foreground_marker(&item, binding))
+                            .and_then(|binding| config.foreground_marker(&effective_item, binding))
                     })
                 } else {
                     None
                 };
                 with_system_work_marker(marker.clone(), || {
                     check_stop()?;
-                    dispatch_enabled_work(db, &item, Some(&effective_coordinates), control)
+                    dispatch_enabled_work(
+                        db,
+                        &effective_item,
+                        Some(&effective_coordinates),
+                        control,
+                    )
                 })?;
                 // Register the next phase before marking this item complete.
                 // The per-work completion transition may close the attempt
@@ -4250,6 +4273,9 @@ mod tests {
     use crate::Database;
     use rusqlite::params;
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::thread;
 
     fn recovery_work(kind: AutomaticRunKind, epoch_id: &str) -> WorkKey {
         let work_key = match kind {
@@ -4302,6 +4328,60 @@ mod tests {
             Ok(())
         })
         .expect("seed pending recovery project");
+        db
+    }
+
+    fn open_backfill_cycle_db(project_ids: &[&str]) -> Arc<Database> {
+        let db = Arc::new(Database::new(std::path::Path::new(":memory:")).expect("open database"));
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            for project_id in project_ids {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES (?1, ?1)",
+                    [*project_id],
+                )?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed backfill projects");
+        db
+    }
+
+    fn backfill_cycle_request(project_ids: &[&str]) -> MaintenanceCycleRequest {
+        MaintenanceCycleRequest {
+            work: project_ids
+                .iter()
+                .map(|project_id| MaintenanceWorkRequest {
+                    project_id: (*project_id).to_string(),
+                    run_kind: AutomaticRunKind::Backfill,
+                    work_key: LEGACY_BACKFILL_WORK_KEY.to_string(),
+                    semantic_epoch_id: None,
+                    reasons: vec!["lifecycle-test".to_string()],
+                })
+                .collect(),
+            wake_project_ids: Vec::new(),
+            workspace_binding: None,
+        }
+    }
+
+    fn open_epoch_normalization_db() -> Arc<Database> {
+        let db = Arc::new(Database::new(std::path::Path::new(":memory:")).expect("open database"));
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-current', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed current epoch");
         db
     }
 
@@ -5672,6 +5752,300 @@ mod tests {
         )
         .expect("rediscover changed evidence")
         .is_none());
+    }
+
+    #[test]
+    fn adapter_db_cancel_before_finalize_does_not_commit_terminal_success() {
+        let db = open_backfill_cycle_db(&["project-1"]);
+        let grant_called = Arc::new(AtomicBool::new(false));
+        let request = backfill_cycle_request(&["project-1"]);
+        let db_for_cycle = Arc::clone(&db);
+        let grant_called_for_cycle = Arc::clone(&grant_called);
+        let result = thread::spawn(move || {
+            let should_stop = || Ok::<_, anyhow::Error>(());
+            let grant_finalize = |_work_key: &str| -> anyhow::Result<()> {
+                grant_called_for_cycle.store(true, Ordering::SeqCst);
+                Err(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancel won before finalization"
+                ))
+            };
+            let register_work = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+            let work_started = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+            let work_completed = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+            let control = MaintenanceCycleControl {
+                should_stop: &should_stop,
+                grant_finalize: &grant_finalize,
+                register_work: &register_work,
+                work_started: &work_started,
+                work_completed: &work_completed,
+            };
+            run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+                &db_for_cycle,
+                &request,
+                |_| RecoveryMode::StartupRecovery,
+                None,
+                None,
+                Some(&control),
+            )
+        })
+        .join()
+        .expect("cycle thread");
+
+        assert!(
+            result.is_err(),
+            "cancel-before-finalize must abort the cycle"
+        );
+        assert!(grant_called.load(Ordering::SeqCst));
+        let completed: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_extraction_runs
+                      WHERE project_id = 'project-1'
+                        AND run_kind = 'backfill'
+                        AND status = 'completed'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read backfill completion");
+        assert_eq!(completed, 0, "cancelled final transaction must roll back");
+    }
+
+    #[test]
+    fn adapter_db_finalize_before_late_cancel_keeps_durable_success() {
+        let db = open_backfill_cycle_db(&["project-1"]);
+        let (grant_tx, grant_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let cancel_requested = Arc::new(AtomicBool::new(false));
+        let request = backfill_cycle_request(&["project-1"]);
+        let db_for_cycle = Arc::clone(&db);
+        let cancel_for_cycle = Arc::clone(&cancel_requested);
+        let result = thread::spawn(move || {
+            let should_stop = || -> anyhow::Result<()> {
+                if cancel_for_cycle.load(Ordering::SeqCst) {
+                    anyhow::bail!(
+                        "NEX_MAINTENANCE_ATTEMPT_CANCELLED: late cancel at cycle boundary"
+                    );
+                }
+                Ok(())
+            };
+            let grant_finalize = |_work_key: &str| -> anyhow::Result<()> {
+                grant_tx.send(()).expect("grant barrier receiver");
+                release_rx.recv().expect("release final transaction");
+                Ok(())
+            };
+            let register_work = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+            let work_started = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+            let work_completed = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+            let control = MaintenanceCycleControl {
+                should_stop: &should_stop,
+                grant_finalize: &grant_finalize,
+                register_work: &register_work,
+                work_started: &work_started,
+                work_completed: &work_completed,
+            };
+            run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+                &db_for_cycle,
+                &request,
+                |_| RecoveryMode::StartupRecovery,
+                None,
+                None,
+                Some(&control),
+            )
+        });
+
+        grant_rx.recv().expect("finalization grant");
+        cancel_requested.store(true, Ordering::SeqCst);
+        release_tx.send(()).expect("release final transaction");
+        let result = result.join().expect("cycle thread");
+        assert!(
+            result.is_err(),
+            "late cancellation should stop the next cycle boundary"
+        );
+        let completed: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_extraction_runs
+                      WHERE project_id = 'project-1'
+                        AND run_kind = 'backfill'
+                        AND status = 'completed'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read late-cancel completion");
+        assert_eq!(completed, 1, "grant-before-cancel must preserve success");
+    }
+
+    #[test]
+    fn adapter_db_partial_success_registers_initial_batch_before_cancel() {
+        let db = open_backfill_cycle_db(&["project-1", "project-2"]);
+        let cancel_requested = Arc::new(AtomicBool::new(false));
+        let registered = Arc::new(Mutex::new(Vec::<String>::new()));
+        let first_completed = Arc::new(AtomicBool::new(false));
+        let all_initial_registered = Arc::new(AtomicBool::new(false));
+        let request = backfill_cycle_request(&["project-1", "project-2"]);
+        let db_for_cycle = Arc::clone(&db);
+        let cancel_for_cycle = Arc::clone(&cancel_requested);
+        let registered_for_cycle = Arc::clone(&registered);
+        let first_completed_for_cycle = Arc::clone(&first_completed);
+        let all_initial_registered_for_cycle = Arc::clone(&all_initial_registered);
+        let result = thread::spawn(move || {
+            let should_stop = || -> anyhow::Result<()> {
+                if cancel_for_cycle.load(Ordering::SeqCst) {
+                    anyhow::bail!("NEX_MAINTENANCE_ATTEMPT_CANCELLED: later work cancelled");
+                }
+                Ok(())
+            };
+            let grant_finalize = |_work_key: &str| Ok::<_, anyhow::Error>(());
+            let register_work = |item: &DesiredWork| -> anyhow::Result<()> {
+                registered_for_cycle
+                    .lock()
+                    .expect("registration lock")
+                    .push(item.canonical_key());
+                Ok(())
+            };
+            let work_started = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+            let work_completed = |item: &DesiredWork| -> anyhow::Result<()> {
+                if item.project_id == "project-1"
+                    && !first_completed_for_cycle.swap(true, Ordering::SeqCst)
+                {
+                    let keys = registered_for_cycle.lock().expect("registration lock");
+                    let has_project_one = keys.iter().any(|key| key.contains("/project-1/"));
+                    let has_project_two = keys.iter().any(|key| key.contains("/project-2/"));
+                    all_initial_registered_for_cycle
+                        .store(has_project_one && has_project_two, Ordering::SeqCst);
+                    cancel_for_cycle.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            };
+            let control = MaintenanceCycleControl {
+                should_stop: &should_stop,
+                grant_finalize: &grant_finalize,
+                register_work: &register_work,
+                work_started: &work_started,
+                work_completed: &work_completed,
+            };
+            run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+                &db_for_cycle,
+                &request,
+                |_| RecoveryMode::StartupRecovery,
+                None,
+                None,
+                Some(&control),
+            )
+        })
+        .join()
+        .expect("cycle thread");
+
+        assert!(result.is_err(), "later work must observe cancellation");
+        assert!(all_initial_registered.load(Ordering::SeqCst));
+        for (project_id, expected_completed) in [("project-1", 1), ("project-2", 0)] {
+            let completed: i64 = db
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT COUNT(*)
+                           FROM narrative_extraction_runs
+                          WHERE project_id = ?1
+                            AND run_kind = 'backfill'
+                            AND status = 'completed'",
+                        [project_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(Into::into)
+                })
+                .expect("read partial lifecycle");
+            assert_eq!(completed, expected_completed, "{project_id}");
+        }
+    }
+
+    #[test]
+    fn adapter_receives_epoch_normalized_identity_for_absent_wire_epoch() {
+        let db = open_epoch_normalization_db();
+        let cancel_requested = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(Mutex::new(Vec::<String>::new()));
+        let granted = Arc::new(Mutex::new(Vec::<String>::new()));
+        let completed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let request = backfill_cycle_request(&["project-1"]);
+        let db_for_cycle = Arc::clone(&db);
+        let cancel_for_cycle = Arc::clone(&cancel_requested);
+        let started_for_cycle = Arc::clone(&started);
+        let granted_for_cycle = Arc::clone(&granted);
+        let completed_for_cycle = Arc::clone(&completed);
+        let result = thread::spawn(move || {
+            let should_stop = || -> anyhow::Result<()> {
+                if cancel_for_cycle.load(Ordering::SeqCst) {
+                    anyhow::bail!(
+                        "NEX_MAINTENANCE_ATTEMPT_CANCELLED: normalized identity test complete"
+                    );
+                }
+                Ok(())
+            };
+            let grant_finalize = |work_key: &str| -> anyhow::Result<()> {
+                granted_for_cycle
+                    .lock()
+                    .expect("grant lock")
+                    .push(work_key.to_string());
+                cancel_for_cycle.store(true, Ordering::SeqCst);
+                Ok(())
+            };
+            let register_work = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+            let work_started = |item: &DesiredWork| -> anyhow::Result<()> {
+                started_for_cycle
+                    .lock()
+                    .expect("start lock")
+                    .push(item.canonical_key());
+                Ok(())
+            };
+            let work_completed = |item: &DesiredWork| -> anyhow::Result<()> {
+                completed_for_cycle
+                    .lock()
+                    .expect("completion lock")
+                    .push(item.canonical_key());
+                Ok(())
+            };
+            let control = MaintenanceCycleControl {
+                should_stop: &should_stop,
+                grant_finalize: &grant_finalize,
+                register_work: &register_work,
+                work_started: &work_started,
+                work_completed: &work_completed,
+            };
+            run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+                &db_for_cycle,
+                &request,
+                |_| RecoveryMode::StartupRecovery,
+                None,
+                None,
+                Some(&control),
+            )
+        })
+        .join()
+        .expect("cycle thread");
+
+        assert!(
+            result.is_err(),
+            "the test stop should end before Verify follow-up"
+        );
+        let started = started.lock().expect("start lock");
+        let granted = granted.lock().expect("grant lock");
+        let completed = completed.lock().expect("completion lock");
+        assert_eq!(started.len(), 2);
+        assert_eq!(granted.len(), 1);
+        assert_eq!(completed.len(), 2);
+        assert!(started
+            .last()
+            .expect("adapter start")
+            .contains("/epoch/epoch-current"));
+        assert_eq!(started.last().expect("adapter start"), &granted[0]);
+        assert_eq!(
+            started.last().expect("adapter start"),
+            completed.last().expect("adapter completion")
+        );
     }
 
     #[test]

@@ -118,6 +118,64 @@ describe("narrative maintenance attempt linearization", () => {
     );
   });
 
+  it("waits for a Native receipt before terminalizing an empty Native-owned attempt", async () => {
+    const attempts = controller();
+    attempts.begin("attempt-native-empty", binding);
+    attempts.markNativeOwned("attempt-native-empty");
+
+    const cancellation = attempts.requestStop(
+      "attempt-native-empty",
+      "closed",
+    );
+    let resolved = false;
+    void cancellation.then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    const receipt = parseNarrativeMaintenanceTerminalReceipt({
+      schemaVersion: 1,
+      attemptId: "attempt-native-empty",
+      state: "succeeded",
+      stopReason: null,
+      generation: binding.generation,
+      workspaceBinding: binding,
+      publishedGeneration: binding.generation,
+      works: [],
+      cleanup: { status: "clean" },
+      connectionReusable: true,
+    });
+    expect(
+      attempts.adoptTerminalReceipt("attempt-native-empty", receipt),
+    ).toEqual(receipt);
+    await expect(cancellation).resolves.toEqual(receipt);
+    expect(attempts.snapshot("attempt-native-empty")?.state).toBe("succeeded");
+  });
+
+  it("rejects a local placeholder for a Native-owned attempt", () => {
+    const attempts = controller();
+    attempts.begin("attempt-native-placeholder", binding);
+    attempts.markNativeOwned("attempt-native-placeholder");
+    attempts.settle("attempt-native-placeholder", { state: "interrupted" });
+
+    const receipt = parseNarrativeMaintenanceTerminalReceipt({
+      schemaVersion: 1,
+      attemptId: "attempt-native-placeholder",
+      state: "interrupted",
+      stopReason: "closed",
+      generation: binding.generation,
+      workspaceBinding: binding,
+      publishedGeneration: null,
+      works: [],
+      cleanup: { status: "clean" },
+      connectionReusable: true,
+    });
+    expect(() =>
+      attempts.adoptTerminalReceipt("attempt-native-placeholder", receipt),
+    ).toThrow(/locally terminalized/);
+  });
+
   it("parses the Native state wire field and binds cleanup to the exact workspace", () => {
     const receipt = parseNarrativeMaintenanceTerminalReceipt(
       JSON.stringify({

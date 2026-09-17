@@ -1047,6 +1047,7 @@ export function createNarrativeMaintenanceScheduler(
               "native maintenance begin receipt binding mismatch",
             );
           }
+          activeAttemptController.markNativeOwned(attemptId);
           nativeAttemptIds.add(attemptId);
         }
       }

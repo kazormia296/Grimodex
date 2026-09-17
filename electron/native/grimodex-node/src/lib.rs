@@ -11550,8 +11550,48 @@ mod narrative_maintenance_epoch_event_tests {
 #[cfg(test)]
 mod narrative_maintenance_admission_unwind_tests {
     use super::*;
+    use grimodex_db::state::{ActiveWorkspace, WorkspaceAuthority};
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::Arc;
+
+    fn backend_with_active_workspace(label: &str) -> (Backend, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-maintenance-admission-production-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let workspace_path = root.join("workspace");
+        let metadata_dir = workspace_path.join(".grimodex");
+        std::fs::create_dir_all(&metadata_dir).expect("workspace metadata directory");
+        std::fs::write(
+            metadata_dir.join("workspace.json"),
+            serde_json::json!({
+                "id": format!("workspace-{label}"),
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
+        let state = AppState::new(
+            &root.to_string_lossy(),
+            &root.join("resources").to_string_lossy(),
+        )
+        .expect("app state");
+        state
+            .narrative_maintenance_recovery_gate
+            .mark_workspace_swapped();
+        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
+        (
+            Backend {
+                state: Arc::new(state),
+            },
+            root,
+        )
+    }
 
     #[test]
     fn admission_reopens_when_open_panics_after_close() {
@@ -11584,6 +11624,77 @@ mod narrative_maintenance_admission_unwind_tests {
         assert!(!state
             .narrative_maintenance_recovery_gate
             .maintenance_admission_is_closed());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn production_restore_error_reopens_admission_and_preserves_binding() {
+        let (backend, root) = backend_with_active_workspace("restore-error");
+        let before = backend
+            .get_narrative_maintenance_workspace_binding()
+            .expect("read binding before restore")
+            .expect("active binding before restore");
+
+        let error = backend
+            .restore_backup("grimodex-missing-backup.db".to_string())
+            .await
+            .expect_err("missing backup must fail before authority replacement");
+        assert!(
+            error.to_string().contains("backup"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            !backend
+                .state
+                .narrative_maintenance_recovery_gate
+                .maintenance_admission_is_closed(),
+            "restore failure must reopen production maintenance admission"
+        );
+        let after = backend
+            .get_narrative_maintenance_workspace_binding()
+            .expect("read binding after restore")
+            .expect("active binding after restore");
+        assert_eq!(after, before, "failed restore must retain the old binding");
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn production_open_rejects_active_attempt_without_closing_admission() {
+        let (backend, root) = backend_with_active_workspace("open-active");
+        let binding = {
+            let authority = active_database(&backend.state.ws).expect("active authority");
+            narrative_maintenance_binding_for_authority(&backend.state, &authority)
+        };
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .register_attempt("active-open-attempt", &binding)
+            .expect("register active attempt");
+
+        let candidate = root.join("replacement");
+        let error = backend
+            .open_workspace(candidate.to_string_lossy().into_owned())
+            .await
+            .expect_err("open must reject while maintenance is active");
+        assert!(
+            error.to_string().contains("NEX_MAINTENANCE_ATTEMPT_ACTIVE"),
+            "unexpected active-attempt error: {error}"
+        );
+        assert!(
+            !backend
+                .state
+                .narrative_maintenance_recovery_gate
+                .maintenance_admission_is_closed(),
+            "rejected open must leave production admission open"
+        );
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .release_attempt("active-open-attempt");
+
+        drop(backend);
         let _ = std::fs::remove_dir_all(root);
     }
 }

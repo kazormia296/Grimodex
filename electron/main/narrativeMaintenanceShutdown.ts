@@ -32,23 +32,24 @@ export function createNarrativeMaintenanceQuitFinalizer(
     event.preventDefault();
     if (finalizationStarted) return;
     finalizationStarted = true;
-    try {
-      await options.dispose();
-      options.complete();
-      cleanupComplete = true;
-      options.quit();
-    } catch (error) {
-      failureCount += 1;
-      options.error?.(error);
-      if (failureCount >= maxAttempts) {
-        fatalExitRequested = true;
-        options.exit(1);
-        return;
+    while (!cleanupComplete && !fatalExitRequested) {
+      try {
+        await options.dispose();
+        options.complete();
+        cleanupComplete = true;
+        options.quit();
+      } catch (error) {
+        failureCount += 1;
+        options.error?.(error);
+        if (failureCount >= maxAttempts) {
+          fatalExitRequested = true;
+          options.exit(1);
+          return;
+        }
+        // Retry the same owned barrier within this invocation. Reentrant
+        // will-quit events still observe finalizationStarted and cannot start
+        // a second disposal concurrently.
       }
-      // The next will-quit event retries the same owned barrier.  This is
-      // intentionally reset only after the failure is observed, so a
-      // reentrant event cannot start a second dispose while it is in flight.
-      finalizationStarted = false;
     }
   };
 }
