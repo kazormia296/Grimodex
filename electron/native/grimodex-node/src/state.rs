@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;
 
@@ -104,6 +104,13 @@ impl grimodex_ai::emit::StreamEmitter for EventQueue {
 }
 
 const MAX_STREAM_ABORT_TOMBSTONES: usize = 256;
+
+/// The Native attempt registry is process-local, so it must not become an
+/// unbounded second history store.  A terminal receipt is retained until its
+/// owner/waiters have left the registry, then the oldest receipts are evicted
+/// once this bound is exceeded.  An explicit acknowledgement can retire a
+/// receipt earlier (see `acknowledge_terminal`).
+pub(crate) const MAX_NARRATIVE_MAINTENANCE_TERMINAL_RECEIPTS: usize = 256;
 
 /// Recovery bookkeeping for one main-process maintenance runtime.
 ///
@@ -825,6 +832,22 @@ struct NarrativeMaintenanceAttemptEntry {
     state: NarrativeMaintenanceAttemptState,
     stop_reason: Option<String>,
     running: bool,
+    /// True while the cycle owner that called `start` still owns the attempt
+    /// admission.  Terminal retention may not evict an entry while this is
+    /// set, even if a terminal receipt was produced by an exceptional path.
+    owner_active: bool,
+    /// An inexpensive process-local cancellation signal that can later be
+    /// passed into a production adapter bridge.  The registry mutex remains
+    /// the lifecycle linearization point; this flag is only the observation
+    /// channel for work already admitted by that owner.
+    stop_signal: Arc<AtomicBool>,
+    /// Waiter admission is counted separately from the registry map so a
+    /// waiter can hold a race-safe reference while an ACK/pruner inspects the
+    /// entry under the map mutex.
+    waiter_count: Arc<AtomicUsize>,
+    /// Monotonic completion order used to evict the oldest eligible terminal
+    /// receipt without maintaining a second lock-protected queue.
+    terminal_sequence: u64,
     /// The shared cycle owns discovery until it explicitly closes this
     /// admission.  A work can finish while discovery is still able to enqueue
     /// a repeated effective key; such a finish must not grant the attempt's
@@ -841,6 +864,11 @@ struct NarrativeMaintenanceAttemptEntry {
     /// the first success finalize the attempt while the later execution is
     /// still pending.
     finalize_grants: HashSet<usize>,
+    /// Queue executions parked behind a foreground authoring barrier.  They
+    /// stay `running` in the receipt so a Deferred cycle cannot manufacture a
+    /// successful completion; settlement maps them to `interrupted`, which
+    /// keeps the exact delivery requeueable for the next cycle.
+    deferred_work: HashSet<usize>,
     cleanup: NarrativeMaintenanceCleanupOutcome,
     connection_reusable: bool,
     terminal: Option<NarrativeMaintenanceTerminalReceipt>,
@@ -852,13 +880,29 @@ struct NarrativeMaintenanceAttemptEntry {
 /// only closes the main/native handoff race around one cycle.
 pub struct NarrativeMaintenanceAttemptRegistry {
     state: Mutex<HashMap<String, NarrativeMaintenanceAttemptEntry>>,
+    next_terminal_sequence: AtomicU64,
 }
 
 impl Default for NarrativeMaintenanceAttemptRegistry {
     fn default() -> Self {
         Self {
             state: Mutex::new(HashMap::new()),
+            next_terminal_sequence: AtomicU64::new(1),
         }
+    }
+}
+
+struct NarrativeMaintenanceWaiterAdmission {
+    waiter_count: Arc<AtomicUsize>,
+}
+
+impl Drop for NarrativeMaintenanceWaiterAdmission {
+    fn drop(&mut self) {
+        let _ = self
+            .waiter_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_sub(1)
+            });
     }
 }
 
@@ -874,6 +918,7 @@ impl NarrativeMaintenanceAttemptRegistry {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.prune_terminal_entries(&mut state);
         if let Some(existing) = state.get(attempt_id) {
             anyhow::ensure!(
                 existing.authority_id == binding.authority_id
@@ -886,6 +931,36 @@ impl NarrativeMaintenanceAttemptRegistry {
             );
             return Ok(());
         }
+        let terminal_count = state
+            .values()
+            .filter(|entry| entry.terminal.is_some())
+            .count();
+        if terminal_count >= MAX_NARRATIVE_MAINTENANCE_TERMINAL_RECEIPTS {
+            // Make room for the new open attempt by evicting only the oldest
+            // terminal that has no admitted owner or waiter.  If all retained
+            // receipts are live, refusing the new admission preserves the
+            // cap and the still-observable results.
+            let expired_id = state
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.terminal.is_some()
+                        && !entry.owner_active
+                        && entry.waiter_count.load(Ordering::Acquire) == 0
+                })
+                .min_by_key(|(_, entry)| entry.terminal_sequence)
+                .map(|(attempt_id, _)| attempt_id.clone());
+            if let Some(expired_id) = expired_id {
+                state.remove(&expired_id);
+            }
+        }
+        let terminal_count = state
+            .values()
+            .filter(|entry| entry.terminal.is_some())
+            .count();
+        anyhow::ensure!(
+            terminal_count < MAX_NARRATIVE_MAINTENANCE_TERMINAL_RECEIPTS,
+            "NEX_MAINTENANCE_ATTEMPT_REGISTRY_FULL: acknowledge or release retained terminal attempts before starting another cycle"
+        );
         state.insert(
             attempt_id.to_string(),
             NarrativeMaintenanceAttemptEntry {
@@ -894,9 +969,14 @@ impl NarrativeMaintenanceAttemptRegistry {
                 state: NarrativeMaintenanceAttemptState::Open,
                 stop_reason: None,
                 running: false,
+                owner_active: false,
+                stop_signal: Arc::new(AtomicBool::new(false)),
+                waiter_count: Arc::new(AtomicUsize::new(0)),
+                terminal_sequence: 0,
                 work_registration_open: false,
                 works: Vec::new(),
                 finalize_grants: HashSet::new(),
+                deferred_work: HashSet::new(),
                 cleanup: NarrativeMaintenanceCleanupOutcome {
                     status: "clean".to_string(),
                     error: None,
@@ -926,10 +1006,15 @@ impl NarrativeMaintenanceAttemptRegistry {
             "NEX_MAINTENANCE_ATTEMPT_TERMINAL: attempt already settled"
         );
         anyhow::ensure!(
+            !entry.running,
+            "NEX_MAINTENANCE_ATTEMPT_ALREADY_STARTED: attempt already has a running cycle"
+        );
+        anyhow::ensure!(
             entry.state != NarrativeMaintenanceAttemptState::StopRequested,
             "NEX_MAINTENANCE_ATTEMPT_CANCELLED: attempt cancellation was accepted before work started"
         );
         entry.running = true;
+        entry.owner_active = true;
         entry.work_registration_open = true;
         // A running attempt must prove cleanup before its terminal receipt is
         // reusable.  The owner upgrades this to clean only after the actual
@@ -940,6 +1025,7 @@ impl NarrativeMaintenanceAttemptRegistry {
         };
         entry.connection_reusable = false;
         entry.finalize_grants.clear();
+        entry.deferred_work.clear();
         entry.works = work_keys
             .into_iter()
             .map(|work_key| NarrativeMaintenanceWorkTerminal {
@@ -1040,6 +1126,9 @@ impl NarrativeMaintenanceAttemptRegistry {
         }
         if entry.state == NarrativeMaintenanceAttemptState::StopRequested
             || entry.work_registration_open
+            || !entry.running
+            || !entry.finalize_grants.is_empty()
+            || !Self::all_work_executions_succeeded(entry)
         {
             return Ok(false);
         }
@@ -1071,12 +1160,63 @@ impl NarrativeMaintenanceAttemptRegistry {
             .find(|(index, work)| {
                 work.work_key == work_key
                     && work.status == "running"
+                    && !entry.deferred_work.contains(index)
                     && !entry.finalize_grants.contains(index)
             })
             .map(|(index, _)| index)
             .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"))?;
         entry.finalize_grants.insert(execution_index);
         Ok(true)
+    }
+
+    /// Park one queue execution behind a foreground authoring barrier. This
+    /// is deliberately distinct from `mark_work_completed`: the durable Run
+    /// is still running, so the Native attempt must settle interrupted and
+    /// let the caller requeue the exact delivery after the barrier releases.
+    pub fn mark_work_deferred(&self, attempt_id: &str, work_key: &str) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get_mut(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        anyhow::ensure!(
+            entry.terminal.is_none(),
+            "NEX_MAINTENANCE_ATTEMPT_TERMINAL: attempt already settled"
+        );
+        anyhow::ensure!(
+            entry.state != NarrativeMaintenanceAttemptState::StopRequested,
+            "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won before foreground parking"
+        );
+        let execution_index = entry
+            .works
+            .iter()
+            .enumerate()
+            .find(|(index, work)| {
+                work.work_key == work_key
+                    && work.status == "running"
+                    && !entry.finalize_grants.contains(index)
+            })
+            .map(|(index, _)| index)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"))?;
+        entry.deferred_work.insert(execution_index);
+        Ok(())
+    }
+
+    /// Return the process-local stop signal for an admitted attempt.  The
+    /// signal is intentionally separate from the N-API surface: a later
+    /// production bridge can pass this `Arc<AtomicBool>` to a Rust adapter
+    /// without allowing that adapter to mutate lifecycle ownership.
+    pub fn stop_signal(&self, attempt_id: &str) -> anyhow::Result<Arc<AtomicBool>> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        Ok(Arc::clone(&entry.stop_signal))
     }
 
     pub fn stop_requested(&self, attempt_id: &str) -> anyhow::Result<bool> {
@@ -1087,11 +1227,12 @@ impl NarrativeMaintenanceAttemptRegistry {
         let entry = state
             .get(attempt_id)
             .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
-        Ok(matches!(
-            entry.state,
-            NarrativeMaintenanceAttemptState::StopRequested
-                | NarrativeMaintenanceAttemptState::Interrupted
-        ))
+        Ok(entry.stop_signal.load(Ordering::Acquire)
+            || matches!(
+                entry.state,
+                NarrativeMaintenanceAttemptState::StopRequested
+                    | NarrativeMaintenanceAttemptState::Interrupted
+            ))
     }
 
     /// Mark one exact canonical work identity after its Rust adapter and
@@ -1147,6 +1288,7 @@ impl NarrativeMaintenanceAttemptRegistry {
             .find(|(index, work)| {
                 work.work_key == work_key
                     && work.status == "running"
+                    && !entry.deferred_work.contains(index)
                     && !entry.finalize_grants.contains(index)
             })
             .map(|(index, _)| index)
@@ -1180,6 +1322,13 @@ impl NarrativeMaintenanceAttemptRegistry {
         Ok(())
     }
 
+    fn all_work_executions_succeeded(entry: &NarrativeMaintenanceAttemptEntry) -> bool {
+        entry
+            .works
+            .iter()
+            .all(|candidate| candidate.status == "succeeded")
+    }
+
     /// Close the shared cycle's discovery queue.  This is the only point at
     /// which an otherwise fully successful set of work executions may acquire
     /// the attempt-level finalization state.  Keeping registration open until
@@ -1198,12 +1347,10 @@ impl NarrativeMaintenanceAttemptRegistry {
             "NEX_MAINTENANCE_ATTEMPT_TERMINAL: attempt already settled"
         );
         entry.work_registration_open = false;
-        if entry.state != NarrativeMaintenanceAttemptState::StopRequested
+        if entry.running
+            && entry.state != NarrativeMaintenanceAttemptState::StopRequested
             && entry.finalize_grants.is_empty()
-            && entry
-                .works
-                .iter()
-                .all(|candidate| candidate.status == "succeeded")
+            && Self::all_work_executions_succeeded(entry)
         {
             entry.state = NarrativeMaintenanceAttemptState::FinalizeGranted;
         }
@@ -1218,11 +1365,11 @@ impl NarrativeMaintenanceAttemptRegistry {
         let mut works = entry.works.clone();
         for work in &mut works {
             if work.status == "running" {
-                work.status = if status == "succeeded" {
-                    "succeeded".to_string()
-                } else {
-                    "interrupted".to_string()
-                };
+                // A terminal success receipt may never manufacture success
+                // for an execution that did not report its own finalization
+                // grant.  `settle` rejects that state; this defensive mapping
+                // keeps an exceptional interruption truthful as well.
+                work.status = "interrupted".to_string();
             }
         }
         NarrativeMaintenanceTerminalReceipt {
@@ -1261,8 +1408,12 @@ impl NarrativeMaintenanceAttemptRegistry {
             if let Some(receipt) = entry.terminal.clone() {
                 return Ok(receipt);
             }
-            let accepted_success =
-                succeeded && entry.state == NarrativeMaintenanceAttemptState::FinalizeGranted;
+            let accepted_success = succeeded
+                && entry.running
+                && entry.state == NarrativeMaintenanceAttemptState::FinalizeGranted
+                && !entry.work_registration_open
+                && entry.finalize_grants.is_empty()
+                && Self::all_work_executions_succeeded(entry);
             // An owner that exits through panic/error without reporting its
             // granted execution must not leave the registry permanently
             // waiting.  The durable transaction did not report success, so
@@ -1279,11 +1430,14 @@ impl NarrativeMaintenanceAttemptRegistry {
                 NarrativeMaintenanceAttemptState::Interrupted
             };
             entry.running = false;
+            entry.owner_active = false;
             let mut new_receipt = Self::receipt_for(entry, status, published_generation);
             new_receipt.attempt_id = attempt_id.to_string();
             entry.terminal = Some(new_receipt.clone());
+            entry.terminal_sequence = self.next_terminal_sequence.fetch_add(1, Ordering::Relaxed);
             notify = Arc::clone(&entry.notify);
             receipt = new_receipt;
+            self.prune_terminal_entries(&mut state);
         }
         notify.notify_waiters();
         Ok(receipt)
@@ -1322,11 +1476,13 @@ impl NarrativeMaintenanceAttemptRegistry {
                 // success before the terminal receipt is built.
                 entry.state = NarrativeMaintenanceAttemptState::StopRequested;
                 entry.stop_reason = Some(reason.to_string());
+                entry.stop_signal.store(true, Ordering::Release);
                 return Ok(None);
             }
             if entry.state != NarrativeMaintenanceAttemptState::FinalizeGranted {
                 entry.state = NarrativeMaintenanceAttemptState::StopRequested;
                 entry.stop_reason = Some(reason.to_string());
+                entry.stop_signal.store(true, Ordering::Release);
             }
             notify = Arc::clone(&entry.notify);
             immediate = if entry.running {
@@ -1337,8 +1493,12 @@ impl NarrativeMaintenanceAttemptRegistry {
             if let Some(mut receipt) = immediate.clone() {
                 receipt.attempt_id = attempt_id.to_string();
                 entry.state = NarrativeMaintenanceAttemptState::Interrupted;
+                entry.owner_active = false;
+                entry.terminal_sequence =
+                    self.next_terminal_sequence.fetch_add(1, Ordering::Relaxed);
                 entry.terminal = Some(receipt.clone());
                 immediate = Some(receipt);
+                self.prune_terminal_entries(&mut state);
             }
         }
         if immediate.is_some() {
@@ -1351,20 +1511,28 @@ impl NarrativeMaintenanceAttemptRegistry {
         &self,
         attempt_id: &str,
     ) -> anyhow::Result<NarrativeMaintenanceTerminalReceipt> {
-        loop {
+        // Admit the waiter while holding the registry mutex.  An explicit ACK
+        // or terminal pruner must observe this admission before it can remove
+        // the entry, closing the settle/await/ACK race.
+        let (notify, waiter_count) = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let entry = state
+                .get(attempt_id)
+                .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+            if let Some(receipt) = entry.terminal.clone() {
+                return Ok(receipt);
+            }
+            entry.waiter_count.fetch_add(1, Ordering::AcqRel);
+            (Arc::clone(&entry.notify), Arc::clone(&entry.waiter_count))
+        };
+        let admission = NarrativeMaintenanceWaiterAdmission { waiter_count };
+        let result = loop {
             // Register the notification before the second terminal check. A
             // terminal transition between the first check and registration
             // then either wakes this future or is observed by the recheck.
-            let notify = {
-                let state = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let entry = state.get(attempt_id).ok_or_else(|| {
-                    anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}")
-                })?;
-                Arc::clone(&entry.notify)
-            };
             let notified = notify.notified();
             {
                 let state = self
@@ -1375,11 +1543,95 @@ impl NarrativeMaintenanceAttemptRegistry {
                     anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}")
                 })?;
                 if let Some(receipt) = entry.terminal.clone() {
-                    return Ok(receipt);
+                    break Ok(receipt);
                 }
             }
             notified.await;
+        };
+        drop(admission);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.prune_terminal_entries(&mut state);
+        result
+    }
+
+    /// Explicitly retire a terminal receipt once its caller has durably
+    /// consumed it.  ACK is denied while an owner or admitted waiter remains;
+    /// callers can retry after the waiter returns.  Removing the entry under
+    /// the same mutex used by begin/settle makes this path race-safe.
+    pub fn acknowledge_terminal(&self, attempt_id: &str) -> anyhow::Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        anyhow::ensure!(
+            entry.terminal.is_some(),
+            "NEX_MAINTENANCE_ATTEMPT_ACK_NOT_TERMINAL: attempt has no terminal receipt"
+        );
+        anyhow::ensure!(
+            !entry.owner_active && entry.waiter_count.load(Ordering::Acquire) == 0,
+            "NEX_MAINTENANCE_ATTEMPT_ACK_BUSY: an attempt owner or waiter still holds the receipt"
+        );
+        state.remove(attempt_id);
+        self.prune_terminal_entries(&mut state);
+        Ok(true)
+    }
+
+    fn prune_terminal_entries(
+        &self,
+        state: &mut HashMap<String, NarrativeMaintenanceAttemptEntry>,
+    ) {
+        loop {
+            let terminal_count = state
+                .values()
+                .filter(|entry| entry.terminal.is_some())
+                .count();
+            if terminal_count <= MAX_NARRATIVE_MAINTENANCE_TERMINAL_RECEIPTS {
+                return;
+            }
+            let Some(expired_id) = state
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.terminal.is_some()
+                        && !entry.owner_active
+                        && entry.waiter_count.load(Ordering::Acquire) == 0
+                })
+                .min_by_key(|(_, entry)| entry.terminal_sequence)
+                .map(|(attempt_id, _)| attempt_id.clone())
+            else {
+                // Every retained terminal is currently admitted by an owner
+                // or waiter.  Keep them until that admission is released;
+                // begin() will apply the same bound and fail closed rather
+                // than evicting a live receipt.
+                return;
+            };
+            state.remove(&expired_id);
         }
+    }
+
+    #[cfg(test)]
+    fn terminal_count(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .filter(|entry| entry.terminal.is_some())
+            .count()
+    }
+
+    #[cfg(test)]
+    fn waiter_count(&self, attempt_id: &str) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(attempt_id)
+            .map(|entry| entry.waiter_count.load(Ordering::Acquire))
+            .unwrap_or_default()
     }
 }
 
@@ -2020,6 +2272,188 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_start_is_rejected_before_replacing_registered_work() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-duplicate-start".to_string(),
+            generation: 8,
+        };
+        registry
+            .begin("attempt-duplicate-start", &binding)
+            .expect("begin");
+        registry
+            .start("attempt-duplicate-start", ["original-work".to_string()])
+            .expect("first start");
+
+        let error = registry
+            .start("attempt-duplicate-start", ["replacement-work".to_string()])
+            .expect_err("duplicate start must be rejected");
+        assert!(error.to_string().contains("ALREADY_STARTED"));
+        registry
+            .mark_work_started("attempt-duplicate-start", "original-work")
+            .expect("original roster remains admitted");
+        assert!(registry
+            .mark_work_started("attempt-duplicate-start", "replacement-work")
+            .is_err());
+    }
+
+    #[test]
+    fn attempt_success_requires_every_registered_execution_to_succeed() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-all-terminal".to_string(),
+            generation: 9,
+        };
+        registry
+            .begin("attempt-all-terminal", &binding)
+            .expect("begin");
+        registry
+            .start(
+                "attempt-all-terminal",
+                ["completed".to_string(), "still-running".to_string()],
+            )
+            .expect("start");
+        registry
+            .mark_work_started("attempt-all-terminal", "completed")
+            .expect("start completed work");
+        registry
+            .grant_work_finalize("attempt-all-terminal", "completed")
+            .expect("grant completed work");
+        registry
+            .mark_work_succeeded("attempt-all-terminal", "completed")
+            .expect("complete first work");
+        registry
+            .mark_work_started("attempt-all-terminal", "still-running")
+            .expect("start second work");
+
+        assert!(!registry
+            .close_work_registration("attempt-all-terminal")
+            .expect("close registration with an incomplete work"));
+        let receipt = registry
+            .settle("attempt-all-terminal", true, Some(binding.generation))
+            .expect("settle incomplete attempt");
+        assert_eq!(receipt.state, "interrupted");
+        assert_eq!(receipt.works[0].status, "succeeded");
+        assert_eq!(receipt.works[1].status, "interrupted");
+    }
+
+    #[test]
+    fn stop_signal_is_shared_with_the_admitted_attempt_owner() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-stop-signal".to_string(),
+            generation: 10,
+        };
+        registry
+            .begin("attempt-stop-signal", &binding)
+            .expect("begin");
+        registry
+            .start("attempt-stop-signal", std::iter::empty::<String>())
+            .expect("start");
+        let signal = registry
+            .stop_signal("attempt-stop-signal")
+            .expect("stop signal");
+        assert!(!signal.load(Ordering::Acquire));
+        assert!(registry
+            .request_cancel("attempt-stop-signal", "closed")
+            .expect("cancel")
+            .is_none());
+        assert!(signal.load(Ordering::Acquire));
+        assert!(registry
+            .stop_requested("attempt-stop-signal")
+            .expect("stop state"));
+    }
+
+    #[tokio::test]
+    async fn terminal_receipts_are_bounded_and_acknowledgeable() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-retention".to_string(),
+            generation: 11,
+        };
+        for index in 0..=MAX_NARRATIVE_MAINTENANCE_TERMINAL_RECEIPTS {
+            let attempt_id = format!("attempt-retention-{index}");
+            registry
+                .begin(&attempt_id, &binding)
+                .expect("begin retained attempt");
+            registry
+                .start(&attempt_id, std::iter::empty::<String>())
+                .expect("start retained attempt");
+            registry
+                .close_work_registration(&attempt_id)
+                .expect("close retained attempt");
+            registry
+                .settle(&attempt_id, true, Some(binding.generation))
+                .expect("settle retained attempt");
+        }
+        assert_eq!(
+            registry.terminal_count(),
+            MAX_NARRATIVE_MAINTENANCE_TERMINAL_RECEIPTS,
+            "retained terminal receipts must stay within the Native bound"
+        );
+        assert!(registry
+            .wait_for_terminal("attempt-retention-0")
+            .await
+            .is_err());
+
+        registry
+            .acknowledge_terminal("attempt-retention-256")
+            .expect("ack terminal receipt");
+        assert_eq!(
+            registry.terminal_count(),
+            MAX_NARRATIVE_MAINTENANCE_TERMINAL_RECEIPTS - 1
+        );
+    }
+
+    #[tokio::test]
+    async fn admitted_terminal_waiter_blocks_ack_until_receipt_is_observed() {
+        let registry = Arc::new(NarrativeMaintenanceAttemptRegistry::default());
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-waiter-admission".to_string(),
+            generation: 12,
+        };
+        registry
+            .begin("attempt-waiter-admission", &binding)
+            .expect("begin");
+        registry
+            .start("attempt-waiter-admission", ["work".to_string()])
+            .expect("start");
+        let waiter_registry = Arc::clone(&registry);
+        let waiter = tokio::spawn(async move {
+            waiter_registry
+                .wait_for_terminal("attempt-waiter-admission")
+                .await
+                .expect("terminal receipt")
+        });
+        for _ in 0..128 {
+            if registry.waiter_count("attempt-waiter-admission") == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            registry.waiter_count("attempt-waiter-admission"),
+            1,
+            "the waiter must be admitted before cancellation races with ACK"
+        );
+        assert!(registry
+            .request_cancel("attempt-waiter-admission", "closed")
+            .expect("cancel")
+            .is_none());
+        let receipt = registry
+            .settle("attempt-waiter-admission", false, None)
+            .expect("settle interrupted attempt");
+        let ack_error = registry
+            .acknowledge_terminal("attempt-waiter-admission")
+            .expect_err("admitted waiter must block ACK");
+        assert!(ack_error.to_string().contains("ACK_BUSY"));
+        assert_eq!(waiter.await.expect("waiter join"), receipt);
+        registry
+            .acknowledge_terminal("attempt-waiter-admission")
+            .expect("ack after waiter observed receipt");
+    }
+
+    #[test]
     fn dynamic_followup_is_registered_before_last_work_closes_attempt() {
         let registry = NarrativeMaintenanceAttemptRegistry::default();
         let binding = MaintenanceWorkspaceBinding {
@@ -2250,6 +2684,40 @@ mod tests {
         assert!(registry
             .mark_work_completed("attempt-no-op-cancel", "verify:epoch-2")
             .is_err());
+    }
+
+    #[test]
+    fn deferred_work_stays_requeueable_and_cannot_finalize_success() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-deferred".to_string(),
+            generation: 13,
+        };
+        let key = "narrative-maintenance:v1/backfill/project-1/key:epoch-current";
+        registry.begin("attempt-deferred", &binding).expect("begin");
+        registry
+            .start("attempt-deferred", [key.to_string()])
+            .expect("start");
+        registry
+            .mark_work_started("attempt-deferred", key)
+            .expect("start deferred work");
+        registry
+            .mark_work_deferred("attempt-deferred", key)
+            .expect("park deferred work");
+        assert!(!registry
+            .grant_work_finalize("attempt-deferred", key)
+            .expect("deferred work has no finalize grant"));
+        assert!(registry
+            .mark_work_completed("attempt-deferred", key)
+            .is_err());
+        assert!(!registry
+            .close_work_registration("attempt-deferred")
+            .expect("close deferred work registration"));
+        let receipt = registry
+            .settle("attempt-deferred", true, Some(binding.generation))
+            .expect("deferred attempt settles interrupted");
+        assert_eq!(receipt.state, "interrupted");
+        assert_eq!(receipt.works[0].status, "interrupted");
     }
 
     #[test]

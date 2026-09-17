@@ -3193,6 +3193,14 @@ impl NarrativeMaintenanceAttemptGuard {
         Ok(receipt.state == "succeeded")
     }
 
+    fn finalize_interrupted(&mut self) -> anyhow::Result<()> {
+        self.state
+            .narrative_maintenance_attempts
+            .settle(&self.attempt_id, false, None)?;
+        self.finalized = true;
+        Ok(())
+    }
+
     fn close_work_registration(&self) -> anyhow::Result<()> {
         self.state
             .narrative_maintenance_attempts
@@ -3788,6 +3796,26 @@ impl Backend {
         serde_json::to_string(&receipt).map_err(|error| Error::from_reason(error.to_string()))
     }
 
+    /// Retire a consumed Native terminal receipt.  This method is main-only
+    /// and intentionally absent from the renderer/preload contract.  The
+    /// registry refuses an ACK while an admitted owner or waiter still holds
+    /// the receipt, so a late ACK cannot delete a result another caller is
+    /// still waiting to observe.
+    #[napi]
+    pub fn ack_narrative_maintenance_attempt(&self, attempt_id: String) -> Result<String> {
+        let acknowledged = self
+            .state
+            .narrative_maintenance_attempts
+            .acknowledge_terminal(&attempt_id)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        Ok(serde_json::json!({
+            "status": "acknowledged",
+            "attemptId": attempt_id,
+            "acknowledged": acknowledged,
+        })
+        .to_string())
+    }
+
     /// Electron main-only serialized system-work cycle.
     ///
     /// The request is validated in shared Rust, then executed against one
@@ -3819,14 +3847,11 @@ impl Backend {
             {
                 Ok(work) => work,
                 Err(error) => {
-                    if let Some(attempt_id) = attempt_id.as_deref() {
-                        let _ = state
-                            .narrative_maintenance_attempts
-                            .settle(attempt_id, false, None);
-                        state
-                            .narrative_maintenance_recovery_gate
-                            .release_attempt(attempt_id);
-                    }
+                    // Request validation belongs to this invocation, not to
+                    // the already-admitted lifecycle owner.  In particular,
+                    // a malformed duplicate cycle carrying the same
+                    // attemptId must not settle or release the original
+                    // recovery-gate owner.
                     return Err(AppError::Anyhow(error));
                 }
             };
@@ -3847,9 +3872,10 @@ impl Backend {
                     .narrative_maintenance_attempts
                     .start(&attempt_id, work_keys)
                 {
-                    state
-                        .narrative_maintenance_recovery_gate
-                        .release_attempt(&attempt_id);
+                    // `start` is an atomic owner admission.  A duplicate
+                    // cycle is rejected without mutating the original owner;
+                    // releasing the recovery gate here would otherwise let
+                    // workspace swap race that still-running owner.
                     return Err(AppError::Anyhow(error));
                 }
                 Some(NarrativeMaintenanceAttemptGuard::new(
@@ -4155,11 +4181,23 @@ impl Backend {
             let attempt_id_for_control =
                 attempt_guard.as_ref().map(|guard| guard.attempt_id.clone());
             let state_for_control = Arc::clone(&state);
+            let stop_signal_for_control = attempt_id_for_control
+                .as_deref()
+                .map(|attempt_id| {
+                    state_for_control
+                        .narrative_maintenance_attempts
+                        .stop_signal(attempt_id)
+                })
+                .transpose()?;
             let should_stop = || -> anyhow::Result<()> {
                 if let Some(attempt_id) = attempt_id_for_control.as_deref() {
-                    if state_for_control
-                        .narrative_maintenance_attempts
-                        .stop_requested(attempt_id)?
+                    let signalled = stop_signal_for_control
+                        .as_ref()
+                        .is_some_and(|signal| signal.load(std::sync::atomic::Ordering::Acquire));
+                    if signalled
+                        || state_for_control
+                            .narrative_maintenance_attempts
+                            .stop_requested(attempt_id)?
                     {
                         anyhow::bail!(
                             "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation requested at a Rust work boundary"
@@ -4183,6 +4221,15 @@ impl Backend {
                         state_for_control
                             .narrative_maintenance_attempts
                             .mark_work_completed(attempt_id, &item.canonical_key())?;
+                    }
+                    Ok(())
+                };
+            let work_deferred =
+                |item: &grimodex_db::narrative_extraction::DesiredWork| -> anyhow::Result<()> {
+                    if let Some(attempt_id) = attempt_id_for_control.as_deref() {
+                        state_for_control
+                            .narrative_maintenance_attempts
+                            .mark_work_deferred(attempt_id, &item.canonical_key())?;
                     }
                     Ok(())
                 };
@@ -4224,6 +4271,7 @@ impl Backend {
                     work_started: &work_started,
                     work_completed: &work_completed,
                     work_noop_completed: &work_noop_completed,
+                    work_deferred: &work_deferred,
                 }
             });
             let result = authority.db().with_background_connection_priority(|| {
@@ -4338,11 +4386,20 @@ impl Backend {
                 }
             }
             if let Some(guard) = attempt_guard.as_mut() {
-                let finalized = guard.finalize_success().map_err(AppError::Anyhow)?;
-                if !finalized {
-                    return Err(AppError::Anyhow(anyhow::anyhow!(
-                        "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won before finalization"
-                    )));
+                if matches!(result.status, MaintenanceCycleStatus::Deferred) {
+                    // A foreground-held adapter deliberately leaves its
+                    // durable Run/Task/Attempt running. Park the exact Native
+                    // work execution as interrupted so the main scheduler can
+                    // requeue it after the authoring barrier releases; never
+                    // turn this status into strict attempt success.
+                    guard.finalize_interrupted().map_err(AppError::Anyhow)?;
+                } else {
+                    let finalized = guard.finalize_success().map_err(AppError::Anyhow)?;
+                    if !finalized {
+                        return Err(AppError::Anyhow(anyhow::anyhow!(
+                            "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won before finalization"
+                        )));
+                    }
                 }
             }
             Ok(json)
@@ -11924,6 +11981,75 @@ mod narrative_maintenance_admission_unwind_tests {
             .expect("read first durable DB result");
         assert_eq!(durable_value, "first-success");
         drop(authority);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn malformed_duplicate_cycle_keeps_the_original_native_owner_admitted() {
+        let (backend, root) = backend_with_active_workspace("malformed-duplicate");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        drop(authority);
+        let attempt_id = "attempt-malformed-duplicate";
+        backend
+            .begin_narrative_maintenance_attempt(
+                attempt_id.to_string(),
+                serde_json::to_value(&binding).expect("binding JSON"),
+            )
+            .await
+            .expect("begin Native attempt");
+
+        let error = backend
+            .run_narrative_maintenance_cycle(serde_json::json!({
+                "attemptId": attempt_id,
+                "work": [{
+                    "projectId": "project-1",
+                    "runKind": "backfill",
+                    "workKey": LEGACY_BACKFILL_WORK_KEY,
+                    "semanticEpochId": null,
+                    "reasons": ["workspace-opened"]
+                }],
+                "wakeProjectIds": ["project-1"],
+                "workspaceBinding": binding,
+            }))
+            .await
+            .expect_err("mixed duplicate request must fail preflight");
+        assert!(
+            error.to_string().contains("WAKE_MIXED_ACK_SCOPE"),
+            "unexpected malformed duplicate error: {error}"
+        );
+        let swap_error = backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .close_for_workspace_swap()
+            .expect_err("malformed duplicate must not release original owner");
+        assert!(swap_error.to_string().contains("ATTEMPT_ACTIVE"));
+
+        let cycle: serde_json::Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "attemptId": attempt_id,
+                    "work": [],
+                    "wakeProjectIds": [],
+                    "workspaceBinding": binding,
+                }))
+                .await
+                .expect("original owner cycle remains usable"),
+        )
+        .expect("cycle JSON");
+        assert_eq!(cycle["status"], "accepted");
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .close_for_workspace_swap()
+            .expect("successful owner releases the recovery gate");
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .reopen_admission(Some(&binding))
+            .expect("reopen after ownership test");
+
         drop(backend);
         let _ = std::fs::remove_dir_all(root);
     }
