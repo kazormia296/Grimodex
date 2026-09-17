@@ -29,7 +29,7 @@ default = []
 # must not be linked into Electron/N-API or other default production builds.
 c2zc-fixture-builder = []
 # Opt-in, read-only NIR-1 feasibility diagnostics; no product IPC or writers.
-nir1-material-diagnostics = []
+nir1-material-diagnostics = ["rusqlite/trace"]
 # CI-only failpoints for migration supervisor crash injection. Must never be
 # enabled in production / release Electron builds.
 test-failpoints = []
@@ -57,6 +57,11 @@ required-features = ["nir1-material-diagnostics"]
 [[bin]]
 name = "nir1-disclosure-precheck"
 path = "src/bin/nir1-disclosure-precheck.rs"
+required-features = ["nir1-material-diagnostics"]
+
+[[bin]]
+name = "nir1-material-capacity"
+path = "src/bin/nir1-material-capacity.rs"
 required-features = ["nir1-material-diagnostics"]
 
 [dev-dependencies]

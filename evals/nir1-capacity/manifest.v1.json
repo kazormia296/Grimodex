@@ -1,0 +1,113 @@
+{
+  "schemaVersion": "nir1-capacity/1",
+  "schema": "schema.v1.json",
+  "diagnosticOnly": true,
+  "status": "measurement-only-unratified",
+  "scope": "NIR-1 B whole-project capacity observation; no Graph query or product dispatch",
+  "capacityDecision": "unratified-until-all-major-structures-are-measured",
+  "admissionBoundary": {
+    "currentMaterialLimit": 512,
+    "meaning": "current A2/request admission label only; not a whole-project build capacity"
+  },
+  "runProtocol": {
+    "database": "Each measured run copies one preseeded file-backed database to a new temporary path.",
+    "process": "Each warmup and measured run starts a fresh child process.",
+    "warmupCount": 1,
+    "measuredRunCount": 5,
+    "freshCopyPerRun": true,
+    "freshProcessPerRun": true
+  },
+  "fixtures": [
+    {
+      "id": "Q513/R3/D0",
+      "qualifiedMaterials": 513,
+      "qualifiedRevisions": 3,
+      "ineligibleCandidates": 0,
+      "dominantShape": "old-512-boundary"
+    },
+    {
+      "id": "Q513/R3/D516",
+      "qualifiedMaterials": 513,
+      "qualifiedRevisions": 3,
+      "ineligibleCandidates": 516,
+      "dominantShape": "ineligible-candidate-growth"
+    },
+    {
+      "id": "Q2044/R1022",
+      "qualifiedMaterials": 2044,
+      "qualifiedRevisions": 1022,
+      "ineligibleCandidates": null,
+      "dominantShape": "many-small-revisions"
+    },
+    {
+      "id": "Q2044/R4",
+      "qualifiedMaterials": 2044,
+      "qualifiedRevisions": 4,
+      "ineligibleCandidates": null,
+      "dominantShape": "few-large-revisions"
+    },
+    {
+      "id": "Q2044/byte-heavy",
+      "qualifiedMaterials": 2044,
+      "qualifiedRevisions": null,
+      "ineligibleCandidates": null,
+      "dominantShape": "large-payload-envelope-live-source-within-per-revision-limits"
+    },
+    {
+      "id": "Q2044/evidence-shared",
+      "qualifiedMaterials": 2044,
+      "qualifiedRevisions": null,
+      "ineligibleCandidates": null,
+      "dominantShape": "evidence-reused-across-revisions"
+    },
+    {
+      "id": "Q2044/evidence-unique",
+      "qualifiedMaterials": 2044,
+      "qualifiedRevisions": null,
+      "ineligibleCandidates": null,
+      "dominantShape": "many-independent-evidence-edges"
+    },
+    {
+      "id": "Q8176/R16",
+      "qualifiedMaterials": 8176,
+      "qualifiedRevisions": 16,
+      "ineligibleCandidates": null,
+      "dominantShape": "material-count-growth"
+    },
+    {
+      "id": "D2064/report-heavy",
+      "qualifiedMaterials": null,
+      "qualifiedRevisions": null,
+      "ineligibleCandidates": 2064,
+      "dominantShape": "full-set-validation-report-accumulation"
+    }
+  ],
+  "requiredMetrics": [
+    "candidateRevisionCount",
+    "qualifiedRevisionCount",
+    "payloadBytes",
+    "envelopeBytes",
+    "liveSourceBytes",
+    "rosterRecordCount",
+    "dependencyEdgeCount",
+    "reportRecordCount",
+    "totalPeakMemory",
+    "rss",
+    "hwmRss",
+    "ruMaxrss",
+    "sqliteMemory",
+    "wallTime",
+    "cpuTime",
+    "statementVmSteps",
+    "progressCallbacks",
+    "readBytes",
+    "writeBytes",
+    "temporaryBytes",
+    "connectionOccupancy",
+    "publishOccupancy",
+    "foregroundWait",
+    "cancelLatency"
+  ],
+  "notMeasuredPolicy": "A field remains explicitly listed under notMeasured when this read-only probe cannot observe it; null is not a zero.",
+  "supportedCapacity": "No numeric capacity or deadline is ratified by this manifest or by a diagnostic result."
+}

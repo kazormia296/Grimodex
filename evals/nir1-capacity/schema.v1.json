@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.local/evals/nir1-capacity/schema.v1.json",
+  "title": "NIR-1 B capacity diagnostic manifest",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "diagnosticOnly",
+    "status",
+    "capacityDecision",
+    "admissionBoundary",
+    "runProtocol",
+    "fixtures",
+    "requiredMetrics",
+    "notMeasuredPolicy",
+    "supportedCapacity"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "nir1-capacity/1" },
+    "diagnosticOnly": { "const": true },
+    "status": { "const": "measurement-only-unratified" },
+    "capacityDecision": {
+      "const": "unratified-until-all-major-structures-are-measured"
+    },
+    "admissionBoundary": {
+      "type": "object",
+      "required": ["currentMaterialLimit", "meaning"],
+      "properties": {
+        "currentMaterialLimit": { "const": 512 },
+        "meaning": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "runProtocol": {
+      "type": "object",
+      "required": [
+        "database",
+        "process",
+        "warmupCount",
+        "measuredRunCount",
+        "freshCopyPerRun",
+        "freshProcessPerRun"
+      ],
+      "properties": {
+        "database": { "type": "string" },
+        "process": { "type": "string" },
+        "warmupCount": { "const": 1 },
+        "measuredRunCount": { "type": "integer", "minimum": 5 },
+        "freshCopyPerRun": { "const": true },
+        "freshProcessPerRun": { "const": true }
+      },
+      "additionalProperties": false
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 9,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "qualifiedMaterials",
+          "qualifiedRevisions",
+          "ineligibleCandidates",
+          "dominantShape"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "qualifiedMaterials": { "type": ["integer", "null"], "minimum": 0 },
+          "qualifiedRevisions": { "type": ["integer", "null"], "minimum": 0 },
+          "ineligibleCandidates": { "type": ["integer", "null"], "minimum": 0 },
+          "dominantShape": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "requiredMetrics": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "notMeasuredPolicy": { "type": "string" },
+    "supportedCapacity": { "type": "string" }
+  },
+  "additionalProperties": false
+}

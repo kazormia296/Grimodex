@@ -70,6 +70,7 @@ pub use nir1_entity_relation::{
     Nir1EntityRelationRevisionPrepareRequest, Nir1EntityRelationRevisionRead,
     Nir1EntityRelationRevisionRequest, Nir1EntityRelationRevisionRestoreMatch,
     NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
+    NIR1_ENTITY_RELATION_SET_KIND,
 };
 pub use nir1_graph::{read_nir1_graph, Nir1GraphRequest, Nir1GraphResponse};
 pub use reconciliation_envelope::SourceBasisRow;
@@ -140,6 +141,8 @@ pub use revision_eligibility::{
 };
 #[cfg(feature = "nir1-material-diagnostics")]
 pub mod material_roster;
+#[cfg(feature = "nir1-material-diagnostics")]
+pub mod nir1_capacity_diagnostics;
 mod repository;
 mod restore_rebuild;
 mod scope_authority_runtime;
