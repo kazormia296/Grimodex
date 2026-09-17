@@ -80,16 +80,16 @@ function extractGraphProposalSections(executionPlan) {
   assert.ok(graphEnd > graphStart, "bounded Graph proposal must have an end");
   const proposal = proposalSection.slice(graphStart, graphEnd);
   const lifecycleStart = proposal.indexOf(
-    "##### B build owner/lifecycle (proposal/5 draft)",
+    "##### B build owner/lifecycle (proposal/5 confirmed contract)",
   );
   const acceptanceStart = proposal.indexOf(
-    "##### Proposal/5 acceptance split (draft)",
+    "##### Proposal/5 acceptance split (confirmed contract)",
   );
   assert.ok(lifecycleStart >= 0, "Graph lifecycle matrix must be present");
   assert.ok(acceptanceStart > lifecycleStart, "Graph acceptance split must follow lifecycle");
   const lifecycle = proposal.slice(lifecycleStart, acceptanceStart);
   const outsideValidationStart = lifecycle.indexOf(
-    "##### Outside-initial-build full-roster validation (proposal/5 draft)",
+    "##### Outside-initial-build full-roster validation (proposal/5 confirmed contract)",
   );
   const outsideValidationEnd = lifecycle.indexOf(
     "\n\nこの表は有限",
@@ -292,6 +292,36 @@ function validateGraphProposalContract(executionPlan) {
     proposal,
     /Outside-initial-build full-set validation:.*Source re-resolution.*is_complete_registered.*restore／cold reopen.*caller connection／read transaction.*progress hook/is,
     "Graph mandatory defenses must bind outside-build validation to existing owners",
+  );
+  assert.match(
+    proposal,
+    /final-publication commit cutoff is separate from run creation and intermediate report commits.*FinalizeGranted.*final Graph generation publish commit.*final Verify／Rebuild success transaction.*late cancel cannot rewrite success/is,
+    "final publication must close cancellation separately from run commits",
+  );
+  assert.match(
+    proposal,
+    /background no-wait try-lock.*continuous shared-connection occupation.*foreground request arriving.*next page／row／A2／D1-edge／digest／serialization boundary.*ends the transaction and releases the connection.*Rust loops.*without waiting for another SQL statement/s,
+    "acquired connection occupation and Rust-loop cancellation must be bounded",
+  );
+  assert.match(
+    proposal,
+    /Cleanup failure is terminal for reuse.*is_autocommit.*connectionReusable=true.*marks the process-local connection `unusable`.*no retry on that connection.*existing workspace reopen path.*auto-rollback.*autocommit/s,
+    "cleanup failure must quarantine the connection",
+  );
+  assert.match(
+    proposal,
+    /測定形状は材料数だけでなくRevision数.*Evidence shared／unique.*ineligible候補.*report-heavy.*同じpreseed済みfile-backed DB copyとfresh subprocess.*warmupを既存Indexのrebuildと混ぜない/s,
+    "capacity measurement must vary input shape and isolate fresh subprocess runs",
+  );
+  assert.match(
+    proposal,
+    /Evidenceは`evidence_ref`.*`source_key`／`revision_token`.*roster→D1／V1 dependency→Freshness→Verify→Restore→cold reopen/s,
+    "Evidence identity must round-trip through downstream validation",
+  );
+  assert.match(
+    proposal,
+    /existing Full maintenance journeys.*Journey対象外.*new Journey implementation and NIR-1 product activation.*requested and effective model／effort.*effective metadata is unavailable.*`unavailable`.*never infer/i,
+    "Full maintenance journeys and effective review metadata must remain explicit",
   );
 
   const requiredMemoryPatterns = [
@@ -1019,15 +1049,15 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   assert.match(executionPlan, /PR-R0.*履歴台帳と評価契約の固定/is);
   assert.match(
     executionPlan,
-    /基点:\s*master@3aab265cbe183746fd6b8ae9c855c2458894be9a/,
+    /基点:\s*master@9f6aba5f/,
   );
   assert.match(
     executionPlan,
-    /Tree:\s*6086bbe9cce05c550e222882aa071ace2b43bc21/,
+    /Tree:\s*b7f97fc7dbbb5243da090b41dbc884ecfdc0ec2b/,
   );
   assert.match(
     executionPlan,
-    /2026-09-17現在.*#596\/\#597 foundations.*#598 A3 review remediation.*masterにある.*Graph.*Packing.*AI dispatch.*未activate.*B capacity proposal\/5.*未確認.*remediation pending/is,
+    /2026-09-17現在.*#596\/\#597 foundations.*#598 A3 review remediation.*masterにある.*Graph.*Packing.*AI dispatch.*未activate.*B.*capacity-remediation-in-progress.*proposal\/5.*確認済み/is,
   );
   assert.match(executionPlan, /Graph.*Packing.*未activate.*downstream threat model.*draft/is);
   assert.match(executionPlan, /NIR-1全体.*未完了/);
@@ -1116,7 +1146,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     "history-reauthorization",
   ];
   const confirmedRefFor = (contractId) =>
-    `${contractId === "typed-revision-material" ? typedDraftRef : proposal3Ref}#${contractId}`;
+    `${contractId === "typed-revision-material" ? typedDraftRef : contractId === "graph-limited-binding" ? graphDraftRef : proposal3Ref}#${contractId}`;
   const ledgerSection = executionPlan
     .split("### 契約別の確認台帳\n", 2)[1]
     ?.split("\n### R0 security contract proposal (draft)", 1)[0];
@@ -1139,16 +1169,16 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         assert.equal(draftRef, graphDraftRef);
         assert.match(
           cells[3],
-          /confirmed baseline remains proposal\/3 scope only.*proposal\/5.*(?:three resource unit|三つのresource unit).*material delta.*未確認/,
+          /proposal\/5 confirmed scope.*(?:three resource unit|三つのresource unit).*finalized P2 boundaries/,
         );
         assert.match(
           cells[4],
-          /pending explicit confirmation.*proposal\/3 remains the approved baseline.*proposal\/5.*query protections/,
+          /none.*proposal\/5 is explicitly confirmed.*capacity remediation.*no supported capacity number/,
         );
-        assert.equal(cells[6], "blocked-pending-proposal-5-confirmation");
+        assert.equal(cells[6], "capacity-remediation-in-progress");
         assert.match(
           cells[7],
-          /B\/C final candidate.*blocked.*material delta.*proposal\/3 baseline/,
+          /exact confirmation is recorded.*B\/C remain blocked.*measurement.*product activation/,
         );
         assert.match(
           cells[8],
@@ -1200,9 +1230,9 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     "the five confirmed baseline/typed contract rows are effective after the R0 merge",
   );
   assert.equal(
-    ledgerRows.filter((row) => row.includes("blocked-pending-proposal-5-confirmation")).length,
+    ledgerRows.filter((row) => row.includes("capacity-remediation-in-progress")).length,
     1,
-    "the graph row remains blocked pending proposal/5 confirmation",
+    "the graph row remains in capacity remediation after proposal/5 confirmation",
   );
   assert.match(
     executionPlan,
@@ -1223,7 +1253,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   for (const confirmationRule of [
     /Confirmation protocol.*only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that one row/is,
     /stable ledger form is `draftRef#contractId`/,
-    /five.*refs.*record separate confirmations.*exactly `scope-storage-authority`.*`caller-profile-egress`.*`graph-limited-binding`.*`native-generation-receipt`.*`history-reauthorization`/is,
+    /four.*refs.*record separate confirmations.*exactly `scope-storage-authority`.*`caller-profile-egress`.*`native-generation-receipt`.*`history-reauthorization`/is,
     /Plan agreement.*not a ratification/is,
     /active goal.*not a ratification/is,
     /merge instruction.*not a ratification/is,
@@ -1371,8 +1401,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
           expected: "Graph proposal must not ratify a numeric whole-project build cap or deadline",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
-              "\n##### Proposal/5 acceptance split (draft)",
-              "\nsupported capacity = 2048 records\n##### Proposal/5 acceptance split (draft)",
+              "\n##### Proposal/5 acceptance split (confirmed contract)",
+              "\nsupported capacity = 2048 records\n##### Proposal/5 acceptance split (confirmed contract)",
             ),
         },
         {
@@ -1380,8 +1410,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
           expected: "Graph proposal must not ratify a numeric whole-project build cap or deadline",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
-              "\n##### Proposal/5 acceptance split (draft)",
-              "\nwhole-project B build deadline is 8ms\n##### Proposal/5 acceptance split (draft)",
+              "\n##### Proposal/5 acceptance split (confirmed contract)",
+              "\nwhole-project B build deadline is 8ms\n##### Proposal/5 acceptance split (confirmed contract)",
             ),
         },
         {
@@ -1517,7 +1547,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       }
       assert.match(
         proposal,
-        /No cumulative build SQL cap is ratified in this draft.*Every prepare／page／publish complete-rescan statement is owned by the builder's connection-level progress hook.*bounded `1,000` VM-step cadence and at Rust boundaries/is,
+        /No cumulative build SQL cap is ratified\.?[^\n]*Every prepare／page／publish complete-rescan statement is owned by the builder's connection-level progress hook.*bounded `1,000` VM-step cadence and at Rust boundaries/is,
         "graph build SQL must remain uncapped while every statement observes bounded cancellation",
       );
       assert.match(
@@ -1526,10 +1556,10 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         "graph interruption cleanup must complete before retry or reentrant admission",
       );
       const lifecycleStart = proposal.indexOf(
-        "##### B build owner/lifecycle (proposal/5 draft)",
+        "##### B build owner/lifecycle (proposal/5 confirmed contract)",
       );
       const acceptanceStart = proposal.indexOf(
-        "##### Proposal/5 acceptance split (draft)",
+        "##### Proposal/5 acceptance split (confirmed contract)",
       );
       assert.ok(lifecycleStart >= 0, "graph lifecycle matrix must be present");
       assert.ok(acceptanceStart > lifecycleStart, "graph acceptance split must follow lifecycle");
@@ -1786,7 +1816,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   );
   assert.match(
     executionPlan,
-    /\| B \| #596 Graph foundation[^|]*\| blocked-proposal-5-and-capacity-remediation \|[^\n]*proposal\/5のexact confirmation[^\n]*capacity remediationがpending/,
+    /\| B \| #596 Graph foundation[^|]*\| capacity-remediation-in-progress \|[^\n]*proposal\/5のexact confirmation[^\n]*capacity remediationがpending/,
     "current B snapshot must remain blocked on proposal/5 and capacity remediation",
   );
   assert.match(
