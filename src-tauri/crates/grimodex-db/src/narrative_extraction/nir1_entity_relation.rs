@@ -7325,7 +7325,10 @@ mod tests {
                 "default-project",
             )
         })?;
-        assert!(report.edge_ids_with_unresolvable_consumer_scope.is_empty());
+        assert!(
+            !report.edge_ids_with_unresolvable_consumer_scope.is_empty(),
+            "a dirty Graph must remain unresolved during dependency Verify"
+        );
 
         let rebuilt = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
@@ -8948,6 +8951,16 @@ mod tests {
         );
         assert!(!digest_check.incomplete.is_empty());
         assert!(!generation_check.incomplete.is_empty());
+        let report = db.with_read_transaction(|conn| {
+            super::super::restore_rebuild::verify_narrative_dependency_graph_for_project(
+                conn,
+                "default-project",
+            )
+        })?;
+        assert!(
+            !report.edge_ids_with_unresolvable_consumer_scope.is_empty(),
+            "a dirty Graph must remain unresolved during dependency Verify"
+        );
         Ok(())
     }
 

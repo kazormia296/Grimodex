@@ -5873,11 +5873,11 @@ mod tests {
 
     #[test]
     fn cleanup_quarantine_outweighs_foreground_preemption() {
-        let error = anyhow::anyhow!(
-            "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: "
-                "NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived; "
-                "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed"
-        );
+        let error = anyhow::anyhow!(concat!(
+            "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: ",
+            "NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived; ",
+            "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed"
+        ));
         assert!(is_maintenance_connection_cleanup_failure(&error));
         assert!(!is_transient_connection_preemption(&error));
         assert!(is_maintenance_connection_deferred_or_cleanup(&error));
