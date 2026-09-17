@@ -230,6 +230,27 @@ function assertManifestRuntimeContract(manifest, manifestPath) {
     );
   }
   for (const mode of configuredModes) {
+    if (typeof mode.producesReportRecords !== "boolean") {
+      fail(
+        `manifest ${manifestPath} mode ${mode.id} must declare producesReportRecords`,
+      );
+    }
+    const minimumReports = mode.minimumOperationReportRecords;
+    if (!minimumReports || typeof minimumReports !== "object") {
+      fail(
+        `manifest ${manifestPath} mode ${mode.id} must declare minimumOperationReportRecords`,
+      );
+    }
+    for (const fixtureId of mode.fixtures) {
+      if (
+        !Number.isSafeInteger(minimumReports[fixtureId]) ||
+        minimumReports[fixtureId] < 0
+      ) {
+        fail(
+          `manifest ${manifestPath} mode ${mode.id} must declare a non-negative minimum report count for ${fixtureId}`,
+        );
+      }
+    }
     if (!mode.fixtures.includes("Q8176/R16") || !mode.fixtures.includes("D2064/report-heavy")) {
       fail(
         `manifest ${manifestPath} mode ${mode.id} must cover Q8176/R16 and D2064/report-heavy`,
@@ -459,7 +480,7 @@ function expectedShape(spec) {
   return shape;
 }
 
-function validateObservedShape(report, spec, context) {
+function validateObservedShape(report, spec, context, modeSpec = null) {
   const shape = expectedShape(spec);
   const labels = {
     qualifiedMaterials: "qualified material records",
@@ -480,6 +501,9 @@ function validateObservedShape(report, spec, context) {
   const checked = new Set();
   for (const [key, expected] of Object.entries(shape)) {
     if (expected === null || expected === undefined) continue;
+    if (key === "reportRecords" && modeSpec?.producesReportRecords === false) {
+      continue;
+    }
     const canonicalKey = aliases[key] ?? key;
     if (checked.has(canonicalKey)) continue;
     checked.add(canonicalKey);
@@ -504,8 +528,6 @@ function modeMetricLabel(mode, metric) {
 
 function normalizeDiagnosticReport(report, mode) {
   const normalized = structuredClone(report);
-  normalized.mode ??= mode;
-  normalized.supportedCapacityClaim = false;
   normalized.notMeasured = Array.isArray(normalized.notMeasured)
     ? [...normalized.notMeasured]
     : [];
@@ -532,7 +554,29 @@ function normalizeDiagnosticReport(report, mode) {
   return normalized;
 }
 
-function assertDiagnosticReport(report, spec, mode, context, validateObservation) {
+function assertRawDiagnosticIdentity(report, spec, mode, context) {
+  if (!report || typeof report !== "object" || Array.isArray(report)) {
+    fail(`${context} did not emit a JSON object`);
+  }
+  if (report.fixtureId !== spec.id) {
+    fail(`${context} reported fixtureId ${String(report.fixtureId)}, expected ${spec.id}`);
+  }
+  if (report.mode !== mode) {
+    fail(`${context} reported mode ${String(report.mode)}, expected ${mode}`);
+  }
+  if (report.supportedCapacityClaim !== false) {
+    fail(`${context} must explicitly report supportedCapacityClaim=false`);
+  }
+}
+
+function assertDiagnosticReport(
+  report,
+  spec,
+  mode,
+  context,
+  validateObservation,
+  modeSpec,
+) {
   if (!report || typeof report !== "object" || Array.isArray(report)) {
     fail(`${context} did not emit a JSON object`);
   }
@@ -545,11 +589,36 @@ function assertDiagnosticReport(report, spec, mode, context, validateObservation
   if (report.mode !== mode) {
     fail(`${context} reported mode ${String(report.mode)}, expected ${mode}`);
   }
-  if (
-    report.supportedCapacityClaim !== undefined &&
-    report.supportedCapacityClaim !== false
-  ) {
-    fail(`${context} attempted to claim supported capacity`);
+  if (report.supportedCapacityClaim !== false) {
+    fail(`${context} must explicitly report supportedCapacityClaim=false`);
+  }
+  if (report.status !== "measured") {
+    fail(`${context} must report status=measured; got ${String(report.status)}`);
+  }
+  if (!report.fixtureShape || typeof report.fixtureShape !== "object") {
+    fail(`${context} must include an immutable fixtureShape`);
+  }
+  if (!report.modeOutcome || typeof report.modeOutcome !== "object") {
+    fail(`${context} must include modeOutcome`);
+  }
+  if (report.modeOutcome.success !== true || report.modeOutcome.requiredSuccess !== true) {
+    fail(`${context} modeOutcome must have success=true and requiredSuccess=true`);
+  }
+  if (typeof report.modeOutcome.operation !== "string" || report.modeOutcome.operation.length === 0) {
+    fail(`${context} modeOutcome.operation must be a non-empty string`);
+  }
+  if (modeSpec?.producesReportRecords === true) {
+    const minimumReports = modeSpec.minimumOperationReportRecords?.[spec.id];
+    if (
+      !Number.isSafeInteger(report.modeOutcome.operationReportRecords) ||
+      report.modeOutcome.operationReportRecords < minimumReports
+    ) {
+      fail(
+        `${context} undercounted operation-produced report records for ${mode}: expected at least ${minimumReports}, observed ${String(report.modeOutcome.operationReportRecords)}`,
+      );
+    }
+  } else if (report.modeOutcome.operationReportRecords !== null) {
+    fail(`${context} must report operationReportRecords=null for ${mode}`);
   }
   if (report.notMeasured !== undefined) {
     if (
@@ -579,7 +648,13 @@ function assertDiagnosticReport(report, spec, mode, context, validateObservation
       `${context} capacity observation schema mismatch: ${formatAjvErrors(validateObservation.errors)}`,
     );
   }
-  validateObservedShape(report, spec, context);
+  validateObservedShape(report, spec, `${context} observed`, modeSpec);
+  validateObservedShape(
+    { counts: report.fixtureShape },
+    spec,
+    `${context} fixtureShape`,
+    null,
+  );
 }
 
 function generationValue(value) {
@@ -1006,6 +1081,7 @@ async function runChild({
   projectId,
   spec,
   mode,
+  modeSpec,
   sourceDb,
   sourceState,
   scratch,
@@ -1065,8 +1141,19 @@ async function runChild({
     );
   }
   const rawReport = parseChildJson(child.stdout, context);
+  // Identity and diagnostic-only claim are admission data from the child.
+  // Validate them before any compatibility normalization so a malformed child
+  // cannot be repaired into an apparently valid observation.
+  assertRawDiagnosticIdentity(rawReport, spec, mode, context);
   const report = normalizeDiagnosticReport(rawReport, mode);
-  assertDiagnosticReport(report, spec, mode, context, validateObservation);
+  assertDiagnosticReport(
+    report,
+    spec,
+    mode,
+    context,
+    validateObservation,
+    modeSpec,
+  );
   const generationBefore = publishedGeneration(rawReport, "before");
   const generationAfter = publishedGeneration(rawReport, "after");
   const childState = {
@@ -1197,6 +1284,7 @@ async function runDiagnosticMode({
   projectId,
   spec,
   mode,
+  modeSpec,
   sourceDb,
   sourceState,
   scratch,
@@ -1210,6 +1298,7 @@ async function runDiagnosticMode({
     projectId,
     spec,
     mode,
+    modeSpec,
     sourceDb,
     sourceState,
     scratch,
@@ -1227,6 +1316,7 @@ async function runDiagnosticMode({
         projectId,
         spec,
         mode,
+        modeSpec,
         sourceDb,
         sourceState,
         scratch,
@@ -1241,6 +1331,7 @@ async function runDiagnosticMode({
   assertSourceStable(sourceDb, sourceState, `${spec.id} ${mode} completed runs`);
   return {
     fixture: spec,
+    fixtureShape: expectedShape(spec),
     mode,
     sourceDatabaseDigest: sourceState.digest,
     sourceState,
@@ -1304,12 +1395,24 @@ async function main() {
       const sourceState = captureDatabaseState(sourceDb);
       const modeResults = [];
       for (const mode of modesForFixture(manifest, spec, options.modeFilter)) {
+        const modeSpec =
+          mode === "full-build"
+            ? {
+                id: mode,
+                producesReportRecords: true,
+                minimumOperationReportRecords: {
+                  [spec.id]: expectedShape(spec).reportRecords ?? 0,
+                },
+              }
+            : manifest.diagnosticModes.find((candidate) => candidate.id === mode);
+        if (!modeSpec) fail(`manifest mode ${mode} is missing its configuration`);
         modeResults.push(
           await runDiagnosticMode({
             binary: options.binary,
             projectId: options.projectId,
             spec,
             mode,
+            modeSpec,
             sourceDb,
             sourceState,
             scratch,

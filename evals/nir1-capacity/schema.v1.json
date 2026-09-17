@@ -72,10 +72,16 @@
       "type": "array",
       "minItems": 5,
       "uniqueItems": false,
-      "items": {
-        "type": "object",
-        "required": ["id", "label", "fixtures"],
-        "properties": {
+        "items": {
+          "type": "object",
+        "required": [
+          "id",
+          "label",
+          "producesReportRecords",
+          "minimumOperationReportRecords",
+          "fixtures"
+        ],
+          "properties": {
           "id": {
             "enum": [
               "source-reresolution",
@@ -91,9 +97,15 @@
             "minItems": 1,
             "items": { "type": "string", "minLength": 1 },
             "uniqueItems": true
+          },
+          "producesReportRecords": { "type": "boolean" },
+          "minimumOperationReportRecords": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": { "type": "integer", "minimum": 0 }
           }
-        },
-        "additionalProperties": false
+          },
+          "additionalProperties": false
       }
     },
     "fixtures": {
@@ -189,10 +201,13 @@
         "supportedCapacityClaim",
         "databasePath",
         "counts",
+        "fixtureShape",
         "bytes",
         "process",
         "sql",
         "occupancy",
+        "graphLifecycle",
+        "modeOutcome",
         "cancel",
         "rejectionReasons",
         "notMeasured"
@@ -216,6 +231,7 @@
         "supportedCapacityClaim": { "const": false },
         "databasePath": { "type": "string", "minLength": 1 },
         "counts": { "$ref": "#/$defs/observationCounts" },
+        "fixtureShape": { "$ref": "#/$defs/observationCounts" },
         "bytes": { "$ref": "#/$defs/observationBytes" },
         "process": { "$ref": "#/$defs/observationProcess" },
         "sql": { "$ref": "#/$defs/observationSql" },
@@ -230,7 +246,8 @@
         "publishedGeneration": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "publishedGenerationBefore": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "publishedGenerationAfter": { "$ref": "#/$defs/optionalNonNegativeInteger" },
-        "graphLifecycle": { "$ref": "#/$defs/graphLifecycleObservation" }
+        "graphLifecycle": { "$ref": "#/$defs/graphLifecycleObservation" },
+        "modeOutcome": { "$ref": "#/$defs/modeOutcome" }
       },
       "additionalProperties": true
     },
@@ -345,6 +362,22 @@
       "properties": {
         "status": { "type": "string", "minLength": 1 },
         "latencyMs": { "$ref": "#/$defs/optionalNonNegativeNumber" }
+      },
+      "additionalProperties": true
+    },
+    "modeOutcome": {
+      "type": "object",
+      "required": [
+        "operation",
+        "success",
+        "requiredSuccess",
+        "operationReportRecords"
+      ],
+      "properties": {
+        "operation": { "type": "string", "minLength": 1 },
+        "success": { "type": "boolean" },
+        "requiredSuccess": { "type": "boolean" },
+        "operationReportRecords": { "$ref": "#/$defs/optionalNonNegativeInteger" }
       },
       "additionalProperties": true
     },

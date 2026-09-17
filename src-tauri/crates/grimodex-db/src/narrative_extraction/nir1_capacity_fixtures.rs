@@ -1096,6 +1096,9 @@ fn partition_materials(total: usize, revisions: usize) -> Result<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::narrative_extraction::nir1_capacity_diagnostics::{
+        measure_capacity_mode, CapacityDiagnosticMode,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(suffix: &str) -> PathBuf {
@@ -1253,7 +1256,7 @@ mod tests {
     }
 
     #[test]
-    fn report_heavy_uses_the_same_verify_report_count_as_normal_probe() -> Result<()> {
+    fn report_heavy_separates_fixture_and_operation_verify_report_counts() -> Result<()> {
         let manifest = temp_path("report-heavy-manifest");
         fs::write(
             &manifest,
@@ -1278,7 +1281,54 @@ mod tests {
             Some(NIR1_CAPACITY_FIXTURE_PROJECT_ID),
         )?;
         assert_eq!(measured.counts.report_records, Some(1));
-        let conn = Connection::open_with_flags(&copy, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        assert_eq!(measured.fixture_shape.report_records, Some(1));
+        assert!(measured.mode_outcome.success);
+        assert_eq!(measured.mode_outcome.operation_report_records, Some(1));
+        remove_fixture_copy(&copy)?;
+
+        let coverage_copy = temp_path("report-heavy-coverage-copy");
+        fs::copy(&output, &coverage_copy)?;
+        let coverage = measure_capacity_mode(
+            &coverage_copy,
+            "D2064/report-heavy",
+            Some(NIR1_CAPACITY_FIXTURE_PROJECT_ID),
+            CapacityDiagnosticMode::Coverage,
+        )?;
+        assert!(coverage.mode_outcome.success);
+        assert!(coverage.graph_lifecycle.coverage_ms.is_some());
+        assert_eq!(coverage.fixture_shape.report_records, Some(1));
+        assert_eq!(coverage.mode_outcome.operation_report_records, Some(1));
+        remove_fixture_copy(&coverage_copy)?;
+
+        let restore_copy = temp_path("report-heavy-restore-copy");
+        fs::copy(&output, &restore_copy)?;
+        let restored = measure_capacity_mode(
+            &restore_copy,
+            "D2064/report-heavy",
+            Some(NIR1_CAPACITY_FIXTURE_PROJECT_ID),
+            CapacityDiagnosticMode::Restore,
+        )?;
+        assert!(restored.mode_outcome.success);
+        assert!(restored.graph_lifecycle.restore_install_ms.is_some());
+        assert!(restored.graph_lifecycle.restore_maintenance_validated);
+        assert!(restored.graph_lifecycle.restore_image_identity.is_some());
+        assert!(restored
+            .graph_lifecycle
+            .restore_workspace_identity
+            .is_some());
+        assert!(restored.graph_lifecycle.restore_epoch.is_some());
+        assert_eq!(restored.fixture_shape.report_records, Some(1));
+        assert!(
+            restored
+                .mode_outcome
+                .operation_report_records
+                .is_some_and(|records| records >= 1),
+            "Restore must expose the real post-rebuild Verify report count"
+        );
+        remove_fixture_copy(&restore_copy)?;
+
+        let conn =
+            Connection::open_with_flags(&output, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let finding_observations: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_maintenance_finding_observations
               WHERE project_id=?1",

@@ -34,7 +34,7 @@ function makeWorkspace(selectedFixture = fixtureId) {
   return { directory, fixtureDirectory, outputDirectory, sourceDb };
 }
 
-function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, malformed = false, timeout = false, leakyDescendant = false, detachedDescendant = false, writeProjectMarker = false } = {}) {
+function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, fixtureShapeReportRecords = null, malformed = false, timeout = false, leakyDescendant = false, detachedDescendant = false, writeProjectMarker = false, omitMode = false, supportedCapacityClaim = false, failedMode = false, operationReportRecords = null } = {}) {
   const fixtureCounts = {
     [fixtureId]: { candidateRevisions: 3, qualifiedRevisions: 3, rejectedRevisions: 0, entityRecords: 255, relationRecords: 3, evidenceRecords: 255, qualifiedMaterialRecords: 513, rosterRecords: 513, dependencyEdges: null, reportRecords: null },
     "Q8176/R16": { candidateRevisions: 16, qualifiedRevisions: 16, rejectedRevisions: 0, entityRecords: 4080, relationRecords: 16, evidenceRecords: 4080, qualifiedMaterialRecords: 8176, rosterRecords: 8176, dependencyEdges: null, reportRecords: null },
@@ -45,6 +45,8 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
   const counts = structuredClone(fixtureCounts[fixtureForReport] ?? fixtureCounts[fixtureId]);
   if (mismatch) counts.qualifiedRevisions = 4;
   if (mismatchField) counts[mismatchField] = Number(counts[mismatchField]) - 1;
+  const fixtureShape = structuredClone(counts);
+  if (fixtureShapeReportRecords !== null) fixtureShape.reportRecords = fixtureShapeReportRecords;
   return [
     "#!/usr/bin/env node",
     'import { spawn } from "node:child_process";',
@@ -69,10 +71,13 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
       admission: "diagnostic-only",
       databasePath: "child.db",
       counts,
+      fixtureShape,
       bytes: { payloadBytes: 0, envelopeBytes: 0, sourceBasisBytes: 0, liveSourceBytes: null, rosterBytes: 0, revisionIdOverheadBytes: 0 },
       process: { elapsedMs: 1, userCpuUs: 1, systemCpuUs: 1, rssBytes: 2, hwmRssBytes: 2, ruMaxrssBytes: 2, sqliteMemoryBytes: 2, sqliteMemoryHighwaterBytes: 2, readBytes: 0, writeBytes: 0 },
       sql: { statementVmSteps: 3, exactVmSteps: true, progressCallbacks: 0, statements: 1 },
       occupancy: { connectionHoldMs: 1, publishTransactionMs: null, foregroundWaitMs: null },
+      graphLifecycle: {},
+      modeOutcome: { operation: "fake", success: true, requiredSuccess: true, operationReportRecords: null },
       cancel: { status: "not-run", latencyMs: null },
       rejectionReasons: {},
       publishedGenerationBefore: 4,
@@ -80,6 +85,11 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
       notMeasured: ["cancel-latency", "publish-transaction-occupancy"],
     })};`,
     "report.fixtureId = fixtureId;",
+    omitMode ? "" : "report.mode = process.argv.at(-1);",
+    `report.supportedCapacityClaim = ${JSON.stringify(supportedCapacityClaim)};`,
+    failedMode ? "report.status = 'path-unavailable'; report.modeOutcome.success = false; report.modeOutcome.requiredSuccess = false;" : "",
+    "if (['full-build', 'coverage', 'restore'].includes(report.mode)) report.modeOutcome.operationReportRecords = report.counts.reportRecords ?? 0;",
+    operationReportRecords === null ? "" : `report.modeOutcome.operationReportRecords = ${operationReportRecords};`,
     "report.projectId = projectId;",
     malformed ? "delete report.bytes.payloadBytes;" : "",
     "report.processId = process.pid;",
@@ -158,6 +168,8 @@ test("capacity manifest fixes the diagnostic matrix and Graph lifecycle boundary
   );
   for (const mode of manifest.diagnosticModes) {
     assert.deepEqual(mode.fixtures, ["Q8176/R16", "D2064/report-heavy"]);
+    assert.equal(typeof mode.producesReportRecords, "boolean");
+    assert.equal(mode.minimumOperationReportRecords["D2064/report-heavy"] >= 0, true);
   }
   for (const fixture of manifest.fixtures) {
     assert.ok(fixture.shape, `${fixture.id} must declare an observed shape`);
@@ -193,6 +205,18 @@ test("target fixtures execute every diagnostic mode in isolated child paths", ()
     );
     assert.equal(result.modeResults.length, 6);
     for (const modeResult of result.modeResults) {
+      assert.equal(
+        modeResult.fixtureShape.qualifiedMaterials,
+        modeResult.fixture.shape.qualifiedMaterials,
+      );
+      assert.equal(
+        modeResult.fixtureShape.qualifiedRevisions,
+        modeResult.fixture.shape.qualifiedRevisions,
+      );
+      assert.equal(
+        modeResult.fixtureShape.rosterRecords,
+        modeResult.fixture.shape.rosterRecords,
+      );
       assert.equal(modeResult.warmup.mode, modeResult.mode);
       assert.equal(modeResult.runs.length, 5);
       assert.equal(modeResult.sourceStateStable, true);
@@ -207,6 +231,14 @@ test("target fixtures execute every diagnostic mode in isolated child paths", ()
         modeResult.runs.every((run) => run.mode === modeResult.mode),
         `${modeResult.mode} reports must retain their path id`,
       );
+      assert.ok(modeResult.runs.every((run) => run.status === "measured"));
+      assert.ok(
+        modeResult.runs.every(
+          (run) =>
+            run.modeOutcome.success === true &&
+            run.modeOutcome.requiredSuccess === true,
+        ),
+      );
       assert.ok(
         modeResult.runs.every((run) =>
           run.notMeasured.every((metric) =>
@@ -216,6 +248,99 @@ test("target fixtures execute every diagnostic mode in isolated child paths", ()
       );
     }
     assert.equal(report.paths.length, 6);
+  } finally {
+    rmSync(workspace.directory, { recursive: true, force: true });
+  }
+});
+
+test("report-heavy fixture crosses the default mode matrix without requiring fixture reports from every mode", () => {
+  const selectedFixture = "D2064/report-heavy";
+  const workspace = makeWorkspace(selectedFixture);
+  try {
+    const binary = makeChild(workspace.directory, {
+      fixtureForReport: selectedFixture,
+    });
+    const report = JSON.parse(
+      runProbe(workspace, binary, ["--fixture", selectedFixture, "--runs", "5"]),
+    );
+    const result = report.results[0];
+    assert.equal(result.modeResults.length, 6);
+    for (const modeResult of result.modeResults) {
+      assert.ok(modeResult.runs.every((run) => run.status === "measured"));
+      const produces = ["full-build", "coverage", "restore"].includes(modeResult.mode);
+      assert.ok(
+        modeResult.runs.every((run) =>
+          produces
+            ? run.modeOutcome.operationReportRecords === 416
+            : run.modeOutcome.operationReportRecords === null,
+        ),
+        `${modeResult.mode} must distinguish fixture reportRecords from operation output`,
+      );
+    }
+  } finally {
+    rmSync(workspace.directory, { recursive: true, force: true });
+  }
+});
+
+test("raw child identity and supported-capacity claim are validated before normalization", () => {
+  for (const options of [
+    { omitMode: true, pattern: /reported mode undefined, expected full-build/ },
+    { supportedCapacityClaim: true, pattern: /must explicitly report supportedCapacityClaim=false/ },
+  ]) {
+    const workspace = makeWorkspace();
+    try {
+      const binary = makeChild(workspace.directory, options);
+      assert.throws(
+        () => runProbe(workspace, binary, ["--fixture", fixtureId, "--runs", "5"]),
+        (error) => {
+          assert.match(error.stderr, options.pattern);
+          return true;
+        },
+      );
+    } finally {
+      rmSync(workspace.directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("mode outcomes fail closed when a child reports an unavailable path", () => {
+  const workspace = makeWorkspace();
+  try {
+    const binary = makeChild(workspace.directory, { failedMode: true });
+    assert.throws(
+      () => runProbe(workspace, binary, ["--fixture", fixtureId, "--runs", "5"]),
+      (error) => {
+        assert.match(error.stderr, /must report status=measured/);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(workspace.directory, { recursive: true, force: true });
+  }
+});
+
+test("report-heavy operation reports cannot be zero or undercounted", () => {
+  const workspace = makeWorkspace("D2064/report-heavy");
+  try {
+    const binary = makeChild(workspace.directory, {
+      fixtureForReport: "D2064/report-heavy",
+      operationReportRecords: 0,
+    });
+    assert.throws(
+      () =>
+        runProbe(workspace, binary, [
+          "--fixture",
+          "D2064/report-heavy",
+          "--mode",
+          "coverage",
+          "--runs",
+          "5",
+        ]),
+      (error) => {
+        assert.match(error.stderr, /undercounted operation-produced report records/);
+        return true;
+      },
+    );
   } finally {
     rmSync(workspace.directory, { recursive: true, force: true });
   }
@@ -491,7 +616,7 @@ test("report-heavy Verify report shape is checked independently", () => {
   try {
     const binary = makeChild(workspace.directory, {
       fixtureForReport: selectedFixture,
-      mismatchField: "reportRecords",
+      fixtureShapeReportRecords: 415,
     });
     assert.throws(
       () => runProbe(workspace, binary, ["--fixture", selectedFixture, "--runs", "5"]),

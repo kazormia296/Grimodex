@@ -33,26 +33,36 @@
     {
       "id": "source-reresolution",
       "label": "Source re-resolution",
+      "producesReportRecords": false,
+      "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 0},
       "fixtures": ["Q8176/R16", "D2064/report-heavy"]
     },
     {
       "id": "complete-registration",
       "label": "complete registration",
+      "producesReportRecords": false,
+      "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 0},
       "fixtures": ["Q8176/R16", "D2064/report-heavy"]
     },
     {
       "id": "coverage",
       "label": "coverage",
+      "producesReportRecords": true,
+      "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 416},
       "fixtures": ["Q8176/R16", "D2064/report-heavy"]
     },
     {
       "id": "restore",
       "label": "Restore",
+      "producesReportRecords": true,
+      "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 416},
       "fixtures": ["Q8176/R16", "D2064/report-heavy"]
     },
     {
       "id": "cold-reopen",
       "label": "cold reopen",
+      "producesReportRecords": false,
+      "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 0},
       "fixtures": ["Q8176/R16", "D2064/report-heavy"]
     }
   ],

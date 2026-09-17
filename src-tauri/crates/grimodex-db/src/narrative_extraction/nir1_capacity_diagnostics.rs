@@ -17,9 +17,13 @@ use std::fs;
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::Instant;
+
+use crate::backup_restore::{read_incomplete_restore_session, restore_backup_core};
+use crate::migration_supervisor::workspace_identity;
+use crate::{ActiveWorkspace, WorkspaceAuthority, WorkspaceState};
 
 use super::restore_rebuild::{
     verify_dependency_graph_snapshot_with_control, DependencyGraphVerifyReport,
@@ -30,8 +34,8 @@ use super::{
     nir1_entity_relation_index::{
         cold_reopen_graph_index_with_control, is_complete_registered_with_control,
         prepare_graph_index_build_with_control,
-        publish_nir1_entity_relation_index_in_tx_with_control,
-        read_eligibility_source_with_control, INDEX_KEY as ENTITY_RELATION_INDEX_KEY,
+        publish_nir1_entity_relation_index_in_tx_with_control, read as read_graph_binding,
+        read_eligibility_source_with_control, BindingRead, INDEX_KEY as ENTITY_RELATION_INDEX_KEY,
     },
     NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
 };
@@ -205,8 +209,35 @@ pub struct GraphLifecycleMetrics {
     pub publish_transaction_ms: Option<f64>,
     pub cold_reopen_ms: Option<f64>,
     pub restore_verify_ms: Option<f64>,
+    /// Full-set Source/registration/Coverage intervals are kept separate so
+    /// the orchestrator cannot mistake the fixture's A2 read for the mode's
+    /// own operation.
+    pub source_reresolution_ms: Option<f64>,
+    pub complete_registration_ms: Option<f64>,
+    pub coverage_ms: Option<f64>,
+    pub restore_install_ms: Option<f64>,
     pub restore_report_records: Option<u64>,
+    /// Report records produced by this mode's operation. `counts.reportRecords`
+    /// remains the persisted fixture shape and may be present even when this
+    /// mode does not run Verify.
+    pub operation_report_records: Option<u64>,
+    pub source_reresolved: bool,
+    pub complete_registered: bool,
+    pub coverage_verified: bool,
+    pub restore_maintenance_validated: bool,
+    pub restore_image_identity: Option<String>,
+    pub restore_workspace_identity: Option<String>,
+    pub restore_epoch: Option<String>,
     pub terminal_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapacityModeOutcome {
+    pub operation: &'static str,
+    pub success: bool,
+    pub required_success: bool,
+    pub operation_report_records: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -228,11 +259,15 @@ pub struct CapacityObservation {
     pub supported_capacity_claim: bool,
     pub database_path: String,
     pub counts: CapacityCounts,
+    /// Shape read from the immutable fixture before the selected diagnostic
+    /// mode runs. It is deliberately separate from any mode outcome.
+    pub fixture_shape: CapacityCounts,
     pub bytes: CapacityBytes,
     pub process: ProcessMetrics,
     pub sql: CapacitySqlMetrics,
     pub occupancy: CapacityOccupancy,
     pub graph_lifecycle: GraphLifecycleMetrics,
+    pub mode_outcome: CapacityModeOutcome,
     pub cancel: CancelMeasurement,
     pub rejection_reasons: BTreeMap<String, usize>,
     pub not_measured: Vec<String>,
@@ -734,6 +769,7 @@ fn mode_measurement_not_measured(
         mode,
         CapacityDiagnosticMode::FullBuild
             | CapacityDiagnosticMode::CompleteRegistration
+            | CapacityDiagnosticMode::Coverage
             | CapacityDiagnosticMode::Restore
             | CapacityDiagnosticMode::ColdReopen
     ) && lifecycle.publish_owner_ms.is_none()
@@ -744,6 +780,7 @@ fn mode_measurement_not_measured(
         mode,
         CapacityDiagnosticMode::FullBuild
             | CapacityDiagnosticMode::CompleteRegistration
+            | CapacityDiagnosticMode::Coverage
             | CapacityDiagnosticMode::Restore
             | CapacityDiagnosticMode::ColdReopen
     ) && lifecycle.publish_transaction_ms.is_none()
@@ -763,6 +800,22 @@ fn mode_measurement_not_measured(
     ) && lifecycle.restore_verify_ms.is_none()
     {
         not_measured.push(path_not_measured(mode, "restore"));
+    }
+    if mode == CapacityDiagnosticMode::SourceReresolution
+        && lifecycle.source_reresolution_ms.is_none()
+    {
+        not_measured.push(path_not_measured(mode, "source-reresolution"));
+    }
+    if mode == CapacityDiagnosticMode::CompleteRegistration
+        && lifecycle.complete_registration_ms.is_none()
+    {
+        not_measured.push(path_not_measured(mode, "complete-registration"));
+    }
+    if mode == CapacityDiagnosticMode::Coverage && lifecycle.coverage_ms.is_none() {
+        not_measured.push(path_not_measured(mode, "coverage"));
+    }
+    if mode == CapacityDiagnosticMode::Restore && lifecycle.restore_install_ms.is_none() {
+        not_measured.push(path_not_measured(mode, "restore-install"));
     }
     not_measured.push(path_not_measured(mode, "temporary-bytes"));
     not_measured.push(path_not_measured(mode, "foreground-wait"));
@@ -784,7 +837,19 @@ struct GraphLifecycleRun {
     publish_transaction_ms: Option<f64>,
     cold_reopen_ms: Option<f64>,
     restore_verify_ms: Option<f64>,
+    source_reresolution_ms: Option<f64>,
+    complete_registration_ms: Option<f64>,
+    coverage_ms: Option<f64>,
+    restore_install_ms: Option<f64>,
     restore_report_records: Option<u64>,
+    operation_report_records: Option<u64>,
+    source_reresolved: bool,
+    complete_registered: bool,
+    coverage_verified: bool,
+    restore_maintenance_validated: bool,
+    restore_image_identity: Option<String>,
+    restore_workspace_identity: Option<String>,
+    restore_epoch: Option<String>,
     terminal_error: Option<String>,
 }
 
@@ -795,6 +860,10 @@ fn conservative_connection_hold_ms(manual_a2_owner_ms: f64, lifecycle: &GraphLif
         lifecycle.publish_owner_ms,
         lifecycle.cold_reopen_ms,
         lifecycle.restore_verify_ms,
+        lifecycle.source_reresolution_ms,
+        lifecycle.complete_registration_ms,
+        lifecycle.coverage_ms,
+        lifecycle.restore_install_ms,
     ]
     .into_iter()
     .flatten()
@@ -907,7 +976,19 @@ fn empty_lifecycle(error: Option<String>) -> GraphLifecycleRun {
         publish_transaction_ms: None,
         cold_reopen_ms: None,
         restore_verify_ms: None,
+        source_reresolution_ms: None,
+        complete_registration_ms: None,
+        coverage_ms: None,
+        restore_install_ms: None,
         restore_report_records: None,
+        operation_report_records: None,
+        source_reresolved: false,
+        complete_registered: false,
+        coverage_verified: false,
+        restore_maintenance_validated: false,
+        restore_image_identity: None,
+        restore_workspace_identity: None,
+        restore_epoch: None,
         terminal_error: error,
     }
 }
@@ -1056,9 +1137,362 @@ fn prepare_and_publish_for_mode(
         publish_transaction_ms,
         cold_reopen_ms: None,
         restore_verify_ms: None,
+        source_reresolution_ms: None,
+        complete_registration_ms: None,
+        coverage_ms: None,
+        restore_install_ms: None,
         restore_report_records: None,
+        operation_report_records: None,
+        source_reresolved: false,
+        complete_registered: false,
+        coverage_verified: false,
+        restore_maintenance_validated: false,
+        restore_image_identity: None,
+        restore_workspace_identity: None,
+        restore_epoch: None,
         terminal_error: None,
     })
+}
+
+fn copy_database_state(source: &Path, destination: &Path) -> Result<()> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    for suffix in ["", "-wal", "-shm"] {
+        let mut source_path = source.as_os_str().to_owned();
+        source_path.push(suffix);
+        let source_path = Path::new(&source_path);
+        let mut destination_path = destination.as_os_str().to_owned();
+        destination_path.push(suffix);
+        let destination_path = Path::new(&destination_path);
+        match fs::copy(source_path, destination_path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && suffix != "" => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "copy diagnostic restore database state {} -> {}",
+                        source_path.display(),
+                        destination_path.display()
+                    )
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Run Restore against a disposable workspace so the mode proves the actual
+/// backup/recovery boundary.  A same-file Verify would only exercise the
+/// normal publish path and could never establish a restored image, workspace
+/// identity, or Restore Epoch.
+fn run_real_restore_mode(
+    database_path: &Path,
+    project_id: &str,
+    progress_callbacks: Option<Arc<AtomicU64>>,
+    trace: Option<Arc<TraceCounter>>,
+) -> Result<GraphLifecycleRun> {
+    let workspace = std::env::temp_dir().join(format!(
+        "grimodex-nir1-capacity-restore-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let backup_dir = workspace.join("backups");
+    let live_path = workspace.join("grimodex.db");
+    let workspace_id = format!("nir1-capacity-restore-{}", uuid::Uuid::new_v4());
+
+    let result = (|| -> Result<GraphLifecycleRun> {
+        // Keep setup inside the guarded closure so partial copy/marker/backup
+        // failures still run the outer temporary-workspace cleanup.
+        fs::create_dir_all(&backup_dir)?;
+        copy_database_state(database_path, &live_path)?;
+        fs::create_dir_all(workspace.join(".grimodex"))?;
+        fs::write(
+            workspace.join(".grimodex/workspace.json"),
+            serde_json::json!({"id": workspace_id}).to_string(),
+        )?;
+        let live_db = Database::new(&live_path).with_context(|| {
+            format!("open diagnostic restore live image {}", live_path.display())
+        })?;
+        let pre_restore_lifecycle =
+            prepare_and_publish_for_mode(&live_db, project_id, progress_callbacks.clone())?;
+        anyhow::ensure!(
+            pre_restore_lifecycle.prepared && pre_restore_lifecycle.published,
+            "restore diagnostic could not seed a published Graph generation before backup"
+        );
+        let expected_generation = pre_restore_lifecycle
+            .published_generation
+            .context("restore diagnostic seed omitted Graph generation")?;
+        let expected_roster_records = pre_restore_lifecycle
+            .shape
+            .as_ref()
+            .context("restore diagnostic seed omitted Graph roster shape")?
+            .roster_records;
+        let restored_marker = format!("restored-{}", uuid::Uuid::new_v4());
+        live_db.with_conn(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+                params!["nir1.capacity.restore.marker", &restored_marker],
+            )?;
+            Ok(())
+        })?;
+        let backup_path = backup_dir.join("grimodex-capacity-restore.db");
+        live_db
+            .backup_to(&backup_path)
+            .context("create disposable diagnostic restore image")?;
+        // Keep the pre-restore published generation in a sealed, sidecar-free
+        // image. Restore must consume this real image; a same-DB Verify would
+        // not prove the backup/recovery boundary.
+        crate::migration_supervisor::seal_sqlite_image(&backup_path)
+            .map_err(|error| anyhow::anyhow!(error))
+            .context("seal disposable diagnostic restore image")?;
+        live_db.with_conn(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+                params!["nir1.capacity.restore.marker", "pre-restore"],
+            )?;
+            Ok(())
+        })?;
+        drop(live_db);
+
+        let authority = WorkspaceAuthority::from_database_for_test(
+            Database::new(&live_path)?,
+            workspace.clone(),
+        )?;
+        let state = WorkspaceState {
+            inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: std::sync::atomic::AtomicBool::new(false),
+            open_lock: Mutex::new(()),
+        };
+        let install_started = Instant::now();
+        let restore_result = restore_backup_core(&state, "grimodex-capacity-restore.db", || {});
+        let restore_install_ms = Some(install_started.elapsed().as_secs_f64() * 1000.0);
+        restore_result.context("run disposable diagnostic restore")?;
+
+        let restored_authority = {
+            let inner = state
+                .inner
+                .lock()
+                .map_err(|error| anyhow::anyhow!("restore workspace lock poisoned: {error}"))?;
+            let active = inner
+                .as_ref()
+                .context("restore did not publish a workspace authority")?;
+            Arc::clone(&active.authority)
+        };
+        if let Some(trace) = trace.as_ref() {
+            restored_authority.db().with_conn(|conn| {
+                install_diagnostic_trace(conn, trace);
+                Ok(())
+            })?;
+        }
+        let actual_workspace_identity = workspace_identity(&workspace);
+        anyhow::ensure!(
+            actual_workspace_identity == workspace_id,
+            "restore workspace identity changed: expected {workspace_id}, got {actual_workspace_identity}"
+        );
+        let (marker, restore_epoch, restore_image_identity) =
+            restored_authority.db().with_conn(|conn| {
+                let marker: Option<String> = conn
+                    .query_row(
+                        "SELECT value FROM app_settings WHERE key=?1",
+                        params!["nir1.capacity.restore.marker"],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let epoch: Option<(String, String)> = conn
+                    .query_row(
+                        "SELECT id, triggered_by_change_event_uid
+                           FROM narrative_semantic_epochs
+                          WHERE project_id=?1 AND reason='restore'
+                          ORDER BY epoch_number DESC
+                          LIMIT 1",
+                        params![project_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                Ok((
+                    marker,
+                    epoch.clone().map(|value| value.0),
+                    epoch.map(|value| value.1),
+                ))
+            })?;
+        anyhow::ensure!(
+            marker.as_deref() == Some(restored_marker.as_str()),
+            "restore image marker was not restored"
+        );
+        let restore_image_identity =
+            restore_image_identity.context("restore did not mint a restore image identity")?;
+        anyhow::ensure!(
+            restore_image_identity.starts_with("restore-image-sha256:"),
+            "restore image identity has unexpected format: {restore_image_identity}"
+        );
+        anyhow::ensure!(
+            restore_epoch.is_some(),
+            "restore did not mint a semantic epoch"
+        );
+        anyhow::ensure!(
+            read_incomplete_restore_session(&workspace)?.is_none(),
+            "restore session marker remained after diagnostic restore"
+        );
+
+        // Restore creates a new semantic epoch and therefore invalidates the
+        // pre-restore freshness state. Prove that the sealed binding and
+        // roster survived the image handoff, then perform the required
+        // post-restore rebuild before complete-registration and Verify.
+        let restored_binding_check = restored_authority.db().with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let source = read_eligibility_source_with_control(
+                &tx,
+                project_id,
+                &mut super::nir1_entity_relation_index::NeverStopGraphWorkControl,
+            )?;
+            anyhow::ensure!(
+                source.roster.len() == expected_roster_records,
+                "restored Graph roster changed before rebuild: expected {}, got {}",
+                expected_roster_records,
+                source.roster.len()
+            );
+            let binding = match read_graph_binding(&tx, project_id)? {
+                BindingRead::Registered(binding) => binding,
+                other => anyhow::bail!(
+                    "restored Graph binding is not registered before rebuild: {other:?}"
+                ),
+            };
+            anyhow::ensure!(
+                binding.generation == expected_generation,
+                "restored Graph generation changed before rebuild: expected {}, got {}",
+                expected_generation,
+                binding.generation
+            );
+            tx.commit()?;
+            Ok(binding.generation)
+        })?;
+        let rebuilt = prepare_and_publish_for_mode(
+            restored_authority.db(),
+            project_id,
+            progress_callbacks.as_ref().map(Arc::clone),
+        )?;
+        anyhow::ensure!(
+            rebuilt.prepared && rebuilt.published,
+            "restore recovery rebuild did not publish a Graph generation: {:?}",
+            rebuilt.terminal_error
+        );
+        let rebuilt_generation = rebuilt
+            .published_generation
+            .context("restore recovery rebuild omitted Graph generation")?;
+        let rebuilt_roster_records = rebuilt
+            .shape
+            .as_ref()
+            .context("restore recovery rebuild omitted Graph roster shape")?
+            .roster_records;
+        anyhow::ensure!(
+            rebuilt_generation > restored_binding_check,
+            "restore recovery rebuild did not advance Graph generation"
+        );
+        anyhow::ensure!(
+            rebuilt_roster_records == expected_roster_records,
+            "restore recovery rebuild changed Graph roster: expected {}, got {}",
+            expected_roster_records,
+            rebuilt_roster_records
+        );
+
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let verify_started = Instant::now();
+        let operation = owned_mode_operation(
+            restored_authority.db(),
+            progress_callbacks,
+            stop,
+            |conn, control| {
+                let tx = conn.unchecked_transaction()?;
+                let restored_source =
+                    read_eligibility_source_with_control(&tx, project_id, control)?;
+                anyhow::ensure!(
+                    restored_source.roster.len() == rebuilt_roster_records,
+                    "rebuilt Graph roster changed: expected {}, got {}",
+                    rebuilt_roster_records,
+                    restored_source.roster.len()
+                );
+                let restored_binding = match read_graph_binding(&tx, project_id)? {
+                    BindingRead::Registered(binding) => binding,
+                    other => anyhow::bail!("restored Graph binding is not registered: {other:?}"),
+                };
+                anyhow::ensure!(
+                    restored_binding.generation == rebuilt_generation,
+                    "rebuilt Graph generation changed: expected {}, got {}",
+                    rebuilt_generation,
+                    restored_binding.generation
+                );
+                let complete = is_complete_registered_with_control(
+                    &tx,
+                    project_id,
+                    ENTITY_RELATION_INDEX_KEY,
+                    control,
+                )?;
+                anyhow::ensure!(
+                    complete,
+                    "rebuilt Graph binding is not complete for the exact roster"
+                );
+                let (report, _digest) =
+                    verify_dependency_graph_snapshot_with_control(&tx, project_id, control)?;
+                control.check(super::nir1_entity_relation_index::GraphWorkStage::ResultAssembly)?;
+                let records = report_observation_count(&report)?;
+                tx.commit()?;
+                Ok((records, restored_binding.generation))
+            },
+        );
+        let restore_verify_ms = Some(verify_started.elapsed().as_secs_f64() * 1000.0);
+        let (restore_verified, operation_report_records, restored_generation, terminal_error) =
+            match operation {
+                Ok(Some((records, generation))) => (true, Some(records), Some(generation), None),
+                Ok(None) => (
+                    false,
+                    None,
+                    None,
+                    Some("maintenance-connection-deferred".to_owned()),
+                ),
+                Err(error) => (false, None, None, Some(error.to_string())),
+            };
+        Ok(GraphLifecycleRun {
+            shape: rebuilt.shape,
+            prepared: pre_restore_lifecycle.prepared && rebuilt.prepared,
+            published: rebuilt.published && restored_generation.is_some(),
+            rolled_back: rebuilt.rolled_back,
+            restore_verified,
+            restore_maintenance_validated: restore_verified,
+            published_generation: restored_generation,
+            prepare_ms: match (pre_restore_lifecycle.prepare_ms, rebuilt.prepare_ms) {
+                (Some(before), Some(after)) => Some(before + after),
+                _ => None,
+            },
+            publish_owner_ms: rebuilt.publish_owner_ms,
+            publish_transaction_ms: rebuilt.publish_transaction_ms,
+            restore_install_ms,
+            restore_verify_ms,
+            restore_report_records: operation_report_records,
+            operation_report_records,
+            restore_image_identity: Some(restore_image_identity),
+            restore_workspace_identity: Some(actual_workspace_identity),
+            restore_epoch,
+            terminal_error,
+            ..empty_lifecycle(None)
+        })
+    })();
+    let cleanup_result = fs::remove_dir_all(&workspace);
+    match (result, cleanup_result) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(mut value), Err(error)) => {
+            value.terminal_error = Some(format!(
+                "restore diagnostic workspace cleanup failed: {error}"
+            ));
+            value.restore_verified = false;
+            value.restore_maintenance_validated = false;
+            Ok(value)
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup_error)) => Err(error.context(format!(
+            "restore diagnostic workspace cleanup also failed: {cleanup_error}"
+        ))),
+    }
 }
 
 fn run_mode_operation(
@@ -1081,6 +1515,7 @@ fn run_mode_operation(
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     match mode {
         CapacityDiagnosticMode::SourceReresolution => {
+            let started = Instant::now();
             let operation = owned_mode_operation(&db, progress_callbacks, stop, |conn, control| {
                 let tx = conn.unchecked_transaction()?;
                 let source = read_eligibility_source_with_control(&tx, project_id, control)?;
@@ -1088,8 +1523,11 @@ fn run_mode_operation(
                 tx.commit()?;
                 Ok(records)
             });
+            let elapsed = Some(started.elapsed().as_secs_f64() * 1000.0);
             let mut lifecycle = empty_lifecycle(None);
-            lifecycle.prepared = matches!(&operation, Ok(Some(_)));
+            lifecycle.source_reresolution_ms = elapsed;
+            lifecycle.source_reresolved = matches!(&operation, Ok(Some(_)));
+            lifecycle.operation_report_records = None;
             lifecycle.terminal_error = match operation {
                 Ok(Some(_)) => None,
                 Ok(None) => Some("maintenance-connection-deferred".to_owned()),
@@ -1099,73 +1537,99 @@ fn run_mode_operation(
             Ok(lifecycle)
         }
         CapacityDiagnosticMode::Coverage => {
-            let operation = owned_mode_operation(&db, progress_callbacks, stop, |conn, control| {
-                let tx = conn.unchecked_transaction()?;
-                let (report, _) =
-                    verify_dependency_graph_snapshot_with_control(&tx, project_id, control)?;
-                let records = report_observation_count(&report)?;
-                tx.commit()?;
-                Ok(records)
-            });
-            let mut lifecycle = empty_lifecycle(None);
-            lifecycle.prepared = matches!(&operation, Ok(Some(_)));
-            lifecycle.restore_report_records = operation.as_ref().ok().and_then(|value| *value);
-            lifecycle.restore_verified = matches!(operation, Ok(Some(_)));
-            lifecycle.restore_verify_ms = Some(0.0);
-            lifecycle.terminal_error = match operation {
-                Ok(Some(_)) => None,
-                Ok(None) => Some("maintenance-connection-deferred".to_owned()),
-                Err(error) => Some(error.to_string()),
-            };
+            let mut lifecycle =
+                prepare_and_publish_for_mode(&db, project_id, progress_callbacks.clone())?;
+            if lifecycle.published {
+                let started = Instant::now();
+                let operation =
+                    owned_mode_operation(&db, progress_callbacks, stop, |conn, control| {
+                        let tx = conn.unchecked_transaction()?;
+                        let complete = is_complete_registered_with_control(
+                            &tx,
+                            project_id,
+                            ENTITY_RELATION_INDEX_KEY,
+                            control,
+                        )?;
+                        anyhow::ensure!(
+                            complete,
+                            "coverage Graph binding is not complete for the exact roster"
+                        );
+                        let binding = match read_graph_binding(&tx, project_id)? {
+                            BindingRead::Registered(binding) => binding,
+                            other => {
+                                anyhow::bail!("coverage Graph binding is not registered: {other:?}")
+                            }
+                        };
+                        let (report, _) = verify_dependency_graph_snapshot_with_control(
+                            &tx, project_id, control,
+                        )?;
+                        let records = report_observation_count(&report)?;
+                        tx.commit()?;
+                        Ok((records, binding.generation))
+                    });
+                lifecycle.coverage_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+                lifecycle.coverage_verified = matches!(&operation, Ok(Some(_)));
+                lifecycle.operation_report_records =
+                    operation.as_ref().ok().and_then(|value| value.map(|v| v.0));
+                lifecycle.restore_report_records = lifecycle.operation_report_records;
+                lifecycle.terminal_error = match operation {
+                    Ok(Some((_records, generation))) => {
+                        if lifecycle.published_generation == Some(generation) {
+                            None
+                        } else {
+                            Some("coverage-generation-mismatch".to_owned())
+                        }
+                    }
+                    Ok(None) => Some("maintenance-connection-deferred".to_owned()),
+                    Err(error) => Some(error.to_string()),
+                };
+            }
             drop(db);
             Ok(lifecycle)
         }
         CapacityDiagnosticMode::CompleteRegistration => {
-            let mut lifecycle = prepare_and_publish_for_mode(&db, project_id, None)?;
+            let mut lifecycle =
+                prepare_and_publish_for_mode(&db, project_id, progress_callbacks.clone())?;
             if lifecycle.published {
-                let operation = owned_mode_operation(&db, None, stop, |conn, control| {
-                    let tx = conn.unchecked_transaction()?;
-                    let complete = is_complete_registered_with_control(
-                        &tx,
-                        project_id,
-                        ENTITY_RELATION_INDEX_KEY,
-                        control,
-                    )?;
-                    tx.commit()?;
-                    Ok(complete)
-                });
-                if let Err(error) = operation {
-                    lifecycle.terminal_error = Some(error.to_string());
+                let started = Instant::now();
+                let operation =
+                    owned_mode_operation(&db, progress_callbacks, stop, |conn, control| {
+                        let tx = conn.unchecked_transaction()?;
+                        let complete = is_complete_registered_with_control(
+                            &tx,
+                            project_id,
+                            ENTITY_RELATION_INDEX_KEY,
+                            control,
+                        )?;
+                        tx.commit()?;
+                        Ok(complete)
+                    });
+                lifecycle.complete_registration_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+                match operation {
+                    Ok(Some(complete)) => {
+                        lifecycle.complete_registered = complete;
+                        if !complete {
+                            lifecycle.terminal_error =
+                                Some("complete-registration-returned-false".to_owned());
+                        }
+                    }
+                    Ok(None) => {
+                        lifecycle.terminal_error =
+                            Some("maintenance-connection-deferred".to_owned());
+                    }
+                    Err(error) => lifecycle.terminal_error = Some(error.to_string()),
                 }
             }
             drop(db);
             Ok(lifecycle)
         }
         CapacityDiagnosticMode::Restore => {
-            let mut lifecycle = prepare_and_publish_for_mode(&db, project_id, None)?;
-            if lifecycle.published {
-                let restore_started = Instant::now();
-                let operation = owned_mode_operation(&db, None, stop, |conn, control| {
-                    let tx = conn.unchecked_transaction()?;
-                    let (report, _) =
-                        verify_dependency_graph_snapshot_with_control(&tx, project_id, control)?;
-                    let records = report_observation_count(&report)?;
-                    tx.commit()?;
-                    Ok(records)
-                });
-                lifecycle.restore_verify_ms =
-                    Some(restore_started.elapsed().as_secs_f64() * 1000.0);
-                lifecycle.restore_report_records = operation.as_ref().ok().and_then(|value| *value);
-                lifecycle.restore_verified = matches!(operation, Ok(Some(_)));
-                if let Err(error) = operation {
-                    lifecycle.terminal_error = Some(error.to_string());
-                }
-            }
             drop(db);
-            Ok(lifecycle)
+            return run_real_restore_mode(database_path, project_id, progress_callbacks, trace);
         }
         CapacityDiagnosticMode::ColdReopen => {
-            let lifecycle = prepare_and_publish_for_mode(&db, project_id, None)?;
+            let lifecycle =
+                prepare_and_publish_for_mode(&db, project_id, progress_callbacks.clone())?;
             if !lifecycle.published {
                 drop(db);
                 return Ok(lifecycle);
@@ -1182,17 +1646,25 @@ fn run_mode_operation(
             install_connection_metadata(&reopened_conn)?;
             let reopened_db = Database::from_connection(reopened_conn);
             let started = Instant::now();
-            let operation = owned_mode_operation(&reopened_db, None, stop, |conn, control| {
-                let tx = conn.unchecked_transaction()?;
-                let result = cold_reopen_graph_index_with_control(&tx, project_id, control)?;
-                tx.commit()?;
-                Ok(result)
-            });
+            let operation =
+                owned_mode_operation(&reopened_db, progress_callbacks, stop, |conn, control| {
+                    let tx = conn.unchecked_transaction()?;
+                    let result = cold_reopen_graph_index_with_control(&tx, project_id, control)?;
+                    tx.commit()?;
+                    Ok(result)
+                });
             let mut result = lifecycle;
             result.cold_reopen_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
             result.cold_reopened = matches!(operation, Ok(Some(true)));
-            if let Err(error) = operation {
-                result.terminal_error = Some(error.to_string());
+            match operation {
+                Ok(Some(true)) => {}
+                Ok(Some(false)) => {
+                    result.terminal_error = Some("cold-reopen-returned-false".to_owned());
+                }
+                Ok(None) => {
+                    result.terminal_error = Some("maintenance-connection-deferred".to_owned());
+                }
+                Err(error) => result.terminal_error = Some(error.to_string()),
             }
             drop(reopened_db);
             Ok(result)
@@ -1222,7 +1694,19 @@ fn run_graph_lifecycle(
             publish_transaction_ms: None,
             cold_reopen_ms: None,
             restore_verify_ms: None,
+            source_reresolution_ms: None,
+            complete_registration_ms: None,
+            coverage_ms: None,
+            restore_install_ms: None,
             restore_report_records: None,
+            operation_report_records: None,
+            source_reresolved: false,
+            complete_registered: false,
+            coverage_verified: false,
+            restore_maintenance_validated: false,
+            restore_image_identity: None,
+            restore_workspace_identity: None,
+            restore_epoch: None,
             terminal_error: Some("project-id-required-for-graph-lifecycle".to_owned()),
         });
     };
@@ -1276,7 +1760,19 @@ fn run_graph_lifecycle(
             publish_transaction_ms: None,
             cold_reopen_ms: None,
             restore_verify_ms: None,
+            source_reresolution_ms: None,
+            complete_registration_ms: None,
+            coverage_ms: None,
+            restore_install_ms: None,
             restore_report_records: None,
+            operation_report_records: None,
+            source_reresolved: false,
+            complete_registered: false,
+            coverage_verified: false,
+            restore_maintenance_validated: false,
+            restore_image_identity: None,
+            restore_workspace_identity: None,
+            restore_epoch: None,
             terminal_error: Some("maintenance-connection-deferred".to_owned()),
         });
     };
@@ -1296,7 +1792,19 @@ fn run_graph_lifecycle(
                 publish_transaction_ms: None,
                 cold_reopen_ms: None,
                 restore_verify_ms: None,
+                source_reresolution_ms: None,
+                complete_registration_ms: None,
+                coverage_ms: None,
+                restore_install_ms: None,
                 restore_report_records: None,
+                operation_report_records: None,
+                source_reresolved: false,
+                complete_registered: false,
+                coverage_verified: false,
+                restore_maintenance_validated: false,
+                restore_image_identity: None,
+                restore_workspace_identity: None,
+                restore_epoch: None,
                 terminal_error: Some(error.to_string()),
             });
         }
@@ -1348,7 +1856,19 @@ fn run_graph_lifecycle(
             publish_transaction_ms,
             cold_reopen_ms: None,
             restore_verify_ms: None,
+            source_reresolution_ms: None,
+            complete_registration_ms: None,
+            coverage_ms: None,
+            restore_install_ms: None,
             restore_report_records: None,
+            operation_report_records: None,
+            source_reresolved: false,
+            complete_registered: false,
+            coverage_verified: false,
+            restore_maintenance_validated: false,
+            restore_image_identity: None,
+            restore_workspace_identity: None,
+            restore_epoch: None,
             terminal_error: Some("maintenance-connection-deferred".to_owned()),
         });
     };
@@ -1368,7 +1888,19 @@ fn run_graph_lifecycle(
                 publish_transaction_ms,
                 cold_reopen_ms: None,
                 restore_verify_ms: None,
+                source_reresolution_ms: None,
+                complete_registration_ms: None,
+                coverage_ms: None,
+                restore_install_ms: None,
                 restore_report_records: None,
+                operation_report_records: None,
+                source_reresolved: false,
+                complete_registered: false,
+                coverage_verified: false,
+                restore_maintenance_validated: false,
+                restore_image_identity: None,
+                restore_workspace_identity: None,
+                restore_epoch: None,
                 terminal_error: Some(error.to_string()),
             });
         }
@@ -1481,8 +2013,56 @@ fn run_graph_lifecycle(
         cold_reopen_ms,
         restore_verify_ms,
         restore_report_records,
+        source_reresolution_ms: None,
+        complete_registration_ms: None,
+        coverage_ms: None,
+        restore_install_ms: None,
+        operation_report_records: restore_report_records,
+        source_reresolved: false,
+        complete_registered: false,
+        coverage_verified: false,
+        restore_maintenance_validated: restore_verified,
+        restore_image_identity: None,
+        restore_workspace_identity: None,
+        restore_epoch: None,
         terminal_error,
     })
+}
+
+fn mode_operation_name(mode: CapacityDiagnosticMode) -> &'static str {
+    match mode {
+        CapacityDiagnosticMode::FullBuild => "whole-project-build-publish-reopen-verify",
+        CapacityDiagnosticMode::SourceReresolution => "source-reresolution-full-set",
+        CapacityDiagnosticMode::CompleteRegistration => "complete-registration-full-set",
+        CapacityDiagnosticMode::Coverage => "coverage-full-set",
+        CapacityDiagnosticMode::Restore => "restore-recovery-maintenance-verify",
+        CapacityDiagnosticMode::ColdReopen => "cold-reopen-full-set",
+    }
+}
+
+fn mode_required_success(mode: CapacityDiagnosticMode, lifecycle: &GraphLifecycleRun) -> bool {
+    if lifecycle.terminal_error.is_some() {
+        return false;
+    }
+    match mode {
+        CapacityDiagnosticMode::FullBuild => {
+            lifecycle.published && lifecycle.cold_reopened && lifecycle.restore_verified
+        }
+        CapacityDiagnosticMode::SourceReresolution => lifecycle.source_reresolved,
+        CapacityDiagnosticMode::CompleteRegistration => {
+            lifecycle.published && lifecycle.complete_registered
+        }
+        CapacityDiagnosticMode::Coverage => lifecycle.coverage_verified,
+        CapacityDiagnosticMode::Restore => {
+            lifecycle.published
+                && lifecycle.restore_verified
+                && lifecycle.restore_maintenance_validated
+                && lifecycle.restore_image_identity.is_some()
+                && lifecycle.restore_workspace_identity.is_some()
+                && lifecycle.restore_epoch.is_some()
+        }
+        CapacityDiagnosticMode::ColdReopen => lifecycle.published && lifecycle.cold_reopened,
+    }
 }
 
 /// Measure one disposable child process's whole-project Graph build.
@@ -1598,6 +2178,7 @@ pub fn measure_capacity_mode(
     }
     transaction.commit()?;
     let manual_a2_owner_ms = manual_a2_started.elapsed().as_secs_f64() * 1000.0;
+    let fixture_shape = counts.clone();
     // The same connection is handed to the real Graph maintenance scope so
     // the lifecycle's SQL and in-process containers belong to this fresh
     // measurement. Its publish transaction may mutate only this disposable
@@ -1632,7 +2213,6 @@ pub fn measure_capacity_mode(
         bytes.roster_bytes = u64::try_from(shape.roster_serialized_bytes)?;
         bytes.edge_serialized_bytes = Some(u64::try_from(shape.edge_serialized_bytes)?);
     }
-    counts.report_records = lifecycle.restore_report_records;
     let post_run_copy_digest = database_state_digest(database_path)?;
     let after_process = sample_process();
     let total_peak_rss_bytes = after_process
@@ -1640,16 +2220,11 @@ pub fn measure_capacity_mode(
         .or(after_process.ru_maxrss_bytes);
     let sqlite_after = sqlite_memory_used();
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let status = if mode == CapacityDiagnosticMode::FullBuild {
-        if lifecycle.published {
-            "measured"
-        } else {
-            "build-unavailable"
-        }
-    } else if lifecycle.terminal_error.is_none() {
+    let required_success = mode_required_success(mode, &lifecycle);
+    let status = if required_success {
         "measured"
     } else {
-        "path-unavailable"
+        "failed"
     };
     let admission = "per-revision-512-record-and-2MiB-envelope";
     let mut not_measured = vec![
@@ -1693,8 +2268,10 @@ pub fn measure_capacity_mode(
             not_measured.push(path_not_measured(mode, metric));
         }
     }
-    if counts.report_records.is_none() {
+    if lifecycle.operation_report_records.is_none() {
         not_measured.push(path_not_measured(mode, "operation-produced-report-count"));
+    }
+    if fixture_shape.report_records.is_none() {
         not_measured.push(path_not_measured(mode, "report-record-count"));
     }
     if lifecycle.shape.is_none() {
@@ -1770,8 +2347,27 @@ pub fn measure_capacity_mode(
             publish_transaction_ms: lifecycle.publish_transaction_ms,
             cold_reopen_ms: lifecycle.cold_reopen_ms,
             restore_verify_ms: lifecycle.restore_verify_ms,
+            source_reresolution_ms: lifecycle.source_reresolution_ms,
+            complete_registration_ms: lifecycle.complete_registration_ms,
+            coverage_ms: lifecycle.coverage_ms,
+            restore_install_ms: lifecycle.restore_install_ms,
             restore_report_records: lifecycle.restore_report_records,
+            operation_report_records: lifecycle.operation_report_records,
+            source_reresolved: lifecycle.source_reresolved,
+            complete_registered: lifecycle.complete_registered,
+            coverage_verified: lifecycle.coverage_verified,
+            restore_maintenance_validated: lifecycle.restore_maintenance_validated,
+            restore_image_identity: lifecycle.restore_image_identity,
+            restore_workspace_identity: lifecycle.restore_workspace_identity,
+            restore_epoch: lifecycle.restore_epoch,
             terminal_error: lifecycle.terminal_error,
+        },
+        fixture_shape,
+        mode_outcome: CapacityModeOutcome {
+            operation: mode_operation_name(mode),
+            success: required_success,
+            required_success,
+            operation_report_records: lifecycle.operation_report_records,
         },
         cancel: CancelMeasurement {
             status: "not-run",
@@ -1857,8 +2453,38 @@ mod tests {
                 publish_transaction_ms: Some(3.0),
                 cold_reopen_ms: Some(4.0),
                 restore_verify_ms: Some(5.0),
+                source_reresolution_ms: Some(6.0),
+                complete_registration_ms: Some(7.0),
+                coverage_ms: Some(8.0),
+                restore_install_ms: Some(9.0),
                 restore_report_records: Some(0),
+                operation_report_records: Some(0),
+                source_reresolved: true,
+                complete_registered: true,
+                coverage_verified: true,
+                restore_maintenance_validated: true,
+                restore_image_identity: None,
+                restore_workspace_identity: None,
+                restore_epoch: None,
                 terminal_error: None,
+            },
+            fixture_shape: CapacityCounts {
+                candidate_revisions: 3,
+                qualified_revisions: 3,
+                rejected_revisions: 0,
+                entity_records: 255,
+                relation_records: 3,
+                evidence_records: 255,
+                qualified_material_records: 513,
+                roster_records: 513,
+                dependency_edges: Some(3),
+                report_records: Some(0),
+            },
+            mode_outcome: CapacityModeOutcome {
+                operation: "test",
+                success: true,
+                required_success: true,
+                operation_report_records: Some(0),
             },
             cancel: CancelMeasurement {
                 status: "not-run",
@@ -2015,7 +2641,19 @@ mod tests {
             publish_transaction_ms: Some(29.0),
             cold_reopen_ms: Some(13.0),
             restore_verify_ms: Some(23.0),
+            source_reresolution_ms: Some(7.0),
+            complete_registration_ms: Some(8.0),
+            coverage_ms: Some(9.0),
+            restore_install_ms: Some(10.0),
             restore_report_records: Some(0),
+            operation_report_records: Some(0),
+            source_reresolved: true,
+            complete_registered: true,
+            coverage_verified: true,
+            restore_maintenance_validated: true,
+            restore_image_identity: None,
+            restore_workspace_identity: None,
+            restore_epoch: None,
             terminal_error: None,
         };
         let measured = conservative_connection_hold_ms(19.0, &lifecycle);
