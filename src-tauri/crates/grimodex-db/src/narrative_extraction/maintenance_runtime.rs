@@ -1193,8 +1193,11 @@ impl MaintenanceCycleResult {
 /// callbacks are invoked only at Rust work boundaries; they never become a
 /// durable authority or a renderer-facing contract. `should_stop` is checked
 /// before a work item, before its adapter dispatch, and before final cycle
-/// publication. `work_completed` is called only after those checks have
-/// passed, so an item interrupted during its adapter remains requeueable.
+/// publication. `work_completed` is called only after a real adapter has
+/// acquired its per-work finalization grant and committed its durable
+/// terminal transition. `work_noop_completed` is used for queue executions
+/// that intentionally do not dispatch an adapter; those paths have no
+/// durable finalization transaction and remain independently cancellable.
 pub struct MaintenanceCycleControl<'a> {
     pub should_stop: &'a dyn Fn() -> anyhow::Result<()>,
     /// Acquire the process-local finalization grant for one canonical work
@@ -1207,7 +1210,11 @@ pub struct MaintenanceCycleControl<'a> {
     /// Mark only the dequeued work as running; queued follow-ups remain
     /// `not-started` in the terminal receipt.
     pub work_started: &'a dyn Fn(&DesiredWork) -> anyhow::Result<()>,
+    /// Complete one real adapter execution after its durable finalization.
     pub work_completed: &'a dyn Fn(&DesiredWork) -> anyhow::Result<()>,
+    /// Complete one non-dispatch queue execution without a durable
+    /// finalization grant.
+    pub work_noop_completed: &'a dyn Fn(&DesiredWork) -> anyhow::Result<()>,
 }
 
 impl MaintenanceCycleRequest {
@@ -2504,6 +2511,12 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
         }
         Ok(())
     };
+    let mark_noop_completed = |item: &DesiredWork| -> anyhow::Result<()> {
+        if let Some(control) = control {
+            (control.work_noop_completed)(item)?;
+        }
+        Ok(())
+    };
     let enqueue_discovered = |queue: &mut std::collections::VecDeque<DesiredWork>,
                               item: DesiredWork|
      -> anyhow::Result<()> {
@@ -2567,7 +2580,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
         if foreground_run_is_held {
             // The exact marked Run is still durable and running. Do not feed
             // it back through StartupRecovery before the N-API cycle ACK.
-            mark_completed(&effective_item)?;
+            mark_noop_completed(&effective_item)?;
             continue;
         }
 
@@ -2603,7 +2616,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                         // handed the cycle to a different canonical phase.
                         handled_non_coalesced = true;
                         enqueue_discovered(&mut queue, next)?;
-                        mark_completed(&effective_item)?;
+                        mark_noop_completed(&effective_item)?;
                         continue;
                     }
                     Some(_) => {
@@ -2616,7 +2629,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                         // No follow-up remains: the completed Verify itself
                         // was the handled item in this cycle.
                         handled_non_coalesced = true;
-                        mark_completed(&effective_item)?;
+                        mark_noop_completed(&effective_item)?;
                         continue;
                     }
                 }
@@ -2630,7 +2643,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                 handled_non_coalesced = true;
                 terminal_halted_work.insert(recovery_work_key);
                 selector_halted_projects.insert(recovery_work.project_id.clone());
-                mark_completed(&effective_item)?;
+                mark_noop_completed(&effective_item)?;
                 continue;
             }
             Err(error) => return Err(error),
@@ -2639,7 +2652,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
             RecoveryAction::CoalescedRunning { .. } | RecoveryAction::CoalescedPending { .. } => {
                 coalesced_active = true;
                 has_more = true;
-                mark_completed(&effective_item)?;
+                mark_noop_completed(&effective_item)?;
                 continue;
             }
             RecoveryAction::SkipCompleted { .. } => {
@@ -2656,7 +2669,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                         enqueue_discovered(&mut queue, next)?;
                     }
                 }
-                mark_completed(&effective_item)?;
+                mark_noop_completed(&effective_item)?;
                 continue;
             }
             RecoveryAction::ManualIntervention { code } => {
@@ -2673,7 +2686,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                 )?;
                 handled_non_coalesced = true;
                 terminal_halted_work.insert(recovery_work_key);
-                mark_completed(&effective_item)?;
+                mark_noop_completed(&effective_item)?;
                 continue;
             }
             RecoveryAction::RecoverInterrupted { .. }
@@ -2708,7 +2721,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                             handled_non_coalesced = true;
                             terminal_halted_work.insert(recovery_work_key);
                             selector_halted_projects.insert(recovery_work.project_id.clone());
-                            mark_completed(&effective_item)?;
+                            mark_noop_completed(&effective_item)?;
                             continue;
                         }
                     };
@@ -2723,6 +2736,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                                 Ok(not_before_at) => {
                                     if chrono::Utc::now() < not_before_at {
                                         has_more = true;
+                                        mark_noop_completed(&effective_item)?;
                                         continue;
                                     }
                                 }
@@ -2734,7 +2748,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                                     )?;
                                     handled_non_coalesced = true;
                                     terminal_halted_work.insert(recovery_work_key);
-                                    mark_completed(&effective_item)?;
+                                    mark_noop_completed(&effective_item)?;
                                     continue;
                                 }
                             }
@@ -2747,7 +2761,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                             )?;
                             handled_non_coalesced = true;
                             terminal_halted_work.insert(recovery_work_key);
-                            mark_completed(&effective_item)?;
+                            mark_noop_completed(&effective_item)?;
                             continue;
                         }
                     }
@@ -2777,7 +2791,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                                     terminal_halted_work.insert(recovery_work_key);
                                     selector_halted_projects
                                         .insert(recovery_work.project_id.clone());
-                                    mark_completed(&effective_item)?;
+                                    mark_noop_completed(&effective_item)?;
                                     continue;
                                 }
                             }
@@ -2801,12 +2815,12 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                             // the cycle its real next phase.
                             handled_non_coalesced = true;
                             enqueue_discovered(&mut queue, next)?;
-                            mark_completed(&effective_item)?;
+                            mark_noop_completed(&effective_item)?;
                             continue;
                         }
                         None => {
                             handled_non_coalesced = true;
-                            mark_completed(&effective_item)?;
+                            mark_noop_completed(&effective_item)?;
                             continue;
                         }
                         Some(_) => {
@@ -2838,7 +2852,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                     )? {
                         enqueue_discovered(&mut queue, next)?;
                     }
-                    mark_completed(&effective_item)?;
+                    mark_noop_completed(&effective_item)?;
                     continue;
                 }
                 let marker = if foreground_marker_available {
@@ -5755,6 +5769,87 @@ mod tests {
     }
 
     #[test]
+    fn coalesced_db_cycle_uses_noop_completion_without_a_finalize_grant() {
+        let db = open_backfill_cycle_db(&["project-1"]);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json,
+                     spec_digest, status, coverage_json, created_at, started_at,
+                     completed_at, version, run_kind, semantic_epoch_id, work_key)
+                 VALUES ('coalesced-run', 'project-1', 'maintenance', '{}', '{}',
+                         'sha256:coalesced', 'running', '{}',
+                         '2026-01-01T00:00:00.000Z',
+                         '2026-01-01T00:00:00.000Z', NULL, 0, 'backfill',
+                         NULL, ?1)",
+                [LEGACY_BACKFILL_WORK_KEY],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed coalesced durable Run");
+
+        let grant_called = Arc::new(AtomicBool::new(false));
+        let adapter_completed = Arc::new(AtomicBool::new(false));
+        let noop_completed = Arc::new(AtomicBool::new(false));
+        let grant_called_for_cycle = Arc::clone(&grant_called);
+        let adapter_completed_for_cycle = Arc::clone(&adapter_completed);
+        let noop_completed_for_cycle = Arc::clone(&noop_completed);
+        let request = backfill_cycle_request(&["project-1"]);
+        let result = {
+            let should_stop = || Ok::<_, anyhow::Error>(());
+            let grant_finalize = move |_work_key: &str| -> anyhow::Result<()> {
+                grant_called_for_cycle.store(true, Ordering::SeqCst);
+                anyhow::bail!("coalesced work must not request adapter finalization")
+            };
+            let register_work = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+            let work_started = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+            let work_completed = move |_item: &DesiredWork| -> anyhow::Result<()> {
+                adapter_completed_for_cycle.store(true, Ordering::SeqCst);
+                anyhow::bail!("coalesced work must not report adapter completion")
+            };
+            let work_noop_completed = move |_item: &DesiredWork| -> anyhow::Result<()> {
+                noop_completed_for_cycle.store(true, Ordering::SeqCst);
+                Ok(())
+            };
+            let control = MaintenanceCycleControl {
+                should_stop: &should_stop,
+                grant_finalize: &grant_finalize,
+                register_work: &register_work,
+                work_started: &work_started,
+                work_completed: &work_completed,
+                work_noop_completed: &work_noop_completed,
+            };
+            run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+                &db,
+                &request,
+                |_| RecoveryMode::SameProcessLive,
+                None,
+                None,
+                Some(&control),
+            )
+        };
+
+        assert_eq!(
+            result.expect("coalesced cycle").status,
+            MaintenanceCycleStatus::Coalesced
+        );
+        assert!(noop_completed.load(Ordering::SeqCst));
+        assert!(!grant_called.load(Ordering::SeqCst));
+        assert!(!adapter_completed.load(Ordering::SeqCst));
+        let durable_status: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = 'coalesced-run'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read coalesced Run");
+        assert_eq!(durable_status, "running");
+    }
+
+    #[test]
     fn adapter_db_cancel_before_finalize_does_not_commit_terminal_success() {
         let db = open_backfill_cycle_db(&["project-1"]);
         let grant_called = Arc::new(AtomicBool::new(false));
@@ -5778,6 +5873,7 @@ mod tests {
                 register_work: &register_work,
                 work_started: &work_started,
                 work_completed: &work_completed,
+                work_noop_completed: &work_completed,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -5845,6 +5941,7 @@ mod tests {
                 register_work: &register_work,
                 work_started: &work_started,
                 work_completed: &work_completed,
+                work_noop_completed: &work_completed,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -5929,6 +6026,7 @@ mod tests {
                 register_work: &register_work,
                 work_started: &work_started,
                 work_completed: &work_completed,
+                work_noop_completed: &work_completed,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6014,6 +6112,7 @@ mod tests {
                 register_work: &register_work,
                 work_started: &work_started,
                 work_completed: &work_completed,
+                work_noop_completed: &work_completed,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
