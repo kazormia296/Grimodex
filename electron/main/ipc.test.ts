@@ -6,7 +6,11 @@ import StarterKit from "@tiptap/starter-kit";
 
 import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 import { IPC } from "../shared/ipcContract.js";
-import { NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS } from "./narrativeMaintenance.js";
+import {
+  createNarrativeMaintenanceScheduler,
+  NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS,
+  NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS,
+} from "./narrativeMaintenance.js";
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
 import { createCliAiManager } from "./cliAi.js";
 import {
@@ -2001,6 +2005,64 @@ describe("registerIpcRouter workspace-open main trace", () => {
     releaseQuiescence();
     await expect(invoke).resolves.toMatchObject({ ok: true });
     expect(order).toEqual(["quiesce", "open"]);
+  });
+
+  it("resumes the real scheduler after a successful Native workspace swap", async () => {
+    vi.useFakeTimers();
+    const previousBinding = { authorityId: "authority-before", generation: 1 };
+    const nextBinding = { authorityId: "authority-after", generation: 2 };
+    let currentBinding = previousBinding;
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue({ status: "accepted", hasMore: false });
+    const openWorkspace = vi.fn(async () => {
+      currentBinding = nextBinding;
+      return JSON.stringify({ status: "ready" });
+    });
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+      runNarrativeMaintenanceCycle,
+      openWorkspace,
+    };
+    const scheduler = createNarrativeMaintenanceScheduler(backend);
+    scheduler.start();
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scheduler,
+    );
+
+    try {
+      const envelope = await invokeHandler()({ sender: {} }, "open_workspace", {
+        path: "/workspace-next",
+      });
+      expect(envelope).toMatchObject({ ok: true });
+      expect(openWorkspace).toHaveBeenCalledOnce();
+
+      scheduler.requestWithBinding(
+        {
+          projectId: "project-after-open",
+          runKind: "backfill",
+          workKey: "backfill:v2",
+          reason: "workspace-opened",
+        },
+        nextBinding,
+      );
+      await vi.advanceTimersByTimeAsync(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
+
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0]).toMatchObject({
+        workspaceBinding: nextBinding,
+      });
+    } finally {
+      await scheduler.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it.each([

@@ -2265,16 +2265,17 @@ export function registerIpcRouter(
             );
           }
         }
-        if (!envelope.ok && workspaceSwitchLease) {
+        if (workspaceSwitchLease) {
           try {
-            // Restore retained maintenance backlog only when this invocation
-            // still owns the quiesce transition.  The lease itself rejects
-            // stale/overlapping resumes and remains closed after cleanup
-            // failure.
+            // Restore retained maintenance backlog after the workspace switch
+            // attempt.  The lease itself rejects stale/overlapping resumes
+            // and remains closed after cleanup failure.  A successful Native
+            // swap needs the same resume as a failed operation; otherwise the
+            // scheduler remains quiesced after the new binding is live.
             await workspaceSwitchLease.resume();
           } catch (resumeError) {
             console.warn(
-              "[narrative-maintenance] failed to resume retained backlog after workspace switch failure:",
+              "[narrative-maintenance] failed to resume retained backlog after workspace switch:",
               resumeError,
             );
           }

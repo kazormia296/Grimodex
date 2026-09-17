@@ -1399,6 +1399,8 @@ export function createNarrativeMaintenanceScheduler(
       // the catch path requeues the exact batch and wake scope.
       const cycleResult = normalizeCycleResult(result);
       settledCycleResult = cycleResult;
+      const terminalFaultHandled =
+        cycleResult.status === "ci-terminal-fault-handled";
       interruptedCycle =
         cycleResult.status === "accepted" && cycleResult.preempted === true;
       lastHasMore =
@@ -1493,14 +1495,16 @@ export function createNarrativeMaintenanceScheduler(
             if (interruptedCycle) {
               throw new Error("NEX_MAINTENANCE_ATTEMPT_CANCELLED");
             }
-            const receiptErrors = parsedReceipt.works
-              .map((work) => work.error)
-              .filter((error): error is string => error !== undefined);
-            throw new Error(
-              receiptErrors.length > 0
-                ? `native maintenance attempt returned interrupted terminal receipt: ${receiptErrors.join("; ")}`
-                : "native maintenance attempt returned interrupted terminal receipt",
-            );
+            if (!terminalFaultHandled) {
+              const receiptErrors = parsedReceipt.works
+                .map((work) => work.error)
+                .filter((error): error is string => error !== undefined);
+              throw new Error(
+                receiptErrors.length > 0
+                  ? `native maintenance attempt returned interrupted terminal receipt: ${receiptErrors.join("; ")}`
+                  : "native maintenance attempt returned interrupted terminal receipt",
+              );
+            }
           }
         } else if (!activeAttemptController.grantFinalize(cycleAttemptId)) {
           interruptedCycle = true;

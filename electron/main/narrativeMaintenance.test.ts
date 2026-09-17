@@ -303,8 +303,39 @@ describe("narrative maintenance scheduler", () => {
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
   });
 
-  it("does not retry a terminal ACK whose exact binding is proven", async () => {
+  it("does not retry a lifecycle terminal ACK whose exact binding is proven", async () => {
     const binding = { authorityId: "authority-1", generation: 7 };
+    const canonicalWorkKey =
+      "narrative-maintenance:v1/backfill/project-1/backfill:v2";
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [
+          {
+            workKey: canonicalWorkKey,
+            status: "failed",
+            error: "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
+          },
+        ],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
     const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue({
       status: "ci-terminal-fault-handled",
       fault: "contract-violation",
@@ -315,11 +346,15 @@ describe("narrative maintenance scheduler", () => {
     const { scheduler } = createScheduler({
       getNarrativeMaintenanceWorkspaceBinding: () => binding,
       runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
     });
 
     scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
     scheduler.start();
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(beginNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+    expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS * 2);
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
   });
