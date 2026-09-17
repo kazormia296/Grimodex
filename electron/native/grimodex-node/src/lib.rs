@@ -13477,7 +13477,10 @@ mod narrative_maintenance_foreground_release_tests {
                 .expect("same-process follow-up cycle"),
         )
         .expect("follow-up cycle JSON");
-        assert_eq!(follow_up["status"], "accepted");
+        // Rediscovery still observes the exact foreground owner, so this
+        // cycle remains parked until the matching barrier release.
+        assert_eq!(follow_up["status"], "deferred");
+        assert_eq!(follow_up["hasMore"], false);
 
         let follow_up_rows: Vec<(String, String)> = authority
             .db()
@@ -13720,7 +13723,10 @@ mod narrative_maintenance_foreground_release_tests {
                 .expect("other-authority cycle"),
         )
         .expect("other-authority cycle JSON");
-        assert_eq!(b_cycle["status"], "accepted");
+        // B claims the current authority's foreground slot and therefore
+        // holds its durable lifecycle for the exact release callback.
+        assert_eq!(b_cycle["status"], "deferred");
+        assert_eq!(b_cycle["hasMore"], false);
 
         let b_row: (String, String, String) = authority
             .db()
@@ -13805,7 +13811,10 @@ mod narrative_maintenance_foreground_release_tests {
                 .expect("current owner follow-up cycle"),
         )
         .expect("follow-up JSON");
-        assert_eq!(follow_up["status"], "accepted");
+        // The selected replacement Run is still foreground-held; an empty
+        // wake remains deferred until that exact owner is released.
+        assert_eq!(follow_up["status"], "deferred");
+        assert_eq!(follow_up["hasMore"], false);
         assert_eq!(run_status(&authority, "run-current"), "running");
         assert_eq!(
             narrative_extraction::find_running_foreground_system_work_run(
