@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, StatementStatus};
 use serde::Serialize;
+use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
@@ -45,6 +46,9 @@ pub struct CapacityCounts {
     pub qualified_material_records: usize,
     pub roster_records: usize,
     pub dependency_edges: Option<u64>,
+    /// Number of entries in the latest completed dependency Verify report's
+    /// missing-Source list. This is deliberately distinct from the historical
+    /// `narrative_maintenance_finding_observations` table.
     pub report_records: Option<u64>,
 }
 
@@ -318,6 +322,52 @@ fn optional_table_count(
     Ok(Some(u64::try_from(count)?))
 }
 
+fn read_persisted_verify_report_records_with_metrics(
+    conn: &Connection,
+    project_id: &str,
+    accumulator: &mut SqlAccumulator,
+) -> Result<Option<u64>> {
+    let mut statement = conn.prepare(
+        "SELECT outcome_summary_json
+           FROM narrative_extraction_runs
+          WHERE project_id=?1
+            AND run_kind='dependency-verify'
+            AND status='completed'
+            AND outcome_summary_json IS NOT NULL
+          ORDER BY rowid DESC
+          LIMIT 1",
+    )?;
+    let outcome: Option<String> = statement
+        .query_row(params![project_id], |row| row.get(0))
+        .optional()?;
+    accumulator.statement_vm_steps = accumulator
+        .statement_vm_steps
+        .saturating_add(u64::try_from(statement.get_status(StatementStatus::VmStep)).unwrap_or(0));
+    accumulator.statements = accumulator.statements.saturating_add(1);
+    let Some(outcome) = outcome else {
+        return Ok(None);
+    };
+    let value: Value = serde_json::from_str(&outcome)
+        .context("parse persisted dependency Verify outcome for capacity diagnostics")?;
+    let count = value
+        .pointer("/report/edgeIdsWithMissingSource")
+        .and_then(Value::as_array)
+        .map(|records| u64::try_from(records.len()))
+        .transpose()?;
+    Ok(Some(count.unwrap_or(0)))
+}
+
+/// Read the same persisted Verify report count used by the normal capacity
+/// probe. Fixture metadata calls this helper after the source database is
+/// closed, so it cannot accidentally introduce a second report definition.
+pub(crate) fn read_persisted_verify_report_records(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Option<u64>> {
+    let mut accumulator = SqlAccumulator::default();
+    read_persisted_verify_report_records_with_metrics(conn, project_id, &mut accumulator)
+}
+
 fn current_revision_ids(
     conn: &Connection,
     project_id: Option<&str>,
@@ -428,9 +478,7 @@ fn row_bytes(
                 &NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
             ],
             accumulator,
-            |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-            },
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )?
     } else {
         count_statement(
@@ -684,13 +732,8 @@ pub fn measure_capacity(
             Some(project_id),
             &mut sql,
         )?;
-        counts.report_records = optional_table_count(
-            &transaction,
-            "narrative_maintenance_finding_observations",
-            "project_id=?1",
-            Some(project_id),
-            &mut sql,
-        )?;
+        counts.report_records =
+            read_persisted_verify_report_records_with_metrics(&transaction, project_id, &mut sql)?;
     }
     transaction.commit()?;
     let connection_hold_ms = transaction_started.elapsed().as_secs_f64() * 1000.0;
@@ -810,5 +853,35 @@ mod tests {
             "measured"
         };
         assert_eq!(status, "current-admission-limit");
+    }
+
+    #[test]
+    fn report_records_measure_the_persisted_verify_report() -> Result<()> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE narrative_extraction_runs (
+                project_id TEXT NOT NULL,
+                run_kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                outcome_summary_json TEXT,
+                rowid_hint INTEGER NOT NULL
+            );
+            INSERT INTO narrative_extraction_runs
+                (project_id, run_kind, status, outcome_summary_json, rowid_hint)
+            VALUES
+                ('project', 'dependency-verify', 'completed',
+                 '{\"report\":{\"edgeIdsWithMissingSource\":[\"edge-1\",\"edge-2\"]}}', 1);
+            INSERT INTO narrative_extraction_runs
+                (project_id, run_kind, status, outcome_summary_json, rowid_hint)
+            VALUES
+                ('project', 'dependency-verify', 'running',
+                 '{\"report\":{\"edgeIdsWithMissingSource\":[\"edge-running\"]}}', 2);",
+        )?;
+
+        assert_eq!(
+            read_persisted_verify_report_records(&conn, "project")?,
+            Some(2)
+        );
+        Ok(())
     }
 }

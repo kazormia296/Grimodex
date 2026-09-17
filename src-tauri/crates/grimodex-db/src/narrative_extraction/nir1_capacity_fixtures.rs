@@ -12,23 +12,27 @@ use grimodex_core::narrative_nir1::{
     ENTITY_RELATION_PRODUCER,
 };
 use grimodex_core::narrative_scene_scope::NarrativeSceneScopeRegistryV1;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::Database;
 
-use super::nir1_capacity_diagnostics::{measure_capacity, CapacityObservation};
+use super::nir1_capacity_diagnostics::{
+    measure_capacity, read_persisted_verify_report_records, CapacityObservation,
+};
 use super::nir1_entity_relation::create_nir1_entity_relation_revision;
 use super::project_scope_authority::load_live_project_scope_authority;
+use super::publish_runtime::publish_complete_runless_freshness_in_tx;
 use super::semantic_epoch::create_epoch_in_tx;
 use super::{
     ensure_scene_scope_binding_in_tx, narrative_extraction_append_human_decision,
     narrative_extraction_create_run, read_narrative_scene_scope,
-    update_narrative_scene_scope_registry, AppendDecisionPayload, CreateRunPayload,
+    update_narrative_scene_scope_registry, AppendDecisionPayload, BuildAction, CreateRunPayload,
+    EdgeObservation, EvidenceFreshness, FindingReasonCode,
     NarrativeSceneScopeRegistryUpdatePayload, Nir1EntityRelationRevisionRequest,
     NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
 };
@@ -41,6 +45,7 @@ const NIR1_CAPACITY_RUN_ID: &str = "nir1-capacity-fixture-run";
 const NIR1_CAPACITY_UPDATED_AT: &str = "2026-09-17T00:00:00Z";
 const NIR1_CAPACITY_DRIFTED_AT: &str = "2026-09-18T00:00:00Z";
 const NIR1_CAPACITY_SOURCE_DRIFTED_AT: &str = "2026-09-19T00:00:00Z";
+const NIR1_CAPACITY_FRESHNESS_STALE_AT: &str = "2026-09-18T00:00:00.000Z";
 const MAX_REVISION_MATERIAL_RECORDS: usize = 511;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -184,50 +189,59 @@ pub fn build_fixture_from_manifest(
         create_typed_run(&db, NIR1_CAPACITY_RUN_ID, "capacity-initial")?;
 
         let mut source_drift_ids = Vec::new();
-        let mut stale_ids = Vec::new();
+        let mut stale_revision_ids = Vec::new();
         let mut approved_scope_drift = false;
         let mut revision_ordinal = 0usize;
         let has_ineligible = expected.ineligible_candidates.unwrap_or(0) > 0;
-        for plan in plans.iter().filter(|plan| plan.category.is_some()) {
-            let created = create_planned_revision(
+        // Scope drift changes the shared project Scope authority. Create and
+        // approve those candidates before the mutation, then create every
+        // other invalid candidate against the new live authority. This keeps
+        // a stale-Freshness candidate's Scope Source token live while still
+        // preserving a real Scope-drift candidate in the same fixture.
+        for plan in plans
+            .iter()
+            .filter(|plan| plan.category == Some("scope-drift"))
+        {
+            create_and_record_invalid_plan(
                 &db,
                 plan,
                 NIR1_CAPACITY_RUN_ID,
-                revision_ordinal,
-                plan.category != Some("decisionless"),
+                &mut revision_ordinal,
+                &mut category_counts,
+                &mut source_drift_ids,
+                &mut stale_revision_ids,
             )?;
-            revision_ordinal = revision_ordinal.saturating_add(1);
-            if let Some(category) = plan.category {
-                *category_counts.entry(category.to_owned()).or_default() += 1;
-                match category {
-                    "source-drift" => source_drift_ids.extend(plan.entity_ids.iter().cloned()),
-                    "stale-freshness" => stale_ids.extend(plan.entity_ids.iter().cloned()),
-                    "scope-drift" => approved_scope_drift = true,
-                    "report-missing-source" => {}
-                    "decisionless" | "rejected" => {}
-                    other => anyhow::bail!("unknown capacity fixture category {other}"),
-                }
-            }
-            // The returned identity is deliberately observed, even though
-            // the fixture metadata is measured from the reopened DB below.
-            ensure!(
-                !created.revision_id.is_empty(),
-                "typed fixture revision id is empty"
-            );
-        }
-
-        if !source_drift_ids.is_empty() || !stale_ids.is_empty() {
-            mutate_source_drift_candidates(&db, &source_drift_ids, &stale_ids)?;
+            approved_scope_drift = true;
         }
         if approved_scope_drift {
             mutate_scope_registry(&db)?;
             // The real registry writer appends a canonical Feed event. Run
-            // the existing bounded Freshness owner before adding the final Q
+            // the existing bounded Freshness owner before adding the other D
             // revisions so the fixture represents a maintained workspace;
             // directly advancing the cursor would bypass that authority.
             let _ = super::run_incremental_freshness_cycle(&db)?;
         }
+        for plan in plans
+            .iter()
+            .filter(|plan| plan.category.is_some() && plan.category != Some("scope-drift"))
+        {
+            create_and_record_invalid_plan(
+                &db,
+                plan,
+                NIR1_CAPACITY_RUN_ID,
+                &mut revision_ordinal,
+                &mut category_counts,
+                &mut source_drift_ids,
+                &mut stale_revision_ids,
+            )?;
+        }
 
+        if !source_drift_ids.is_empty() {
+            mutate_source_drift_candidates(&db, &source_drift_ids)?;
+        }
+        if !stale_revision_ids.is_empty() {
+            seed_stale_freshness_candidates(&db, &stale_revision_ids)?;
+        }
         let report_heavy = case_id == "D2064/report-heavy";
         if report_heavy {
             // The missing Source state is real: typed revisions were written
@@ -283,15 +297,17 @@ pub fn build_fixture_from_manifest(
     // later perform a writeful publish/verify sequence, which must never make
     // the source fixture dirty or invalidate its checkpoint receipt.
     let source_snapshot = snapshot_fixture_files(&output_path)?;
-    let mut observed =
+    let observed =
         measure_on_disposable_copy(&output_path, case_id, NIR1_CAPACITY_FIXTURE_PROJECT_ID)?;
     ensure!(
         snapshot_fixture_files(&output_path)? == source_snapshot,
         "capacity measurement changed the immutable fixture source"
     );
     let seeded_live_source_bytes = read_live_source_bytes(&output_path)?;
-    let persisted_verify_report_records =
-        read_persisted_verify_report_records(&output_path, NIR1_CAPACITY_FIXTURE_PROJECT_ID)?;
+    let persisted_verify_report_records = read_persisted_verify_report_records_from_file(
+        &output_path,
+        NIR1_CAPACITY_FIXTURE_PROJECT_ID,
+    )?;
     if case_id == "D2064/report-heavy" {
         let report_records = persisted_verify_report_records.ok_or_else(|| {
             anyhow::anyhow!(
@@ -302,10 +318,10 @@ pub fn build_fixture_from_manifest(
             report_records > 0,
             "{case_id}: completed dependency Verify outcome has an empty missing-Source report"
         );
-        // The generic capacity probe counts finding observations, which are a
-        // separate lifecycle surface and are intentionally absent from this
-        // diagnostic fixture. Expose the real Verify report count instead.
-        observed.counts.report_records = Some(report_records);
+        ensure!(
+            observed.counts.report_records == Some(report_records),
+            "{case_id}: normal capacity probe report count differs from persisted Verify report"
+        );
     }
     // The read-only metadata readers above may create SQLite's shared-memory
     // sidecar even after the initial checkpoint. Close them before the final
@@ -534,6 +550,41 @@ fn create_planned_revision(
     Ok(CreatedRevision { revision_id })
 }
 
+fn create_and_record_invalid_plan(
+    db: &Database,
+    plan: &RevisionPlan,
+    run_id: &str,
+    revision_ordinal: &mut usize,
+    category_counts: &mut BTreeMap<String, usize>,
+    source_drift_ids: &mut Vec<String>,
+    stale_revision_ids: &mut Vec<String>,
+) -> Result<()> {
+    let created = create_planned_revision(
+        db,
+        plan,
+        run_id,
+        *revision_ordinal,
+        plan.category != Some("decisionless"),
+    )?;
+    *revision_ordinal = revision_ordinal.saturating_add(1);
+    if let Some(category) = plan.category {
+        *category_counts.entry(category.to_owned()).or_default() += 1;
+        match category {
+            "source-drift" => source_drift_ids.extend(plan.entity_ids.iter().cloned()),
+            "stale-freshness" => stale_revision_ids.push(created.revision_id.clone()),
+            "scope-drift" | "report-missing-source" | "decisionless" | "rejected" => {}
+            other => anyhow::bail!("unknown capacity fixture category {other}"),
+        }
+    }
+    // The returned identity is deliberately observed, even though the
+    // fixture metadata is measured from the reopened DB below.
+    ensure!(
+        !created.revision_id.is_empty(),
+        "typed fixture revision id is empty"
+    );
+    Ok(())
+}
+
 fn bundle_for_plan(db: &Database, plan: &RevisionPlan) -> Result<EntityRelationBundle> {
     let authority = db.with_read_transaction(|conn| {
         load_live_project_scope_authority(
@@ -640,11 +691,7 @@ fn bundle_for_plan(db: &Database, plan: &RevisionPlan) -> Result<EntityRelationB
     })
 }
 
-fn mutate_source_drift_candidates(
-    db: &Database,
-    source_drift_ids: &[String],
-    stale_ids: &[String],
-) -> Result<()> {
+fn mutate_source_drift_candidates(db: &Database, source_drift_ids: &[String]) -> Result<()> {
     db.with_conn(|conn| {
         for entity_id in source_drift_ids {
             conn.execute(
@@ -652,17 +699,6 @@ fn mutate_source_drift_candidates(
                   WHERE id=?3 AND project_id=?4",
                 params![
                     format!("source drift for {entity_id}"),
-                    NIR1_CAPACITY_DRIFTED_AT,
-                    entity_id,
-                    NIR1_CAPACITY_FIXTURE_PROJECT_ID,
-                ],
-            )?;
-        }
-        for entity_id in stale_ids {
-            conn.execute(
-                "UPDATE codex_entries SET updated_at=?1
-                  WHERE id=?2 AND project_id=?3",
-                params![
                     NIR1_CAPACITY_SOURCE_DRIFTED_AT,
                     entity_id,
                     NIR1_CAPACITY_FIXTURE_PROJECT_ID,
@@ -670,6 +706,54 @@ fn mutate_source_drift_candidates(
             )?;
         }
         Ok(())
+    })
+}
+
+/// Seed a canonical stale Freshness result without changing any live Source.
+///
+/// The stale candidates are deliberately published through the existing
+/// runless Freshness owner. This keeps the Edge State and Consumer Freshness
+/// rows coherent while leaving the Source revision token recorded in each
+/// Revision unchanged. The typed reader therefore reaches its canonical
+/// Freshness gate and reports `canonical-freshness-unavailable`, rather than
+/// stopping at the earlier live-Source validation gate.
+fn seed_stale_freshness_candidates(db: &Database, revision_ids: &[String]) -> Result<()> {
+    db.with_conn(|conn| {
+        super::with_immediate_transaction(conn, |conn| {
+            let epoch = super::get_current_epoch(conn, NIR1_CAPACITY_FIXTURE_PROJECT_ID)?
+                .context("capacity fixture has no current Semantic Epoch")?;
+            let stale = EdgeObservation {
+                freshness: EvidenceFreshness::Stale,
+                reason_code: Some(FindingReasonCode::ReadSetDrift),
+                build_action: BuildAction::RevalidateExact,
+            };
+            for revision_id in revision_ids {
+                let edges = super::find_edges_by_consumer(
+                    conn,
+                    NIR1_CAPACITY_FIXTURE_PROJECT_ID,
+                    "proposal-revision",
+                    revision_id,
+                )?;
+                ensure!(
+                    !edges.is_empty(),
+                    "stale-freshness fixture revision has no dependency edges: {revision_id}"
+                );
+                let observations = edges
+                    .into_iter()
+                    .map(|edge| (edge.id, stale))
+                    .collect::<Vec<_>>();
+                publish_complete_runless_freshness_in_tx(
+                    conn,
+                    NIR1_CAPACITY_FIXTURE_PROJECT_ID,
+                    "proposal-revision",
+                    revision_id,
+                    &observations,
+                    &epoch.id,
+                    NIR1_CAPACITY_FRESHNESS_STALE_AT,
+                )?;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
     })
 }
 
@@ -846,34 +930,13 @@ fn read_live_source_bytes(path: &Path) -> Result<u64> {
     Ok(u64::try_from(bytes)?)
 }
 
-fn read_persisted_verify_report_records(path: &Path, project_id: &str) -> Result<Option<u64>> {
+fn read_persisted_verify_report_records_from_file(
+    path: &Path,
+    project_id: &str,
+) -> Result<Option<u64>> {
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("open fixture for Verify report count {}", path.display()))?;
-    let outcome: Option<String> = conn
-        .query_row(
-            "SELECT outcome_summary_json
-               FROM narrative_extraction_runs
-              WHERE project_id=?1
-                AND run_kind='dependency-verify'
-                AND status='completed'
-                AND outcome_summary_json IS NOT NULL
-              ORDER BY rowid DESC
-              LIMIT 1",
-            params![project_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(outcome) = outcome else {
-        return Ok(None);
-    };
-    let value: Value = serde_json::from_str(&outcome)
-        .context("parse persisted dependency Verify outcome for fixture metadata")?;
-    let count = value
-        .pointer("/report/edgeIdsWithMissingSource")
-        .and_then(Value::as_array)
-        .map(|records| u64::try_from(records.len()))
-        .transpose()?;
-    Ok(Some(count.unwrap_or(0)))
+    read_persisted_verify_report_records(&conn, project_id)
 }
 
 fn validate_observed_shape(
@@ -1143,7 +1206,92 @@ mod tests {
         assert_eq!(result.observed.counts.qualified_revisions, 3);
         assert_eq!(result.observed.counts.rejected_revisions, 516);
         assert_eq!(result.observed.counts.candidate_revisions, 519);
+        let stale_count = *result
+            .category_counts
+            .get("stale-freshness")
+            .expect("stale-freshness category");
+        let source_drift_count = *result
+            .category_counts
+            .get("source-drift")
+            .expect("source-drift category");
+        let scope_drift_count = *result
+            .category_counts
+            .get("scope-drift")
+            .expect("scope-drift category");
+        assert_eq!(
+            result
+                .observed
+                .rejection_reasons
+                .get("canonical-freshness-unavailable"),
+            Some(&stale_count),
+            "stale-freshness candidates must reach the canonical Freshness gate: {:?}",
+            result.observed.rejection_reasons
+        );
+        assert_eq!(
+            result
+                .observed
+                .rejection_reasons
+                .get("source-revision-changed"),
+            Some(&(source_drift_count + scope_drift_count)),
+            "source-drift and scope-drift candidates must remain source-revision failures"
+        );
+        let conn =
+            Connection::open_with_flags(&output, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let stale_source_token: String = conn.query_row(
+            "SELECT updated_at FROM codex_entries
+              WHERE id='nir1-capacity-d-stale-freshness-0'
+                AND project_id=?1",
+            [NIR1_CAPACITY_FIXTURE_PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            stale_source_token, NIR1_CAPACITY_UPDATED_AT,
+            "stale-freshness must preserve the live Source revision token"
+        );
         remove_fixture_copy(&output)?;
+        Ok(())
+    }
+
+    #[test]
+    fn report_heavy_uses_the_same_verify_report_count_as_normal_probe() -> Result<()> {
+        let manifest = temp_path("report-heavy-manifest");
+        fs::write(
+            &manifest,
+            r#"{
+                "schemaVersion": "nir1-capacity/1",
+                "diagnosticOnly": true,
+                "fixtures": [
+                    {"id": "D2064/report-heavy", "ineligibleCandidates": 5}
+                ]
+            }"#,
+        )?;
+        let output = temp_path("report-heavy");
+        let result = build_fixture_from_manifest(&manifest, "D2064/report-heavy", &output)?;
+        assert_eq!(result.persisted_verify_report_records, Some(1));
+        assert_eq!(result.observed.counts.report_records, Some(1));
+
+        let copy = temp_path("report-heavy-copy");
+        fs::copy(&output, &copy)?;
+        let measured = measure_capacity(
+            &copy,
+            "D2064/report-heavy",
+            Some(NIR1_CAPACITY_FIXTURE_PROJECT_ID),
+        )?;
+        assert_eq!(measured.counts.report_records, Some(1));
+        let conn = Connection::open_with_flags(&copy, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let finding_observations: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_maintenance_finding_observations
+              WHERE project_id=?1",
+            [NIR1_CAPACITY_FIXTURE_PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            finding_observations, 0,
+            "report_records must not alias the finding-observation table"
+        );
+        remove_fixture_copy(&output)?;
+        remove_fixture_copy(&copy)?;
+        let _ = fs::remove_file(&manifest);
         Ok(())
     }
 }
