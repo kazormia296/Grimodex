@@ -92,10 +92,10 @@ use super::maintenance_runtime::{
 };
 use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage, NeverStopGraphWorkControl};
 use super::restore_rebuild::{
-    run_maintenance_graph_phase, run_maintenance_graph_phase_for_run,
+    is_controlled_maintenance_termination, run_maintenance_graph_phase,
+    run_maintenance_graph_phase_for_run, transfer_controlled_maintenance_run_to_owner,
     MAINTENANCE_CONNECTION_PREEMPTED_CODE,
 };
-use super::source_revision::is_validation_terminated;
 use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::task_leases::with_immediate_transaction;
@@ -722,15 +722,22 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
             })
         },
     );
-    if let Err(error) = &transform_result {
-        let message = error.to_string();
-        if is_validation_terminated(error)
-            || message.starts_with(MAINTENANCE_CONNECTION_PREEMPTED_CODE)
-            || message.contains("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED")
-            || message.contains("NIR1_MAINTENANCE_CONNECTION_UNUSABLE")
-        {
-            return Err(anyhow::anyhow!(message));
+    if transform_result
+        .as_ref()
+        .err()
+        .is_some_and(is_controlled_maintenance_termination)
+    {
+        let Err(error) = transform_result else {
+            unreachable!("controlled Backfill termination must carry an error")
+        };
+        if let Err(owner_error) = transfer_controlled_maintenance_run_to_owner(
+            db, &run_id, &error, control,
+        ) {
+            return Err(error.context(format!(
+                "legacy dependency backfill: failed to transfer exact Run ownership: {owner_error}"
+            )));
         }
+        return Err(error);
     }
 
     let finalize_result = run_maintenance_graph_phase_for_run(
@@ -752,6 +759,13 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
                     // The final stop check and Native grant are inside the
                     // same transaction; the reservation/scope outlive this
                     // closure so they remain active through COMMIT.
+                    let current_epoch_id = get_current_epoch(conn, project_id)?.map(|epoch| epoch.id);
+                    anyhow::ensure!(
+                        current_epoch_id.as_deref() == Some(semantic_epoch_id.as_str()),
+                        "NEX_BACKFILL_STALE_EPOCH: Backfill Run '{run_id}' captured epoch '{}', but project '{project_id}' is now at epoch '{}'",
+                        semantic_epoch_id,
+                        current_epoch_id.as_deref().unwrap_or("<none>")
+                    );
                     graph.check(GraphWorkStage::ResultAssembly)?;
                     reservation = Some(db.try_reserve_maintenance_finalization().ok_or_else(|| {
                         anyhow::anyhow!(
@@ -775,6 +789,19 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
         },
     );
     if let Err(finalize_error) = finalize_result {
+        if is_controlled_maintenance_termination(&finalize_error) {
+            if let Err(owner_error) = transfer_controlled_maintenance_run_to_owner(
+                db,
+                &run_id,
+                &finalize_error,
+                control,
+            ) {
+                return Err(finalize_error.context(format!(
+                    "legacy dependency backfill: failed to transfer exact Run ownership after finalization interruption: {owner_error}"
+                )));
+            }
+            return Err(finalize_error);
+        }
         return Err(anyhow::anyhow!(
             "legacy dependency backfill: failed to finalize run '{run_id}' with durable terminal evidence: {finalize_error}"
         ));
@@ -2290,6 +2317,77 @@ mod tests {
             Ok(())
         })
         .expect("read owner-finalized Backfill Run");
+    }
+
+    #[test]
+    fn controlled_backfill_termination_transfers_the_exact_run_owner() {
+        let db = test_db();
+        let run_id = db
+            .with_conn(|conn| {
+                seed_project(conn, "project-1");
+                with_immediate_transaction(conn, |conn| {
+                    let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+                    let spec = json!({
+                        "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION
+                    });
+                    let spec_digest = format!("sha256:{}", digest_plan(&spec));
+                    Ok(create_maintenance_run_in_tx(
+                        conn,
+                        "project-1",
+                        "backfill",
+                        &epoch_id,
+                        LEGACY_BACKFILL_WORK_KEY,
+                        &spec,
+                        &spec_digest,
+                        SystemRunWorkKeyReuse::RunningOnly,
+                    )?
+                    .run_id)
+                })
+            })
+            .expect("create controlled Backfill Run");
+
+        let no_stop = || Ok::<_, anyhow::Error>(());
+        let no_defer = |_run_id: &str| Ok::<_, anyhow::Error>(());
+        let no_grant = |_work_key: &str| Ok::<_, anyhow::Error>(());
+        let no_work = |_item: &crate::narrative_extraction::DesiredWork| {
+            Ok::<_, anyhow::Error>(())
+        };
+        let control = super::super::maintenance_runtime::MaintenanceCycleControl {
+            should_stop: &no_stop,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &no_defer,
+            grant_finalize: &no_grant,
+            register_work: &no_work,
+            work_started: &no_work,
+            work_completed: &no_work,
+            work_noop_completed: &no_work,
+            work_deferred: &no_work,
+        };
+        let cancellation = super::super::source_revision::validation_terminated(
+            super::super::source_revision::ValidationTerminationReason::Cancelled,
+            "controlled Backfill cancellation",
+        );
+
+        super::super::restore_rebuild::transfer_controlled_maintenance_run_to_owner(
+            &db,
+            &run_id,
+            &cancellation,
+            &control,
+        )
+        .expect("controlled Backfill must transfer its exact Run owner");
+
+        let status: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read transferred Backfill status");
+        assert_eq!(status, "cancelled");
     }
 
     #[test]

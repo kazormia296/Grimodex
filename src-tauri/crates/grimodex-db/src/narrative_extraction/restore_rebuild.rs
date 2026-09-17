@@ -3820,8 +3820,14 @@ where
         Err(error) if is_transient_connection_preemption(&error) => {
             if let Err(cleanup) = cancel_preempted_maintenance_run(db, run_id, &error.to_string())
             {
-                if is_transient_connection_preemption(&cleanup) {
-                    (control.defer_preempted_run)(run_id)?;
+                if is_transient_connection_preemption(&cleanup)
+                    || is_maintenance_connection_deferred_or_cleanup(&cleanup)
+                {
+                    if let Err(defer_error) = (control.defer_preempted_run)(run_id) {
+                        return Err(error.context(format!(
+                            "NEX_MAINTENANCE_CONNECTION_PREEMPTED: exact Run cleanup owner registration failed: {defer_error}"
+                        )));
+                    }
                 }
                 return Err(error.context(format!(
                     "NEX_MAINTENANCE_CONNECTION_PREEMPTED cleanup failed: {cleanup}"
@@ -3831,6 +3837,45 @@ where
         }
         Err(error) => Err(error),
     }
+}
+
+/// A controlled adapter owns the exact Run after its creation. If a later
+/// cancellation or connection cleanup error prevents the adapter from
+/// finishing, transfer that Run to the exact terminal owner when the
+/// maintenance connection is available, or to the process-local pending
+/// owner when reacquisition would wait. The original typed control error is
+/// returned by the caller after this handoff.
+pub(crate) fn transfer_controlled_maintenance_run_to_owner(
+    db: &Database,
+    run_id: &str,
+    error: &anyhow::Error,
+    control: &MaintenanceCycleControl<'_>,
+) -> anyhow::Result<()> {
+    if !is_controlled_maintenance_termination(error) {
+        return Ok(());
+    }
+
+    match cancel_preempted_maintenance_run(db, run_id, &error.to_string()) {
+        Ok(()) => Ok(()),
+        Err(cleanup)
+            if is_transient_connection_preemption(&cleanup)
+                || is_maintenance_connection_deferred_or_cleanup(&cleanup) =>
+        {
+            (control.defer_preempted_run)(run_id).map_err(|defer_error| {
+                cleanup.context(format!(
+                    "NEX_MAINTENANCE_CONNECTION_PREEMPTED: exact Run cleanup owner registration failed: {defer_error}"
+                ))
+            })
+        }
+        Err(cleanup) => Err(cleanup),
+    }
+}
+
+pub(crate) fn is_controlled_maintenance_termination(error: &anyhow::Error) -> bool {
+    is_validation_terminated(error)
+        || is_transient_connection_preemption(error)
+        || is_maintenance_connection_deferred_or_cleanup(error)
+        || is_maintenance_attempt_stop(error)
 }
 
 fn is_maintenance_connection_deferred_or_cleanup(error: &anyhow::Error) -> bool {
@@ -3890,7 +3935,7 @@ fn record_verify_failure_controlled(
 ) -> anyhow::Result<()> {
     let message = error.to_string();
     let failure_kind = maintenance_failure_kind_for_message(&message);
-    run_maintenance_graph_phase(db, control, |conn, graph| {
+    run_maintenance_graph_phase_for_run(db, control, run_id, |conn, graph| {
         with_immediate_transaction(conn, |conn| {
             graph.check(GraphWorkStage::ResultAssembly)?;
             record_run_outcome_in_tx(conn, run_id, &json!({ "failure": message }))?;
@@ -5787,6 +5832,35 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[test]
+    fn finalization_grant_scope_survives_until_the_transaction_owner_drops_it() {
+        let signal = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let no_stop = || Ok::<_, anyhow::Error>(());
+        let no_defer = |_run_id: &str| Ok::<_, anyhow::Error>(());
+        let no_grant = |_work_key: &str| Ok::<_, anyhow::Error>(());
+        let no_work = |_item: &crate::narrative_extraction::DesiredWork| {
+            Ok::<_, anyhow::Error>(())
+        };
+        let control = MaintenanceCycleControl {
+            should_stop: &no_stop,
+            stop_signal: None,
+            finalization_granted_signal: Some(Arc::clone(&signal)),
+            defer_preempted_run: &no_defer,
+            grant_finalize: &no_grant,
+            register_work: &no_work,
+            work_started: &no_work,
+            work_completed: &no_work,
+            work_noop_completed: &no_work,
+            work_deferred: &no_work,
+        };
+
+        {
+            let _scope = FinalizationGrantScope::new(&control);
+            assert!(signal.load(Ordering::Acquire));
+        }
+        assert!(!signal.load(Ordering::Acquire));
     }
 
     struct StopAfter {
