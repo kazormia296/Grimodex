@@ -197,9 +197,20 @@ pub(crate) fn resolve_source_revision_with_control(
         return ensure_non_empty_token(source.digest);
     }
     // Source kinds without a controlled Graph reader retain their existing
-    // canonical implementation. The boundary check above still guarantees a
-    // pending maintenance stop is surfaced before entering them.
-    resolve_source_revision(conn, project_id, run_id, source_kind, source_key)
+    // canonical implementation. Re-check after it returns so a SQLite
+    // interruption or a stop arriving during that read cannot be normalized
+    // by a caller into an ordinary missing/stale diagnostic.
+    match resolve_source_revision(conn, project_id, run_id, source_kind, source_key) {
+        Ok(current) => {
+            control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+            Ok(current)
+        }
+        Err(error) if is_validation_terminated(&error) => Err(error),
+        Err(error) => {
+            control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+            Err(error)
+        }
+    }
 }
 
 /// Lazy-load-safe summary of a source's current state. Deliberately has no

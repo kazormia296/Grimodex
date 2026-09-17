@@ -20,6 +20,7 @@ use super::nir1_entity_relation_index::{
     GraphWorkControl, GraphWorkStage, NeverStopGraphWorkControl,
 };
 use super::source_revision::resolve_source_revision_with_control;
+use super::source_revision::is_validation_terminated;
 use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
 
 fn check_control(
@@ -370,9 +371,16 @@ pub(crate) fn verify_application_revision_artifact_references_with_control(
                             "application:{application_id}:revision:{revision_id}:artifact-revision-token-mismatch:{artifact_id}:recorded={revision_token}:current={}",
                             current.revision_token
                         )),
-                        Err(error) => check.issues.push(format!(
-                            "application:{application_id}:revision:{revision_id}:artifact-resolution-failed:{artifact_id}:{error}"
-                        )),
+                        Err(error) if is_validation_terminated(&error) => return Err(error),
+                        Err(error) => {
+                            // A generic read error may be SQLite interruption
+                            // from the same controlled owner. Re-check before
+                            // classifying it as an artifact issue.
+                            check_control(control, GraphWorkStage::Source)?;
+                            check.issues.push(format!(
+                                "application:{application_id}:revision:{revision_id}:artifact-resolution-failed:{artifact_id}:{error}"
+                            ));
+                        }
                     }
                 }
             }

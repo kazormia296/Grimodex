@@ -224,13 +224,11 @@ impl GraphIndexBuildSnapshot {
         // same meaning; neither is presented as retained/live memory.
         let edge_bytes = {
             let mut edge_bytes = CountingJsonWriter::new(control);
-            edge_bytes.write_all(b"[")?;
+            edge_bytes.write_bytes(b"[")?;
             for edge in &self.edges {
-                edge_bytes
-                    .control
-                    .check(GraphWorkStage::Serialization)?;
+                edge_bytes.check(GraphWorkStage::Serialization)?;
                 if edge_bytes.item_count > 0 {
-                    edge_bytes.write_all(b",")?;
+                    edge_bytes.write_bytes(b",")?;
                 }
                 let payload = serde_json::json!({
                     "id": edge.id,
@@ -243,10 +241,10 @@ impl GraphIndexBuildSnapshot {
                     "createdAt": edge.created_at,
                     "owningRunId": edge.owning_run_id,
                 });
-                serde_json::to_writer(&mut edge_bytes, &payload)?;
+                edge_bytes.write_json(&payload)?;
                 edge_bytes.item_count += 1;
             }
-            edge_bytes.write_all(b"]")?;
+            edge_bytes.write_bytes(b"]")?;
             edge_bytes.len
         };
         control.check(GraphWorkStage::Serialization)?;
@@ -271,6 +269,7 @@ struct CountingJsonWriter<'a> {
     len: usize,
     item_count: usize,
     control: &'a mut dyn GraphWorkControl,
+    error: Option<anyhow::Error>,
 }
 
 impl<'a> CountingJsonWriter<'a> {
@@ -279,15 +278,46 @@ impl<'a> CountingJsonWriter<'a> {
             len: 0,
             item_count: 0,
             control,
+            error: None,
         }
+    }
+
+    fn check(&mut self, stage: GraphWorkStage) -> Result<()> {
+        self.control.check(stage)
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        let result = self.write_all(bytes);
+        self.finish_io(result)
+    }
+
+    fn write_json<T: Serialize>(&mut self, value: &T) -> Result<()> {
+        let result = serde_json::to_writer(&mut *self, value);
+        self.finish_serde(result)
+    }
+
+    fn finish_io<T>(&mut self, result: io::Result<T>) -> Result<T> {
+        if let Some(error) = self.error.take() {
+            return Err(error);
+        }
+        Ok(result?)
+    }
+
+    fn finish_serde<T>(&mut self, result: serde_json::Result<T>) -> Result<T> {
+        if let Some(error) = self.error.take() {
+            return Err(error);
+        }
+        Ok(result?)
     }
 }
 
 impl Write for CountingJsonWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.control
-            .check(GraphWorkStage::Serialization)
-            .map_err(|error| io::Error::other(error.to_string()))?;
+        if let Err(error) = self.control.check(GraphWorkStage::Serialization) {
+            let message = error.to_string();
+            self.error = Some(error);
+            return Err(io::Error::other(message));
+        }
         self.len = self
             .len
             .checked_add(bytes.len())
@@ -305,26 +335,17 @@ fn serialized_json_array_len_with_control<T: Serialize>(
     control: &mut dyn GraphWorkControl,
 ) -> Result<usize> {
     let mut writer = CountingJsonWriter::new(control);
-    writer.write_all(b"[")?;
+    writer.write_bytes(b"[")?;
     for (index, value) in values.iter().enumerate() {
-        writer
-            .control
-            .check(GraphWorkStage::Serialization)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        writer.check(GraphWorkStage::Serialization)?;
         if index > 0 {
-            writer.write_all(b",")?;
+            writer.write_bytes(b",")?;
         }
-        serde_json::to_writer(&mut writer, value)?;
-        writer
-            .control
-            .check(GraphWorkStage::Serialization)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        writer.write_json(value)?;
+        writer.check(GraphWorkStage::Serialization)?;
     }
-    writer.write_all(b"]")?;
-    writer
-        .control
-        .check(GraphWorkStage::Serialization)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    writer.write_bytes(b"]")?;
+    writer.check(GraphWorkStage::Serialization)?;
     Ok(writer.len)
 }
 
@@ -2013,6 +2034,20 @@ mod tests {
         }
     }
 
+    struct TypedStop(GraphWorkStage);
+
+    impl GraphWorkControl for TypedStop {
+        fn check(&mut self, stage: GraphWorkStage) -> Result<()> {
+            if stage == self.0 {
+                return Err(crate::narrative_extraction::source_revision::validation_terminated(
+                    crate::narrative_extraction::source_revision::ValidationTerminationReason::Cancelled,
+                    "typed graph cancellation",
+                ));
+            }
+            Ok(())
+        }
+    }
+
     fn roster_entry(
         material_kind: &str,
         material_id: &str,
@@ -2195,6 +2230,22 @@ mod tests {
         .expect_err("long digest serialization must remain cancellable")
         .to_string();
         assert!(digest_error.contains("NIR1_GRAPH_TEST_CANCELLED_AFTER_Digest"));
+    }
+
+    #[test]
+    fn counting_json_writer_preserves_typed_termination() {
+        let values = vec![roster_entry(
+            "entity",
+            "entity-1",
+            "codex:entity-1",
+            "revision-1",
+            "decision-1",
+            "token-1",
+        )];
+        let mut control = TypedStop(GraphWorkStage::Serialization);
+        let error = serialized_json_array_len_with_control(&values, &mut control)
+            .expect_err("writer cancellation must remain typed");
+        assert!(crate::narrative_extraction::source_revision::is_validation_terminated(&error));
     }
 
     #[test]

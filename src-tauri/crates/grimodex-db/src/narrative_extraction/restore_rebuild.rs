@@ -932,6 +932,21 @@ fn finalize_rebuild_run(
     Ok(())
 }
 
+fn combine_rebuild_errors(
+    primary: anyhow::Error,
+    secondary: anyhow::Error,
+) -> anyhow::Error {
+    let primary_message = primary.to_string();
+    let secondary_message = secondary.to_string();
+    if is_validation_terminated(&primary) {
+        primary.context(format!("secondary rebuild error: {secondary_message}"))
+    } else if is_validation_terminated(&secondary) {
+        secondary.context(format!("primary rebuild error: {primary_message}"))
+    } else {
+        primary.context(format!("secondary rebuild error: {secondary_message}"))
+    }
+}
+
 fn maintenance_failure_kind_for_message(message: &str) -> MaintenanceFailureKind {
     let classification = super::maintenance_runtime::classify_failure(message);
     if classification.code == "NEX_MAINTENANCE_INTERRUPTED" {
@@ -1098,7 +1113,14 @@ pub(crate) fn rebuild_narrative_derived_state_for_project_with_control(
         control,
     );
 
-    control.check(GraphWorkStage::ResultAssembly)?;
+    let work_result = match (work_result, control.check(GraphWorkStage::ResultAssembly)) {
+        (Ok(summary), Ok(())) => Ok(summary),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(stop_error)) => Err(stop_error),
+        (Err(work_error), Err(stop_error)) => {
+            Err(combine_rebuild_errors(stop_error, work_error))
+        }
+    };
     if let Err(finalize_error) =
         finalize_rebuild_run(db, project_id, &run_id, &semantic_epoch_id, &work_result)
     {
@@ -1173,8 +1195,15 @@ pub(crate) fn verify_v2_shadow_for_rebuild_in_tx_with_control(
 ) -> anyhow::Result<RebuildShadowVerificationSummary> {
     let mut verification = RebuildShadowVerificationSummary::default();
     let head_keys = match list_dependency_declaration_head_keys_in_tx(conn, project_id) {
-        Ok(keys) => keys,
+        Ok(keys) => {
+            control.check(GraphWorkStage::Coverage)?;
+            keys
+        }
         Err(error) => {
+            if is_validation_terminated(&error) {
+                return Err(error);
+            }
+            control.check(GraphWorkStage::Coverage)?;
             verification
                 .diagnostics
                 .push(format!("NEX_V2_SHADOW_REBUILD_HEAD_LOOKUP_UNKNOWN:{error}"));
@@ -1212,6 +1241,10 @@ pub(crate) fn verify_v2_shadow_for_rebuild_in_tx_with_control(
             }
             Ok(ActiveDependencyDeclarationSetRead::Active(active_set)) => active_set,
             Err(error) => {
+                if is_validation_terminated(&error) {
+                    return Err(error);
+                }
+                control.check(GraphWorkStage::Coverage)?;
                 verification.diagnostics.push(format!(
                     "NEX_V2_SHADOW_REBUILD_DECLARATION_HEAD_UNKNOWN:{consumer_kind}:{consumer_key}:{error}"
                 ));
@@ -1355,20 +1388,45 @@ pub(crate) fn rebuild_source_change_class_from_source_with_control(
             }
             Ok(_) => snapshot_run_id,
             Err(error) if is_validation_terminated(&error) => return Err(error),
-            Err(_) => return Ok(SourceChangeClass::ComponentUnavailable),
+            Err(_) => {
+                control.check(GraphWorkStage::Source)?;
+                return Ok(SourceChangeClass::ComponentUnavailable);
+            }
         },
         Ok(None) => run_id,
         Err(error) if is_validation_terminated(&error) => return Err(error),
-        Err(_) => return Ok(SourceChangeClass::ComponentUnavailable),
+        Err(_) => {
+            control.check(GraphWorkStage::Source)?;
+            return Ok(SourceChangeClass::ComponentUnavailable);
+        }
     };
-    rebuild_source_change_class_from_state(resolve_current_source_state_with_control(
+    rebuild_source_change_class_from_state_with_control(
+        resolve_current_source_state_with_control(
         conn,
         project_id,
         resolver_run_id,
         source_kind,
         source_object_identity,
         control,
-    ))
+        ),
+        control,
+    )
+}
+
+fn rebuild_source_change_class_from_state_with_control(
+    state: anyhow::Result<CurrentSourceState>,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<SourceChangeClass> {
+    match state {
+        Ok(state) if !state.exists => Ok(SourceChangeClass::SourceMissing),
+        Ok(state) if !state.usable => Ok(SourceChangeClass::ComponentUnavailable),
+        Ok(_) => Ok(SourceChangeClass::SourceContentChanged),
+        Err(error) if is_validation_terminated(&error) => Err(error),
+        Err(_) => {
+            control.check(GraphWorkStage::Source)?;
+            Ok(SourceChangeClass::ComponentUnavailable)
+        }
+    }
 }
 
 fn rebuild_source_change_class_for_role(
@@ -1621,14 +1679,31 @@ fn edge_source_is_missing_with_control(
     let Some(source_kind) = infer_source_kind(&edge.source_object_identity) else {
         return Ok(true);
     };
-    edge_source_missing_from_state(resolve_current_source_state_with_control(
-        conn,
-        project_id,
-        run_id,
-        source_kind,
-        &edge.source_object_identity,
+    edge_source_missing_from_state_with_control(
+        resolve_current_source_state_with_control(
+            conn,
+            project_id,
+            run_id,
+            source_kind,
+            &edge.source_object_identity,
+            control,
+        ),
         control,
-    ))
+    )
+}
+
+fn edge_source_missing_from_state_with_control(
+    state: anyhow::Result<CurrentSourceState>,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<bool> {
+    match state {
+        Ok(state) => Ok(!state.exists),
+        Err(error) if is_validation_terminated(&error) => Err(error),
+        Err(_) => {
+            control.check(GraphWorkStage::Source)?;
+            Ok(true)
+        }
+    }
 }
 
 /// Read-only diagnostic: for every Dependency Edge Run `run_id` declared
@@ -2723,8 +2798,10 @@ fn controlled_digest_plan(
         let mut sink = ControlledDigestSink {
             hasher: Sha256::new(),
             control,
+            error: None,
         };
-        serde_json::to_writer(&mut sink, &canonical)?;
+        let result = serde_json::to_writer(&mut sink, &canonical);
+        sink.finish_serde(result)?;
         sink.hasher.finalize()
     };
     control.check(GraphWorkStage::Digest)?;
@@ -2857,13 +2934,25 @@ fn sort_json_object_entries_with_control(
 struct ControlledDigestSink<'a> {
     hasher: Sha256,
     control: &'a mut dyn GraphWorkControl,
+    error: Option<anyhow::Error>,
+}
+
+impl ControlledDigestSink<'_> {
+    fn finish_serde<T>(&mut self, result: serde_json::Result<T>) -> anyhow::Result<T> {
+        if let Some(error) = self.error.take() {
+            return Err(error);
+        }
+        Ok(result?)
+    }
 }
 
 impl Write for ControlledDigestSink<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.control
-            .check(GraphWorkStage::Digest)
-            .map_err(|error| io::Error::other(error.to_string()))?;
+        if let Err(error) = self.control.check(GraphWorkStage::Digest) {
+            let message = error.to_string();
+            self.error = Some(error);
+            return Err(io::Error::other(message));
+        }
         self.hasher.update(bytes);
         Ok(bytes.len())
     }
@@ -4808,7 +4897,30 @@ mod tests {
     impl GraphWorkControl for StopAt {
         fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
             if stage == self.0 {
-                anyhow::bail!("NIR1_GRAPH_TEST_CANCELLED_{stage:?}");
+                return Err(crate::narrative_extraction::source_revision::validation_terminated(
+                    crate::narrative_extraction::source_revision::ValidationTerminationReason::Cancelled,
+                    format!("controlled stop at {stage:?}"),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    struct StopAfter {
+        stage: GraphWorkStage,
+        remaining: usize,
+    }
+
+    impl GraphWorkControl for StopAfter {
+        fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+            if stage == self.stage {
+                if self.remaining == 0 {
+                    return Err(crate::narrative_extraction::source_revision::validation_terminated(
+                        crate::narrative_extraction::source_revision::ValidationTerminationReason::Cancelled,
+                        format!("controlled stop after {stage:?}"),
+                    ));
+                }
+                self.remaining -= 1;
             }
             Ok(())
         }
@@ -4823,7 +4935,10 @@ mod tests {
             if stage == GraphWorkStage::Serialization {
                 self.serialization_started = true;
             } else if stage == GraphWorkStage::Digest && self.serialization_started {
-                anyhow::bail!("NIR1_GRAPH_TEST_CANCELLED_DURING_DIGEST_WRITE");
+                return Err(crate::narrative_extraction::source_revision::validation_terminated(
+                    crate::narrative_extraction::source_revision::ValidationTerminationReason::Cancelled,
+                    "controlled digest write stop",
+                ));
             }
             Ok(())
         }
@@ -4840,9 +4955,8 @@ mod tests {
             serialization_started: false,
         };
         let error = controlled_digest_plan(&value, &mut control)
-            .expect_err("controlled digest serialization must remain cancellable")
-            .to_string();
-        assert!(error.contains("NIR1_GRAPH_TEST_CANCELLED_DURING_DIGEST_WRITE"));
+            .expect_err("controlled digest serialization must remain cancellable");
+        assert!(is_validation_terminated(&error));
         Ok(())
     }
 
@@ -4857,9 +4971,8 @@ mod tests {
                     "project-1",
                     &mut coverage_control,
                 )
-                .expect_err("controlled coverage must propagate cancellation")
-                .to_string();
-            assert!(coverage_error.contains("NIR1_GRAPH_TEST_CANCELLED_Coverage"));
+                .expect_err("controlled coverage must propagate cancellation");
+            assert!(is_validation_terminated(&coverage_error));
 
             let mut rebuild_control = StopAt(GraphWorkStage::Coverage);
             let rebuild_error = verify_v2_shadow_for_rebuild_in_tx_with_control(
@@ -4868,9 +4981,8 @@ mod tests {
                 "run-1",
                 &mut rebuild_control,
             )
-            .expect_err("controlled rebuild shadow must propagate cancellation")
-            .to_string();
-            assert!(rebuild_error.contains("NIR1_GRAPH_TEST_CANCELLED_Coverage"));
+            .expect_err("controlled rebuild shadow must propagate cancellation");
+            assert!(is_validation_terminated(&rebuild_error));
 
             let tx = conn.unchecked_transaction()?;
             let mut skip_control = StopAt(GraphWorkStage::ResultAssembly);
@@ -4893,12 +5005,73 @@ mod tests {
                     },
                     &mut skip_control,
                 )
-                .expect_err("controlled skip sealing must propagate cancellation")
-                .to_string();
-            assert!(skip_error.contains("NIR1_GRAPH_TEST_CANCELLED_ResultAssembly"));
+                .expect_err("controlled skip sealing must propagate cancellation");
+            assert!(is_validation_terminated(&skip_error));
             tx.rollback()?;
             Ok(())
         })
+    }
+
+    #[test]
+    fn controlled_rebuild_head_lookup_does_not_normalize_stop_to_diagnostic() {
+        let db = test_db();
+        let error = db
+            .with_conn(|conn| {
+                conn.execute("DROP TABLE narrative_dependency_declaration_heads", [])?;
+                conn.execute(
+                    "CREATE TABLE narrative_dependency_declaration_heads (broken TEXT)",
+                    [],
+                )?;
+                let mut control = StopAt(GraphWorkStage::Coverage);
+                verify_v2_shadow_for_rebuild_in_tx_with_control(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    &mut control,
+                )
+            })
+            .expect_err("head lookup stop must remain terminal");
+        assert!(is_validation_terminated(&error));
+    }
+
+    #[test]
+    fn controlled_artifact_source_stop_does_not_become_an_issue() -> anyhow::Result<()> {
+        let db = current_schema_db();
+        seed_application_fixture(&db, "application-1", "commit-1", "proposal-1", "revision-1");
+        seed_sealed_snapshot_run(&db, "project-1", "artifact-run");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_artifacts
+                    (id, run_id, artifact_kind, payload_digest, created_at)
+                 VALUES ('artifact-1', 'artifact-run', 'test', 'sha256:artifact-token',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_revision_source_basis
+                    (revision_id, ordinal, source_kind, source_key, revision_token)
+                 VALUES ('revision-1', 0, 'narrative-artifact', 'artifact:artifact-1',
+                         'sha256:artifact-token')",
+                [],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        let error = db
+            .with_conn(|conn| {
+                let mut control = StopAfter {
+                    stage: GraphWorkStage::Source,
+                    remaining: 2,
+                };
+                verify_coverage::verify_application_revision_artifact_references_with_control(
+                    conn,
+                    "project-1",
+                    &mut control,
+                )
+            })
+            .expect_err("source stop must abort coverage rather than add an issue");
+        assert!(is_validation_terminated(&error));
+        Ok(())
     }
 
     #[test]
@@ -5821,6 +5994,38 @@ mod tests {
             })
             .expect("read run status");
         assert_eq!(status, "completed");
+    }
+
+    #[test]
+    fn controlled_rebuild_stop_after_work_finalizes_run_before_returning() {
+        let db = test_db();
+        seed_epoch_for_rebuild(&db, "project-1");
+        let mut control = StopAt(GraphWorkStage::ResultAssembly);
+
+        let error = rebuild_narrative_derived_state_for_project_with_control(
+            &db,
+            "project-1",
+            &mut control,
+        )
+        .expect_err("a stopped rebuild must return its typed termination");
+        assert!(is_validation_terminated(&error));
+
+        db.with_conn(|conn| {
+            let status: String = conn.query_row(
+                "SELECT status FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'semantic-index-rebuild'
+                  ORDER BY created_at DESC, id DESC LIMIT 1",
+                params!["project-1"],
+                |row| row.get(0),
+            )?;
+            assert_eq!(status, "failed");
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("stopped rebuild must be terminal before returning");
+
+        let next = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("a terminal stopped run must not block the next rebuild");
+        assert!(matches!(next, RebuildDerivedStateOutcome::Ran { .. }));
     }
 
     #[test]
