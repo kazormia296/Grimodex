@@ -107,10 +107,27 @@ export declare class Backend {
    * non-ACK, never an acknowledgement against a replacement workspace.
    */
   ackNarrativeMaintenanceWakeOutbox(ids: Array<string>, workspaceBinding: any): Promise<string>
-  /** Main-only process-local lifecycle registration; no durable schema. */
+  /**
+   * Register one process-local maintenance attempt against the exact
+   * workspace recovery generation. This is main-only and has no durable
+   * schema; durable Run/Task/Attempt rows remain owned by the existing
+   * maintenance runtime.
+   */
   beginNarrativeMaintenanceAttempt(attemptId: string, workspaceBinding: any): Promise<string>
-  /** Main-only cancellation; resolves only after a terminal receipt exists. */
+  /**
+   * Request cancellation and wait until the Native attempt has produced a
+   * terminal receipt. A late request after FinalizeGranted observes the
+   * already-successful receipt and cannot rewrite it.
+   */
   cancelNarrativeMaintenanceAttempt(attemptId: string, reason: string): Promise<string>
+  /**
+   * Retire a consumed Native terminal receipt.  This method is main-only
+   * and intentionally absent from the renderer/preload contract.  The
+   * registry refuses an ACK while an admitted owner or waiter still holds
+   * the receipt, so a late ACK cannot delete a result another caller is
+   * still waiting to observe.
+   */
+  ackNarrativeMaintenanceAttempt(attemptId: string): string
   /**
    * Electron main-only serialized system-work cycle.
    *
