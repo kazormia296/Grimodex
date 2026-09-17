@@ -394,9 +394,7 @@ fn decision_binding(
     require_non_empty(decision.id(), "decision.id")?;
     require_non_empty(decision.revision_id(), "decision.revisionId")?;
     require_non_empty(decision.decision(), "decision.value")?;
-    require_non_empty(decision.decision_json(), "decision.json")?;
     require_non_empty(decision.created_at(), "decision.createdAt")?;
-    require_non_empty(decision.created_by(), "decision.createdBy")?;
     require_non_empty(decision.actor_kind(), "decision.actorKind")?;
     require_non_empty(decision.actor_id(), "decision.actorId")?;
     let authority_scope = decision
@@ -412,11 +410,6 @@ fn decision_binding(
             && decision.actor_id() == "electron:human-review"
             && authority_scope == expected_scope,
         "NIR-1 Native Decision is not the exact current human approval"
-    );
-    let decision_json: Value = serde_json::from_str(decision.decision_json())?;
-    ensure!(
-        decision_json.is_object(),
-        "NIR-1 Native Decision payload is not an object"
     );
     let override_field_paths: Value = serde_json::from_str(decision.override_field_paths_json())?;
     ensure!(

@@ -4569,6 +4569,110 @@ mod tests {
         Ok(())
     }
 
+    fn pack_decision_metadata_fixture(
+        decision_json: Value,
+        created_by: Option<String>,
+    ) -> anyhow::Result<(crate::narrative_extraction::NativeNir1PackedContext, String)> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        run_incremental_freshness_cycle(&db)?;
+
+        let prepared = prepare_nir1_entity_relation_revision(
+            &db,
+            Nir1EntityRelationRevisionPrepareRequest {
+                project_id: "default-project".into(),
+                scene_id: "nir1".into(),
+                proposal_key: Some("nir1:packing:decision-metadata".into()),
+                entity_ids: vec!["nir1-alice".into(), "nir1-bob".into()],
+                relation_ids: vec!["nir1-edge".into()],
+            },
+        )?;
+        let run_id = prepared["runId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("decision metadata run id missing"))?
+            .to_owned();
+        let (proposal_id, revision_id) = match db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision_current(conn, "default-project", &run_id)
+        })? {
+            Nir1EntityRelationRevisionCurrentRead::Draft(revision) => {
+                (revision.proposal_id.clone(), revision.revision_id.clone())
+            }
+            other => anyhow::bail!("decision metadata preparation was not a draft: {other:?}"),
+        };
+
+        narrative_extraction_append_human_decision(
+            &db,
+            AppendDecisionPayload {
+                run_id,
+                project_id: "default-project".into(),
+                proposal_id,
+                revision_id: revision_id.clone(),
+                decision: "approved".into(),
+                decision_json: Some(decision_json),
+                created_by,
+            },
+        )?;
+
+        let packed = read_and_pack_native_a2_context(
+            &db,
+            NativeNir1PackingRequest {
+                project_id: "default-project".into(),
+                revision_id: revision_id.clone(),
+                query_scene_id: "a3-future".into(),
+                budget_tokens: 100_000,
+                purpose: PackingPurpose::Writing,
+                atomic_group: String::new(),
+                raw_items: vec![NativeNir1RawContextItem {
+                    id: "decision-metadata-raw".into(),
+                    text: "Raw context".into(),
+                    tokens: 1,
+                }],
+            },
+        )?;
+        Ok((packed, revision_id))
+    }
+
+    #[test]
+    fn native_a2_packing_accepts_empty_created_by_and_preserves_object_metadata_bytes(
+    ) -> anyhow::Result<()> {
+        let (packed, revision_id) = pack_decision_metadata_fixture(
+            json!({"reviewerNote": "empty creator"}),
+            Some("".into()),
+        )?;
+        assert!(!packed.selected_items().is_empty());
+        assert_eq!(packed.binding().revision_id(), revision_id);
+        assert_eq!(
+            packed.binding().decision().decision_json(),
+            r#"{"reviewerNote":"empty creator"}"#
+        );
+        assert_eq!(packed.binding().decision().created_by(), "");
+        assert_eq!(
+            packed.binding().decision().override_field_paths_json(),
+            "[]"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_a3_packing_accepts_array_decision_json_and_preserves_metadata_bytes(
+    ) -> anyhow::Result<()> {
+        let (packed, revision_id) =
+            pack_decision_metadata_fixture(json!([]), Some("renderer-reviewer".into()))?;
+        assert!(!packed.selected_items().is_empty());
+        assert_eq!(packed.binding().revision_id(), revision_id);
+        assert_eq!(packed.binding().decision().decision_json(), "[]");
+        assert_eq!(
+            packed.binding().decision().created_by(),
+            "renderer-reviewer"
+        );
+        assert_eq!(
+            packed.binding().decision().override_field_paths_json(),
+            "[]"
+        );
+        Ok(())
+    }
+
     #[test]
     fn native_a2_preserves_duplicate_relation_refs_but_deduplicates_material_projection(
     ) -> anyhow::Result<()> {
