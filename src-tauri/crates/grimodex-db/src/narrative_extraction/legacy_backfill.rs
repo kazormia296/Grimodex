@@ -722,7 +722,13 @@ fn finalize_legacy_backfill_run_with_control(
         with_immediate_transaction(conn, |conn| {
             if let Some(control) = control {
                 (control.should_stop)()?;
-                if transform_result.is_ok() {
+                // A foreground success is intentionally held behind the
+                // authoring barrier. Its durable outcome remains running
+                // until the exact Run is released, so the cycle must not
+                // acquire the strict finalization grant on this path.
+                if transform_result.is_ok()
+                    && !super::maintenance_runtime::foreground_system_work_barrier_requested()
+                {
                     (control.grant_finalize)(work_key)?;
                 }
             }

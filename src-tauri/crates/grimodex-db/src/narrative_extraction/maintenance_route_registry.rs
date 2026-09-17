@@ -8,9 +8,11 @@
 
 use crate::narrative_extraction::maintenance_contracts::MaintenanceContractCoordinates;
 use crate::narrative_extraction::maintenance_runtime::{
-    AutomaticRunKind, DesiredWork, MaintenanceCycleControl,
+    foreground_system_work_barrier_requested, AutomaticRunKind, DesiredWork,
+    MaintenanceCycleControl, MaintenanceDispatchOutcome,
 };
 use crate::Database;
+use rusqlite::OptionalExtension;
 
 /// Version of the native automatic maintenance route registry contract.
 pub const NARRATIVE_MAINTENANCE_ROUTE_REGISTRY_VERSION: &str = "narrative-maintenance-route/v1";
@@ -31,7 +33,7 @@ type DispatchAdapter = for<'a> fn(
     &DesiredWork,
     Option<&MaintenanceContractCoordinates>,
     Option<&MaintenanceCycleControl<'a>>,
-) -> anyhow::Result<()>;
+) -> anyhow::Result<MaintenanceDispatchOutcome>;
 
 #[derive(Clone, Copy)]
 struct RouteEntry {
@@ -103,7 +105,7 @@ pub(crate) fn dispatch_enabled_work(
     item: &DesiredWork,
     coordinates: Option<&MaintenanceContractCoordinates>,
     control: Option<&MaintenanceCycleControl<'_>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<MaintenanceDispatchOutcome> {
     let entry = ROUTE_REGISTRY
         .iter()
         .find(|entry| entry.descriptor.run_kind == item.run_kind)
@@ -121,14 +123,18 @@ fn dispatch_backfill(
     item: &DesiredWork,
     _coordinates: Option<&MaintenanceContractCoordinates>,
     control: Option<&MaintenanceCycleControl<'_>>,
-) -> anyhow::Result<()> {
-    super::bootstrap_legacy_dependency_backfill_for_project_with_control(
+) -> anyhow::Result<MaintenanceDispatchOutcome> {
+    let outcome = super::bootstrap_legacy_dependency_backfill_for_project_with_control(
         db,
         &item.project_id,
         control,
         &item.canonical_key(),
     )?;
-    Ok(())
+    let run_id = match outcome {
+        super::LegacyBackfillBootstrapOutcome::AlreadyRun { run_id }
+        | super::LegacyBackfillBootstrapOutcome::Ran { run_id, .. } => run_id,
+    };
+    foreground_dispatch_outcome(db, &run_id)
 }
 
 fn dispatch_verify(
@@ -136,15 +142,16 @@ fn dispatch_verify(
     item: &DesiredWork,
     coordinates: Option<&MaintenanceContractCoordinates>,
     control: Option<&MaintenanceCycleControl<'_>>,
-) -> anyhow::Result<()> {
-    super::restore_rebuild::run_dependency_verify_for_project_with_coordinates_and_control(
-        db,
-        &item.project_id,
-        coordinates,
-        control,
-        &item.canonical_key(),
-    )?;
-    Ok(())
+) -> anyhow::Result<MaintenanceDispatchOutcome> {
+    let outcome =
+        super::restore_rebuild::run_dependency_verify_for_project_with_coordinates_and_control(
+            db,
+            &item.project_id,
+            coordinates,
+            control,
+            &item.canonical_key(),
+        )?;
+    foreground_dispatch_outcome(db, &outcome.run_id)
 }
 
 fn dispatch_rebuild_derived(
@@ -152,16 +159,46 @@ fn dispatch_rebuild_derived(
     item: &DesiredWork,
     _coordinates: Option<&MaintenanceContractCoordinates>,
     control: Option<&MaintenanceCycleControl<'_>>,
-) -> anyhow::Result<()> {
-    match super::restore_rebuild::rebuild_narrative_derived_state_for_project_with_control(
+) -> anyhow::Result<MaintenanceDispatchOutcome> {
+    let outcome = super::restore_rebuild::rebuild_narrative_derived_state_for_project_with_control(
         db,
         &item.project_id,
         control,
         &item.canonical_key(),
-    )? {
-        super::restore_rebuild::RebuildDerivedStateOutcome::AlreadyRunning { .. }
-        | super::restore_rebuild::RebuildDerivedStateOutcome::Ran { .. } => Ok(()),
+    )?;
+    let run_id = match outcome {
+        super::restore_rebuild::RebuildDerivedStateOutcome::AlreadyRunning { run_id }
+        | super::restore_rebuild::RebuildDerivedStateOutcome::Ran { run_id, .. } => run_id,
+    };
+    foreground_dispatch_outcome(db, &run_id)
+}
+
+/// Convert the durable lifecycle left by an adapter into the typed result the
+/// cycle needs.  A marker being active is not sufficient by itself: a
+/// completed Backfill reuse, for example, did not create a Run for this
+/// dispatch and must remain an ordinary no-op completion.  Only the exact
+/// Run that is still running is a foreground hold.
+fn foreground_dispatch_outcome(
+    db: &Database,
+    run_id: &str,
+) -> anyhow::Result<MaintenanceDispatchOutcome> {
+    if !foreground_system_work_barrier_requested() {
+        return Ok(MaintenanceDispatchOutcome::Completed);
     }
+    let status = db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                [run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    })?;
+    Ok(if status.as_deref() == Some("running") {
+        MaintenanceDispatchOutcome::ForegroundHeld
+    } else {
+        MaintenanceDispatchOutcome::Completed
+    })
 }
 
 #[cfg(test)]

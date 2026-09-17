@@ -6048,6 +6048,68 @@ mod tests {
     }
 
     #[test]
+    fn foreground_rebuild_records_outcome_and_waits_for_exact_barrier_release() {
+        let db = test_db();
+        let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
+        let marker = super::super::maintenance_runtime::NarrativeSystemWorkMarker {
+            trigger: "workspace-opened".to_string(),
+            canonical_work_key: super::super::maintenance_runtime::canonical_work_key_for_epoch(
+                "project-1",
+                super::super::maintenance_runtime::AutomaticRunKind::RebuildDerived,
+                REBUILD_DERIVED_WORK_KEY,
+                Some(&epoch_id),
+            )
+            .expect("canonical Rebuild work key"),
+            authority_id: "authority:workspace-1".to_string(),
+            generation: 1,
+            product_journey_barrier_id: "barrier-rebuild".to_string(),
+            correlation: "correlation-rebuild".to_string(),
+        };
+
+        let outcome = super::super::maintenance_runtime::with_system_work_marker(
+            Some(marker.clone()),
+            || rebuild_narrative_derived_state_for_project(&db, "project-1"),
+        )
+        .expect("foreground Rebuild should persist its successful outcome");
+        let run_id = match outcome {
+            RebuildDerivedStateOutcome::Ran { run_id, .. } => run_id,
+            RebuildDerivedStateOutcome::AlreadyRunning { .. } => {
+                panic!("first foreground Rebuild must create a fresh Run")
+            }
+        };
+        let status: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read held Rebuild status");
+        assert_eq!(status, "running");
+
+        let barrier = super::super::maintenance_runtime::ForegroundSystemWorkRun {
+            run_id: run_id.clone(),
+            project_id: "project-1".to_string(),
+            marker,
+        };
+        super::super::maintenance_runtime::complete_foreground_system_work_run(&db, &barrier)
+            .expect("exact Rebuild barrier release");
+        let status: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read released Rebuild status");
+        assert_eq!(status, "completed");
+    }
+
+    #[test]
     fn controlled_rebuild_stop_after_work_finalizes_run_before_returning() {
         let db = test_db();
         seed_epoch_for_rebuild(&db, "project-1");

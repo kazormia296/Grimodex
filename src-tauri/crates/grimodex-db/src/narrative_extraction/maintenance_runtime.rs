@@ -63,6 +63,19 @@ pub enum AutomaticRunKind {
     RebuildDerived,
 }
 
+/// Result of dispatching one automatic adapter.
+///
+/// A foreground product-journey barrier deliberately keeps a successful
+/// Run/Task/Attempt lifecycle running until the matching authoring write
+/// commits.  The cycle must preserve that durable work and tell its caller to
+/// park the delivery; treating the adapter as an ordinary success would let
+/// the attempt owner acquire a false finalization grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaintenanceDispatchOutcome {
+    Completed,
+    ForegroundHeld,
+}
+
 impl AutomaticRunKind {
     /// Persisted `narrative_extraction_runs.run_kind` value.
     pub const fn as_str(self) -> &'static str {
@@ -1149,9 +1162,11 @@ pub struct MaintenanceWorkRequest {
 pub enum MaintenanceCycleStatus {
     Accepted,
     Coalesced,
-    /// Retained for the shadow/planning API. Execute-mode maintenance no
-    /// longer returns Deferred for Verify or Rebuild; the Rust phase owner
-    /// dispatches them on the same live Database.
+    /// A successful foreground adapter recorded its durable outcome but kept
+    /// its Run/Task/Attempt lifecycle running behind the authoring barrier.
+    /// The caller must park this delivery until the exact barrier Run is
+    /// released; treating it as Accepted would grant false finalization and
+    /// immediately retry the same held work.
     Deferred,
 }
 
@@ -1215,6 +1230,10 @@ pub struct MaintenanceCycleControl<'a> {
     /// Complete one non-dispatch queue execution without a durable
     /// finalization grant.
     pub work_noop_completed: &'a dyn Fn(&DesiredWork) -> anyhow::Result<()>,
+    /// Park one foreground-held queue execution without settling it as a
+    /// successful work item. The native owner must leave this execution
+    /// requeueable until the exact foreground Run is released.
+    pub work_deferred: &'a dyn Fn(&DesiredWork) -> anyhow::Result<()>,
 }
 
 impl MaintenanceCycleRequest {
@@ -2402,7 +2421,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
     request: &MaintenanceCycleRequest,
     mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
-    foreground_owner: Option<&ForegroundSystemWorkRun>,
+    _foreground_owner: Option<&ForegroundSystemWorkRun>,
     control: Option<&MaintenanceCycleControl<'_>>,
 ) -> anyhow::Result<MaintenanceCycleResult> {
     if let Some(control) = control {
@@ -2450,6 +2469,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
     let mut coalesced_active = false;
     let mut handled_non_coalesced = false;
     let mut has_more = false;
+    let mut foreground_held = false;
     let foreground_durable_run = match (ci_config, request.workspace_binding.as_ref()) {
         (Some(config), Some(binding))
             if config.trigger == Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake)
@@ -2470,10 +2490,6 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
         }
         _ => None,
     };
-    let mut foreground_owned_run = match (foreground_owner, foreground_durable_run.as_ref()) {
-        (Some(owner), Some(current)) if owner == current => Some(owner.clone()),
-        _ => None,
-    };
     // A durable current marker consumes the one foreground marker slot even
     // after a process restart, when no process-local owner is available. The
     // restarted Run still goes through StartupRecovery below, but any fresh
@@ -2487,12 +2503,11 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
     // durable rediscovery check from turning a terminal Inbox item into a
     // scheduler retry wake.
     let mut terminal_halted_work = BTreeSet::new();
-    // Only the exact foreground Run created by this process may suppress its
-    // same-key rediscovery. A canonical-key-only set would also suppress the
-    // ordinary Verify confirmation after a Verify -> Rebuild phase chain.
-    // The durable lookup below keeps this ownership bounded to the marked Run
-    // while it is still running; pre-existing active rows remain subject to
-    // the caller-selected StartupRecovery/SameProcessLive mode.
+    // Only the exact current foreground Run may suppress its same-key
+    // rediscovery. A canonical-key-only set would also suppress the ordinary
+    // Verify confirmation after a Verify -> Rebuild phase chain. The durable
+    // lookup below keeps this bounded to the marked Run while it is still
+    // running, including after process restart when no owner handle exists.
     let mut project_ids = BTreeSet::new();
     // A selector/ledger failure is durable manual work, not an Electron
     // delivery retry. Discovery cannot safely choose a next phase for that
@@ -2514,6 +2529,12 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
     let mark_noop_completed = |item: &DesiredWork| -> anyhow::Result<()> {
         if let Some(control) = control {
             (control.work_noop_completed)(item)?;
+        }
+        Ok(())
+    };
+    let mark_deferred = |item: &DesiredWork| -> anyhow::Result<()> {
+        if let Some(control) = control {
+            (control.work_deferred)(item)?;
         }
         Ok(())
     };
@@ -2562,15 +2583,17 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
             (control.work_started)(&effective_item)?;
         }
 
-        let foreground_run_is_held = if let Some(owned) = foreground_owned_run.as_ref() {
-            if !foreground_owned_run_matches_work(owned, &effective_item)? {
+        let foreground_run_is_held = if let Some(candidate) = foreground_durable_run.as_ref() {
+            if !foreground_owned_run_matches_work(candidate, &effective_item)? {
                 false
             } else if let (Some(config), Some(binding)) =
                 (ci_config.as_ref(), request.workspace_binding.as_ref())
             {
+                // Re-read the exact durable row so a release that races this
+                // bounded cycle cannot be mistaken for a held lifecycle.
                 find_running_foreground_system_work_run(db, config, binding)?
                     .as_ref()
-                    .is_some_and(|current| current == owned)
+                    .is_some_and(|current| current == candidate)
             } else {
                 false
             }
@@ -2579,9 +2602,11 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
         };
         if foreground_run_is_held {
             // The exact marked Run is still durable and running. Do not feed
-            // it back through StartupRecovery before the N-API cycle ACK.
-            mark_noop_completed(&effective_item)?;
-            continue;
+            // it back through StartupRecovery before the N-API cycle ACK, and
+            // do not let the caller report strict adapter success for it.
+            foreground_held = true;
+            mark_deferred(&effective_item)?;
+            break;
         }
 
         // Verify-only completed-run skip is checked before recovery. Rebuild
@@ -2865,7 +2890,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                 } else {
                     None
                 };
-                with_system_work_marker(marker.clone(), || {
+                let dispatch_outcome = with_system_work_marker(marker.clone(), || {
                     check_stop()?;
                     dispatch_enabled_work(
                         db,
@@ -2874,6 +2899,16 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                         control,
                     )
                 })?;
+                if matches!(dispatch_outcome, MaintenanceDispatchOutcome::ForegroundHeld) {
+                    // The adapter has already persisted its real successful
+                    // outcome and deliberately left the lifecycle running.
+                    // Complete only the queue bookkeeping; the native owner
+                    // must park/requeue this delivery until exact barrier
+                    // release rather than granting finalization here.
+                    foreground_held = true;
+                    mark_deferred(&effective_item)?;
+                    break;
+                }
                 // Register the next phase before marking this item complete.
                 // The per-work completion transition may close the attempt
                 // when this was the final registered item.
@@ -2916,7 +2951,6 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                                 && created.marker.canonical_work_key == item.canonical_key(),
                             "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_DISPATCH_MISMATCH: marked Run does not match the dispatched WorkKey"
                         );
-                        foreground_owned_run = Some(created);
                     }
                 }
                 if marker.is_some() {
@@ -2928,6 +2962,9 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
     }
 
     check_stop()?;
+    if foreground_held {
+        return Ok(MaintenanceCycleResult::deferred(false));
+    }
     has_more |= !queue.is_empty();
     if !has_more {
         for project_id in project_ids {
@@ -3123,7 +3160,7 @@ fn dispatch_enabled_work(
     item: &DesiredWork,
     coordinates: Option<&MaintenanceContractCoordinates>,
     control: Option<&MaintenanceCycleControl<'_>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<MaintenanceDispatchOutcome> {
     validate_dispatch_contract(item)?;
     // This adapter uses the exact Database supplied by the live
     // WorkspaceAuthority. It owns its transaction phases but never opens a
@@ -5465,6 +5502,161 @@ mod tests {
     }
 
     #[test]
+    fn foreground_cycle_holds_initial_and_existing_run_until_exact_release() {
+        let db = open_backfill_cycle_db(&["project-1"]);
+        let mut config = ci_config(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake);
+        config.product_journey_barrier_id = Some("barrier-backfill".to_string());
+        config.correlation = Some("correlation-backfill".to_string());
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority:workspace-1".to_string(),
+            generation: 1,
+        };
+        let mut request = backfill_cycle_request(&["project-1"]);
+        request.workspace_binding = Some(binding.clone());
+
+        let run_cycle = |db: &Database,
+                         request: &MaintenanceCycleRequest,
+                         config: &NarrativeMaintenanceCiConfig| {
+            let grant_called = Arc::new(AtomicBool::new(false));
+            let adapter_completed = Arc::new(AtomicBool::new(false));
+            let noop_completed = Arc::new(AtomicBool::new(false));
+            let deferred = Arc::new(AtomicBool::new(false));
+            let grant_called_for_cycle = Arc::clone(&grant_called);
+            let adapter_completed_for_cycle = Arc::clone(&adapter_completed);
+            let noop_completed_for_cycle = Arc::clone(&noop_completed);
+            let deferred_for_cycle = Arc::clone(&deferred);
+            let should_stop = || Ok::<_, anyhow::Error>(());
+            let grant_finalize = move |_work_key: &str| -> anyhow::Result<()> {
+                grant_called_for_cycle.store(true, Ordering::SeqCst);
+                anyhow::bail!("foreground-held work must not request finalization")
+            };
+            let register_work = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+            let work_started = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+            let work_completed = move |_item: &DesiredWork| -> anyhow::Result<()> {
+                adapter_completed_for_cycle.store(true, Ordering::SeqCst);
+                anyhow::bail!("foreground-held work must not report strict completion")
+            };
+            let work_noop_completed = move |_item: &DesiredWork| -> anyhow::Result<()> {
+                noop_completed_for_cycle.store(true, Ordering::SeqCst);
+                Ok(())
+            };
+            let work_deferred = move |_item: &DesiredWork| -> anyhow::Result<()> {
+                deferred_for_cycle.store(true, Ordering::SeqCst);
+                Ok(())
+            };
+            let control = MaintenanceCycleControl {
+                should_stop: &should_stop,
+                grant_finalize: &grant_finalize,
+                register_work: &register_work,
+                work_started: &work_started,
+                work_completed: &work_completed,
+                work_noop_completed: &work_noop_completed,
+                work_deferred: &work_deferred,
+            };
+            let result =
+                run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+                    db,
+                    request,
+                    |_| RecoveryMode::StartupRecovery,
+                    Some(config),
+                    None,
+                    Some(&control),
+                )?;
+            Ok::<_, anyhow::Error>((
+                result,
+                grant_called.load(Ordering::SeqCst),
+                adapter_completed.load(Ordering::SeqCst),
+                noop_completed.load(Ordering::SeqCst),
+                deferred.load(Ordering::SeqCst),
+            ))
+        };
+
+        let (initial, grant_called, adapter_completed, noop_completed, deferred) =
+            run_cycle(&db, &request, &config).expect("initial foreground cycle");
+        assert_eq!(initial.status, MaintenanceCycleStatus::Deferred);
+        assert!(!initial.has_more);
+        assert!(!grant_called, "held adapter must not acquire finalization");
+        assert!(
+            !noop_completed,
+            "held adapter must not settle as no-op success"
+        );
+        assert!(deferred, "held adapter must use the parked callback");
+        assert!(
+            !adapter_completed,
+            "held adapter must not report strict success"
+        );
+
+        let barrier = find_running_foreground_system_work_run(&db, &config, &binding)
+            .expect("find initial foreground Run")
+            .expect("initial cycle must leave a durable foreground Run running");
+        let (status, task_status, attempt_status): (String, String, String) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT r.status, t.status, a.status
+                       FROM narrative_extraction_runs r
+                       JOIN narrative_extraction_tasks t ON t.run_id = r.id
+                       JOIN narrative_extraction_attempts a ON a.task_id = t.id
+                      WHERE r.id = ?1",
+                    params![barrier.run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read initial held lifecycle");
+        assert_eq!(
+            (
+                status.as_str(),
+                task_status.as_str(),
+                attempt_status.as_str()
+            ),
+            ("running", "running", "running")
+        );
+
+        let (existing, grant_called, adapter_completed, noop_completed, deferred) =
+            run_cycle(&db, &request, &config).expect("existing foreground cycle");
+        assert_eq!(existing.status, MaintenanceCycleStatus::Deferred);
+        assert!(!existing.has_more);
+        assert!(
+            !grant_called,
+            "pre-existing hold must not acquire finalization"
+        );
+        assert!(
+            !noop_completed,
+            "pre-existing hold must not settle as no-op success"
+        );
+        assert!(deferred, "pre-existing hold must use the parked callback");
+        assert!(
+            !adapter_completed,
+            "pre-existing hold must not report strict success"
+        );
+
+        complete_foreground_system_work_run(&db, &barrier)
+            .expect("exact foreground barrier release");
+        let (status, task_status, attempt_status): (String, String, String) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT r.status, t.status, a.status
+                       FROM narrative_extraction_runs r
+                       JOIN narrative_extraction_tasks t ON t.run_id = r.id
+                       JOIN narrative_extraction_attempts a ON a.task_id = t.id
+                      WHERE r.id = ?1",
+                    params![barrier.run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read released lifecycle");
+        assert_eq!(
+            (
+                status.as_str(),
+                task_status.as_str(),
+                attempt_status.as_str()
+            ),
+            ("completed", "completed", "completed")
+        );
+    }
+
+    #[test]
     fn rediscovery_orders_new_terminal_run_after_imported_future_run() {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
         db.migrate().expect("migrate database");
@@ -5818,6 +6010,7 @@ mod tests {
                 work_started: &work_started,
                 work_completed: &work_completed,
                 work_noop_completed: &work_noop_completed,
+                work_deferred: &work_noop_completed,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db,
@@ -5874,6 +6067,7 @@ mod tests {
                 work_started: &work_started,
                 work_completed: &work_completed,
                 work_noop_completed: &work_completed,
+                work_deferred: &work_completed,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -5942,6 +6136,7 @@ mod tests {
                 work_started: &work_started,
                 work_completed: &work_completed,
                 work_noop_completed: &work_completed,
+                work_deferred: &work_completed,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6027,6 +6222,7 @@ mod tests {
                 work_started: &work_started,
                 work_completed: &work_completed,
                 work_noop_completed: &work_completed,
+                work_deferred: &work_completed,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6113,6 +6309,7 @@ mod tests {
                 work_started: &work_started,
                 work_completed: &work_completed,
                 work_noop_completed: &work_completed,
+                work_deferred: &work_completed,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
