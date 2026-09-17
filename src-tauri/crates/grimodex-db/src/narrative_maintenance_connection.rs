@@ -210,6 +210,12 @@ pub(crate) struct NarrativeMaintenanceGraphControlConfig {
     /// outer scope. This is diagnostic telemetry only; callback count is not
     /// an SQL work total.
     pub(crate) progress_callbacks: Option<Arc<AtomicU64>>,
+    /// Masks the complete process-local stop set only while the owning attempt
+    /// has acquired its per-work finalization grant. The grant is the one
+    /// linearization point at which cancellation, deadline, close,
+    /// foreground preemption, and workspace-generation changes must all wait
+    /// for the already-authorized durable success transaction to finish.
+    pub(crate) finalization_granted: Option<Arc<AtomicBool>>,
     /// Latched by the outer SQLite progress hook without re-entering the
     /// Database. A long-running SQL statement is converted to the same typed
     /// terminal reason at the operation boundary.
@@ -223,6 +229,7 @@ impl Default for NarrativeMaintenanceGraphControlConfig {
             workspace_generation: None,
             closed: None,
             progress_callbacks: None,
+            finalization_granted: None,
             termination_latch: TerminationLatch::default(),
         }
     }
@@ -232,6 +239,15 @@ impl NarrativeMaintenanceGraphControlConfig {
     pub(crate) fn with_progress_callbacks(progress_callbacks: Arc<AtomicU64>) -> Self {
         Self {
             progress_callbacks: Some(progress_callbacks),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn with_finalization_granted(
+        finalization_granted: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            finalization_granted: Some(finalization_granted),
             ..Self::default()
         }
     }
@@ -266,6 +282,18 @@ impl<'a> NarrativeMaintenanceGraphControl<'a> {
 
 impl GraphWorkControl for NarrativeMaintenanceGraphControl<'_> {
     fn check(&mut self, stage: GraphWorkStage) -> Result<()> {
+        let finalization_granted = self
+            .config
+            .finalization_granted
+            .as_ref()
+            .is_some_and(|signal| signal.load(Ordering::Acquire));
+        if finalization_granted {
+            // The final grant is scoped to the exact transaction currently
+            // executing. Do not latch a late stop source here: after the
+            // transaction returns, the signal/current generation/deadline/
+            // waiter state is observed by the next phase and later work.
+            return Ok(());
+        }
         if let Some(reason) = self.config.termination_latch.get() {
             return Err(Self::terminal(reason, stage));
         }
@@ -604,6 +632,7 @@ where
         let generation_for_hook = hook_config.workspace_generation.clone();
         let deadline_for_hook = hook_config.deadline;
         let progress_callbacks_for_hook = hook_config.progress_callbacks.clone();
+        let finalization_granted_for_hook = hook_config.finalization_granted.clone();
         let foreground_waiters_for_hook = foreground_waiters.clone();
         let hook_result = if progress_interval > 0 {
             conn.progress_handler(
@@ -611,6 +640,15 @@ where
                 Some(move || {
                     if let Some(counter) = progress_callbacks_for_hook.as_ref() {
                         counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                    let finalization_granted = finalization_granted_for_hook
+                        .as_ref()
+                        .is_some_and(|signal| signal.load(Ordering::Acquire));
+                    if finalization_granted {
+                        // The grant masks the entire stop set for this exact
+                        // terminal transaction. Once it returns, the live
+                        // values are checked by the next phase.
+                        return false;
                     }
                     if closed_for_hook
                         .as_ref()
@@ -704,11 +742,14 @@ where
         #[cfg(not(test))]
         let rollback_failpoint = false;
         if rollback_failpoint {
-            cleanup_error = Some(anyhow!("rollback failpoint"));
+            append_cleanup_error(&mut cleanup_error, anyhow!("rollback failpoint"));
         } else {
             let rollback_result = conn.execute_batch("ROLLBACK");
             if let Err(error) = rollback_result {
-                cleanup_error = Some(anyhow!("rollback failed: {error}"));
+                append_cleanup_error(
+                    &mut cleanup_error,
+                    anyhow!("rollback failed: {error}"),
+                );
             }
         }
         if !conn.is_autocommit() {
@@ -799,11 +840,15 @@ impl Database {
         self.connection_health.mark_unusable(reason);
     }
 
-    pub(crate) fn connection_reusable(&self) -> bool {
+    /// Read the process-local cleanup/quarantine state without acquiring the
+    /// SQLite mutex. Native terminal settlement uses this after a scoped
+    /// maintenance operation so a foreground owner arriving afterward cannot
+    /// turn cleanup bookkeeping into a blocking probe.
+    pub fn connection_reusable(&self) -> bool {
         self.connection_health.is_reusable()
     }
 
-    pub(crate) fn connection_unusable_reason(&self) -> Option<String> {
+    pub fn connection_unusable_reason(&self) -> Option<String> {
         self.connection_health.unusable_reason()
     }
 

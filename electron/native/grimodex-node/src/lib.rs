@@ -32,7 +32,7 @@ mod test_link_stubs;
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::{atomic::AtomicU64, Arc, Mutex, TryLockError};
 use std::time::Instant;
 
 use napi::bindgen_prelude::*;
@@ -115,7 +115,9 @@ use grimodex_db::{with_db_state, AppError, BatchStatement, Database, RepairInteg
 
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
-use state::{AppState, EventQueue, EventTsfn, NarrativeMaintenanceCleanupOutcome};
+use state::{
+    AppState, EventQueue, EventTsfn, NarrativeMaintenanceCleanupOutcome,
+};
 use uuid::Uuid;
 
 const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
@@ -1061,6 +1063,52 @@ fn recover_workspace_open_lock_after_panic(
         )));
     }
     state.ws.open_lock.clear_poison();
+    Ok(())
+}
+
+/// Close maintenance admission before checking process-local preempted Run
+/// owners. With admission closed no active cycle can add a new owner between
+/// the gate check and the workspace swap; a pending owner therefore blocks the
+/// swap until the exact old-authority Run is drained.
+fn close_narrative_maintenance_for_workspace_swap(
+    state: &Arc<AppState>,
+) -> std::result::Result<(), AppError> {
+    state
+        .narrative_maintenance_recovery_gate
+        .close_for_workspace_swap()
+        .map_err(AppError::Anyhow)?;
+    if let Ok(authority) = active_database(&state.ws) {
+        let binding = state
+            .narrative_maintenance_recovery_gate
+            .binding_for_authority(&narrative_authority_id(&authority));
+        for run_id in state
+            .narrative_maintenance_preempted_runs
+            .pending_for_binding(&binding)
+        {
+            if matches!(
+                grimodex_db::narrative_extraction::try_cancel_preempted_maintenance_run(
+                    authority.db(),
+                    &run_id,
+                    "NEX_MAINTENANCE_CONNECTION_PREEMPTED: draining before workspace swap",
+                ),
+                Ok(true)
+            ) {
+                state
+                    .narrative_maintenance_preempted_runs
+                    .remove(&run_id);
+            }
+        }
+    }
+    if let Err(error) = state.narrative_maintenance_preempted_runs.assert_empty() {
+        let reopen = state
+            .narrative_maintenance_recovery_gate
+            .reopen_admission(None)
+            .map_err(AppError::Anyhow);
+        return match reopen {
+            Ok(()) => Err(AppError::Anyhow(error)),
+            Err(reopen_error) => Err(reopen_error),
+        };
+    }
     Ok(())
 }
 
@@ -3157,21 +3205,35 @@ pub struct Backend {
 struct NarrativeMaintenanceAttemptGuard {
     state: Arc<AppState>,
     attempt_id: String,
-    published_generation: u64,
+    published_generation: Arc<AtomicU64>,
     authority: Option<PinnedWorkspaceDb>,
     finalized: bool,
     cleanup_reusable: bool,
 }
 
 impl NarrativeMaintenanceAttemptGuard {
-    fn new(state: Arc<AppState>, attempt_id: String, published_generation: u64) -> Self {
+    fn new(state: Arc<AppState>, attempt_id: String, _published_generation: u64) -> Self {
         Self {
             state,
             attempt_id,
-            published_generation,
+            published_generation: Arc::new(AtomicU64::new(0)),
             authority: None,
             finalized: false,
             cleanup_reusable: false,
+        }
+    }
+
+    fn published_generation_signal(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.published_generation)
+    }
+
+    fn published_generation_value(&self) -> Option<u64> {
+        match self
+            .published_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            0 => None,
+            generation => Some(generation),
         }
     }
 
@@ -3187,7 +3249,7 @@ impl NarrativeMaintenanceAttemptGuard {
         let receipt = self.state.narrative_maintenance_attempts.settle(
             &self.attempt_id,
             granted,
-            granted.then_some(self.published_generation),
+            granted.then(|| self.published_generation_value()).flatten(),
         )?;
         self.finalized = true;
         Ok(receipt.state == "succeeded")
@@ -3196,7 +3258,11 @@ impl NarrativeMaintenanceAttemptGuard {
     fn finalize_interrupted(&mut self) -> anyhow::Result<()> {
         self.state
             .narrative_maintenance_attempts
-            .settle(&self.attempt_id, false, None)?;
+            .settle(
+                &self.attempt_id,
+                false,
+                self.published_generation_value(),
+            )?;
         self.finalized = true;
         Ok(())
     }
@@ -3225,49 +3291,46 @@ impl NarrativeMaintenanceAttemptGuard {
 impl Drop for NarrativeMaintenanceAttemptGuard {
     fn drop(&mut self) {
         if !self.finalized {
-            // Cancellation and adapter errors still have to prove that the
-            // exact pinned connection returned to autocommit before the
-            // recovery gate can be released.  This is deliberately scoped to
-            // the owner guard: nested readers do not mutate connection-wide
-            // settings or publish their own terminal receipt.
+            // The phase-owned maintenance scope has already restored
+            // autocommit, progress state, and busy timeout before it returns.
+            // Consult only its process-local health result here: reacquiring
+            // the SQLite mutex would wait behind a foreground owner that may
+            // have arrived after cleanup and would make Drop block.
             if let Some(authority) = self.authority.as_ref() {
-                match authority.db().with_conn(|conn| {
-                    anyhow::ensure!(
-                        conn.is_autocommit(),
-                        "NEX_MAINTENANCE_CONNECTION_NOT_REUSABLE: connection remains in a transaction"
-                    );
-                    Ok::<_, anyhow::Error>(())
-                }) {
-                    Ok(()) => {
-                        if self
-                            .state
-                            .narrative_maintenance_attempts
-                            .set_cleanup_outcome(
-                                &self.attempt_id,
-                                NarrativeMaintenanceCleanupOutcome {
-                                    status: "clean".to_string(),
-                                    error: None,
-                                },
-                                true,
-                            )
-                            .is_ok()
-                        {
-                            self.cleanup_reusable = true;
-                        }
+                if authority.db().connection_reusable() {
+                    if self
+                        .state
+                        .narrative_maintenance_attempts
+                        .set_cleanup_outcome(
+                            &self.attempt_id,
+                            NarrativeMaintenanceCleanupOutcome {
+                                status: "clean".to_string(),
+                                error: None,
+                            },
+                            true,
+                        )
+                        .is_ok()
+                    {
+                        self.cleanup_reusable = true;
                     }
-                    Err(error) => {
-                        let _ = self
-                            .state
-                            .narrative_maintenance_attempts
-                            .set_cleanup_outcome(
-                                &self.attempt_id,
-                                NarrativeMaintenanceCleanupOutcome {
-                                    status: "failed".to_string(),
-                                    error: Some(error.to_string()),
-                                },
-                                false,
-                            );
-                    }
+                } else {
+                    let reason = authority
+                        .db()
+                        .connection_unusable_reason()
+                        .unwrap_or_else(|| "maintenance connection is quarantined".to_string());
+                    let _ = self
+                        .state
+                        .narrative_maintenance_attempts
+                        .set_cleanup_outcome(
+                            &self.attempt_id,
+                            NarrativeMaintenanceCleanupOutcome {
+                                status: "failed".to_string(),
+                                error: Some(format!(
+                                    "NEX_MAINTENANCE_CONNECTION_UNUSABLE: {reason}"
+                                )),
+                            },
+                            false,
+                        );
                 }
             }
             self.cleanup_reusable = match self.state.narrative_maintenance_attempts.settle(
@@ -3839,6 +3902,7 @@ impl Backend {
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let operation_result = (|| -> std::result::Result<String, AppError> {
             let attempt_id = payload
                 .get("attemptId")
                 .and_then(serde_json::Value::as_str)
@@ -3943,6 +4007,56 @@ impl Backend {
                     "reason": "maintenance-workspace-binding-mismatch",
                 })
                 .to_string());
+            }
+
+            // Every short ledger read performed by recovery, foreground
+            // lookup, and post-cycle acknowledgement inherits the same
+            // no-wait policy as the phase-owned Graph scopes.
+            let _maintenance_no_wait = authority
+                .db()
+                .enter_maintenance_connection_no_wait();
+
+            // A phase-scoped no-wait acquisition may lose a foreground
+            // handoff after its Run was created.  Drain that exact Run owner
+            // before recovery/dispatch; a busy connection leaves the owner
+            // parked and returns an interrupted receipt so main requeues the
+            // delivery without startup-recovery retry accounting.
+            let pending_preempted_runs = state
+                .narrative_maintenance_preempted_runs
+                .pending_for_binding(request_binding);
+            for run_id in pending_preempted_runs {
+                match narrative_extraction::try_cancel_preempted_maintenance_run(
+                    authority.db(),
+                    &run_id,
+                    "NEX_MAINTENANCE_CONNECTION_PREEMPTED: retrying deferred cleanup",
+                )
+                .map_err(AppError::Anyhow)?
+                {
+                    true => state
+                        .narrative_maintenance_preempted_runs
+                        .remove(&run_id),
+                    false => {
+                        if let Some(guard) = attempt_guard.as_mut() {
+                            // No maintenance connection was acquired for this
+                            // attempt. The pending Run owner is still a
+                            // separate quiescence blocker, but this attempt's
+                            // connection cleanup is clean and must not cause
+                            // quarantine/reopen on its own.
+                            guard
+                                .mark_cleanup_clean(&state)
+                                .map_err(AppError::Anyhow)?;
+                            guard.finalize_interrupted().map_err(AppError::Anyhow)?;
+                            return Ok(serde_json::json!({
+                                "status": "accepted",
+                                "hasMore": true,
+                            })
+                            .to_string());
+                        }
+                        return Err(AppError::Anyhow(anyhow::anyhow!(
+                            "NEX_MAINTENANCE_CONNECTION_PREEMPTED: cleanup remains owned by the foreground connection"
+                        )));
+                    }
+                }
             }
             let ci_config = state.narrative_maintenance_ci_seam.config();
             // Faults are claimed against the same immutable authority,
@@ -4195,6 +4309,17 @@ impl Backend {
                         .stop_signal(attempt_id)
                 })
                 .transpose()?;
+            let finalization_granted_signal_for_control = attempt_id_for_control
+                .as_deref()
+                .map(|attempt_id| {
+                    state_for_control
+                        .narrative_maintenance_attempts
+                        .finalization_granted_signal(attempt_id)
+                })
+                .transpose()?;
+            let published_generation_signal_for_control = attempt_guard
+                .as_ref()
+                .map(NarrativeMaintenanceAttemptGuard::published_generation_signal);
             let should_stop = || -> anyhow::Result<()> {
                 if let Some(attempt_id) = attempt_id_for_control.as_deref() {
                     let signalled = stop_signal_for_control
@@ -4218,6 +4343,12 @@ impl Backend {
                         state_for_control
                             .narrative_maintenance_attempts
                             .mark_work_succeeded(attempt_id, &item.canonical_key())?;
+                        if let Some(signal) = published_generation_signal_for_control.as_ref() {
+                            signal.store(
+                                request_binding.generation,
+                                std::sync::atomic::Ordering::Release,
+                            );
+                        }
                     }
                     Ok(())
                 };
@@ -4239,6 +4370,11 @@ impl Backend {
                     }
                     Ok(())
                 };
+            let defer_preempted_run = |run_id: &str| -> anyhow::Result<()> {
+                state
+                    .narrative_maintenance_preempted_runs
+                    .defer(run_id, request_binding)
+            };
             let grant_finalize = |work_key: &str| -> anyhow::Result<()> {
                 if let Some(attempt_id) = attempt_id_for_control.as_deref() {
                     let granted = state_for_control
@@ -4272,6 +4408,9 @@ impl Backend {
             let attempt_control = attempt_id_for_control.as_ref().map(|_| {
                 MaintenanceCycleControl {
                     should_stop: &should_stop,
+                    stop_signal: stop_signal_for_control.clone(),
+                    finalization_granted_signal: finalization_granted_signal_for_control.clone(),
+                    defer_preempted_run: &defer_preempted_run,
                     grant_finalize: &grant_finalize,
                     register_work: &register_work,
                     work_started: &work_started,
@@ -4280,7 +4419,7 @@ impl Backend {
                     work_deferred: &work_deferred,
                 }
             });
-            let result = authority.db().with_background_connection_priority(|| {
+            let cycle_result = {
                 narrative_extraction::run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                     authority.db(),
                     &request,
@@ -4293,7 +4432,32 @@ impl Backend {
                     foreground_owner.as_ref(),
                     attempt_control.as_ref(),
                 )
-            })?;
+            };
+            let result = match cycle_result {
+                Ok(result) => result,
+                Err(error)
+                    if error
+                        .to_string()
+                        .starts_with("NEX_MAINTENANCE_CONNECTION_PREEMPTED") =>
+                {
+                    if let Some(guard) = attempt_guard.as_mut() {
+                        guard
+                            .mark_cleanup_clean(&state)
+                            .map_err(AppError::Anyhow)?;
+                        guard.finalize_interrupted().map_err(AppError::Anyhow)?;
+                        return Ok(
+                            serde_json::json!({
+                                "status": "accepted",
+                                "hasMore": true,
+                                "preempted": true,
+                            })
+                            .to_string(),
+                        );
+                    }
+                    return Err(AppError::Anyhow(error));
+                }
+                Err(error) => return Err(AppError::Anyhow(error)),
+            };
             if let Some(guard) = attempt_guard.as_ref() {
                 // Dynamic discovery remains open until the shared cycle has
                 // returned.  Only now may an all-success work set acquire the
@@ -4346,17 +4510,18 @@ impl Backend {
             }
             let json = serde_json::to_string(&result).map_err(anyhow::Error::from)?;
             if let Some(guard) = attempt_guard.as_mut() {
-                // A successful adapter return is not itself cleanup proof.
-                // Check the actual pinned connection after all owned work and
-                // serialization have completed; the guard remains failed
-                // closed if this health check cannot be established.
-                authority.db().with_conn(|conn| {
-                    anyhow::ensure!(
-                        conn.is_autocommit(),
-                        "NEX_MAINTENANCE_CONNECTION_NOT_REUSABLE: connection remains in a transaction"
-                    );
-                    Ok::<_, anyhow::Error>(())
-                })?;
+                // Every phase scope has already performed the connection
+                // cleanup proof. Reading process-local health here avoids a
+                // second mutex acquisition after a foreground owner arrives.
+                if !authority.db().connection_reusable() {
+                    let reason = authority
+                        .db()
+                        .connection_unusable_reason()
+                        .unwrap_or_else(|| "maintenance connection is quarantined".to_string());
+                    return Err(AppError::Anyhow(anyhow::anyhow!(
+                        "NEX_MAINTENANCE_CONNECTION_UNUSABLE: {reason}"
+                    )));
+                }
                 guard.mark_cleanup_clean(&state).map_err(AppError::Anyhow)?;
             }
             // Only a fully validated, serialized, and completed cycle
@@ -4400,6 +4565,16 @@ impl Backend {
                     // turn this status into strict attempt success.
                     guard.finalize_interrupted().map_err(AppError::Anyhow)?;
                 } else {
+                    let armed = state
+                        .narrative_maintenance_attempts
+                        .arm_finalize_success(&guard.attempt_id)
+                        .map_err(AppError::Anyhow)?;
+                    if !armed {
+                        guard.finalize_interrupted().map_err(AppError::Anyhow)?;
+                        return Err(AppError::Anyhow(anyhow::anyhow!(
+                            "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won before final attempt publication"
+                        )));
+                    }
                     let finalized = guard.finalize_success().map_err(AppError::Anyhow)?;
                     if !finalized {
                         return Err(AppError::Anyhow(anyhow::anyhow!(
@@ -4409,6 +4584,25 @@ impl Backend {
                 }
             }
             Ok(json)
+            })();
+            match operation_result {
+                Err(error)
+                    if error
+                        .to_string()
+                        .starts_with("NEX_MAINTENANCE_CONNECTION_PREEMPTED")
+                        || error
+                            .to_string()
+                            .contains("NEX_VALIDATION_TERMINATED:foreground-preempted") =>
+                {
+                    Ok(serde_json::json!({
+                        "status": "accepted",
+                        "hasMore": true,
+                        "preempted": true,
+                    })
+                    .to_string())
+                }
+                other => other,
+            }
         })
         .await
     }
@@ -5723,19 +5917,10 @@ impl Backend {
                     .narrative_maintenance_recovery_gate
                     .mark_workspace_swapped();
             };
-            if let Err(error) = state
-                .narrative_maintenance_recovery_gate
-                .assert_no_active_attempts()
-            {
-                return (trace, Err(AppError::Anyhow(error)));
-            }
             let mut admission_guard =
                 NarrativeMaintenanceAdmissionReopenGuard::new(Arc::clone(&state));
             let mut before_swap = || {
-                state
-                    .narrative_maintenance_recovery_gate
-                    .close_for_workspace_swap()
-                    .map_err(AppError::Anyhow)?;
+                close_narrative_maintenance_for_workspace_swap(&state)?;
                 admission_guard.arm();
                 #[cfg(test)]
                 state
@@ -5990,10 +6175,7 @@ impl Backend {
         run_blocking(move || {
             let mut admission_guard =
                 NarrativeMaintenanceAdmissionReopenGuard::new(Arc::clone(&state));
-            state
-                .narrative_maintenance_recovery_gate
-                .close_for_workspace_swap()
-                .map_err(AppError::Anyhow)?;
+            close_narrative_maintenance_for_workspace_swap(&state)?;
             admission_guard.arm();
             #[cfg(test)]
             state

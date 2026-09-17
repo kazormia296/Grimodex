@@ -1088,6 +1088,65 @@ pub(crate) fn hold_maintenance_run_in_tx(
     validate_handle_in_tx(conn, handle)
 }
 
+/// Cancel a maintenance lifecycle that was admitted but could not acquire a
+/// later phase connection without waiting. This is a transient scheduler
+/// preemption, so it closes the exact Run/Task/Attempt cleanly without
+/// creating a failed Run that would consume the crash-interruption retry
+/// budget. The next durable wake starts a fresh Run for the same WorkKey.
+pub(crate) fn cancel_maintenance_run_for_preemption_in_tx(
+    conn: &Connection,
+    handle: &MaintenanceRunHandle,
+    reason: &str,
+) -> anyhow::Result<()> {
+    validate_handle_in_tx(conn, handle)?;
+    let terminal_at = next_maintenance_terminal_timestamp_in_tx(conn, handle)?;
+    let run_updated = conn.execute(
+        "UPDATE narrative_extraction_runs
+            SET status = 'cancelled',
+                completed_at = ?1,
+                terminal_reason_code = 'NEX_MAINTENANCE_CONNECTION_PREEMPTED',
+                version = version + 1
+          WHERE id = ?2 AND status = 'running'",
+        params![&terminal_at, &handle.run_id],
+    )?;
+    anyhow::ensure!(
+        run_updated == 1,
+        "NEX_MAINTENANCE_CONNECTION_PREEMPTED: Run changed while cancelling preempted maintenance"
+    );
+    let task_updated = conn.execute(
+        "UPDATE narrative_extraction_tasks
+            SET status = 'cancelled',
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                heartbeat_at = NULL,
+                completed_at = ?1,
+                version = version + 1
+          WHERE id = ?2 AND run_id = ?3 AND status = 'running'",
+        params![&terminal_at, &handle.task_id, &handle.run_id],
+    )?;
+    anyhow::ensure!(
+        task_updated == 1,
+        "NEX_MAINTENANCE_CONNECTION_PREEMPTED: Task changed while cancelling preempted maintenance"
+    );
+    let attempt_updated = conn.execute(
+        "UPDATE narrative_extraction_attempts
+            SET status = 'failed',
+                completed_at = ?1,
+                error_message = ?2,
+                failure_code = 'NEX_MAINTENANCE_CONNECTION_PREEMPTED',
+                retry_disposition = 'retryable',
+                policy_version = 'v1',
+                next_attempt_at = NULL
+          WHERE id = ?3 AND task_id = ?4 AND status = 'running'",
+        params![&terminal_at, reason, &handle.attempt_id, &handle.task_id],
+    )?;
+    anyhow::ensure!(
+        attempt_updated == 1,
+        "NEX_MAINTENANCE_CONNECTION_PREEMPTED: Attempt changed while cancelling preempted maintenance"
+    );
+    Ok(())
+}
+
 /// Complete Attempt, Task, and Run with the same project-scoped lifecycle
 /// instant. The surrounding transaction owns atomicity.
 pub(crate) fn complete_maintenance_run_in_tx(

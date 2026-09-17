@@ -136,6 +136,70 @@ pub struct NarrativeMaintenanceRecoveryGate {
     state: Mutex<NarrativeMaintenanceRecoveryState>,
 }
 
+/// Process-local ownership for a transiently preempted maintenance Run whose
+/// phase connection could not be reacquired without waiting.  The entry is
+/// retried against the same workspace binding before the next cycle reaches
+/// startup recovery, so foreground contention never turns the running Run
+/// into a crash interruption.
+#[derive(Default)]
+pub struct NarrativeMaintenancePreemptedRunRegistry {
+    pending: Mutex<HashMap<String, MaintenanceWorkspaceBinding>>,
+}
+
+const MAX_PREEMPTED_MAINTENANCE_RUNS: usize = 256;
+
+impl NarrativeMaintenancePreemptedRunRegistry {
+    pub fn defer(
+        &self,
+        run_id: &str,
+        binding: &MaintenanceWorkspaceBinding,
+    ) -> anyhow::Result<()> {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !pending.contains_key(run_id) {
+            anyhow::ensure!(
+                pending.len() < MAX_PREEMPTED_MAINTENANCE_RUNS,
+                "NEX_MAINTENANCE_PREEMPTED_RUN_REGISTRY_FULL: cleanup owners are still pending"
+            );
+        }
+        pending.insert(run_id.to_string(), binding.clone());
+        Ok(())
+    }
+
+    pub fn pending_for_binding(&self, binding: &MaintenanceWorkspaceBinding) -> Vec<String> {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending
+            .iter()
+            .filter_map(|(run_id, candidate)| (candidate == binding).then_some(run_id.clone()))
+            .collect()
+    }
+
+    pub fn assert_empty(&self) -> anyhow::Result<()> {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        anyhow::ensure!(
+            pending.is_empty(),
+            "NEX_MAINTENANCE_PREEMPTED_RUN_ACTIVE: workspace switch requires pending Run cleanup to finish"
+        );
+        Ok(())
+    }
+
+    pub fn remove(&self, run_id: &str) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.remove(run_id);
+    }
+}
+
 // The generation is process-local, but it must not restart at the same value
 // after a fresh Backend is created.  A durable foreground marker from an old
 // process therefore cannot be released merely because the workspace metadata
@@ -864,6 +928,11 @@ struct NarrativeMaintenanceAttemptEntry {
     /// the first success finalize the attempt while the later execution is
     /// still pending.
     finalize_grants: HashSet<usize>,
+    /// Set while one granted work execution is committing its final durable
+    /// success transaction. A late cancellation remains recorded, but the
+    /// phase-owned SQLite progress hook masks it until this transaction
+    /// reports success or the owner settles the attempt.
+    finalization_granted_signal: Arc<AtomicBool>,
     /// Queue executions parked behind a foreground authoring barrier.  They
     /// stay `running` in the receipt so a Deferred cycle cannot manufacture a
     /// successful completion; settlement maps them to `interrupted`, which
@@ -976,6 +1045,7 @@ impl NarrativeMaintenanceAttemptRegistry {
                 work_registration_open: false,
                 works: Vec::new(),
                 finalize_grants: HashSet::new(),
+                finalization_granted_signal: Arc::new(AtomicBool::new(false)),
                 deferred_work: HashSet::new(),
                 cleanup: NarrativeMaintenanceCleanupOutcome {
                     status: "clean".to_string(),
@@ -1025,6 +1095,9 @@ impl NarrativeMaintenanceAttemptRegistry {
         };
         entry.connection_reusable = false;
         entry.finalize_grants.clear();
+        entry
+            .finalization_granted_signal
+            .store(false, Ordering::Release);
         entry.deferred_work.clear();
         entry.works = work_keys
             .into_iter()
@@ -1175,6 +1248,9 @@ impl NarrativeMaintenanceAttemptRegistry {
             return Ok(false);
         };
         entry.finalize_grants.insert(execution_index);
+        entry
+            .finalization_granted_signal
+            .store(true, Ordering::Release);
         Ok(true)
     }
 
@@ -1226,6 +1302,20 @@ impl NarrativeMaintenanceAttemptRegistry {
             .get(attempt_id)
             .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
         Ok(Arc::clone(&entry.stop_signal))
+    }
+
+    /// Return the process-local mask used only by the granted final success
+    /// transaction. It is separate from the cancellation signal so a late
+    /// cancel remains observable by the attempt owner and later work.
+    pub fn finalization_granted_signal(&self, attempt_id: &str) -> anyhow::Result<Arc<AtomicBool>> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        Ok(Arc::clone(&entry.finalization_granted_signal))
     }
 
     pub fn stop_requested(&self, attempt_id: &str) -> anyhow::Result<bool> {
@@ -1313,6 +1403,9 @@ impl NarrativeMaintenanceAttemptRegistry {
     ) -> anyhow::Result<()> {
         if consume_finalize_grant {
             entry.finalize_grants.remove(&execution_index);
+            entry
+                .finalization_granted_signal
+                .store(false, Ordering::Release);
         }
         let work = entry
             .works
@@ -1356,14 +1449,34 @@ impl NarrativeMaintenanceAttemptRegistry {
             "NEX_MAINTENANCE_ATTEMPT_TERMINAL: attempt already settled"
         );
         entry.work_registration_open = false;
-        if entry.running
+        Ok(entry.running
             && entry.state != NarrativeMaintenanceAttemptState::StopRequested
             && entry.finalize_grants.is_empty()
-            && Self::all_work_executions_succeeded(entry)
+            && Self::all_work_executions_succeeded(entry))
+    }
+
+    /// Seal the attempt only after post-cycle binding/recovery bookkeeping and
+    /// connection cleanup have completed. Cancellation remains able to win
+    /// during those read-only steps; the sealed state is the final cutoff.
+    pub fn arm_finalize_success(&self, attempt_id: &str) -> anyhow::Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get_mut(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        if entry.terminal.is_some()
+            || !entry.running
+            || entry.work_registration_open
+            || entry.state == NarrativeMaintenanceAttemptState::StopRequested
+            || !entry.finalize_grants.is_empty()
+            || !Self::all_work_executions_succeeded(entry)
         {
-            entry.state = NarrativeMaintenanceAttemptState::FinalizeGranted;
+            return Ok(false);
         }
-        Ok(entry.state == NarrativeMaintenanceAttemptState::FinalizeGranted)
+        entry.state = NarrativeMaintenanceAttemptState::FinalizeGranted;
+        Ok(true)
     }
 
     fn receipt_for(
@@ -1428,6 +1541,9 @@ impl NarrativeMaintenanceAttemptRegistry {
             // waiting.  The durable transaction did not report success, so
             // the in-flight execution is represented as interrupted below.
             entry.finalize_grants.clear();
+            entry
+                .finalization_granted_signal
+                .store(false, Ordering::Release);
             let status = if accepted_success {
                 "succeeded"
             } else {
@@ -1931,6 +2047,9 @@ pub struct AppState {
     /// Workspace-generation-scoped startup-recovery gate for the main-only
     /// narrative maintenance cycle.
     pub narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate,
+    /// Process-local cleanup owner for maintenance Runs preempted between
+    /// phase-scoped connection acquisitions.
+    pub narrative_maintenance_preempted_runs: NarrativeMaintenancePreemptedRunRegistry,
     /// Process-local attempt state used to linearize cancel/finalize and
     /// prevent workspace generation swaps before terminal cleanup.
     pub narrative_maintenance_attempts: NarrativeMaintenanceAttemptRegistry,
@@ -2026,6 +2145,7 @@ impl AppState {
                 reranker_resource_root,
             )),
             narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate::default(),
+            narrative_maintenance_preempted_runs: NarrativeMaintenancePreemptedRunRegistry::default(),
             narrative_maintenance_attempts: NarrativeMaintenanceAttemptRegistry::default(),
             narrative_maintenance_ci_seam: NarrativeMaintenanceCiSeamState::default(),
             narrative_maintenance_foreground_barrier:

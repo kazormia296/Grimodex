@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Duration;
 
 use super::commit::digest_plan;
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
@@ -38,12 +43,18 @@ use super::maintenance_skip_evidence::{
 };
 use super::restore_rebuild::{
     is_canonical_graph_state_digest, validate_canonical_verify_outcome_digest,
-    validate_graph_state_digest, validate_report_rebuild_required, validate_verify_check_coverage,
+    validate_graph_state_digest, validate_graph_state_digest_with_control,
+    validate_report_rebuild_required, validate_verify_check_coverage,
     DependencyGraphVerifyReport, RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION,
     VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
+use super::source_revision::is_validation_terminated;
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
+use crate::narrative_maintenance_connection::{
+    with_narrative_maintenance_graph_control, NarrativeMaintenanceGraphControlConfig,
+};
 
 /// Exact renderer-owned marker used to hide an in-progress Scan publication.
 /// C2-ZC inventory selectors reuse this predicate so maintenance and cutover
@@ -580,7 +591,8 @@ fn find_running_foreground_system_work_scoped(
         .ok_or_else(|| anyhow::anyhow!("foreground correlation is required"))?;
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT id, project_id, run_kind, work_key, semantic_epoch_id, spec_json, status
+            "SELECT id, project_id, run_kind, work_key, semantic_epoch_id, spec_json, status,
+                    outcome_summary_json
                FROM narrative_extraction_runs
               WHERE run_kind IN ('backfill', 'dependency-verify', 'semantic-index-rebuild')
               ORDER BY created_at ASC, id ASC",
@@ -594,11 +606,21 @@ fn find_running_foreground_system_work_scoped(
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?,
             ))
         })?;
         let mut matches = Vec::new();
         for row in rows {
-            let (run_id, project_id, run_kind, work_key, epoch_id, spec_json, status) = row?;
+            let (
+                run_id,
+                project_id,
+                run_kind,
+                work_key,
+                epoch_id,
+                spec_json,
+                status,
+                outcome_summary_json,
+            ) = row?;
             if require_running_status && status != "running" {
                 continue;
             }
@@ -627,6 +649,30 @@ fn find_running_foreground_system_work_scoped(
                 || (require_current_generation && marker.generation != binding.generation)
             {
                 continue;
+            }
+            if require_running_status {
+                // A durable marker/status pair is not enough to suppress
+                // startup recovery. Only a successful, identity-bound
+                // outcome may be held behind the foreground authoring
+                // barrier. A Run created before cancellation/finalization
+                // remains recoverable when its outcome is absent or invalid.
+                let Some(outcome_summary_json) = outcome_summary_json.as_deref() else {
+                    continue;
+                };
+                let Ok(outcome) = serde_json::from_str::<Value>(outcome_summary_json) else {
+                    continue;
+                };
+                if validate_phase_success_outcome(
+                    &run_kind,
+                    &project_id,
+                    &work_key,
+                    epoch_id.as_deref(),
+                    &outcome,
+                )
+                .is_err()
+                {
+                    continue;
+                }
             }
             validate_foreground_run_identity(
                 conn,
@@ -1215,6 +1261,20 @@ impl MaintenanceCycleResult {
 /// durable finalization transaction and remain independently cancellable.
 pub struct MaintenanceCycleControl<'a> {
     pub should_stop: &'a dyn Fn() -> anyhow::Result<()>,
+    /// Process-local cancellation signal shared with the SQLite progress hook
+    /// owned by each phase-scoped maintenance connection.  The callback above
+    /// remains the lifecycle authority; this signal is only the low-level
+    /// observation channel needed while SQLite is executing a long statement.
+    pub stop_signal: Option<Arc<AtomicBool>>,
+    /// Set only while the owning adapter is inside its granted final success
+    /// transaction.  A late cancellation may stop later work, but must not
+    /// interrupt the transaction whose grant already linearized success.
+    pub finalization_granted_signal: Option<Arc<AtomicBool>>,
+    /// Record a Run whose transient foreground preemption could not
+    /// synchronously cancel it because the shared connection was already
+    /// owned. The Native owner retries this cleanup with the same authority
+    /// before the next cycle can recover or dispatch the WorkKey.
+    pub defer_preempted_run: &'a dyn Fn(&str) -> anyhow::Result<()>,
     /// Acquire the process-local finalization grant for one canonical work
     /// key.  The route owner invokes this while its final success transaction
     /// is open, immediately before the durable terminal write.
@@ -1292,6 +1352,75 @@ impl MaintenanceCycleRequest {
         }
         Ok(coalesce_desired_work(desired))
     }
+}
+
+/// Compose the process-local attempt callback with the phase-owned SQLite
+/// GraphWorkControl.  The outer callback is deliberately checked before the
+/// inner control at every Rust boundary, so cancellation is never converted
+/// into a source-missing or diagnostic result by a nested resolver.
+pub(crate) struct MaintenanceCycleGraphControl<'graph, 'cycle> {
+    inner: &'graph mut dyn GraphWorkControl,
+    cycle: Option<&'cycle MaintenanceCycleControl<'cycle>>,
+}
+
+impl<'graph, 'cycle> MaintenanceCycleGraphControl<'graph, 'cycle> {
+    pub(crate) fn new(
+        inner: &'graph mut dyn GraphWorkControl,
+        cycle: Option<&'cycle MaintenanceCycleControl<'cycle>>,
+    ) -> Self {
+        Self { inner, cycle }
+    }
+}
+
+impl GraphWorkControl for MaintenanceCycleGraphControl<'_, '_> {
+    fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+        if let Some(cycle) = self.cycle {
+            // The finalization grant is the only narrow window in which the
+            // complete stop set is intentionally masked. The inner control
+            // has the same grant signal and therefore masks deadline,
+            // closed, generation, and foreground conditions as well.
+            let finalization_granted = cycle
+                .finalization_granted_signal
+                .as_ref()
+                .is_some_and(|signal| signal.load(Ordering::Acquire));
+            if !finalization_granted {
+                (cycle.should_stop)()?;
+            }
+        }
+        self.inner.check(stage)
+    }
+}
+
+/// RAII scope for the process-local finalization mask. The Native grant stays
+/// recorded in the attempt registry until `work_completed`, but the Graph and
+/// SQLite stop mask must end as soon as the exact terminal transaction exits,
+/// including rollback/error paths.
+pub(crate) struct FinalizationGrantScope {
+    signal: Option<Arc<AtomicBool>>,
+}
+
+impl FinalizationGrantScope {
+    pub(crate) fn new(control: &MaintenanceCycleControl<'_>) -> Self {
+        Self {
+            signal: control.finalization_granted_signal.clone(),
+        }
+    }
+}
+
+impl Drop for FinalizationGrantScope {
+    fn drop(&mut self) {
+        if let Some(signal) = self.signal.as_ref() {
+            signal.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+pub(crate) fn maintenance_stop_signal(
+    control: Option<&MaintenanceCycleControl<'_>>,
+) -> Arc<AtomicBool> {
+    control
+        .and_then(|control| control.stop_signal.clone())
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)))
 }
 
 /// Validate the complete wire request before any phase owner claims a fault
@@ -1833,6 +1962,98 @@ pub fn discover_before_cutover_maintenance_work_with_coordinates(
     })
 }
 
+pub(crate) fn discover_before_cutover_maintenance_work_with_coordinates_and_control(
+    db: &Database,
+    project_id: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+    control: &MaintenanceCycleControl<'_>,
+) -> anyhow::Result<Option<DesiredWork>> {
+    let first = discover_durable_maintenance_work_with_coordinates_and_control(
+        db,
+        project_id,
+        "before-cutover",
+        coordinates,
+        control,
+    )?;
+    if first.is_some() {
+        return Ok(first);
+    }
+
+    let project_id = require_component(project_id.to_string(), "projectId")?;
+    let stop = maintenance_stop_signal(Some(control));
+    let config = control
+        .finalization_granted_signal
+        .as_ref()
+        .map(|signal| {
+            NarrativeMaintenanceGraphControlConfig::with_finalization_granted(Arc::clone(signal))
+        })
+        .unwrap_or_default();
+    let result = with_narrative_maintenance_graph_control(
+        db,
+        Duration::ZERO,
+        1_000,
+        stop,
+        config,
+        |conn, graph| {
+            let mut chained = MaintenanceCycleGraphControl::new(graph, Some(control));
+            with_immediate_transaction(conn, |conn| {
+                chained.check(GraphWorkStage::Restore)?;
+                if is_scan_staging_project_in_tx(conn, &project_id)? {
+                    return Ok(None);
+                }
+                let Some(current_epoch_id) =
+                    super::semantic_epoch::get_current_epoch(conn, &project_id)?.map(|epoch| epoch.id)
+                else {
+                    return Ok(None);
+                };
+                let runs = load_durable_maintenance_runs(conn, &project_id)?;
+                chained.check(GraphWorkStage::Restore)?;
+                let latest_completed_rebuild = select_latest_relevant_run(
+                    &runs,
+                    Some(&current_epoch_id),
+                    false,
+                    |run| {
+                        run.run_kind == "semantic-index-rebuild" && run.status == "completed"
+                    },
+                )?;
+                chained.check(GraphWorkStage::Coverage)?;
+                if latest_completed_rebuild.is_none() {
+                    return Ok(Some(DesiredWork::new_with_epoch(
+                        project_id.clone(),
+                        AutomaticRunKind::Verify,
+                        format!("{VERIFY_WORK_KEY_PREFIX}{current_epoch_id}"),
+                        Some(current_epoch_id.clone()),
+                        "before-cutover",
+                    )?));
+                }
+                if latest_completed_rebuild.as_ref().is_some_and(|run| {
+                    !completed_rebuild_outcome_is_current(
+                        &project_id,
+                        &current_epoch_id,
+                        run,
+                    )
+                }) {
+                    return Ok(Some(DesiredWork::new_with_epoch(
+                        project_id.clone(),
+                        AutomaticRunKind::RebuildDerived,
+                        REBUILD_DERIVED_WORK_KEY,
+                        Some(current_epoch_id.clone()),
+                        BEFORE_CUTOVER_FOLLOW_UP_REASON,
+                    )?));
+                }
+                chained.check(GraphWorkStage::ResultAssembly)?;
+                Ok(None)
+            })
+        },
+    )?;
+    let Some(result) = result else {
+        anyhow::bail!(
+            "NEX_MAINTENANCE_CONNECTION_PREEMPTED: before-cutover discovery could not acquire the maintenance connection without waiting"
+        );
+    };
+    result.into_result()
+}
+
 /// Discover durable work using one effective coordinate set selected by the
 /// native caller. The coordinate set is computed once per live authority
 /// operation and is used only for Verify skip evidence; the durable ledger
@@ -1853,6 +2074,86 @@ pub fn discover_durable_maintenance_work_with_coordinates(
             discover_durable_maintenance_work_in_tx(conn, &project_id, &reason, coordinates)
         })
     })
+}
+
+/// Controlled discovery for the Native maintenance cycle.  Candidate
+/// selection, completed Verify validation, and skip evidence all share the
+/// same phase-owned no-wait connection and top-level GraphWorkControl.
+pub(crate) fn discover_durable_maintenance_work_with_coordinates_and_control(
+    db: &Database,
+    project_id: &str,
+    reason: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+    control: &MaintenanceCycleControl<'_>,
+) -> anyhow::Result<Option<DesiredWork>> {
+    let project_id = require_component(project_id.to_string(), "projectId")?;
+    let reason = require_component(reason.to_string(), "reason")?;
+    let stop = maintenance_stop_signal(Some(control));
+    let config = control
+        .finalization_granted_signal
+        .as_ref()
+        .map(|signal| {
+            NarrativeMaintenanceGraphControlConfig::with_finalization_granted(Arc::clone(signal))
+        })
+        .unwrap_or_default();
+    let result = with_narrative_maintenance_graph_control(
+        db,
+        Duration::ZERO,
+        1_000,
+        stop,
+        config,
+        |conn, graph| {
+            let mut chained = MaintenanceCycleGraphControl::new(graph, Some(control));
+            with_immediate_transaction(conn, |conn| {
+                chained.check(GraphWorkStage::Restore)?;
+                discover_durable_maintenance_work_in_tx_with_control(
+                    conn,
+                    &project_id,
+                    &reason,
+                    coordinates,
+                    &mut chained,
+                )
+            })
+        },
+    )?;
+    let Some(result) = result else {
+        anyhow::bail!(
+            "NEX_MAINTENANCE_CONNECTION_PREEMPTED: discovery could not acquire the maintenance connection without waiting"
+        );
+    };
+    result.into_result()
+}
+
+fn discover_cycle_work(
+    db: &Database,
+    project_id: &str,
+    reason: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+    control: Option<&MaintenanceCycleControl<'_>>,
+) -> anyhow::Result<Option<DesiredWork>> {
+    match control {
+        Some(control) if reason == "before-cutover" => {
+            discover_before_cutover_maintenance_work_with_coordinates_and_control(
+                db,
+                project_id,
+                coordinates,
+                control,
+            )
+        }
+        Some(control) => discover_durable_maintenance_work_with_coordinates_and_control(
+            db,
+            project_id,
+            reason,
+            coordinates,
+            control,
+        ),
+        None => discover_durable_maintenance_work_with_coordinates(
+            db,
+            project_id,
+            reason,
+            coordinates,
+        ),
+    }
 }
 
 pub(crate) fn is_scan_staging_project_in_tx(
@@ -1879,6 +2180,24 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
     reason: &str,
     coordinates: Option<&MaintenanceContractCoordinates>,
 ) -> anyhow::Result<Option<DesiredWork>> {
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    discover_durable_maintenance_work_in_tx_with_control(
+        conn,
+        project_id,
+        reason,
+        coordinates,
+        &mut control,
+    )
+}
+
+pub(crate) fn discover_durable_maintenance_work_in_tx_with_control(
+    conn: &Connection,
+    project_id: &str,
+    reason: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Option<DesiredWork>> {
+    control.check(GraphWorkStage::Restore)?;
     if is_scan_staging_project_in_tx(conn, project_id)? {
         // Scan staging Projects are intentionally hidden until the publish
         // writer removes the exact marker. No wake, including BeforeCutover
@@ -1892,6 +2211,7 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
         let runs = load_durable_maintenance_runs(conn, project_id)?;
         let mut completed_backfill = None;
         for run in &runs {
+            control.check(GraphWorkStage::Restore)?;
             if is_completed_backfill_marker(conn, project_id, run)? {
                 completed_backfill = Some(run.clone());
                 break;
@@ -1922,6 +2242,8 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
             latest_completed_rebuild,
         )
     };
+
+    control.check(GraphWorkStage::Restore)?;
 
     if let Some(active) = active {
         return durable_run_work(project_id, &active, reason);
@@ -1985,6 +2307,7 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
             }
         }
         VERIFY_RUN_KIND => {
+            control.check(GraphWorkStage::Coverage)?;
             if !latest_epoch_matches || latest.status != "completed" {
                 return Ok(Some(verify_work(project_id, &current_epoch_id, reason)?));
             }
@@ -1997,8 +2320,20 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
                 latest.work_key.as_deref().unwrap_or_default(),
                 &current_epoch_id,
                 outcome_json,
+                control,
             ) {
                 Ok(report) => report,
+                Err(error)
+                    if is_validation_terminated(&error)
+                        || error
+                            .to_string()
+                            .contains("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED")
+                        || error
+                            .to_string()
+                            .contains("NIR1_MAINTENANCE_CONNECTION_UNUSABLE") =>
+                {
+                    return Err(error);
+                }
                 Err(_) => return Ok(Some(verify_work(project_id, &current_epoch_id, reason)?)),
             };
             if report.requires_rebuild() {
@@ -2015,8 +2350,13 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
             // evidence is present and current; old reports are re-run once
             // to seal the current coordinates.
             if report.is_clean() {
+                control.check(GraphWorkStage::Coverage)?;
                 let expected = verify_skip_expectation(project_id, &current_epoch_id, coordinates)?;
-                let decision = evaluate_completed_run_skip(conn, &expected)?;
+                let decision = super::maintenance_skip_evidence::evaluate_completed_run_skip_with_control(
+                    conn,
+                    &expected,
+                    control,
+                )?;
                 if !matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
                     return Ok(Some(verify_work(project_id, &current_epoch_id, reason)?));
                 }
@@ -2077,6 +2417,7 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
                             .map(str::to_string)
                     });
             if let Some(report_digest) = report_digest {
+                control.check(GraphWorkStage::ResultAssembly)?;
                 let observed_at = grimodex_core::now_rfc3339_millis();
                 super::terminal_failure::project_graph_repair_required_in_tx(
                     conn,
@@ -2087,6 +2428,7 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
                     &observed_at,
                 )?;
             }
+            control.check(GraphWorkStage::ResultAssembly)?;
             Ok(None)
         }
         "semantic-index-rebuild" => {
@@ -2160,7 +2502,9 @@ fn validate_discovered_verify_outcome(
     work_key: &str,
     semantic_epoch_id: &str,
     outcome_json: &str,
+    control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<DependencyGraphVerifyReport> {
+    control.check(GraphWorkStage::Serialization)?;
     let outcome: Value = serde_json::from_str(outcome_json).with_context(|| {
         "NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: completed Verify outcome is not JSON"
     })?;
@@ -2171,13 +2515,14 @@ fn validate_discovered_verify_outcome(
         Some(semantic_epoch_id),
         &outcome,
     )?;
-    validate_graph_state_digest(
+    validate_graph_state_digest_with_control(
         conn,
         project_id,
         outcome
             .get("graphStateDigest")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("Verify outcome has no graph state digest"))?,
+        control,
     )?;
     let report: DependencyGraphVerifyReport = serde_json::from_value(
         outcome
@@ -2186,6 +2531,7 @@ fn validate_discovered_verify_outcome(
             .ok_or_else(|| anyhow::anyhow!("Verify outcome has no report"))?,
     )
     .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify report shape is invalid")?;
+    control.check(GraphWorkStage::Coverage)?;
     validate_report_rebuild_required(conn, project_id, &report).context(
         "NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: rebuildRequired does not match live repairability",
     )?;
@@ -2197,6 +2543,7 @@ fn validate_discovered_verify_outcome(
         .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify outcome digest is invalid")?;
     validate_verify_check_coverage(&outcome)
         .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify check coverage is invalid")?;
+    control.check(GraphWorkStage::Serialization)?;
     Ok(report)
 }
 
@@ -2434,11 +2781,12 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
     let mut work = preflight_maintenance_cycle_request(request)?;
     if work.is_empty() {
         for project_id in &request.wake_project_ids {
-            if let Some(next) = discover_durable_maintenance_work_with_coordinates(
+            if let Some(next) = discover_cycle_work(
                 db,
                 project_id,
                 "durable-wake",
                 Some(&effective_coordinates),
+                control,
             )? {
                 work.push(next);
             }
@@ -2611,7 +2959,11 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
 
         // Verify-only completed-run skip is checked before recovery. Rebuild
         // completed rows are intentionally never reused.
-        if item.run_kind == AutomaticRunKind::Verify
+        // The legacy completed-run skip reader has no process-local control
+        // and performs a full-set scan. During a Native cycle bypass it so a
+        // controlled Verify owns the same no-wait connection, progress hook,
+        // and cancellation path as every other Graph phase.
+        if control.is_none() && item.run_kind == AutomaticRunKind::Verify
             && !item.reasons.iter().any(|reason| {
                 matches!(
                     reason.as_str(),
@@ -2629,11 +2981,12 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
             )?;
             let decision = db.with_conn(|conn| evaluate_completed_run_skip(conn, &expected))?;
             if matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
-                let next = discover_durable_maintenance_work_with_coordinates(
+                let next = discover_cycle_work(
                     db,
                     &item.project_id,
                     maintenance_rediscovery_reason(&item),
                     Some(&effective_coordinates),
+                    control,
                 )?;
                 match next {
                     Some(next) if next.canonical_key() != item.canonical_key() => {
@@ -2663,6 +3016,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
 
         let action = match recover_cycle_work(db, &effective_item, mode_for(&effective_item)) {
             Ok(action) => action,
+            Err(error) if is_maintenance_control_or_cleanup_error(&error) => return Err(error),
             Err(error) if item.run_kind == AutomaticRunKind::RebuildDerived => {
                 project_ledger_selector_manual_intervention(db, &recovery_work, &error)?;
                 handled_non_coalesced = true;
@@ -2685,11 +3039,12 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                 // Backfill's completed row is only the durable marker for the
                 // next Verify phase. No completed Rebuild can enter this arm.
                 if item.run_kind == AutomaticRunKind::Backfill {
-                    if let Some(next) = discover_durable_maintenance_work_with_coordinates(
+                    if let Some(next) = discover_cycle_work(
                         db,
                         &item.project_id,
                         maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
+                        control,
                     )? {
                         enqueue_discovered(&mut queue, next)?;
                     }
@@ -2737,6 +3092,9 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                     // to dispatch immediately: fail closed to manual.
                     let retry_evidence = match retry_not_before(db, &recovery_work) {
                         Ok(evidence) => evidence,
+                        Err(error) if is_maintenance_control_or_cleanup_error(&error) => {
+                            return Err(error);
+                        }
                         Err(error) => {
                             project_ledger_selector_manual_intervention(
                                 db,
@@ -2806,6 +3164,11 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                         Some(epoch) => {
                             match has_committed_current_rebuild(db, &recovery_work, epoch) {
                                 Ok(committed) => committed,
+                                Err(error)
+                                    if is_maintenance_control_or_cleanup_error(&error) =>
+                                {
+                                    return Err(error);
+                                }
                                 Err(error) => {
                                     project_ledger_selector_manual_intervention(
                                         db,
@@ -2827,11 +3190,12 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                     false
                 };
                 if committed_current_rebuild {
-                    let next = discover_durable_maintenance_work_with_coordinates(
+                    let next = discover_cycle_work(
                         db,
                         &item.project_id,
                         maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
+                        control,
                     )?;
                     match next {
                         Some(next) if next.canonical_key() != item.canonical_key() => {
@@ -2869,11 +3233,12 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                     || current_epoch.as_deref() != item.semantic_epoch_id.as_deref()
                 {
                     handled_non_coalesced = true;
-                    if let Some(next) = discover_durable_maintenance_work_with_coordinates(
+                    if let Some(next) = discover_cycle_work(
                         db,
                         &item.project_id,
                         maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
+                        control,
                     )? {
                         enqueue_discovered(&mut queue, next)?;
                     }
@@ -2890,7 +3255,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                 } else {
                     None
                 };
-                let dispatch_outcome = with_system_work_marker(marker.clone(), || {
+                let dispatch_outcome = match with_system_work_marker(marker.clone(), || {
                     check_stop()?;
                     dispatch_enabled_work(
                         db,
@@ -2898,7 +3263,23 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                         Some(&effective_coordinates),
                         control,
                     )
-                })?;
+                }) {
+                    Ok(outcome) => outcome,
+                    Err(error)
+                        if control.is_some()
+                            && is_transient_maintenance_preemption(&error) =>
+                    {
+                        // A foreground waiter won a phase-scoped no-wait
+                        // handoff. Park this exact execution in the Native
+                        // receipt and return an accepted-but-interrupted
+                        // cycle so the main scheduler requeues it without
+                        // treating contention as adapter-disabled work or a
+                        // persisted delivery failure.
+                        mark_deferred(&effective_item)?;
+                        return Ok(MaintenanceCycleResult::accepted(true));
+                    }
+                    Err(error) => return Err(error),
+                };
                 if matches!(dispatch_outcome, MaintenanceDispatchOutcome::ForegroundHeld) {
                     // The adapter has already persisted its real successful
                     // outcome and deliberately left the lifecycle running.
@@ -2912,11 +3293,12 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                 // Register the next phase before marking this item complete.
                 // The per-work completion transition may close the attempt
                 // when this was the final registered item.
-                let next = match discover_durable_maintenance_work_with_coordinates(
+                let next = match discover_cycle_work(
                     db,
                     &item.project_id,
                     maintenance_rediscovery_reason(&item),
                     Some(&effective_coordinates),
+                    control,
                 ) {
                     Ok(next) => next,
                     Err(error) => {
@@ -2971,11 +3353,12 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
             if selector_halted_projects.contains(&project_id) {
                 continue;
             }
-            if let Some(next) = discover_durable_maintenance_work_with_coordinates(
+            if let Some(next) = discover_cycle_work(
                 db,
                 &project_id,
                 "durable-wake",
                 Some(&effective_coordinates),
+                control,
             )? {
                 let next_key = recovery_work_key_for_item(db, &next)?.canonical_key();
                 if !terminal_halted_work.contains(&next_key) {
@@ -3166,6 +3549,26 @@ fn dispatch_enabled_work(
     // WorkspaceAuthority. It owns its transaction phases but never opens a
     // second filesystem connection.
     super::maintenance_route_registry::dispatch_enabled_work(db, item, coordinates, control)
+}
+
+/// Classify foreground/no-wait contention as a transient queue outcome.  It
+/// must not enter the adapter-disabled Deferred lane or the delivery-failure
+/// retry budget.
+pub(crate) fn is_transient_maintenance_preemption(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.starts_with("NEX_MAINTENANCE_CONNECTION_PREEMPTED")
+        || message.contains("NEX_VALIDATION_TERMINATED:foreground-preempted")
+}
+
+fn is_maintenance_control_or_cleanup_error(error: &anyhow::Error) -> bool {
+    is_transient_maintenance_preemption(error)
+        || is_validation_terminated(error)
+        || error
+            .to_string()
+            .contains("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED")
+        || error
+            .to_string()
+            .contains("NIR1_MAINTENANCE_CONNECTION_UNUSABLE")
 }
 
 /// Trigger vocabulary consumed by the pure desired-work planner.
@@ -3464,6 +3867,7 @@ pub fn classify_failure(message: &str) -> FailureClassification {
                 | "NEX_MAINTENANCE_TRANSIENT"
                 | "NEX_MAINTENANCE_SQLITE_LOCKED"
                 | "NEX_MAINTENANCE_SQLITE_IOERR"
+                | "NEX_MAINTENANCE_CONNECTION_PREEMPTED"
                 | "NEX_SEMANTIC_EPOCH_CHANGED"
                 | "NEX_CURSOR_RESERVATION_CONFLICT"
                 | "NEX_INCREMENTAL_FRESHNESS_RETRYABLE"
@@ -5546,6 +5950,9 @@ mod tests {
             };
             let control = MaintenanceCycleControl {
                 should_stop: &should_stop,
+                stop_signal: None,
+                finalization_granted_signal: None,
+                defer_preempted_run: &|_run_id: &str| Ok::<_, anyhow::Error>(()),
                 grant_finalize: &grant_finalize,
                 register_work: &register_work,
                 work_started: &work_started,
@@ -6005,6 +6412,9 @@ mod tests {
             };
             let control = MaintenanceCycleControl {
                 should_stop: &should_stop,
+                stop_signal: None,
+                finalization_granted_signal: None,
+                defer_preempted_run: &|_run_id: &str| Ok::<_, anyhow::Error>(()),
                 grant_finalize: &grant_finalize,
                 register_work: &register_work,
                 work_started: &work_started,
@@ -6062,6 +6472,9 @@ mod tests {
             let work_completed = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
             let control = MaintenanceCycleControl {
                 should_stop: &should_stop,
+                stop_signal: None,
+                finalization_granted_signal: None,
+                defer_preempted_run: &|_run_id: &str| Ok::<_, anyhow::Error>(()),
                 grant_finalize: &grant_finalize,
                 register_work: &register_work,
                 work_started: &work_started,
@@ -6131,6 +6544,9 @@ mod tests {
             let work_completed = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
             let control = MaintenanceCycleControl {
                 should_stop: &should_stop,
+                stop_signal: None,
+                finalization_granted_signal: None,
+                defer_preempted_run: &|_run_id: &str| Ok::<_, anyhow::Error>(()),
                 grant_finalize: &grant_finalize,
                 register_work: &register_work,
                 work_started: &work_started,
@@ -6217,6 +6633,9 @@ mod tests {
             };
             let control = MaintenanceCycleControl {
                 should_stop: &should_stop,
+                stop_signal: None,
+                finalization_granted_signal: None,
+                defer_preempted_run: &|_run_id: &str| Ok::<_, anyhow::Error>(()),
                 grant_finalize: &grant_finalize,
                 register_work: &register_work,
                 work_started: &work_started,
@@ -6304,6 +6723,9 @@ mod tests {
             };
             let control = MaintenanceCycleControl {
                 should_stop: &should_stop,
+                stop_signal: None,
+                finalization_granted_signal: None,
+                defer_preempted_run: &|_run_id: &str| Ok::<_, anyhow::Error>(()),
                 grant_finalize: &grant_finalize,
                 register_work: &register_work,
                 work_started: &work_started,

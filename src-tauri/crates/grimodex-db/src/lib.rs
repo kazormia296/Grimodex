@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Mutex, MutexGuard, TryLockError,
 };
 use std::time::Duration;
@@ -22,6 +22,10 @@ use narrative_maintenance_connection::ConnectionHealth;
 
 thread_local! {
     static BACKGROUND_CONNECTION_PRIORITY_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// Native maintenance owns the connection in short, phase-scoped
+    /// no-wait sections. Direct ledger reads that still use `with_conn` must
+    /// inherit that policy instead of sleeping behind a foreground writer.
+    static MAINTENANCE_NO_WAIT_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
 struct BackgroundConnectionPriorityGuard;
@@ -29,6 +33,18 @@ struct BackgroundConnectionPriorityGuard;
 impl Drop for BackgroundConnectionPriorityGuard {
     fn drop(&mut self) {
         BACKGROUND_CONNECTION_PRIORITY_DEPTH.with(|depth| {
+            depth.set(depth.get().saturating_sub(1));
+        });
+    }
+}
+
+/// Thread-local no-wait mode used by the Native maintenance owner while it
+/// performs short ledger/bookkeeping reads between phase scopes.
+pub struct MaintenanceConnectionNoWaitGuard;
+
+impl Drop for MaintenanceConnectionNoWaitGuard {
+    fn drop(&mut self) {
+        MAINTENANCE_NO_WAIT_DEPTH.with(|depth| {
             depth.set(depth.get().saturating_sub(1));
         });
     }
@@ -61,7 +77,23 @@ pub struct BatchStatement {
 pub struct Database {
     conn: Mutex<Connection>,
     foreground_connection_waiters: std::sync::Arc<AtomicUsize>,
+    maintenance_finalization_reserved: std::sync::Arc<AtomicBool>,
     connection_health: ConnectionHealth,
+}
+
+/// Process-local finalization reservation held for one exact terminal
+/// transaction.  Foreground admission observes this reservation before
+/// announcing a waiter, closing the waiter/grant ordering race.
+pub(crate) struct MaintenanceFinalizationReservation<'a> {
+    db: &'a Database,
+}
+
+impl Drop for MaintenanceFinalizationReservation<'_> {
+    fn drop(&mut self) {
+        self.db
+            .maintenance_finalization_reserved
+            .store(false, Ordering::Release);
+    }
 }
 
 /// Connection-local token used to prove that a renderer snapshot and a
@@ -198,6 +230,7 @@ impl Database {
         Self {
             conn: Mutex::new(conn),
             foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
+            maintenance_finalization_reserved: std::sync::Arc::new(AtomicBool::new(false)),
             connection_health: ConnectionHealth::new(),
         }
     }
@@ -275,6 +308,7 @@ impl Database {
         Ok(Self {
             conn: Mutex::new(conn),
             foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
+            maintenance_finalization_reserved: std::sync::Arc::new(AtomicBool::new(false)),
             connection_health: ConnectionHealth::new(),
         })
     }
@@ -315,17 +349,67 @@ impl Database {
         BACKGROUND_CONNECTION_PRIORITY_DEPTH.with(|depth| depth.get() > 0)
     }
 
+    fn maintenance_no_wait_active() -> bool {
+        MAINTENANCE_NO_WAIT_DEPTH.with(|depth| depth.get() > 0)
+    }
+
     pub(crate) fn lock_conn(&self) -> anyhow::Result<MutexGuard<'_, Connection>> {
         self.ensure_connection_reusable()?;
-        if !Self::background_connection_priority_active() {
-            let waiter = ForegroundConnectionWaiter::new(&self.foreground_connection_waiters);
-            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        if Self::maintenance_no_wait_active() {
+            if self.foreground_connection_waiters.load(Ordering::Acquire) > 0 {
+                anyhow::bail!(
+                    "NEX_MAINTENANCE_CONNECTION_PREEMPTED: foreground waiter owns the next maintenance handoff"
+                );
+            }
+            let conn = match self.conn.try_lock() {
+                Ok(conn) => conn,
+                Err(TryLockError::WouldBlock) => {
+                    anyhow::bail!(
+                        "NEX_MAINTENANCE_CONNECTION_PREEMPTED: maintenance connection is busy"
+                    );
+                }
+                Err(TryLockError::Poisoned(error)) => {
+                    return Err(anyhow::anyhow!("{error}"));
+                }
+            };
             self.ensure_connection_reusable()?;
-            // Keep the waiter published until this caller owns the connection.
-            // A background contender then observes either a waiting foreground
-            // caller or the foreground-owned mutex, never an empty hand-off gap.
-            drop(waiter);
+            if self.foreground_connection_waiters.load(Ordering::Acquire) > 0 {
+                drop(conn);
+                anyhow::bail!(
+                    "NEX_MAINTENANCE_CONNECTION_PREEMPTED: foreground waiter arrived before maintenance acquisition"
+                );
+            }
             return Ok(conn);
+        }
+        if !Self::background_connection_priority_active() {
+            loop {
+                // A final transaction reserves the handoff before acquiring
+                // its process-local grant. Do not announce a foreground
+                // waiter into that narrow window.
+                if self
+                    .maintenance_finalization_reserved
+                    .load(Ordering::Acquire)
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                let waiter = ForegroundConnectionWaiter::new(&self.foreground_connection_waiters);
+                if self
+                    .maintenance_finalization_reserved
+                    .load(Ordering::Acquire)
+                {
+                    drop(waiter);
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+                self.ensure_connection_reusable()?;
+                // Keep the waiter published until this caller owns the
+                // connection. A background contender then observes either a
+                // waiting foreground caller or the foreground-owned mutex.
+                drop(waiter);
+                return Ok(conn);
+            }
         }
 
         loop {
@@ -358,6 +442,27 @@ impl Database {
         }
     }
 
+    pub(crate) fn try_reserve_maintenance_finalization(
+        &self,
+    ) -> Option<MaintenanceFinalizationReservation<'_>> {
+        if self.foreground_connection_waiters.load(Ordering::Acquire) > 0 {
+            return None;
+        }
+        if self
+            .maintenance_finalization_reserved
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return None;
+        }
+        if self.foreground_connection_waiters.load(Ordering::Acquire) > 0 {
+            self.maintenance_finalization_reserved
+                .store(false, Ordering::Release);
+            return None;
+        }
+        Some(MaintenanceFinalizationReservation { db: self })
+    }
+
     /**
      * Mark connection acquisitions on the current worker as rebuildable
      * background work.
@@ -375,6 +480,25 @@ impl Database {
         });
         let _guard = BackgroundConnectionPriorityGuard;
         operation()
+    }
+
+    /// Run a Native maintenance cycle with no blocking connection ownership.
+    /// Every nested `with_conn` on this worker returns a typed transient
+    /// preemption error when a foreground owner or another phase holds the
+    /// connection; the caller requeues the exact work item.
+    pub fn with_maintenance_connection_no_wait<T>(
+        &self,
+        operation: impl FnOnce() -> T,
+    ) -> T {
+        let _guard = self.enter_maintenance_connection_no_wait();
+        operation()
+    }
+
+    pub fn enter_maintenance_connection_no_wait(&self) -> MaintenanceConnectionNoWaitGuard {
+        MAINTENANCE_NO_WAIT_DEPTH.with(|depth| {
+            depth.set(depth.get().saturating_add(1));
+        });
+        MaintenanceConnectionNoWaitGuard
     }
 
     /// Update the query planner's statistics (`sqlite_stat1`). Cheap because

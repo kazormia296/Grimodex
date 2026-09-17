@@ -344,6 +344,7 @@ pub use restore_rebuild::{
     record_maintenance_delivery_failure_wake, run_dependency_verify_for_project,
     run_dependency_verify_for_project_with_coordinates,
     run_dependency_verify_for_project_with_coordinates_and_control,
+    try_cancel_preempted_maintenance_run,
     verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
     PendingMaintenanceWake, RebuildDerivedStateOutcome, RebuildDerivedStateSummary,
     RebuildShadowVerificationSummary, VerifyRunOutcome,
