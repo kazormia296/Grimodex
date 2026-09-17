@@ -48,7 +48,8 @@
         "freshProcessPerRun",
         "sourceState",
         "childState",
-        "childTimeoutMs"
+        "childTimeoutMs",
+        "childTerminationGraceMs"
       ],
       "properties": {
         "database": { "type": "string", "minLength": 1 },
@@ -59,7 +60,8 @@
         "freshProcessPerRun": { "const": true },
         "sourceState": { "const": "immutable-main-wal-shm" },
         "childState": { "const": "record-before-and-after" },
-        "childTimeoutMs": { "type": "integer", "minimum": 1 }
+        "childTimeoutMs": { "type": "integer", "minimum": 1 },
+        "childTerminationGraceMs": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
     },
@@ -200,7 +202,9 @@
         "relationRecords",
         "evidenceRecords",
         "qualifiedMaterialRecords",
-        "rosterRecords"
+        "rosterRecords",
+        "dependencyEdges",
+        "reportRecords"
       ],
       "properties": {
         "candidateRevisions": { "type": "integer", "minimum": 0 },
@@ -222,6 +226,7 @@
         "payloadBytes",
         "envelopeBytes",
         "sourceBasisBytes",
+        "liveSourceBytes",
         "rosterBytes",
         "revisionIdOverheadBytes"
       ],
@@ -237,7 +242,18 @@
     },
     "observationProcess": {
       "type": "object",
-      "required": ["elapsedMs"],
+      "required": [
+        "elapsedMs",
+        "userCpuUs",
+        "systemCpuUs",
+        "rssBytes",
+        "hwmRssBytes",
+        "ruMaxrssBytes",
+        "sqliteMemoryBytes",
+        "sqliteMemoryHighwaterBytes",
+        "readBytes",
+        "writeBytes"
+      ],
       "properties": {
         "elapsedMs": { "type": "number", "minimum": 0 },
         "userCpuUs": { "$ref": "#/$defs/optionalNonNegativeInteger" },
@@ -265,7 +281,11 @@
     },
     "observationOccupancy": {
       "type": "object",
-      "required": ["connectionHoldMs"],
+      "required": [
+        "connectionHoldMs",
+        "publishTransactionMs",
+        "foregroundWaitMs"
+      ],
       "properties": {
         "connectionHoldMs": { "type": "number", "minimum": 0 },
         "publishTransactionMs": { "$ref": "#/$defs/optionalNonNegativeNumber" },
@@ -275,7 +295,7 @@
     },
     "observationCancel": {
       "type": "object",
-      "required": ["status"],
+      "required": ["status", "latencyMs"],
       "properties": {
         "status": { "type": "string", "minLength": 1 },
         "latencyMs": { "$ref": "#/$defs/optionalNonNegativeNumber" }

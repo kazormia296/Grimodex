@@ -25,7 +25,8 @@
     "freshProcessPerRun": true,
     "sourceState": "immutable-main-wal-shm",
     "childState": "record-before-and-after",
-    "childTimeoutMs": 30000
+    "childTimeoutMs": 30000,
+    "childTerminationGraceMs": 250
   },
   "fixtures": [
     {
@@ -103,6 +104,8 @@
       "shape": {
         "candidateRevisions": 4,
         "qualifiedMaterials": 2044,
+        "evidenceRecords": 1020,
+        "dependencyEdges": 1028,
         "rosterRecords": 2044
       }
     },
@@ -115,6 +118,8 @@
       "shape": {
         "candidateRevisions": 4,
         "qualifiedMaterials": 2044,
+        "evidenceRecords": 1020,
+        "dependencyEdges": 1028,
         "rosterRecords": 2044
       }
     },
@@ -139,7 +144,9 @@
       "dominantShape": "full-set-validation-report-accumulation",
       "shape": {
         "candidateRevisions": 2064,
-        "ineligibleCandidates": 2064
+        "ineligibleCandidates": 2064,
+        "dependencyEdges": 4128,
+        "reportRecords": 416
       }
     }
   ],

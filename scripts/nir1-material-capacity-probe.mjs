@@ -19,10 +19,10 @@ import {
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 
 const USAGE =
-  "usage: node scripts/nir1-material-capacity-probe.mjs <binary> <manifest> <fixture-directory> <output-directory> [project-id] [--fixture <id>] [--runs <n>] [--timeout-ms <n>]";
+  "usage: node scripts/nir1-material-capacity-probe.mjs <binary> <manifest> <fixture-directory> <output-directory> [project-id] [--fixture <id>] [--runs <n>] [--timeout-ms <n>] [--kill-grace-ms <n>]";
 const SOURCE_COMPONENTS = [
   ["main", ""],
   ["wal", "-wal"],
@@ -56,6 +56,7 @@ function parseCli(argv) {
     fixtureFilter: null,
     measuredRuns: null,
     timeoutMs: null,
+    terminationGraceMs: null,
   };
   for (let index = 4; index < argv.length; index += 1) {
     const value = argv[index];
@@ -76,6 +77,15 @@ function parseCli(argv) {
       if (!argv[index + 1] || argv[index + 1].startsWith("--"))
         fail(`${value} requires a timeout in milliseconds`);
       options.timeoutMs = parsePositiveInteger(argv[++index], value);
+      continue;
+    }
+    if (value === "--kill-grace-ms" || value === "--termination-grace-ms") {
+      if (!argv[index + 1] || argv[index + 1].startsWith("--"))
+        fail(`${value} requires a termination grace period in milliseconds`);
+      options.terminationGraceMs = parsePositiveInteger(
+        argv[++index],
+        value,
+      );
       continue;
     }
     if (value === "--project-id") {
@@ -127,15 +137,21 @@ function validateManifest(manifest, manifestPath) {
   const schema = readJson(schemaPath, "manifest schema");
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   let validate;
+  let validateObservation;
   try {
     validate = ajv.compile(schema);
+    validateObservation = ajv.compile({
+      $schema: schema.$schema,
+      $defs: schema.$defs,
+      $ref: "#/$defs/capacityObservation",
+    });
   } catch (error) {
     fail(`manifest schema ${schemaPath} is invalid: ${error.message}`);
   }
   if (!validate(manifest)) {
     fail(`manifest ${manifestPath} failed JSON schema validation: ${formatAjvErrors(validate.errors)}`);
   }
-  return { schema, schemaPath };
+  return { schema, schemaPath, validateObservation };
 }
 
 function assertManifestRuntimeContract(manifest, manifestPath) {
@@ -159,6 +175,12 @@ function assertManifestRuntimeContract(manifest, manifestPath) {
     manifest.runProtocol?.freshProcessPerRun !== true
   ) {
     fail(`manifest ${manifestPath} must use a fresh copy and process for every run`);
+  }
+  if (
+    !Number.isSafeInteger(manifest.runProtocol?.childTerminationGraceMs) ||
+    manifest.runProtocol.childTerminationGraceMs < 1
+  ) {
+    fail(`manifest ${manifestPath} must configure a positive child termination grace period`);
   }
   if (
     manifest.graphLifecycle?.queryActivation !== "not-activated" ||
@@ -429,7 +451,7 @@ function validateObservedShape(report, spec, context) {
   }
 }
 
-function assertDiagnosticReport(report, spec, context) {
+function assertDiagnosticReport(report, spec, context, validateObservation) {
   if (!report || typeof report !== "object" || Array.isArray(report)) {
     fail(`${context} did not emit a JSON object`);
   }
@@ -467,6 +489,11 @@ function assertDiagnosticReport(report, spec, context) {
     report.graphLifecycle.productDispatch !== "not-activated"
   ) {
     fail(`${context} reported product dispatch activation`);
+  }
+  if (!validateObservation(report)) {
+    fail(
+      `${context} capacity observation schema mismatch: ${formatAjvErrors(validateObservation.errors)}`,
+    );
   }
   validateObservedShape(report, spec, context);
 }
@@ -515,9 +542,142 @@ function safeChildName(specId, suffix) {
   return `${encoded}-${suffix}.db`;
 }
 
+function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGraceMs) {
+  return new Promise((resolve) => {
+    let child;
+    let stdout = "";
+    let stderr = "";
+    let exitInfo = null;
+    let streamsClosed = false;
+    let timedOut = false;
+    let termSent = false;
+    let killSent = false;
+    let settled = false;
+    let timeoutTimer = null;
+    let termTimer = null;
+    let killTimer = null;
+    let streamTimer = null;
+
+    const clearTimers = () => {
+      for (const timer of [timeoutTimer, termTimer, killTimer, streamTimer]) {
+        if (timer !== null) clearTimeout(timer);
+      }
+      timeoutTimer = null;
+      termTimer = null;
+      killTimer = null;
+      streamTimer = null;
+    };
+
+    const finish = (result = {}) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      resolve({
+        status: exitInfo?.status ?? null,
+        signal: exitInfo?.signal ?? null,
+        stdout,
+        stderr,
+        timedOut,
+        exitConfirmed: exitInfo !== null,
+        termination: {
+          termSent,
+          killSent,
+          exitConfirmed: exitInfo !== null,
+        },
+        ...result,
+      });
+    };
+
+    const sendSignal = (signal) => {
+      try {
+        return child?.kill(signal) === true;
+      } catch (error) {
+        stderr += `\nfailed to send ${signal}: ${error.message}`;
+        return false;
+      }
+    };
+
+    const finishAfterExit = () => {
+      if (exitInfo === null) return;
+      if (streamsClosed) {
+        finish();
+        return;
+      }
+      if (streamTimer === null) {
+        streamTimer = setTimeout(() => {
+          finish({
+            lifecycleError: new Error(
+              `${context} exited but its output streams did not close within ${terminationGraceMs}ms`,
+            ),
+          });
+        }, terminationGraceMs);
+      }
+    };
+
+    try {
+      child = spawn(path.resolve(binary), childArgs, {
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    } catch (error) {
+      finish({ error });
+      return;
+    }
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", (error) => {
+      // ENOENT and equivalent spawn failures have no running child to reap.
+      // If an exit was already observed, retain that proof and report the
+      // lifecycle error after streams close.
+      if (exitInfo === null) {
+        finish({ error });
+      } else {
+        finishAfterExit();
+      }
+    });
+    child.once("exit", (status, signal) => {
+      exitInfo = { status, signal };
+      finishAfterExit();
+    });
+    child.once("close", (status, signal) => {
+      streamsClosed = true;
+      if (exitInfo === null) exitInfo = { status, signal };
+      finishAfterExit();
+    });
+
+    timeoutTimer = setTimeout(() => {
+      if (settled || exitInfo !== null) return;
+      timedOut = true;
+      termSent = sendSignal("SIGTERM");
+      termTimer = setTimeout(() => {
+        if (settled || exitInfo !== null) return;
+        killSent = sendSignal("SIGKILL");
+        killTimer = setTimeout(() => {
+          if (settled || exitInfo !== null) return;
+          finish({
+            lifecycleError: new Error(
+              `${context} did not exit after SIGKILL within ${terminationGraceMs}ms`,
+            ),
+          });
+        }, terminationGraceMs);
+      }, terminationGraceMs);
+    }, timeoutMs);
+  });
+}
+
 function childFailureMessage(child, context, binary, timeoutMs) {
   if (child.error?.code === "ETIMEDOUT" || child.timedOut) {
     return `${context} timed out after ${timeoutMs}ms (binary ${binary})`;
+  }
+  if (child.lifecycleError) {
+    return `${context} lifecycle failure: ${child.lifecycleError.message}`;
   }
   if (child.error) return `${context} could not start: ${child.error.message}`;
   const status = child.status === null ? "no exit status" : `exit status ${child.status}`;
@@ -536,7 +696,7 @@ function parseChildJson(stdout, context) {
   }
 }
 
-function runChild({
+async function runChild({
   binary,
   projectId,
   spec,
@@ -546,6 +706,8 @@ function runChild({
   index,
   warmup,
   timeoutMs,
+  terminationGraceMs,
+  validateObservation,
 }) {
   const runLabel = warmup ? "warmup" : `run ${index}`;
   const context = `${spec.id} ${runLabel}`;
@@ -557,24 +719,45 @@ function runChild({
   const before = captureDatabaseState(childPath);
   const childArgs = [childPath, spec.id];
   if (projectId !== null) childArgs.push(projectId);
-  const child = spawnSync(path.resolve(binary), childArgs, {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: timeoutMs,
-    killSignal: "SIGTERM",
-  });
-  const after = captureDatabaseState(childPath);
-  assertSourceStable(sourceDb, sourceState, context);
+  let child = null;
+  let after;
+  try {
+    child = await spawnChildProcess(
+      binary,
+      childArgs,
+      context,
+      timeoutMs,
+      terminationGraceMs,
+    );
+  } finally {
+    // The child owner resolves only after exit confirmation (or after the
+    // bounded SIGKILL escalation reports that confirmation is unavailable).
+    // Snapshot and source verification run on every path before scratch
+    // cleanup so a mutable child can never be mistaken for a stable source.
+    after = captureDatabaseState(childPath);
+    assertSourceStable(sourceDb, sourceState, context);
+  }
   if (
+    !child ||
     child.error ||
     child.status !== 0 ||
     child.signal !== null ||
-    child.timedOut
+    child.timedOut ||
+    child.exitConfirmed !== true
   ) {
-    fail(childFailureMessage(child, context, binary, timeoutMs));
+    fail(
+      childFailureMessage(
+        child ?? {
+          lifecycleError: new Error("child owner did not return a lifecycle result"),
+        },
+        context,
+        binary,
+        timeoutMs,
+      ),
+    );
   }
   const rawReport = parseChildJson(child.stdout, context);
-  assertDiagnosticReport(rawReport, spec, context);
+  assertDiagnosticReport(rawReport, spec, context, validateObservation);
   const report = {
     ...rawReport,
     supportedCapacityClaim: false,
@@ -653,11 +836,11 @@ function uniqueNotMeasured(reports) {
   ];
 }
 
-function main() {
+async function main() {
   const options = parseCli(process.argv.slice(2));
   const manifestPath = path.resolve(options.manifestPath);
   const manifest = readJson(manifestPath, "manifest");
-  validateManifest(manifest, manifestPath);
+  const { validateObservation } = validateManifest(manifest, manifestPath);
   assertManifestRuntimeContract(manifest, manifestPath);
   const measuredRuns = options.measuredRuns ?? manifest.runProtocol.measuredRunCount;
   if (!Number.isSafeInteger(measuredRuns) || measuredRuns < 5) {
@@ -666,6 +849,13 @@ function main() {
   const timeoutMs = options.timeoutMs ?? manifest.runProtocol.childTimeoutMs;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     fail("manifest runProtocol.childTimeoutMs and --timeout-ms must be positive integers");
+  }
+  const terminationGraceMs =
+    options.terminationGraceMs ?? manifest.runProtocol.childTerminationGraceMs;
+  if (!Number.isSafeInteger(terminationGraceMs) || terminationGraceMs < 1) {
+    fail(
+      "manifest runProtocol.childTerminationGraceMs and --kill-grace-ms must be positive integers",
+    );
   }
   const fixtureSpecs = options.fixtureFilter
     ? manifest.fixtures.filter((fixture) => fixture.id === options.fixtureFilter)
@@ -683,7 +873,7 @@ function main() {
     for (const spec of fixtureSpecs) {
       const sourceDb = fixturePath(spec, fixtureDirectory);
       const sourceState = captureDatabaseState(sourceDb);
-      const warmup = runChild({
+      const warmup = await runChild({
         binary: options.binary,
         projectId: options.projectId,
         spec,
@@ -693,11 +883,13 @@ function main() {
         index: 0,
         warmup: true,
         timeoutMs,
+        terminationGraceMs,
+        validateObservation,
       });
       const reports = [];
       for (let index = 1; index <= measuredRuns; index += 1) {
         reports.push(
-          runChild({
+          await runChild({
             binary: options.binary,
             projectId: options.projectId,
             spec,
@@ -707,6 +899,8 @@ function main() {
             index,
             warmup: false,
             timeoutMs,
+            terminationGraceMs,
+            validateObservation,
           }),
         );
       }
@@ -728,6 +922,7 @@ function main() {
       ...manifest.runProtocol,
       measuredRunCount: measuredRuns,
       childTimeoutMs: timeoutMs,
+      childTerminationGraceMs: terminationGraceMs,
     };
     const notMeasured = uniqueNotMeasured(
       results.flatMap((result) => [result.warmup, ...result.runs]),
@@ -763,7 +958,7 @@ function main() {
 }
 
 try {
-  main();
+  await main();
 } catch (error) {
   console.error(`[nir1-capacity-probe] ${error.message}`);
   process.exitCode = 1;

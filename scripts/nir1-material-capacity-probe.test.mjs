@@ -20,29 +20,35 @@ const schemaPath = path.join(root, "evals/nir1-capacity/schema.v1.json");
 const probePath = path.join(root, "scripts/nir1-material-capacity-probe.mjs");
 const fixtureId = "Q513/R3/D0";
 
-function makeWorkspace() {
+function makeWorkspace(selectedFixture = fixtureId) {
   const directory = mkdtempSync(path.join(tmpdir(), "nir1-capacity-script-test-"));
   const fixtureDirectory = path.join(directory, "fixtures");
   const outputDirectory = path.join(directory, "output");
   mkdirSync(fixtureDirectory);
-  const sourceDb = path.join(fixtureDirectory, fixtureId.replaceAll("/", "__") + ".db");
+  const sourceDb = path.join(fixtureDirectory, selectedFixture.replaceAll("/", "__") + ".db");
   writeFileSync(sourceDb, "preseeded-file-backed-db");
   writeFileSync(`${sourceDb}-wal`, "preseeded-wal");
   writeFileSync(`${sourceDb}-shm`, "preseeded-shm");
   return { directory, fixtureDirectory, outputDirectory, sourceDb };
 }
 
-function childReportSource({ mutate = false, mismatch = false, timeout = false } = {}) {
-  const counts = mismatch
-    ? { candidateRevisions: 3, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 0, relationRecords: 0, evidenceRecords: 0, qualifiedMaterialRecords: 513, rosterRecords: 513 }
-    : { candidateRevisions: 3, qualifiedRevisions: 3, rejectedRevisions: 0, entityRecords: 255, relationRecords: 3, evidenceRecords: 255, qualifiedMaterialRecords: 513, rosterRecords: 513 };
+function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, malformed = false, timeout = false } = {}) {
+  const fixtureCounts = {
+    [fixtureId]: { candidateRevisions: 3, qualifiedRevisions: 3, rejectedRevisions: 0, entityRecords: 255, relationRecords: 3, evidenceRecords: 255, qualifiedMaterialRecords: 513, rosterRecords: 513, dependencyEdges: null, reportRecords: null },
+    "Q2044/evidence-shared": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, reportRecords: null },
+    "Q2044/evidence-unique": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, reportRecords: null },
+    "D2064/report-heavy": { candidateRevisions: 2064, qualifiedRevisions: 0, rejectedRevisions: 2064, entityRecords: 0, relationRecords: 0, evidenceRecords: 0, qualifiedMaterialRecords: 0, rosterRecords: 0, dependencyEdges: 4128, reportRecords: 416 },
+  };
+  const counts = structuredClone(fixtureCounts[fixtureForReport] ?? fixtureCounts[fixtureId]);
+  if (mismatch) counts.qualifiedRevisions = 4;
+  if (mismatchField) counts[mismatchField] = Number(counts[mismatchField]) - 1;
   return [
     "#!/usr/bin/env node",
     'import { writeFileSync } from "node:fs";',
     "const database = process.argv[2];",
     "const fixtureId = process.argv[3];",
     "const projectId = process.argv[4] ?? null;",
-    timeout ? "await new Promise((resolve) => setTimeout(resolve, 250));" : "",
+    timeout ? "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);" : "",
     mutate ? "writeFileSync(database, `mutated-main-${process.pid}`);" : "",
     mutate ? "writeFileSync(`${database}-wal`, `mutated-wal-${process.pid}`);" : "",
     mutate ? "writeFileSync(`${database}-shm`, `mutated-shm-${process.pid}`);" : "",
@@ -54,15 +60,21 @@ function childReportSource({ mutate = false, mismatch = false, timeout = false }
       processId: 1,
       status: "measured",
       admission: "diagnostic-only",
+      databasePath: "child.db",
       counts,
-      process: { elapsedMs: 1, hwmRssBytes: 2, ruMaxrssBytes: 2 },
-      sql: { statementVmSteps: 3 },
+      bytes: { payloadBytes: 0, envelopeBytes: 0, sourceBasisBytes: 0, liveSourceBytes: null, rosterBytes: 0, revisionIdOverheadBytes: 0 },
+      process: { elapsedMs: 1, userCpuUs: 1, systemCpuUs: 1, rssBytes: 2, hwmRssBytes: 2, ruMaxrssBytes: 2, sqliteMemoryBytes: 2, sqliteMemoryHighwaterBytes: 2, readBytes: 0, writeBytes: 0 },
+      sql: { statementVmSteps: 3, exactVmSteps: true, progressCallbacks: 0, statements: 1 },
+      occupancy: { connectionHoldMs: 1, publishTransactionMs: null, foregroundWaitMs: null },
+      cancel: { status: "not-run", latencyMs: null },
+      rejectionReasons: {},
       publishedGenerationBefore: 4,
       publishedGenerationAfter: 5,
       notMeasured: ["cancel-latency", "publish-transaction-occupancy"],
     })};`,
     "report.fixtureId = fixtureId;",
     "report.projectId = projectId;",
+    malformed ? "delete report.bytes.payloadBytes;" : "",
     "report.processId = process.pid;",
     "console.log(JSON.stringify(report));",
   ].filter(Boolean).join("\n");
@@ -106,6 +118,7 @@ test("capacity manifest fixes the diagnostic matrix and Graph lifecycle boundary
   assert.equal(manifest.runProtocol.sourceState, "immutable-main-wal-shm");
   assert.equal(manifest.runProtocol.childState, "record-before-and-after");
   assert.ok(manifest.runProtocol.childTimeoutMs > 0);
+  assert.ok(manifest.runProtocol.childTerminationGraceMs > 0);
   assert.deepEqual(
     manifest.fixtures.map((fixture) => fixture.id),
     [
@@ -195,13 +208,15 @@ test("child timeout is bounded and reports the fixture/run context", () => {
   const workspace = makeWorkspace();
   try {
     const binary = makeChild(workspace.directory, { timeout: true });
+    const started = Date.now();
     assert.throws(
-      () => runProbe(workspace, binary, ["--fixture", fixtureId, "--runs", "5", "--timeout-ms", "20"]),
+      () => runProbe(workspace, binary, ["--fixture", fixtureId, "--runs", "5", "--timeout-ms", "20", "--kill-grace-ms", "40"]),
       (error) => {
         assert.match(error.stderr, /Q513\/R3\/D0 warmup timed out after 20ms/);
         return true;
       },
     );
+    assert.ok(Date.now() - started < 1000, "TERM-resistant child must be bounded by TERM/KILL escalation");
   } finally {
     rmSync(workspace.directory, { recursive: true, force: true });
   }
@@ -215,6 +230,67 @@ test("shape mismatch fails closed with the observed field and expected value", (
       () => runProbe(workspace, binary, ["--fixture", fixtureId, "--runs", "5"]),
       (error) => {
         assert.match(error.stderr, /shape mismatch for qualified revisions: expected 3, observed 4/);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(workspace.directory, { recursive: true, force: true });
+  }
+});
+
+test("complete capacity observation schema rejects missing child measurements", () => {
+  const workspace = makeWorkspace();
+  try {
+    const binary = makeChild(workspace.directory, { malformed: true });
+    assert.throws(
+      () => runProbe(workspace, binary, ["--fixture", fixtureId, "--runs", "5"]),
+      (error) => {
+        assert.match(error.stderr, /capacity observation schema mismatch/);
+        assert.match(error.stderr, /bytes must have required property 'payloadBytes'/);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(workspace.directory, { recursive: true, force: true });
+  }
+});
+
+test("shared and unique evidence/dependency shapes are independently checked", () => {
+  for (const [selectedFixture, mismatchField, label] of [
+    ["Q2044/evidence-shared", "evidenceRecords", "evidence records"],
+    ["Q2044/evidence-unique", "dependencyEdges", "dependency edges"],
+  ]) {
+    const workspace = makeWorkspace(selectedFixture);
+    try {
+      const binary = makeChild(workspace.directory, {
+        fixtureForReport: selectedFixture,
+        mismatchField,
+      });
+      assert.throws(
+        () => runProbe(workspace, binary, ["--fixture", selectedFixture, "--runs", "5"]),
+        (error) => {
+          assert.match(error.stderr, new RegExp(`shape mismatch for ${label}`));
+          return true;
+        },
+      );
+    } finally {
+      rmSync(workspace.directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("report-heavy Verify report shape is checked independently", () => {
+  const selectedFixture = "D2064/report-heavy";
+  const workspace = makeWorkspace(selectedFixture);
+  try {
+    const binary = makeChild(workspace.directory, {
+      fixtureForReport: selectedFixture,
+      mismatchField: "reportRecords",
+    });
+    assert.throws(
+      () => runProbe(workspace, binary, ["--fixture", selectedFixture, "--runs", "5"]),
+      (error) => {
+        assert.match(error.stderr, /shape mismatch for report records/);
         return true;
       },
     );
