@@ -892,7 +892,7 @@ impl Default for NarrativeMaintenanceAttemptRegistry {
     }
 }
 
-struct NarrativeMaintenanceWaiterAdmission {
+pub(crate) struct NarrativeMaintenanceWaiterAdmission {
     waiter_count: Arc<AtomicUsize>,
 }
 
@@ -1163,8 +1163,17 @@ impl NarrativeMaintenanceAttemptRegistry {
                     && !entry.deferred_work.contains(index)
                     && !entry.finalize_grants.contains(index)
             })
-            .map(|(index, _)| index)
-            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"))?;
+            .map(|(index, _)| index);
+        let Some(execution_index) = execution_index else {
+            // A known execution that is already terminal, parked, or has an
+            // in-flight grant is a valid non-grant outcome. Keep UNKNOWN for
+            // keys that were never admitted to this attempt.
+            anyhow::ensure!(
+                entry.works.iter().any(|work| work.work_key == work_key),
+                "NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"
+            );
+            return Ok(false);
+        };
         entry.finalize_grants.insert(execution_index);
         Ok(true)
     }
@@ -1443,15 +1452,46 @@ impl NarrativeMaintenanceAttemptRegistry {
         Ok(receipt)
     }
 
-    /// Request cancellation. `Some` means the attempt was not running and is
-    /// already terminal; `None` means the caller must await the Notify.
+    /// Request cancellation. `Some` means a terminal receipt is already
+    /// available; `None` means the owner is still settling and the caller
+    /// must await the Notify.
     pub fn request_cancel(
         &self,
         attempt_id: &str,
         reason: &str,
     ) -> anyhow::Result<Option<NarrativeMaintenanceTerminalReceipt>> {
+        self.request_cancel_inner(attempt_id, reason, false)
+            .map(|(receipt, _)| receipt)
+    }
+
+    /// Request cancellation and atomically admit the caller as a terminal
+    /// waiter when the owner is still running. The returned admission must be
+    /// passed to `wait_for_terminal_with_admission`; keeping it in the caller
+    /// closes the request-cancel/terminal-ACK gap where a concurrent ACK could
+    /// otherwise remove the entry before the caller starts waiting.
+    pub(crate) fn request_cancel_with_waiter(
+        &self,
+        attempt_id: &str,
+        reason: &str,
+    ) -> anyhow::Result<(
+        Option<NarrativeMaintenanceTerminalReceipt>,
+        Option<NarrativeMaintenanceWaiterAdmission>,
+    )> {
+        self.request_cancel_inner(attempt_id, reason, true)
+    }
+
+    fn request_cancel_inner(
+        &self,
+        attempt_id: &str,
+        reason: &str,
+        admit_waiter: bool,
+    ) -> anyhow::Result<(
+        Option<NarrativeMaintenanceTerminalReceipt>,
+        Option<NarrativeMaintenanceWaiterAdmission>,
+    )> {
         let notify;
         let mut immediate;
+        let mut admission = None;
         {
             let mut state = self
                 .state
@@ -1461,14 +1501,17 @@ impl NarrativeMaintenanceAttemptRegistry {
                 .get_mut(attempt_id)
                 .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
             if let Some(receipt) = entry.terminal.clone() {
-                return Ok(Some(receipt));
+                return Ok((Some(receipt), None));
             }
             // FinalizeGranted is the commit-side linearization point. The
             // cancellation request must observe that terminal result rather
             // than manufacturing an interruption while the final transaction
             // is still being recovered.
             if entry.state == NarrativeMaintenanceAttemptState::FinalizeGranted {
-                return Ok(None);
+                if admit_waiter {
+                    admission = Some(Self::admit_waiter(entry));
+                }
+                return Ok((None, admission));
             }
             if !entry.finalize_grants.is_empty() {
                 // A final transaction is already in flight. Stop later queue
@@ -1477,7 +1520,10 @@ impl NarrativeMaintenanceAttemptRegistry {
                 entry.state = NarrativeMaintenanceAttemptState::StopRequested;
                 entry.stop_reason = Some(reason.to_string());
                 entry.stop_signal.store(true, Ordering::Release);
-                return Ok(None);
+                if admit_waiter {
+                    admission = Some(Self::admit_waiter(entry));
+                }
+                return Ok((None, admission));
             }
             if entry.state != NarrativeMaintenanceAttemptState::FinalizeGranted {
                 entry.state = NarrativeMaintenanceAttemptState::StopRequested;
@@ -1499,12 +1545,14 @@ impl NarrativeMaintenanceAttemptRegistry {
                 entry.terminal = Some(receipt.clone());
                 immediate = Some(receipt);
                 self.prune_terminal_entries(&mut state);
+            } else if admit_waiter {
+                admission = Some(Self::admit_waiter(entry));
             }
         }
         if immediate.is_some() {
             notify.notify_waiters();
         }
-        Ok(immediate)
+        Ok((immediate, admission))
     }
 
     pub async fn wait_for_terminal(
@@ -1514,7 +1562,7 @@ impl NarrativeMaintenanceAttemptRegistry {
         // Admit the waiter while holding the registry mutex.  An explicit ACK
         // or terminal pruner must observe this admission before it can remove
         // the entry, closing the settle/await/ACK race.
-        let (notify, waiter_count) = {
+        let (notify, admission) = {
             let state = self
                 .state
                 .lock()
@@ -1525,10 +1573,50 @@ impl NarrativeMaintenanceAttemptRegistry {
             if let Some(receipt) = entry.terminal.clone() {
                 return Ok(receipt);
             }
-            entry.waiter_count.fetch_add(1, Ordering::AcqRel);
-            (Arc::clone(&entry.notify), Arc::clone(&entry.waiter_count))
+            (Arc::clone(&entry.notify), Self::admit_waiter(entry))
         };
-        let admission = NarrativeMaintenanceWaiterAdmission { waiter_count };
+        self.wait_for_terminal_inner(attempt_id, notify, admission)
+            .await
+    }
+
+    /// Await a terminal receipt with an admission obtained by
+    /// `request_cancel_with_waiter`. The entry cannot be ACKed or evicted
+    /// between those two calls because the admission is already counted under
+    /// the registry mutex.
+    pub(crate) async fn wait_for_terminal_with_admission(
+        &self,
+        attempt_id: &str,
+        admission: NarrativeMaintenanceWaiterAdmission,
+    ) -> anyhow::Result<NarrativeMaintenanceTerminalReceipt> {
+        let notify = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let entry = state
+                .get(attempt_id)
+                .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+            Arc::clone(&entry.notify)
+        };
+        self.wait_for_terminal_inner(attempt_id, notify, admission)
+            .await
+    }
+
+    fn admit_waiter(
+        entry: &NarrativeMaintenanceAttemptEntry,
+    ) -> NarrativeMaintenanceWaiterAdmission {
+        entry.waiter_count.fetch_add(1, Ordering::AcqRel);
+        NarrativeMaintenanceWaiterAdmission {
+            waiter_count: Arc::clone(&entry.waiter_count),
+        }
+    }
+
+    async fn wait_for_terminal_inner(
+        &self,
+        attempt_id: &str,
+        notify: Arc<Notify>,
+        admission: NarrativeMaintenanceWaiterAdmission,
+    ) -> anyhow::Result<NarrativeMaintenanceTerminalReceipt> {
         let result = loop {
             // Register the notification before the second terminal check. A
             // terminal transition between the first check and registration
@@ -2451,6 +2539,46 @@ mod tests {
         registry
             .acknowledge_terminal("attempt-waiter-admission")
             .expect("ack after waiter observed receipt");
+    }
+
+    #[tokio::test]
+    async fn cancellation_waiter_admission_survives_settle_before_wait() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-cancel-admission".to_string(),
+            generation: 14,
+        };
+        registry
+            .begin("attempt-cancel-admission", &binding)
+            .expect("begin");
+        registry
+            .start("attempt-cancel-admission", std::iter::empty::<String>())
+            .expect("start");
+
+        let (immediate, admission) = registry
+            .request_cancel_with_waiter("attempt-cancel-admission", "closed")
+            .expect("request cancellation");
+        assert!(immediate.is_none());
+        let admission = admission.expect("cancellation waiter admission");
+        let receipt = registry
+            .settle("attempt-cancel-admission", false, None)
+            .expect("settle before waiter begins");
+        assert!(registry
+            .acknowledge_terminal("attempt-cancel-admission")
+            .expect_err("ACK must respect the pre-admitted cancellation waiter")
+            .to_string()
+            .contains("ACK_BUSY"));
+
+        assert_eq!(
+            registry
+                .wait_for_terminal_with_admission("attempt-cancel-admission", admission)
+                .await
+                .expect("wait with pre-admitted cancellation waiter"),
+            receipt
+        );
+        registry
+            .acknowledge_terminal("attempt-cancel-admission")
+            .expect("ACK after cancellation waiter observes receipt");
     }
 
     #[test]

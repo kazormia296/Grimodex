@@ -3770,19 +3770,25 @@ impl Backend {
         attempt_id: String,
         reason: String,
     ) -> Result<String> {
-        let immediate = self
+        let (immediate, admission) = self
             .state
             .narrative_maintenance_attempts
-            .request_cancel(&attempt_id, &reason)
+            .request_cancel_with_waiter(&attempt_id, &reason)
             .map_err(|error| Error::from_reason(error.to_string()))?;
         let receipt = match immediate {
             Some(receipt) => receipt,
-            None => self
-                .state
-                .narrative_maintenance_attempts
-                .wait_for_terminal(&attempt_id)
-                .await
-                .map_err(|error| Error::from_reason(error.to_string()))?,
+            None => {
+                let admission = admission.ok_or_else(|| {
+                    Error::from_reason(
+                        "NEX_MAINTENANCE_ATTEMPT_WAIT_ADMISSION_MISSING: cancellation did not admit a terminal waiter",
+                    )
+                })?;
+                self.state
+                    .narrative_maintenance_attempts
+                    .wait_for_terminal_with_admission(&attempt_id, admission)
+                    .await
+                    .map_err(|error| Error::from_reason(error.to_string()))?
+            }
         };
         // A terminal receipt with failed cleanup is deliberately kept in the
         // recovery gate.  Releasing it would allow workspace swap or a later
