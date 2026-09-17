@@ -6,12 +6,15 @@
 // A result is an observation, not a capacity approval or a Graph/product
 // activation receipt.
 import Ajv2020 from "ajv/dist/2020.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -28,6 +31,7 @@ const SOURCE_COMPONENTS = [
   ["wal", "-wal"],
   ["shm", "-shm"],
 ];
+const CHILD_OWNER_ENV = "NIR1_CAPACITY_OWNER_TOKEN";
 
 function fail(message) {
   throw new Error(message);
@@ -46,6 +50,17 @@ function parsePositiveInteger(value, label, minimum = 1) {
 
 function parseCli(argv) {
   if (argv.length < 4) fail(USAGE);
+  const requiredPositionals = [
+    ["binary", argv[0]],
+    ["manifest path", argv[1]],
+    ["fixture directory", argv[2]],
+    ["output directory", argv[3]],
+  ];
+  for (const [label, value] of requiredPositionals) {
+    if (!value || value.startsWith("--")) {
+      fail(`${label} must be a positional argument; ${USAGE}`);
+    }
+  }
   const [binary, manifestPath, fixtureDirectory, outputDirectory] = argv;
   const options = {
     binary,
@@ -542,6 +557,63 @@ function safeChildName(specId, suffix) {
   return `${encoded}-${suffix}.db`;
 }
 
+function scanOwnedProcessIds(ownerToken, knownPids = [], pipeInodes = []) {
+  if (process.platform !== "linux") {
+    return {
+      supported: false,
+      pids: [],
+      error: new Error(`unsupported platform ${process.platform}; Linux /proc ownership is required`),
+    };
+  }
+  let entries;
+  try {
+    entries = readdirSync("/proc");
+  } catch (error) {
+    return { supported: false, pids: [], error };
+  }
+  const known = new Set(knownPids);
+  const token = `${CHILD_OWNER_ENV}=${ownerToken}`;
+  const ownedPipes = new Set(pipeInodes);
+  const pids = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === process.pid) continue;
+    let ownsPipe = false;
+    try {
+      const environment = readFileSync(path.join("/proc", entry, "environ"), "utf8");
+      if (environment.split("\0").includes(token)) pids.push(pid);
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      if (known.has(pid)) {
+        return { supported: false, pids, error };
+      }
+    }
+    if (ownedPipes.size > 0) {
+      try {
+        for (const fd of readdirSync(path.join("/proc", entry, "fd"))) {
+          try {
+            if (ownedPipes.has(readlinkSync(path.join("/proc", entry, "fd", fd)))) {
+              ownsPipe = true;
+              break;
+            }
+          } catch (error) {
+            if (error.code !== "ENOENT" && known.has(pid)) {
+              return { supported: false, pids, error };
+            }
+          }
+        }
+      } catch (error) {
+        if (error.code !== "ENOENT" && known.has(pid)) {
+          return { supported: false, pids, error };
+        }
+      }
+    }
+    if (ownsPipe && !pids.includes(pid)) pids.push(pid);
+  }
+  return { supported: true, pids, error: null };
+}
+
 function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGraceMs) {
   return new Promise((resolve) => {
     let child;
@@ -553,10 +625,15 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
     let termSent = false;
     let killSent = false;
     let settled = false;
+    let finalizing = false;
     let timeoutTimer = null;
     let termTimer = null;
     let killTimer = null;
     let streamTimer = null;
+    const ownerToken = `${process.pid}-${randomUUID()}`;
+    const knownOwnedPids = new Set();
+    let ownedPipeInodes = [];
+    let pipeOwnershipError = null;
 
     const clearTimers = () => {
       for (const timer of [timeoutTimer, termTimer, killTimer, streamTimer]) {
@@ -591,6 +668,12 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
       });
     };
 
+    const destroyStreams = () => {
+      for (const stream of [child?.stdout, child?.stderr]) {
+        if (stream && !stream.destroyed) stream.destroy();
+      }
+    };
+
     const sendSignal = (signal) => {
       const pid = child?.pid;
       if (process.platform !== "win32" && Number.isInteger(pid) && pid > 0) {
@@ -613,20 +696,146 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
       }
     };
 
+    const scanOwned = (includePipes = true) => {
+      if (includePipes && pipeOwnershipError) {
+        const tokenOnly = scanOwnedProcessIds(ownerToken, [
+          child?.pid,
+          ...knownOwnedPids,
+        ]);
+        if (tokenOnly.supported) {
+          for (const pid of tokenOnly.pids) knownOwnedPids.add(pid);
+        }
+        return { ...tokenOnly, supported: false, error: pipeOwnershipError };
+      }
+      const result = scanOwnedProcessIds(ownerToken, [
+        child?.pid,
+        ...knownOwnedPids,
+      ], includePipes ? ownedPipeInodes : []);
+      if (result.supported) {
+        for (const pid of result.pids) knownOwnedPids.add(pid);
+      }
+      return result;
+    };
+
+    const captureOwnedPipes = () => {
+      const inodes = [];
+      for (const [stream, childFd] of [
+        [child?.stdout, 1],
+        [child?.stderr, 2],
+      ]) {
+        const fd = stream?._handle?.fd;
+        if (!Number.isInteger(fd) || fd < 0) {
+          pipeOwnershipError = new Error(
+            `${context} could not identify its owned output pipe`,
+          );
+          return;
+        }
+        try {
+          // The descendant inherits the child's endpoint of the socketpair,
+          // whose inode differs from the runner's endpoint.
+          const target = readlinkSync(`/proc/${child.pid}/fd/${childFd}`);
+          if (!/^(?:pipe|socket):\[\d+\]$/.test(target)) {
+            pipeOwnershipError = new Error(
+              `${context} output handle ${fd} is not a Linux pipe`,
+            );
+            return;
+          }
+          inodes.push(target);
+        } catch (error) {
+          pipeOwnershipError = error;
+          return;
+        }
+      }
+      ownedPipeInodes = inodes;
+    };
+
+    const signalOwned = (pids, signal) => {
+      let sent = false;
+      for (const pid of pids) {
+        if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+        try {
+          process.kill(pid, signal);
+          sent = true;
+        } catch (error) {
+          if (error.code !== "ESRCH") {
+            stderr += `\nfailed to send ${signal} to owned process ${pid}: ${error.message}`;
+          }
+        }
+      }
+      return sent;
+    };
+
+    const waitForOwnedProcesses = (waitMs) =>
+      new Promise((waitResolve) => {
+        const deadline = Date.now() + waitMs;
+        const poll = () => {
+          const ownership = scanOwned(true);
+          if (!ownership.supported || ownership.pids.length === 0) {
+            waitResolve({
+              confirmed: ownership.supported,
+              ownership,
+            });
+            return;
+          }
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            waitResolve({ confirmed: false, ownership });
+            return;
+          }
+          setTimeout(poll, Math.min(10, remaining));
+        };
+        poll();
+      });
+
+    const finalizeLifecycleFailure = (lifecycleError) => {
+      if (settled || finalizing) return;
+      finalizing = true;
+      killSent = sendSignal("SIGKILL") || killSent;
+      const ownership = scanOwned();
+      if (ownership.supported) {
+        killSent = signalOwned(ownership.pids, "SIGKILL") || killSent;
+      }
+      destroyStreams();
+      void waitForOwnedProcesses(terminationGraceMs).then(({ confirmed, ownership: finalOwnership }) => {
+        const detail = confirmed
+          ? ""
+          : finalOwnership?.error
+            ? `; unable to verify owned process termination: ${finalOwnership.error.message}`
+            : `; owned process termination was not confirmed (${(finalOwnership?.pids ?? []).join(", ")})`;
+        finish({
+          lifecycleError: new Error(`${lifecycleError.message}${detail}`),
+        });
+      });
+    };
+
     const finishAfterExit = () => {
-      if (exitInfo === null) return;
+      if (settled || finalizing || exitInfo === null) return;
       if (streamsClosed) {
-        finish();
+        const ownership = scanOwned(false);
+        if (!ownership.supported) {
+          finalizeLifecycleFailure(
+            new Error(
+              `${context} exited but owned process termination could not be verified`,
+            ),
+          );
+        } else if (ownership.pids.length > 0) {
+          finalizeLifecycleFailure(
+            new Error(
+              `${context} exited while owned processes remained (${ownership.pids.join(", ")})`,
+            ),
+          );
+        } else {
+          finish();
+        }
         return;
       }
       if (streamTimer === null) {
         streamTimer = setTimeout(() => {
-          killSent = sendSignal("SIGKILL") || killSent;
-          finish({
-            lifecycleError: new Error(
+          finalizeLifecycleFailure(
+            new Error(
               `${context} exited but its output streams did not close within ${terminationGraceMs}ms`,
             ),
-          });
+          );
         }, terminationGraceMs);
       }
     };
@@ -635,8 +844,13 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
       child = spawn(path.resolve(binary), childArgs, {
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
+        env: { ...process.env, [CHILD_OWNER_ENV]: ownerToken },
         windowsHide: true,
       });
+      if (Number.isInteger(child.pid) && child.pid > 0) {
+        knownOwnedPids.add(child.pid);
+      }
+      captureOwnedPipes();
     } catch (error) {
       finish({ error });
       return;
@@ -655,7 +869,11 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
       // If an exit was already observed, retain that proof and report the
       // lifecycle error after streams close.
       if (exitInfo === null) {
-        finish({ error });
+        if (child?.pid) {
+          finalizeLifecycleFailure(error);
+        } else {
+          finish({ error });
+        }
       } else {
         finishAfterExit();
       }
@@ -679,12 +897,11 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
         killSent = sendSignal("SIGKILL");
         killTimer = setTimeout(() => {
           if (settled || exitInfo !== null) return;
-          killSent = sendSignal("SIGKILL") || killSent;
-          finish({
-            lifecycleError: new Error(
+          finalizeLifecycleFailure(
+            new Error(
               `${context} did not exit after SIGKILL within ${terminationGraceMs}ms`,
             ),
-          });
+          );
         }, terminationGraceMs);
       }, terminationGraceMs);
     }, timeoutMs);
@@ -856,8 +1073,17 @@ function uniqueNotMeasured(reports) {
   ];
 }
 
+function removePreviousReport(outputDirectory) {
+  const reportPath = path.join(path.resolve(outputDirectory), "capacity-report.json");
+  rmSync(reportPath, { force: true });
+}
+
 async function main() {
-  const options = parseCli(process.argv.slice(2));
+  const rawArgs = process.argv.slice(2);
+  if (rawArgs.length >= 4 && rawArgs[3] && !rawArgs[3].startsWith("--")) {
+    removePreviousReport(rawArgs[3]);
+  }
+  const options = parseCli(rawArgs);
   const manifestPath = path.resolve(options.manifestPath);
   const manifest = readJson(manifestPath, "manifest");
   const { validateObservation } = validateManifest(manifest, manifestPath);
@@ -886,6 +1112,12 @@ async function main() {
   const fixtureDirectory = path.resolve(options.fixtureDirectory);
   const outputDirectory = path.resolve(options.outputDirectory);
   mkdirSync(outputDirectory, { recursive: true });
+  const reportPath = path.join(outputDirectory, "capacity-report.json");
+  // A failed rerun must not leave a prior successful artifact looking current.
+  removePreviousReport(outputDirectory);
+  if (process.platform !== "linux") {
+    fail(`unsupported platform ${process.platform}; Linux /proc ownership is required`);
+  }
   const manifestDigest = hashBytes(Buffer.from(JSON.stringify(manifest)));
   const scratch = mkdtempSync(path.join(tmpdir(), "nir1-capacity-probe-"));
   const results = [];
@@ -967,10 +1199,16 @@ async function main() {
       notMeasured,
       results,
     };
-    writeFileSync(
-      path.join(outputDirectory, "capacity-report.json"),
-      JSON.stringify(report, null, 2) + "\n",
+    const stagedReportPath = path.join(
+      outputDirectory,
+      `.capacity-report-${process.pid}-${randomUUID()}.tmp`,
     );
+    try {
+      writeFileSync(stagedReportPath, JSON.stringify(report, null, 2) + "\n");
+      renameSync(stagedReportPath, reportPath);
+    } finally {
+      rmSync(stagedReportPath, { force: true });
+    }
     console.log(JSON.stringify(report, null, 2));
   } finally {
     rmSync(scratch, { recursive: true, force: true });

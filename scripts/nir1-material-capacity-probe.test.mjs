@@ -33,7 +33,7 @@ function makeWorkspace(selectedFixture = fixtureId) {
   return { directory, fixtureDirectory, outputDirectory, sourceDb };
 }
 
-function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, malformed = false, timeout = false, leakyDescendant = false } = {}) {
+function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, malformed = false, timeout = false, leakyDescendant = false, detachedDescendant = false } = {}) {
   const fixtureCounts = {
     [fixtureId]: { candidateRevisions: 3, qualifiedRevisions: 3, rejectedRevisions: 0, entityRecords: 255, relationRecords: 3, evidenceRecords: 255, qualifiedMaterialRecords: 513, rosterRecords: 513, dependencyEdges: null, reportRecords: null },
     "Q2044/evidence-shared": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, reportRecords: null },
@@ -52,6 +52,7 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
     "const projectId = process.argv[4] ?? null;",
     timeout ? "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);" : "",
     leakyDescendant ? "const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit' }); descendant.unref();" : "",
+    detachedDescendant ? "const descendant = spawn('setsid', ['env', '-i', process.execPath, '-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit' }); if (projectId) writeFileSync(projectId, String(descendant.pid)); descendant.unref();" : "",
     mutate ? "writeFileSync(database, `mutated-main-${process.pid}`);" : "",
     mutate ? "writeFileSync(`${database}-wal`, `mutated-wal-${process.pid}`);" : "",
     mutate ? "writeFileSync(`${database}-shm`, `mutated-shm-${process.pid}`);" : "",
@@ -207,6 +208,64 @@ test("CLI flags pass only the optional project id and preserve mutable child/sou
   }
 });
 
+test("a failed rerun removes a prior success artifact", () => {
+  const workspace = makeWorkspace();
+  try {
+    const successfulBinary = makeChild(workspace.directory, {});
+    runProbe(workspace, successfulBinary, ["--fixture", fixtureId, "--runs", "5"]);
+    const reportPath = path.join(workspace.outputDirectory, "capacity-report.json");
+    assert.equal(existsSync(reportPath), true);
+
+    const failingBinary = makeChild(workspace.directory, { mismatch: true });
+    assert.throws(
+      () => runProbe(workspace, failingBinary, ["--fixture", fixtureId, "--runs", "5"]),
+      (error) => {
+        assert.match(error.stderr, /shape mismatch for qualified revisions/);
+        return true;
+      },
+    );
+    assert.equal(existsSync(reportPath), false);
+  } finally {
+    rmSync(workspace.directory, { recursive: true, force: true });
+  }
+});
+
+test("required positional paths reject option tokens and missing output directories", () => {
+  const workspace = makeWorkspace();
+  try {
+    const binary = makeChild(workspace.directory, {});
+    const accidentalOutput = path.join(workspace.directory, "--fixture");
+    rmSync(accidentalOutput, { recursive: true, force: true });
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          [probePath, binary, manifestPath, workspace.fixtureDirectory, "--fixture", fixtureId],
+          { cwd: workspace.directory, encoding: "utf8" },
+        ),
+      (error) => {
+        assert.match(error.stderr, /output directory must be a positional argument/);
+        return true;
+      },
+    );
+    assert.equal(existsSync(accidentalOutput), false);
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          [probePath, binary, manifestPath, workspace.fixtureDirectory],
+          { cwd: workspace.directory, encoding: "utf8" },
+        ),
+      (error) => {
+        assert.match(error.stderr, /usage:/);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(workspace.directory, { recursive: true, force: true });
+  }
+});
+
 test("child timeout is bounded and reports the fixture/run context", () => {
   const workspace = makeWorkspace();
   try {
@@ -239,6 +298,41 @@ test("inherited child pipes are a terminal lifecycle failure and stay bounded", 
       },
     );
     assert.ok(Date.now() - started < 1000, "inherited pipes must not extend the owner beyond its bound");
+  } finally {
+    rmSync(workspace.directory, { recursive: true, force: true });
+  }
+});
+
+test("setsid descendants are killed and absent before the owner returns", () => {
+  if (process.platform !== "linux") return;
+  const workspace = makeWorkspace();
+  try {
+    const descendantPidPath = path.join(workspace.directory, "descendant.pid");
+    const binary = makeChild(workspace.directory, { detachedDescendant: true });
+    const started = Date.now();
+    assert.throws(
+      () =>
+        runProbe(workspace, binary, [
+          descendantPidPath,
+          "--fixture",
+          fixtureId,
+          "--runs",
+          "5",
+          "--timeout-ms",
+          "100",
+          "--kill-grace-ms",
+          "40",
+        ]),
+      (error) => {
+        assert.match(error.stderr, /lifecycle failure:/);
+        assert.equal(existsSync(path.join(workspace.outputDirectory, "capacity-report.json")), false);
+        return true;
+      },
+    );
+    const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
+    assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
+    assert.ok(Date.now() - started < 1000, "setsid descendants must remain bounded");
+    assert.equal(existsSync(`/proc/${descendantPid}`), false);
   } finally {
     rmSync(workspace.directory, { recursive: true, force: true });
   }
