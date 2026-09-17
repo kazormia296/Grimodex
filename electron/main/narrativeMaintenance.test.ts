@@ -1184,6 +1184,102 @@ describe("narrative maintenance scheduler", () => {
     },
   );
 
+  it.each(["resolved", "rejected"] as const)(
+    "does not requeue a cycle after quiesce adopts a succeeded receipt before the cycle is %s",
+    async (cycleOutcome) => {
+      const binding = {
+        authorityId: `authority-adopted-success-${cycleOutcome}`,
+        generation: 6,
+      };
+      const firstWork = work(
+        `project-adopted-success-a-${cycleOutcome}`,
+        "backfill",
+        "legacy-dependency-backfill:v3",
+        "open",
+      );
+      const secondWork = work(
+        `project-adopted-success-b-${cycleOutcome}`,
+        "backfill",
+        "legacy-dependency-backfill:v3",
+        "open",
+      );
+      const effectiveKey = (item: NarrativeMaintenanceRequest): string =>
+        canonicalNarrativeMaintenanceWorkKey({
+          ...item,
+          semanticEpochId: "epoch-adopted-success",
+        });
+      const firstCycle = deferred<NarrativeMaintenanceCycleResult>();
+      const runNarrativeMaintenanceCycle = vi
+        .fn()
+        .mockImplementationOnce(() => firstCycle.promise)
+        .mockResolvedValue({ status: "accepted", hasMore: false });
+      const beginNarrativeMaintenanceAttempt = vi.fn(
+        (attemptId: string, receivedBinding: typeof binding) =>
+          JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: receivedBinding.authorityId,
+            generation: receivedBinding.generation,
+          }),
+      );
+      const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) =>
+        JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state: "succeeded",
+          stopReason: null,
+          generation: binding.generation,
+          workspaceBinding: binding,
+          publishedGeneration: binding.generation,
+          works: [
+            { workKey: effectiveKey(firstWork), status: "succeeded" },
+            { workKey: effectiveKey(secondWork), status: "succeeded" },
+          ],
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        }),
+      );
+      const { scheduler } = createScheduler({
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+      });
+
+      scheduler.request(firstWork);
+      scheduler.request(secondWork);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+      const quiescing = scheduler.quiesceForWorkspaceSwitch?.();
+      for (
+        let turn = 0;
+        turn < 6 && cancelNarrativeMaintenanceAttempt.mock.calls.length === 0;
+        turn += 1
+      ) {
+        await Promise.resolve();
+      }
+      expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+
+      if (cycleOutcome === "resolved") {
+        firstCycle.resolve(acceptedCycle());
+      } else {
+        firstCycle.reject(new Error("cycle rejected after success receipt adoption"));
+      }
+      const lease = await quiescing;
+      lease?.resume();
+      await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+      await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS);
+
+      // The adopted Native success already crossed the durable completion
+      // boundary. A late cycle response must not make the claimed batch run
+      // again on the resumed lease.
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+    },
+  );
+
   it("renders only a canonical requeued transient failure as a bounded warning", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()

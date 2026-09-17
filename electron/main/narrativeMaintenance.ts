@@ -1663,7 +1663,6 @@ export function createNarrativeMaintenanceScheduler(
             }
           }
         } else if (!activeAttemptController.grantFinalize(cycleAttemptId)) {
-          interruptedCycle = true;
           // A concurrent quiesce/cancel may already have adopted Native's
           // terminal receipt. Recover that exact controller-owned value before
           // the catch path decides which work to requeue; it cannot be
@@ -1673,12 +1672,19 @@ export function createNarrativeMaintenanceScheduler(
               await waitForAdoptedNativeTerminalReceipt(cycleAttemptId);
             nativeReceiptAdopted = nativeTerminalReceipt !== null;
           }
-          const attemptSnapshot =
-            activeAttemptController.snapshot(cycleAttemptId);
-          if (attemptSnapshot?.state === "stop-requested") {
-            settleAttempt("interrupted");
+          // Finalization may already have won before the late cancellation.
+          // Preserve that terminal success and let the accepted cycle clear
+          // its claimed batch; only an interrupted or unavailable receipt
+          // enters the selective-requeue path below.
+          if (nativeTerminalReceipt?.state !== "succeeded") {
+            interruptedCycle = true;
+            const attemptSnapshot =
+              activeAttemptController.snapshot(cycleAttemptId);
+            if (attemptSnapshot?.state === "stop-requested") {
+              settleAttempt("interrupted");
+            }
+            throw new Error("NEX_MAINTENANCE_ATTEMPT_CANCELLED");
           }
-          throw new Error("NEX_MAINTENANCE_ATTEMPT_CANCELLED");
         } else {
           settleAttempt("succeeded", cycleBinding?.generation ?? null);
         }
@@ -1804,7 +1810,20 @@ export function createNarrativeMaintenanceScheduler(
             attemptSnapshot.state === "stop-requested";
           settleAttempt("interrupted");
         }
-        if (deferredCycle) {
+        if (nativeTerminalReceipt?.state === "succeeded") {
+          // Native already committed this cycle before the late cancellation
+          // reached it. Do not requeue a claimed work item or wake that the
+          // receipt has already completed.
+          for (const entry of sendingWakeEntries) {
+            durableWakeRetryCounts.delete(
+              scopedWakeKey(entry.projectId, entry.workspaceBinding),
+            );
+          }
+          for (const work of backendBatch) {
+            retryCounts.delete(scopedWorkKey(work));
+          }
+          shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
+        } else if (deferredCycle) {
           for (const work of backendBatch) {
             requeueWork(work);
             deferredWorkKeys.add(scopedWorkKey(work));
