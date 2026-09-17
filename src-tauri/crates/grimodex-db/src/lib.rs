@@ -40,7 +40,15 @@ impl Drop for BackgroundConnectionPriorityGuard {
 
 /// Thread-local no-wait mode used by the Native maintenance owner while it
 /// performs short ledger/bookkeeping reads between phase scopes.
-pub struct MaintenanceConnectionNoWaitGuard;
+///
+/// The guard is deliberately thread-affine.  Its state is stored in
+/// thread-local storage, so allowing it to move to another worker would leave
+/// no-wait mode enabled on the creating worker and decrement an unrelated
+/// worker's depth when dropped.
+#[must_use = "a maintenance no-wait guard must stay alive for the scoped work"]
+pub struct MaintenanceConnectionNoWaitGuard {
+    _thread_affine: std::marker::PhantomData<*mut ()>,
+}
 
 impl Drop for MaintenanceConnectionNoWaitGuard {
     fn drop(&mut self) {
@@ -56,14 +64,18 @@ struct ForegroundConnectionWaiter<'a> {
 
 impl<'a> ForegroundConnectionWaiter<'a> {
     fn new(count: &'a AtomicUsize) -> Self {
-        count.fetch_add(1, Ordering::AcqRel);
+        // Waiter admission and the finalization reservation are separate
+        // atomics.  Use one sequentially consistent order for both so the
+        // pre/post checks around the reservation CAS cannot observe a
+        // foreground arrival on the wrong side of the handoff.
+        count.fetch_add(1, Ordering::SeqCst);
         Self { count }
     }
 }
 
 impl Drop for ForegroundConnectionWaiter<'_> {
     fn drop(&mut self) {
-        self.count.fetch_sub(1, Ordering::AcqRel);
+        self.count.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -92,7 +104,7 @@ impl Drop for MaintenanceFinalizationReservation<'_> {
     fn drop(&mut self) {
         self.db
             .maintenance_finalization_reserved
-            .store(false, Ordering::Release);
+            .store(false, Ordering::SeqCst);
     }
 }
 
@@ -356,7 +368,7 @@ impl Database {
     pub(crate) fn lock_conn(&self) -> anyhow::Result<MutexGuard<'_, Connection>> {
         self.ensure_connection_reusable()?;
         if Self::maintenance_no_wait_active() {
-            if self.foreground_connection_waiters.load(Ordering::Acquire) > 0 {
+            if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
                 anyhow::bail!(
                     "NEX_MAINTENANCE_CONNECTION_PREEMPTED: foreground waiter owns the next maintenance handoff"
                 );
@@ -373,7 +385,7 @@ impl Database {
                 }
             };
             self.ensure_connection_reusable()?;
-            if self.foreground_connection_waiters.load(Ordering::Acquire) > 0 {
+            if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
                 drop(conn);
                 anyhow::bail!(
                     "NEX_MAINTENANCE_CONNECTION_PREEMPTED: foreground waiter arrived before maintenance acquisition"
@@ -388,7 +400,7 @@ impl Database {
                 // waiter into that narrow window.
                 if self
                     .maintenance_finalization_reserved
-                    .load(Ordering::Acquire)
+                    .load(Ordering::SeqCst)
                 {
                     std::thread::sleep(Duration::from_millis(1));
                     continue;
@@ -396,7 +408,7 @@ impl Database {
                 let waiter = ForegroundConnectionWaiter::new(&self.foreground_connection_waiters);
                 if self
                     .maintenance_finalization_reserved
-                    .load(Ordering::Acquire)
+                    .load(Ordering::SeqCst)
                 {
                     drop(waiter);
                     std::thread::sleep(Duration::from_millis(1));
@@ -413,7 +425,7 @@ impl Database {
         }
 
         loop {
-            if self.foreground_connection_waiters.load(Ordering::Acquire) > 0 {
+            if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
                 std::thread::sleep(Duration::from_millis(1));
                 continue;
             }
@@ -426,7 +438,7 @@ impl Database {
                     // Close the observation-to-lock race. A foreground caller
                     // that announced itself while try_lock succeeded gets the
                     // next hand-off instead of sitting behind another bulk item.
-                    if self.foreground_connection_waiters.load(Ordering::Acquire) == 0 {
+                    if self.foreground_connection_waiters.load(Ordering::SeqCst) == 0 {
                         return Ok(conn);
                     }
                     drop(conn);
@@ -445,19 +457,30 @@ impl Database {
     pub(crate) fn try_reserve_maintenance_finalization(
         &self,
     ) -> Option<MaintenanceFinalizationReservation<'_>> {
-        if self.foreground_connection_waiters.load(Ordering::Acquire) > 0 {
+        self.try_reserve_maintenance_finalization_with_hook(|| {})
+    }
+
+    fn try_reserve_maintenance_finalization_with_hook<F>(
+        &self,
+        after_reservation: F,
+    ) -> Option<MaintenanceFinalizationReservation<'_>>
+    where
+        F: FnOnce(),
+    {
+        if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
             return None;
         }
         if self
             .maintenance_finalization_reserved
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
             return None;
         }
-        if self.foreground_connection_waiters.load(Ordering::Acquire) > 0 {
+        after_reservation();
+        if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
             self.maintenance_finalization_reserved
-                .store(false, Ordering::Release);
+                .store(false, Ordering::SeqCst);
             return None;
         }
         Some(MaintenanceFinalizationReservation { db: self })
@@ -482,23 +505,19 @@ impl Database {
         operation()
     }
 
-    /// Run a Native maintenance cycle with no blocking connection ownership.
-    /// Every nested `with_conn` on this worker returns a typed transient
-    /// preemption error when a foreground owner or another phase holds the
-    /// connection; the caller requeues the exact work item.
-    pub fn with_maintenance_connection_no_wait<T>(
-        &self,
-        operation: impl FnOnce() -> T,
-    ) -> T {
-        let _guard = self.enter_maintenance_connection_no_wait();
-        operation()
-    }
-
+    /// Enter the Native maintenance no-wait mode for this worker.
+    ///
+    /// This narrow entry point is public so the Electron N-API crate can wrap
+    /// its scheduler-owned ledger work.  The returned guard is the only
+    /// authority exposed to that caller: it changes no database state and
+    /// merely makes nested connection acquisition fail fast while it is alive.
     pub fn enter_maintenance_connection_no_wait(&self) -> MaintenanceConnectionNoWaitGuard {
         MAINTENANCE_NO_WAIT_DEPTH.with(|depth| {
             depth.set(depth.get().saturating_add(1));
         });
-        MaintenanceConnectionNoWaitGuard
+        MaintenanceConnectionNoWaitGuard {
+            _thread_affine: std::marker::PhantomData,
+        }
     }
 
     /// Update the query planner's statistics (`sqlite_stat1`). Cheap because

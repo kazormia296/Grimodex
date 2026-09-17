@@ -516,6 +516,7 @@ where
         let reason = result
             .cleanup_error
             .as_ref()
+            .or(result.operation_error.as_ref())
             .map(ToString::to_string)
             .unwrap_or_else(|| "maintenance connection cleanup failed".to_string());
         db.quarantine_connection(reason);
@@ -676,7 +677,7 @@ where
                     }
                     if foreground_waiters_for_hook
                         .as_ref()
-                        .is_some_and(|waiters| waiters.load(Ordering::Acquire) > 0)
+                        .is_some_and(|waiters| waiters.load(Ordering::SeqCst) > 0)
                     {
                         latch_for_hook.set(ValidationTerminationReason::ForegroundPreempted);
                         return true;
@@ -691,6 +692,7 @@ where
             setup_error = Some(error.into());
         }
     }
+    let setup_failed = setup_error.is_some();
 
     let (value, mut operation_error, panic_payload) = match setup_error {
         Some(error) => (None, Some(error), None),
@@ -787,6 +789,7 @@ where
     receipt.connection_reusable = receipt.transaction_clean
         && receipt.progress_handler_cleared
         && receipt.busy_timeout_restored
+        && !setup_failed
         && cleanup_error.is_none();
 
     let result = NarrativeMaintenanceConnectionResult {
@@ -853,7 +856,7 @@ impl Database {
     }
 
     pub(crate) fn foreground_connection_waiter_count(&self) -> usize {
-        self.foreground_connection_waiters.load(Ordering::Acquire)
+        self.foreground_connection_waiters.load(Ordering::SeqCst)
     }
 
     pub(crate) fn foreground_connection_waiting(&self) -> bool {
@@ -922,6 +925,7 @@ mod tests {
     use crate::narrative_extraction::nir1_entity_relation_index::GraphWorkStage;
     use crate::narrative_extraction::{is_validation_terminated, ValidationTerminated};
     use std::sync::mpsc;
+    use std::sync::Barrier;
     use std::thread;
 
     fn test_db() -> Database {
@@ -1066,6 +1070,78 @@ mod tests {
             .join()
             .expect("foreground join")
             .expect("foreground");
+    }
+
+    #[test]
+    fn foreground_waiter_admission_precedes_finalization_reservation() {
+        let db = Arc::new(test_db());
+        let waiter_published = Arc::new(Barrier::new(2));
+        let release_waiter = Arc::new(Barrier::new(2));
+        let waiter_db = Arc::clone(&db);
+        let waiter_published_for_thread = Arc::clone(&waiter_published);
+        let release_waiter_for_thread = Arc::clone(&release_waiter);
+        let foreground = thread::spawn(move || {
+            let waiter = ForegroundConnectionWaiter::new(&waiter_db.foreground_connection_waiters);
+            waiter_published_for_thread.wait();
+            release_waiter_for_thread.wait();
+            drop(waiter);
+        });
+
+        // The barrier is released only after the waiter increment is complete,
+        // so this is the exact interleaving in which a foreground owner arrives
+        // immediately before a maintenance finalization attempt.
+        waiter_published.wait();
+        assert_eq!(db.foreground_connection_waiter_count(), 1);
+        assert!(db.try_reserve_maintenance_finalization().is_none());
+
+        release_waiter.wait();
+        foreground.join().expect("foreground waiter thread");
+        assert_eq!(db.foreground_connection_waiter_count(), 0);
+        assert!(db.try_reserve_maintenance_finalization().is_some());
+    }
+
+    #[test]
+    fn finalization_reservation_precedes_late_foreground_waiter_admission() {
+        let db = Arc::new(test_db());
+        let reservation_cas_reached = Arc::new(Barrier::new(2));
+        let allow_reservation_post_check = Arc::new(Barrier::new(2));
+        let reservation_db = Arc::clone(&db);
+        let reservation_cas_reached_for_thread = Arc::clone(&reservation_cas_reached);
+        let allow_reservation_post_check_for_thread = Arc::clone(&allow_reservation_post_check);
+        let finalizer = thread::spawn(move || {
+            let reservation = reservation_db.try_reserve_maintenance_finalization_with_hook(|| {
+                reservation_cas_reached_for_thread.wait();
+                allow_reservation_post_check_for_thread.wait();
+            });
+            assert!(reservation.is_none(), "late waiter must cancel the reservation");
+        });
+
+        // Pause after the reservation CAS and publish the foreground waiter
+        // before allowing the maintenance thread's post-CAS check to run.
+        reservation_cas_reached.wait();
+        let waiter = ForegroundConnectionWaiter::new(&db.foreground_connection_waiters);
+        assert_eq!(db.foreground_connection_waiter_count(), 1);
+        allow_reservation_post_check.wait();
+        finalizer.join().expect("finalization reservation thread");
+        drop(waiter);
+        assert_eq!(db.foreground_connection_waiter_count(), 0);
+        assert!(db.try_reserve_maintenance_finalization().is_some());
+    }
+
+    #[test]
+    fn public_no_wait_entry_is_scoped_and_fails_fast() {
+        let db = test_db();
+        let held = db.lock().expect("hold connection");
+        let no_wait = db.enter_maintenance_connection_no_wait();
+        let result = db.with_conn(|_| Ok::<_, anyhow::Error>(()));
+        let error = result.expect_err("no-wait entry must not block on owner");
+        assert!(error
+            .to_string()
+            .starts_with("NEX_MAINTENANCE_CONNECTION_PREEMPTED"));
+        drop(no_wait);
+        drop(held);
+        db.with_conn(|_| Ok::<_, anyhow::Error>(()))
+            .expect("dropping the guard restores normal acquisition");
     }
 
     #[test]
@@ -1253,6 +1329,52 @@ mod tests {
         assert!(message.contains("progress handler reset failpoint"));
         assert!(message.contains("autocommit verification failpoint"));
         assert!(!db.connection_reusable());
+    }
+
+    #[test]
+    fn all_cleanup_failures_are_aggregated_and_quarantine_connection() {
+        let db = test_db();
+        set_maintenance_cleanup_failpoints_for_test(MaintenanceCleanupFailpoints {
+            rollback: true,
+            autocommit_check: true,
+            progress_reset: true,
+            busy_timeout_restore: true,
+        });
+        let result =
+            with_narrative_maintenance_connection(&db, Duration::ZERO, 1, stop_flag(), |conn| {
+                conn.execute_batch("BEGIN")?;
+                Err::<(), _>(anyhow!("operation failpoint"))
+            })
+            .expect("acquisition")
+            .expect("scope");
+        assert!(!result.receipt.connection_reusable);
+        let error = result.into_result().expect_err("cleanup must fail");
+        let message = error.to_string();
+        for fragment in [
+            "operation failpoint",
+            "rollback failpoint",
+            "progress handler reset failpoint",
+            "busy timeout restore failpoint",
+            "autocommit verification failpoint",
+        ] {
+            assert!(
+                message.contains(fragment),
+                "missing '{fragment}' in {message}"
+            );
+        }
+        assert!(!db.connection_reusable());
+        let reason = db.connection_unusable_reason().expect("quarantine reason");
+        for fragment in [
+            "rollback failpoint",
+            "progress handler reset failpoint",
+            "busy timeout restore failpoint",
+            "autocommit verification failpoint",
+        ] {
+            assert!(
+                reason.contains(fragment),
+                "missing '{fragment}' in {reason}"
+            );
+        }
     }
 
     #[test]
