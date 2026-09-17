@@ -55,6 +55,7 @@ import type {
   MainIssuedCallerIdentity,
   ProfileEgressGate,
 } from "./profileEgress.js";
+import type { NarrativeMaintenanceScheduler } from "./narrativeMaintenance.js";
 
 const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_create",
@@ -2040,6 +2041,10 @@ export function registerIpcRouter(
     LicenseValidationScheduler,
     "runManualOperation"
   >,
+  narrativeMaintenance?: Pick<
+    NarrativeMaintenanceScheduler,
+    "quiesceForWorkspaceSwitch"
+  >,
 ): void {
   const relatedScenesReconciler = createRelatedScenesReconciler({
     reconcile: async () => {
@@ -2127,6 +2132,9 @@ export function registerIpcRouter(
           });
         let envelope: Envelope;
         try {
+          if (cmd === "open_workspace") {
+            await narrativeMaintenance?.quiesceForWorkspaceSwitch?.();
+          }
           envelope =
             licenseValidation && MANUAL_LICENSE_COMMANDS.has(cmd)
               ? await licenseValidation.runManualOperation(dispatch)

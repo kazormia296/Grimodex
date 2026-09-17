@@ -3039,6 +3039,57 @@ pub struct Backend {
     state: Arc<AppState>,
 }
 
+/// Drop guard for a process-local maintenance attempt. Any early return,
+/// workspace mismatch, adapter error, or panic path settles as interrupted
+/// and releases the recovery gate. The only success path must explicitly pass
+/// through `finalize_success`, which linearizes cancellation against the
+/// final result.
+struct NarrativeMaintenanceAttemptGuard {
+    state: Arc<AppState>,
+    attempt_id: String,
+    published_generation: u64,
+    finalized: bool,
+}
+
+impl NarrativeMaintenanceAttemptGuard {
+    fn new(state: Arc<AppState>, attempt_id: String, published_generation: u64) -> Self {
+        Self {
+            state,
+            attempt_id,
+            published_generation,
+            finalized: false,
+        }
+    }
+
+    fn finalize_success(&mut self) -> anyhow::Result<bool> {
+        let granted = self
+            .state
+            .narrative_maintenance_attempts
+            .grant_finalize(&self.attempt_id)?;
+        let receipt = self.state.narrative_maintenance_attempts.settle(
+            &self.attempt_id,
+            granted,
+            granted.then_some(self.published_generation),
+        )?;
+        self.finalized = true;
+        Ok(receipt.status == "succeeded")
+    }
+}
+
+impl Drop for NarrativeMaintenanceAttemptGuard {
+    fn drop(&mut self) {
+        if !self.finalized {
+            let _ = self
+                .state
+                .narrative_maintenance_attempts
+                .settle(&self.attempt_id, false, None);
+        }
+        self.state
+            .narrative_maintenance_recovery_gate
+            .release_attempt(&self.attempt_id);
+    }
+}
+
 async fn settle_profile_egress_startup(state: &Arc<AppState>) -> Result<String> {
     let initial = state.profile_egress.status();
     if !initial.restricted {
@@ -3454,6 +3505,76 @@ impl Backend {
         .await
     }
 
+    /// Register one process-local maintenance attempt against the exact
+    /// workspace recovery generation. This is main-only and has no durable
+    /// schema; durable Run/Task/Attempt rows remain owned by the existing
+    /// maintenance runtime.
+    #[napi]
+    pub async fn begin_narrative_maintenance_attempt(
+        &self,
+        attempt_id: String,
+        workspace_binding: serde_json::Value,
+    ) -> Result<String> {
+        let binding: MaintenanceWorkspaceBinding =
+            from_wire("workspaceBinding", workspace_binding).map_err(app_err_to_napi)?;
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let authority = active_database(&state.ws)?;
+            let authority_id = narrative_authority_id(&authority);
+            let current_binding = state
+                .narrative_maintenance_recovery_gate
+                .binding_for_authority(&authority_id);
+            if current_binding != binding {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_ATTEMPT_BINDING_MISMATCH: attempt is bound to an old workspace generation"
+                )));
+            }
+            state
+                .narrative_maintenance_recovery_gate
+                .register_attempt(&attempt_id, &binding)?;
+            state
+                .narrative_maintenance_attempts
+                .begin(&attempt_id, &binding)?;
+            Ok(serde_json::json!({
+                "status": "open",
+                "attemptId": attempt_id,
+                "authorityId": binding.authority_id,
+                "generation": binding.generation,
+            })
+            .to_string())
+        })
+        .await
+    }
+
+    /// Request cancellation and wait until the Native attempt has produced a
+    /// terminal receipt. A late request after FinalizeGranted observes the
+    /// already-successful receipt and cannot rewrite it.
+    #[napi]
+    pub async fn cancel_narrative_maintenance_attempt(
+        &self,
+        attempt_id: String,
+        reason: String,
+    ) -> Result<String> {
+        let immediate = self
+            .state
+            .narrative_maintenance_attempts
+            .request_cancel(&attempt_id, &reason)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let receipt = match immediate {
+            Some(receipt) => receipt,
+            None => self
+                .state
+                .narrative_maintenance_attempts
+                .wait_for_terminal(&attempt_id)
+                .await
+                .map_err(|error| Error::from_reason(error.to_string()))?,
+        };
+        self.state
+            .narrative_maintenance_recovery_gate
+            .release_attempt(&attempt_id);
+        serde_json::to_string(&receipt).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
     /// Electron main-only serialized system-work cycle.
     ///
     /// The request is validated in shared Rust, then executed against one
@@ -3471,7 +3592,39 @@ impl Backend {
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            let request: MaintenanceCycleRequest = from_wire("payload", payload)?;
+            let attempt_id = payload
+                .get("attemptId")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned);
+            let mut request_payload = payload;
+            if let Some(object) = request_payload.as_object_mut() {
+                object.remove("attemptId");
+            }
+            let request: MaintenanceCycleRequest = from_wire("payload", request_payload)?;
+            let mut attempt_guard = if let Some(attempt_id) = attempt_id {
+                let binding = request.workspace_binding.as_ref().ok_or_else(|| {
+                    AppError::Anyhow(anyhow::anyhow!(
+                        "NEX_MAINTENANCE_ATTEMPT_BINDING_MISSING: attempt requires workspaceBinding"
+                    ))
+                })?;
+                let work_keys = request.work.iter().map(|item| item.work_key.clone());
+                if let Err(error) = state
+                    .narrative_maintenance_attempts
+                    .start(&attempt_id, work_keys)
+                {
+                    state
+                        .narrative_maintenance_recovery_gate
+                        .release_attempt(&attempt_id);
+                    return Err(AppError::Anyhow(error));
+                }
+                Some(NarrativeMaintenanceAttemptGuard::new(
+                    Arc::clone(&state),
+                    attempt_id,
+                    binding.generation,
+                ))
+            } else {
+                None
+            };
             let normalized_work = narrative_extraction::preflight_maintenance_cycle_request(&request)
                 .map_err(AppError::Anyhow)?;
             let authority = match active_database(&state.ws) {
@@ -3845,6 +3998,14 @@ impl Backend {
                             );
                         }
                     }
+                }
+            }
+            if let Some(guard) = attempt_guard.as_mut() {
+                let finalized = guard.finalize_success().map_err(AppError::Anyhow)?;
+                if !finalized {
+                    return Err(AppError::Anyhow(anyhow::anyhow!(
+                        "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won before finalization"
+                    )));
                 }
             }
             Ok(json)
@@ -5162,6 +5323,12 @@ impl Backend {
                     .narrative_maintenance_recovery_gate
                     .mark_workspace_swapped();
             };
+            if let Err(error) = state
+                .narrative_maintenance_recovery_gate
+                .assert_no_active_attempts()
+            {
+                return (trace, Err(AppError::Anyhow(error)));
+            }
             let result = match open_workspace_sync_traced(
                 &state.ws,
                 &state.gs,
@@ -5376,6 +5543,10 @@ impl Backend {
     pub async fn restore_backup(&self, file_name: String) -> Result<()> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            state
+                .narrative_maintenance_recovery_gate
+                .assert_no_active_attempts()
+                .map_err(AppError::Anyhow)?;
             let state_for_hook = Arc::clone(&state);
             let workspace_binding = active_workspace_path(&state.ws)
                 .ok()

@@ -5,6 +5,7 @@
 //! app_data_dir は Electron main (`app.getPath("userData")`) から
 //! コンストラクタで明示注入される (dirs:: を napi 内で解決しない。§4.2)。
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -115,6 +116,7 @@ struct NarrativeMaintenanceRecoveryState {
     workspace_generation: u64,
     authority_id: Option<String>,
     recovered_work_keys: HashSet<String>,
+    active_attempts: HashMap<String, MaintenanceWorkspaceBinding>,
 }
 
 pub struct NarrativeMaintenanceRecoveryGate {
@@ -501,12 +503,68 @@ impl Default for NarrativeMaintenanceRecoveryGate {
                 workspace_generation: allocate_narrative_maintenance_generation(None),
                 authority_id: None,
                 recovered_work_keys: HashSet::new(),
+                active_attempts: HashMap::new(),
             }),
         }
     }
 }
 
 impl NarrativeMaintenanceRecoveryGate {
+    /// Register a process-local attempt before it can touch the pinned
+    /// authority. Workspace open/restore checks this same gate immediately
+    /// before swapping authorities.
+    pub fn register_attempt(
+        &self,
+        attempt_id: &str,
+        binding: &MaintenanceWorkspaceBinding,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(!attempt_id.trim().is_empty(), "attemptId is required");
+        binding.validate()?;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        anyhow::ensure!(
+            state.authority_id.as_deref() == Some(binding.authority_id.as_str())
+                && state.workspace_generation == binding.generation,
+            "NEX_MAINTENANCE_ATTEMPT_BINDING_MISMATCH: attempt is bound to an old workspace generation"
+        );
+        if let Some(existing) = state.active_attempts.get(attempt_id) {
+            anyhow::ensure!(
+                existing == binding,
+                "NEX_MAINTENANCE_ATTEMPT_BINDING_CONFLICT: attemptId is already bound to another workspace"
+            );
+            return Ok(());
+        }
+        state
+            .active_attempts
+            .insert(attempt_id.to_string(), binding.clone());
+        Ok(())
+    }
+
+    pub fn release_attempt(&self, attempt_id: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.active_attempts.remove(attempt_id);
+    }
+
+    /// Fail closed before shared workspace open/restore is allowed to swap
+    /// its authority. Main quiescence is the normal owner; this native check
+    /// closes the final direct-native old-generation race.
+    pub fn assert_no_active_attempts(&self) -> anyhow::Result<()> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        anyhow::ensure!(
+            state.active_attempts.is_empty(),
+            "NEX_MAINTENANCE_ATTEMPT_ACTIVE: workspace swap requires a terminal maintenance receipt"
+        );
+        Ok(())
+    }
+
     /// Atomically bind a live authority identity to its recovery generation.
     /// The identity is process-local and supplied by the pinned Arc in the
     /// N-API adapter; changing it clears every recovered WorkKey before the
@@ -617,6 +675,304 @@ impl NarrativeMaintenanceRecoveryGate {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.workspace_generation == generation {
             state.recovered_work_keys.insert(work_key.to_string());
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrativeMaintenanceCleanupOutcome {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrativeMaintenanceWorkTerminal {
+    pub work_key: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrativeMaintenanceTerminalReceipt {
+    pub schema_version: u8,
+    pub attempt_id: String,
+    pub status: String,
+    pub stop_reason: Option<String>,
+    pub generation: u64,
+    pub published_generation: Option<u64>,
+    pub works: Vec<NarrativeMaintenanceWorkTerminal>,
+    pub cleanup: NarrativeMaintenanceCleanupOutcome,
+    pub connection_reusable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NarrativeMaintenanceAttemptState {
+    Open,
+    StopRequested,
+    FinalizeGranted,
+    Interrupted,
+    Succeeded,
+}
+
+struct NarrativeMaintenanceAttemptEntry {
+    authority_id: String,
+    generation: u64,
+    state: NarrativeMaintenanceAttemptState,
+    stop_reason: Option<String>,
+    running: bool,
+    works: Vec<NarrativeMaintenanceWorkTerminal>,
+    terminal: Option<NarrativeMaintenanceTerminalReceipt>,
+    notify: Arc<Notify>,
+}
+
+/// Process-local owner for maintenance attempt cancellation and terminal
+/// receipts. Durable Run/Task/Attempt state remains in grimodex-db; this map
+/// only closes the main/native handoff race around one cycle.
+pub struct NarrativeMaintenanceAttemptRegistry {
+    state: Mutex<HashMap<String, NarrativeMaintenanceAttemptEntry>>,
+}
+
+impl Default for NarrativeMaintenanceAttemptRegistry {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl NarrativeMaintenanceAttemptRegistry {
+    pub fn begin(
+        &self,
+        attempt_id: &str,
+        binding: &MaintenanceWorkspaceBinding,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(!attempt_id.trim().is_empty(), "attemptId is required");
+        binding.validate()?;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = state.get(attempt_id) {
+            anyhow::ensure!(
+                existing.authority_id == binding.authority_id
+                    && existing.generation == binding.generation,
+                "NEX_MAINTENANCE_ATTEMPT_BINDING_CONFLICT: attemptId is already bound to another workspace"
+            );
+            anyhow::ensure!(
+                existing.terminal.is_none(),
+                "NEX_MAINTENANCE_ATTEMPT_REUSED: terminal attempt ids cannot be reused"
+            );
+            return Ok(());
+        }
+        state.insert(
+            attempt_id.to_string(),
+            NarrativeMaintenanceAttemptEntry {
+                authority_id: binding.authority_id.clone(),
+                generation: binding.generation,
+                state: NarrativeMaintenanceAttemptState::Open,
+                stop_reason: None,
+                running: false,
+                works: Vec::new(),
+                terminal: None,
+                notify: Arc::new(Notify::new()),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn start(
+        &self,
+        attempt_id: &str,
+        work_keys: impl IntoIterator<Item = String>,
+    ) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get_mut(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        anyhow::ensure!(
+            entry.terminal.is_none(),
+            "NEX_MAINTENANCE_ATTEMPT_TERMINAL: attempt already settled"
+        );
+        anyhow::ensure!(
+            entry.state != NarrativeMaintenanceAttemptState::StopRequested,
+            "NEX_MAINTENANCE_ATTEMPT_CANCELLED: attempt cancellation was accepted before work started"
+        );
+        entry.running = true;
+        entry.works = work_keys
+            .into_iter()
+            .map(|work_key| NarrativeMaintenanceWorkTerminal {
+                work_key,
+                status: "not-started".to_string(),
+                error: None,
+            })
+            .collect();
+        for work in &mut entry.works {
+            work.status = "running".to_string();
+        }
+        Ok(())
+    }
+
+    pub fn grant_finalize(&self, attempt_id: &str) -> anyhow::Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get_mut(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        if entry.terminal.is_some() {
+            return Ok(false);
+        }
+        if entry.state == NarrativeMaintenanceAttemptState::StopRequested {
+            return Ok(false);
+        }
+        entry.state = NarrativeMaintenanceAttemptState::FinalizeGranted;
+        Ok(true)
+    }
+
+    fn receipt_for(
+        entry: &NarrativeMaintenanceAttemptEntry,
+        status: &str,
+        published_generation: Option<u64>,
+    ) -> NarrativeMaintenanceTerminalReceipt {
+        let mut works = entry.works.clone();
+        for work in &mut works {
+            if work.status == "running" {
+                work.status = if status == "succeeded" {
+                    "succeeded".to_string()
+                } else {
+                    "interrupted".to_string()
+                };
+            }
+        }
+        NarrativeMaintenanceTerminalReceipt {
+            schema_version: 1,
+            attempt_id: String::new(),
+            status: status.to_string(),
+            stop_reason: entry.stop_reason.clone(),
+            generation: entry.generation,
+            published_generation,
+            works,
+            cleanup: NarrativeMaintenanceCleanupOutcome {
+                status: "clean".to_string(),
+                error: None,
+            },
+            connection_reusable: true,
+        }
+    }
+
+    pub fn settle(
+        &self,
+        attempt_id: &str,
+        succeeded: bool,
+        published_generation: Option<u64>,
+    ) -> anyhow::Result<NarrativeMaintenanceTerminalReceipt> {
+        let notify;
+        let receipt;
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let entry = state
+                .get_mut(attempt_id)
+                .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+            if let Some(receipt) = entry.terminal.clone() {
+                return Ok(receipt);
+            }
+            let accepted_success =
+                succeeded && entry.state == NarrativeMaintenanceAttemptState::FinalizeGranted;
+            let status = if accepted_success {
+                "succeeded"
+            } else {
+                "interrupted"
+            };
+            entry.state = if accepted_success {
+                NarrativeMaintenanceAttemptState::Succeeded
+            } else {
+                NarrativeMaintenanceAttemptState::Interrupted
+            };
+            entry.running = false;
+            let mut new_receipt = Self::receipt_for(entry, status, published_generation);
+            new_receipt.attempt_id = attempt_id.to_string();
+            entry.terminal = Some(new_receipt.clone());
+            notify = Arc::clone(&entry.notify);
+            receipt = new_receipt;
+        }
+        notify.notify_waiters();
+        Ok(receipt)
+    }
+
+    /// Request cancellation. `Some` means the attempt was not running and is
+    /// already terminal; `None` means the caller must await the Notify.
+    pub fn request_cancel(
+        &self,
+        attempt_id: &str,
+        reason: &str,
+    ) -> anyhow::Result<Option<NarrativeMaintenanceTerminalReceipt>> {
+        let notify;
+        let mut immediate;
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let entry = state
+                .get_mut(attempt_id)
+                .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+            if let Some(receipt) = entry.terminal.clone() {
+                return Ok(Some(receipt));
+            }
+            if entry.state != NarrativeMaintenanceAttemptState::FinalizeGranted {
+                entry.state = NarrativeMaintenanceAttemptState::StopRequested;
+                entry.stop_reason = Some(reason.to_string());
+            }
+            notify = Arc::clone(&entry.notify);
+            immediate = if entry.running {
+                None
+            } else {
+                Some(Self::receipt_for(entry, "interrupted", None))
+            };
+            if let Some(mut receipt) = immediate.clone() {
+                receipt.attempt_id = attempt_id.to_string();
+                entry.state = NarrativeMaintenanceAttemptState::Interrupted;
+                entry.terminal = Some(receipt.clone());
+                immediate = Some(receipt);
+            }
+        }
+        if immediate.is_some() {
+            notify.notify_waiters();
+        }
+        Ok(immediate)
+    }
+
+    pub async fn wait_for_terminal(
+        &self,
+        attempt_id: &str,
+    ) -> anyhow::Result<NarrativeMaintenanceTerminalReceipt> {
+        loop {
+            let notify = {
+                let state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let entry = state.get(attempt_id).ok_or_else(|| {
+                    anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}")
+                })?;
+                if let Some(receipt) = entry.terminal.clone() {
+                    return Ok(receipt);
+                }
+                Arc::clone(&entry.notify)
+            };
+            notify.notified().await;
         }
     }
 }
@@ -829,6 +1185,9 @@ pub struct AppState {
     /// Workspace-generation-scoped startup-recovery gate for the main-only
     /// narrative maintenance cycle.
     pub narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate,
+    /// Process-local attempt state used to linearize cancel/finalize and
+    /// prevent workspace generation swaps before terminal cleanup.
+    pub narrative_maintenance_attempts: NarrativeMaintenanceAttemptRegistry,
     /// One-shot, CI-only product-journey configuration. This is deliberately
     /// not part of the renderer/preload bridge or shared IPC contract.
     pub narrative_maintenance_ci_seam: NarrativeMaintenanceCiSeamState,
@@ -921,6 +1280,7 @@ impl AppState {
                 reranker_resource_root,
             )),
             narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate::default(),
+            narrative_maintenance_attempts: NarrativeMaintenanceAttemptRegistry::default(),
             narrative_maintenance_ci_seam: NarrativeMaintenanceCiSeamState::default(),
             narrative_maintenance_foreground_barrier:
                 NarrativeMaintenanceForegroundBarrierState::default(),
@@ -1187,6 +1547,7 @@ mod tests {
                 workspace_generation: MAX_SAFE_GENERATION - 1,
                 authority_id: None,
                 recovered_work_keys: HashSet::new(),
+                active_attempts: HashMap::new(),
             }),
         };
         let first_rollover = near_max.mark_workspace_swapped();
@@ -1201,6 +1562,7 @@ mod tests {
                 workspace_generation: MAX_SAFE_GENERATION,
                 authority_id: None,
                 recovered_work_keys: HashSet::new(),
+                active_attempts: HashMap::new(),
             }),
         };
         let at_max_rollover = at_max.mark_workspace_swapped();

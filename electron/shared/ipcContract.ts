@@ -957,6 +957,14 @@ export interface NapiBackendLike {
   getNarrativeMaintenanceWorkspaceBinding?(): string | null;
   // renderer/preload には公開しない serialized system-work seam。入力は
   // Electron main scheduler が coalesce 済みの project-scoped work DTO。
+  beginNarrativeMaintenanceAttempt?(
+    attemptId: string,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  cancelNarrativeMaintenanceAttempt?(
+    attemptId: string,
+    reason: string,
+  ): Promise<string>;
   runNarrativeMaintenanceCycle?(payload: unknown): Promise<string>;
   // post_effect run 系（Phase 3d）。settings は dispatch が1回だけ読んだ
   // AiSettings snapshot。API key は未登録時 null、safeStorage lookup 自体が

@@ -107,6 +107,10 @@ export declare class Backend {
    * non-ACK, never an acknowledgement against a replacement workspace.
    */
   ackNarrativeMaintenanceWakeOutbox(ids: Array<string>, workspaceBinding: any): Promise<string>
+  /** Main-only process-local lifecycle registration; no durable schema. */
+  beginNarrativeMaintenanceAttempt(attemptId: string, workspaceBinding: any): Promise<string>
+  /** Main-only cancellation; resolves only after a terminal receipt exists. */
+  cancelNarrativeMaintenanceAttempt(attemptId: string, reason: string): Promise<string>
   /**
    * Electron main-only serialized system-work cycle.
    *

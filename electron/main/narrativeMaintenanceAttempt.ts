@@ -1,0 +1,340 @@
+/**
+ * Process-local linearization for one main-owned maintenance attempt.
+ *
+ * Native remains the owner of durable Run/Task/Attempt state.  This module
+ * only owns the short-lived boundary between the scheduler, cancellation,
+ * and the final native receipt.  In particular, a delivery/run creation
+ * acknowledgement does not close the cancellation window; only the explicit
+ * finalization transition does.
+ */
+
+export type NarrativeMaintenanceAttemptState =
+  | "open"
+  | "stop-requested"
+  | "finalize-granted"
+  | "interrupted"
+  | "succeeded";
+
+export type NarrativeMaintenanceStopReason =
+  | "cancelled"
+  | "timeout"
+  | "closed"
+  | "workspace-generation-changed"
+  | "foreground-preempted";
+
+export type NarrativeMaintenanceWorkTerminalStatus =
+  | "succeeded"
+  | "interrupted"
+  | "not-started"
+  | "failed";
+
+export interface NarrativeMaintenanceWorkTerminal {
+  readonly workKey: string;
+  readonly status: NarrativeMaintenanceWorkTerminalStatus;
+  readonly error?: string;
+}
+
+export interface NarrativeMaintenanceCleanupOutcome {
+  readonly status: "clean" | "failed";
+  readonly error?: string;
+}
+
+export interface NarrativeMaintenanceTerminalReceipt {
+  readonly schemaVersion: 1;
+  readonly attemptId: string;
+  readonly state: "interrupted" | "succeeded";
+  readonly stopReason: NarrativeMaintenanceStopReason | null;
+  readonly generation: number;
+  readonly publishedGeneration: number | null;
+  readonly works: readonly NarrativeMaintenanceWorkTerminal[];
+  readonly cleanup: NarrativeMaintenanceCleanupOutcome;
+  readonly connectionReusable: boolean;
+}
+
+export interface NarrativeMaintenanceAttemptSnapshot {
+  readonly attemptId: string;
+  readonly state: NarrativeMaintenanceAttemptState;
+  readonly authorityId: string;
+  readonly generation: number;
+  readonly stopReason: NarrativeMaintenanceStopReason | null;
+  readonly works: readonly NarrativeMaintenanceWorkTerminal[];
+}
+
+export interface NarrativeMaintenanceAttemptBinding {
+  readonly authorityId: string;
+  readonly generation: number;
+}
+
+export interface NarrativeMaintenanceAttemptController {
+  begin(
+    attemptId: string,
+    binding: NarrativeMaintenanceAttemptBinding,
+  ): NarrativeMaintenanceAttemptSnapshot;
+  addWork(attemptId: string, workKey: string): void;
+  markWorkStarted(attemptId: string, workKey: string): void;
+  requestStop(
+    attemptId: string,
+    reason: NarrativeMaintenanceStopReason,
+  ): Promise<NarrativeMaintenanceTerminalReceipt>;
+  grantFinalize(attemptId: string): boolean;
+  settle(
+    attemptId: string,
+    outcome: {
+      readonly state: "interrupted" | "succeeded";
+      readonly publishedGeneration?: number | null;
+      readonly cleanup?: NarrativeMaintenanceCleanupOutcome;
+      readonly connectionReusable?: boolean;
+      readonly errorByWorkKey?: ReadonlyMap<string, string>;
+    },
+  ): NarrativeMaintenanceTerminalReceipt;
+  snapshot(attemptId: string): NarrativeMaintenanceAttemptSnapshot | null;
+  waitForTerminal(
+    attemptId: string,
+  ): Promise<NarrativeMaintenanceTerminalReceipt>;
+  activeAttemptIds(): readonly string[];
+}
+
+interface MutableWorkTerminal {
+  workKey: string;
+  status: NarrativeMaintenanceWorkTerminalStatus;
+  started: boolean;
+  error?: string;
+}
+
+interface MutableAttempt {
+  attemptId: string;
+  authorityId: string;
+  generation: number;
+  state: NarrativeMaintenanceAttemptState;
+  stopReason: NarrativeMaintenanceStopReason | null;
+  works: Map<string, MutableWorkTerminal>;
+  terminal: NarrativeMaintenanceTerminalReceipt | null;
+  waiters: Array<(
+    receipt: NarrativeMaintenanceTerminalReceipt,
+  ) => void>;
+}
+
+function assertAttemptId(value: string): void {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("maintenance attemptId is required");
+  }
+}
+
+function assertBinding(binding: NarrativeMaintenanceAttemptBinding): void {
+  if (
+    !binding ||
+    typeof binding.authorityId !== "string" ||
+    binding.authorityId.trim().length === 0 ||
+    !Number.isSafeInteger(binding.generation) ||
+    binding.generation <= 0
+  ) {
+    throw new Error("maintenance workspace binding is invalid");
+  }
+}
+
+function cloneWorks(
+  works: Map<string, MutableWorkTerminal>,
+): readonly NarrativeMaintenanceWorkTerminal[] {
+  return [...works.values()].map((work) =>
+    work.error === undefined
+      ? { workKey: work.workKey, status: work.status }
+      : { workKey: work.workKey, status: work.status, error: work.error },
+  );
+}
+
+function cloneSnapshot(
+  attempt: MutableAttempt,
+): NarrativeMaintenanceAttemptSnapshot {
+  return {
+    attemptId: attempt.attemptId,
+    state: attempt.state,
+    authorityId: attempt.authorityId,
+    generation: attempt.generation,
+    stopReason: attempt.stopReason,
+    works: cloneWorks(attempt.works),
+  };
+}
+
+function makeTerminalReceipt(
+  attempt: MutableAttempt,
+  state: "interrupted" | "succeeded",
+  publishedGeneration: number | null,
+  cleanup: NarrativeMaintenanceCleanupOutcome,
+  connectionReusable: boolean,
+  errorByWorkKey?: ReadonlyMap<string, string>,
+): NarrativeMaintenanceTerminalReceipt {
+  const works = [...attempt.works.values()].map((work) => {
+    const error = errorByWorkKey?.get(work.workKey) ?? work.error;
+    return error === undefined
+      ? { workKey: work.workKey, status: work.status }
+      : { workKey: work.workKey, status: work.status, error };
+  });
+  return {
+    schemaVersion: 1,
+    attemptId: attempt.attemptId,
+    state,
+    stopReason: attempt.stopReason,
+    generation: attempt.generation,
+    publishedGeneration,
+    works,
+    cleanup,
+    connectionReusable,
+  };
+}
+
+/**
+ * Create a synchronous state owner.  Waiting is promise-based, but all state
+ * transitions themselves are synchronous, which makes cancel/finalize order
+ * deterministic even when callers are on different async turns.
+ */
+export function createNarrativeMaintenanceAttemptController(): NarrativeMaintenanceAttemptController {
+  const attempts = new Map<string, MutableAttempt>();
+
+  const requireAttempt = (attemptId: string): MutableAttempt => {
+    assertAttemptId(attemptId);
+    const attempt = attempts.get(attemptId);
+    if (!attempt) {
+      throw new Error(`unknown maintenance attempt: ${attemptId}`);
+    }
+    return attempt;
+  };
+
+  const settle = (
+    attempt: MutableAttempt,
+    outcome: {
+      readonly state: "interrupted" | "succeeded";
+      readonly publishedGeneration?: number | null;
+      readonly cleanup?: NarrativeMaintenanceCleanupOutcome;
+      readonly connectionReusable?: boolean;
+      readonly errorByWorkKey?: ReadonlyMap<string, string>;
+    },
+  ): NarrativeMaintenanceTerminalReceipt => {
+    if (attempt.terminal) return attempt.terminal;
+    if (outcome.state === "succeeded" && attempt.state === "stop-requested") {
+      // A stop request linearized before finalization wins.  The caller must
+      // rollback/clean up and report interruption instead of publishing.
+      outcome = { ...outcome, state: "interrupted" };
+    }
+    attempt.state = outcome.state;
+    if (outcome.state === "interrupted") {
+      for (const work of attempt.works.values()) {
+        if (work.status === "succeeded" || work.status === "failed") continue;
+        work.status = work.started ? "interrupted" : "not-started";
+      }
+    } else {
+      for (const work of attempt.works.values()) {
+        if (work.status === "not-started") work.status = "succeeded";
+      }
+    }
+    const receipt = makeTerminalReceipt(
+      attempt,
+      outcome.state,
+      outcome.publishedGeneration ?? null,
+      outcome.cleanup ?? { status: "clean" },
+      outcome.connectionReusable ?? true,
+      outcome.errorByWorkKey,
+    );
+    attempt.terminal = receipt;
+    for (const waiter of attempt.waiters.splice(0)) waiter(receipt);
+    return receipt;
+  };
+
+  return {
+    begin(attemptId, binding) {
+      assertAttemptId(attemptId);
+      assertBinding(binding);
+      const existing = attempts.get(attemptId);
+      if (existing) {
+        if (
+          existing.authorityId !== binding.authorityId ||
+          existing.generation !== binding.generation
+        ) {
+          throw new Error("maintenance attempt binding conflict");
+        }
+        return cloneSnapshot(existing);
+      }
+      const attempt: MutableAttempt = {
+        attemptId,
+        authorityId: binding.authorityId,
+        generation: binding.generation,
+        state: "open",
+        stopReason: null,
+        works: new Map(),
+        terminal: null,
+        waiters: [],
+      };
+      attempts.set(attemptId, attempt);
+      return cloneSnapshot(attempt);
+    },
+
+    addWork(attemptId, workKey) {
+      if (typeof workKey !== "string" || workKey.trim().length === 0) {
+        throw new Error("maintenance workKey is required");
+      }
+      const attempt = requireAttempt(attemptId);
+      if (attempt.terminal) return;
+      if (!attempt.works.has(workKey)) {
+        attempt.works.set(workKey, {
+          workKey,
+          status: "not-started",
+          started: false,
+        });
+      }
+    },
+
+    markWorkStarted(attemptId, workKey) {
+      const attempt = requireAttempt(attemptId);
+      if (attempt.terminal || attempt.state === "stop-requested") return;
+      const work = attempt.works.get(workKey);
+      if (!work) throw new Error(`unknown maintenance work: ${workKey}`);
+      work.started = true;
+    },
+
+    async requestStop(attemptId, reason) {
+      const attempt = requireAttempt(attemptId);
+      if (attempt.terminal) return attempt.terminal;
+      if (attempt.state === "finalize-granted") {
+        return new Promise((resolve) => attempt.waiters.push(resolve));
+      }
+      if (attempt.state === "open") {
+        attempt.state = "stop-requested";
+        attempt.stopReason = reason;
+        // A begin/cancel race with no work has no native operation to wait on.
+        if (attempt.works.size === 0) {
+          return settle(attempt, { state: "interrupted" });
+        }
+      }
+      return this.waitForTerminal(attemptId);
+    },
+
+    grantFinalize(attemptId) {
+      const attempt = requireAttempt(attemptId);
+      if (attempt.terminal) return false;
+      if (attempt.state === "stop-requested") return false;
+      if (attempt.state !== "open") return attempt.state === "finalize-granted";
+      attempt.state = "finalize-granted";
+      return true;
+    },
+
+    settle(attemptId, outcome) {
+      return settle(requireAttempt(attemptId), outcome);
+    },
+
+    snapshot(attemptId) {
+      const attempt = attempts.get(attemptId);
+      return attempt ? cloneSnapshot(attempt) : null;
+    },
+
+    waitForTerminal(attemptId) {
+      const attempt = requireAttempt(attemptId);
+      if (attempt.terminal) return Promise.resolve(attempt.terminal);
+      return new Promise((resolve) => attempt.waiters.push(resolve));
+    },
+
+    activeAttemptIds() {
+      return [...attempts.values()]
+        .filter((attempt) => attempt.terminal === null)
+        .map((attempt) => attempt.attemptId);
+    },
+  };
+}

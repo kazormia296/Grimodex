@@ -1,3 +1,10 @@
+import { randomUUID } from "node:crypto";
+
+import {
+  createNarrativeMaintenanceAttemptController,
+  type NarrativeMaintenanceStopReason,
+} from "./narrativeMaintenanceAttempt.js";
+
 /**
  * Electron main 専用の Narrative Maintenance scheduler (C2-5A).
  *
@@ -55,6 +62,8 @@ export interface NarrativeMaintenanceCycleRequest {
   work: readonly NarrativeMaintenanceWork[];
   wakeProjectIds: readonly string[];
   workspaceBinding?: NarrativeMaintenanceWorkspaceBinding;
+  /** Process-local lifecycle identity; Native does not persist this field. */
+  attemptId?: string;
 }
 
 export interface NarrativeMaintenanceDeliveryFailure {
@@ -119,6 +128,15 @@ export interface NarrativeMaintenanceBackendLike {
   runNarrativeMaintenanceCycle?(
     request: NarrativeMaintenanceCycleRequest,
   ): Promise<unknown>;
+  /** Main-only attempt lifecycle. These are intentionally absent from IPC. */
+  beginNarrativeMaintenanceAttempt?(
+    attemptId: string,
+    workspaceBinding: NarrativeMaintenanceWorkspaceBinding,
+  ): Promise<unknown> | unknown;
+  cancelNarrativeMaintenanceAttempt?(
+    attemptId: string,
+    reason: NarrativeMaintenanceStopReason,
+  ): Promise<unknown> | unknown;
   /**
    * Persist a terminal delivery failure before the scheduler drops its
    * process-local claim. Native returns an explicit accepted receipt.
@@ -155,7 +173,17 @@ export interface NarrativeMaintenanceScheduler {
     hasMore: boolean;
     timerScheduled: boolean;
   };
-  dispose(): void;
+  /** Stop scheduling, cancel the active attempt, and await its terminal receipt. */
+  quiesceForWorkspaceSwitch?(): Promise<void>;
+  beginNarrativeMaintenanceAttempt?(
+    attemptId: string,
+    workspaceBinding: NarrativeMaintenanceWorkspaceBinding,
+  ): Promise<unknown>;
+  cancelNarrativeMaintenanceAttempt?(
+    attemptId: string,
+    reason: NarrativeMaintenanceStopReason,
+  ): Promise<unknown>;
+  dispose(): void | Promise<void>;
 }
 
 export interface NarrativeMaintenanceSchedulerOptions {
@@ -845,6 +873,10 @@ export function createNarrativeMaintenanceScheduler(
   let started = false;
   let disposed = false;
   let inFlight = false;
+  let inFlightPromise: Promise<void> | null = null;
+  let quiescing = false;
+  let activeAttemptId: string | null = null;
+  const activeAttemptController = createNarrativeMaintenanceAttemptController();
   let cycleGeneration = 0;
   let mutationRevision = 0;
   let lastHasMore = false;
@@ -888,14 +920,18 @@ export function createNarrativeMaintenanceScheduler(
   };
 
   const schedule = (delayMs: number): void => {
-    if (disposed) return;
+    if (disposed || quiescing) return;
     clearCoordinatorWait();
     clearTimer();
     noteMutation();
     timer = setTimeout(() => {
       noteMutation();
       timer = null;
-      void runCycle();
+      const cycle = runCycle();
+      inFlightPromise = cycle;
+      void cycle.finally(() => {
+        if (inFlightPromise === cycle) inFlightPromise = null;
+      });
     }, delayMs);
   };
 
@@ -977,8 +1013,56 @@ export function createNarrativeMaintenanceScheduler(
     }
   };
 
+  const beginAttempt = async (
+    attemptId: string,
+    binding: NarrativeMaintenanceWorkspaceBinding,
+    workItems: readonly NarrativeMaintenanceWork[],
+  ): Promise<void> => {
+    activeAttemptController.begin(attemptId, binding);
+    for (const work of workItems) {
+      activeAttemptController.addWork(attemptId, work.workKey);
+      activeAttemptController.markWorkStarted(attemptId, work.workKey);
+    }
+    activeAttemptId = attemptId;
+    const begin = backend?.beginNarrativeMaintenanceAttempt;
+    if (typeof begin === "function") {
+      await begin.call(backend, attemptId, binding);
+    }
+  };
+
+  const settleAttempt = (
+    state: "interrupted" | "succeeded",
+    publishedGeneration: number | null = null,
+  ): void => {
+    const attemptId = activeAttemptId;
+    if (!attemptId) return;
+    const snapshot = activeAttemptController.snapshot(attemptId);
+    if (!snapshot) return;
+    activeAttemptController.settle(attemptId, {
+      state,
+      publishedGeneration,
+    });
+  };
+
+  const cancelActiveAttempt = async (
+    reason: NarrativeMaintenanceStopReason,
+  ): Promise<void> => {
+    const attemptId = activeAttemptId;
+    if (!attemptId) return;
+    const cancel = backend?.cancelNarrativeMaintenanceAttempt;
+    const nativeCancellation =
+      typeof cancel === "function"
+        ? Promise.resolve(cancel.call(backend, attemptId, reason))
+        : Promise.resolve(undefined);
+    const localCancellation = activeAttemptController.requestStop(
+      attemptId,
+      reason,
+    );
+    await Promise.all([nativeCancellation, localCancellation]);
+  };
+
   const runCycle = async (): Promise<void> => {
-    if (disposed || inFlight) return;
+    if (disposed || quiescing || inFlight) return;
     const method = backend?.runNarrativeMaintenanceCycle;
     if (typeof method !== "function") return;
 
@@ -1084,8 +1168,18 @@ export function createNarrativeMaintenanceScheduler(
     let workspaceMismatch = false;
     let deferredCycle = false;
     let haltForProcessInterruption = false;
+    let interruptedCycle = false;
     let settledCycleResult: NarrativeMaintenanceCycleResult | null = null;
+    const lifecycleEnabled =
+      cycleBinding !== undefined &&
+      cycleBinding !== null &&
+      (typeof backend?.beginNarrativeMaintenanceAttempt === "function" ||
+        typeof backend?.cancelNarrativeMaintenanceAttempt === "function");
+    const cycleAttemptId = lifecycleEnabled ? randomUUID() : null;
     try {
+      if (cycleAttemptId && cycleBinding) {
+        await beginAttempt(cycleAttemptId, cycleBinding, backendBatch);
+      }
       // N-API class methods must be invoked through backend to preserve self.
       const result = await method.call(backend, {
         work: wireBatch,
@@ -1093,6 +1187,7 @@ export function createNarrativeMaintenanceScheduler(
         ...(cycleBinding !== undefined && cycleBinding !== null
           ? { workspaceBinding: cycleBinding }
           : {}),
+        ...(cycleAttemptId ? { attemptId: cycleAttemptId } : {}),
       });
       // Validate the response before clearing retry state.  A malformed
       // native response is a failed cycle and consumes the same bounded retry
@@ -1175,6 +1270,14 @@ export function createNarrativeMaintenanceScheduler(
           "native maintenance cycle deferred an unenabled adapter",
         );
       }
+      if (cycleAttemptId) {
+        if (!activeAttemptController.grantFinalize(cycleAttemptId)) {
+          interruptedCycle = true;
+          settleAttempt("interrupted");
+          throw new Error("NEX_MAINTENANCE_ATTEMPT_CANCELLED");
+        }
+        settleAttempt("succeeded", cycleBinding?.generation ?? null);
+      }
       if (cycleResult.status === "accepted" && !disposed) {
         try {
           const followup = options.onCycleAccepted?.();
@@ -1231,7 +1334,29 @@ export function createNarrativeMaintenanceScheduler(
       }
     } catch (error) {
       if (!disposed) {
-        if (deferredCycle) {
+        const attemptSnapshot = cycleAttemptId
+          ? activeAttemptController.snapshot(cycleAttemptId)
+          : null;
+        if (
+          attemptSnapshot &&
+          attemptSnapshot.state !== "interrupted" &&
+          attemptSnapshot.state !== "succeeded"
+        ) {
+          interruptedCycle =
+            interruptedCycle || attemptSnapshot.state === "stop-requested";
+          settleAttempt("interrupted");
+        }
+        if (interruptedCycle) {
+          for (const work of backendBatch) requeueWork(work);
+          for (const projectId of sendingWakeProjects) {
+            const wakeKey = scopedWakeKey(projectId, cycleBinding);
+            durableWakeProjects.set(wakeKey, {
+              projectId,
+              workspaceBinding: cycleBinding,
+            });
+          }
+          shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
+        } else if (deferredCycle) {
           for (const work of backendBatch) {
             requeueWork(work);
             deferredWorkKeys.add(scopedWorkKey(work));
@@ -1404,6 +1529,19 @@ export function createNarrativeMaintenanceScheduler(
     } finally {
       sharedCoordinator?.release(claimedProjects);
       inFlight = false;
+      if (cycleAttemptId) {
+        const attemptSnapshot = activeAttemptController.snapshot(cycleAttemptId);
+        if (
+          attemptSnapshot &&
+          attemptSnapshot.state !== "interrupted" &&
+          attemptSnapshot.state !== "succeeded"
+        ) {
+          settleAttempt("interrupted");
+        }
+      }
+      if (activeAttemptId === cycleAttemptId) {
+        activeAttemptId = null;
+      }
       noteMutation();
       if (
         !disposed &&
@@ -1479,6 +1617,16 @@ export function createNarrativeMaintenanceScheduler(
     }
   };
 
+  const quiesceForWorkspaceSwitch = async (): Promise<void> => {
+    if (disposed) return;
+    quiescing = true;
+    clearTimer();
+    clearCoordinatorWait();
+    await cancelActiveAttempt("workspace-generation-changed");
+    const running = inFlightPromise;
+    if (running) await running;
+  };
+
   const enqueue = (
     rawWork: NarrativeMaintenanceRequest,
     explicitBinding?: NarrativeMaintenanceWorkspaceBinding,
@@ -1548,6 +1696,7 @@ export function createNarrativeMaintenanceScheduler(
           "native maintenance discovery returned no workspace binding",
         );
       }
+      quiescing = false;
       enqueue(work, normalizedBinding);
     },
     requestManyWithBinding(workItems, binding): void {
@@ -1557,6 +1706,7 @@ export function createNarrativeMaintenanceScheduler(
           "native maintenance discovery returned no workspace binding",
         );
       }
+      quiescing = false;
       // Validate the complete native discovery result before the first queue
       // mutation. A malformed later page/item therefore cannot leave a
       // partial batch behind.
@@ -1591,8 +1741,37 @@ export function createNarrativeMaintenanceScheduler(
       };
     },
 
-    dispose(): void {
+    async beginNarrativeMaintenanceAttempt(attemptId, binding) {
+      const normalizedBinding = normalizeWorkspaceBinding(binding);
+      if (!normalizedBinding) {
+        throw new Error("native maintenance attempt binding is unavailable");
+      }
+      activeAttemptController.begin(attemptId, normalizedBinding);
+      const begin = backend?.beginNarrativeMaintenanceAttempt;
+      if (typeof begin !== "function") return undefined;
+      return begin.call(backend, attemptId, normalizedBinding);
+    },
+
+    async cancelNarrativeMaintenanceAttempt(attemptId, reason) {
+      const cancel = backend?.cancelNarrativeMaintenanceAttempt;
+      const nativeReceipt =
+        typeof cancel === "function"
+          ? await cancel.call(backend, attemptId, reason)
+          : undefined;
+      const localReceipt = await activeAttemptController.requestStop(
+        attemptId,
+        reason,
+      );
+      return nativeReceipt ?? localReceipt;
+    },
+
+    async quiesceForWorkspaceSwitch(): Promise<void> {
+      await quiesceForWorkspaceSwitch();
+    },
+
+    async dispose(): Promise<void> {
       if (disposed) return;
+      await quiesceForWorkspaceSwitch();
       disposed = true;
       noteMutation();
       clearTimer();
@@ -1600,8 +1779,9 @@ export function createNarrativeMaintenanceScheduler(
       pending.clear();
       durableWakeProjects.clear();
       durableWakeRetryCounts.clear();
-      // An in-flight native call is not forcibly cancelled.  The disposed
-      // guard suppresses its warning/re-schedule after completion.
+      // The active attempt has returned a terminal Native receipt before the
+      // scheduler is disposed.  No old workspace work is allowed to be
+      // mistaken for the replacement workspace's acknowledgement.
     },
   };
 }

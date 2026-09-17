@@ -1967,6 +1967,42 @@ describe("registerIpcRouter workspace-open main trace", () => {
     return { openWorkspace } as unknown as NapiBackendLike;
   }
 
+  it("waits for maintenance quiescence before swapping the native workspace", async () => {
+    const order: string[] = [];
+    let releaseQuiescence!: () => void;
+    const quiesced = new Promise<void>((resolve) => {
+      releaseQuiescence = resolve;
+    });
+    const openWorkspace = vi.fn(async () => {
+      order.push("open");
+      return JSON.stringify({ status: "ready" });
+    });
+    const quiesceForWorkspaceSwitch = vi.fn(async () => {
+      order.push("quiesce");
+      await quiesced;
+    });
+    registerIpcRouter(
+      backendWithOpenWorkspace(openWorkspace),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { quiesceForWorkspaceSwitch },
+    );
+
+    const invoke = invokeHandler()({ sender: {} }, "open_workspace", {
+      path: "/workspace-next",
+    });
+    await Promise.resolve();
+    expect(quiesceForWorkspaceSwitch).toHaveBeenCalledOnce();
+    expect(openWorkspace).not.toHaveBeenCalled();
+    releaseQuiescence();
+    await expect(invoke).resolves.toMatchObject({ ok: true });
+    expect(order).toEqual(["quiesce", "open"]);
+  });
+
   it("emits one safe success summary when the dev trace is enabled", async () => {
     process.env.GRIMODEX_WORKSPACE_OPEN_TRACE = "1";
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
