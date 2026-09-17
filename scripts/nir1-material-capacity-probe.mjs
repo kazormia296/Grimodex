@@ -1080,10 +1080,11 @@ function removePreviousReport(outputDirectory) {
 
 async function main() {
   const rawArgs = process.argv.slice(2);
-  if (rawArgs.length >= 4 && rawArgs[3] && !rawArgs[3].startsWith("--")) {
-    removePreviousReport(rawArgs[3]);
-  }
   const options = parseCli(rawArgs);
+  // Parse all required positionals before touching the filesystem. An option
+  // token in any required slot must not let an invalid invocation delete a
+  // report through a later positional value.
+  removePreviousReport(options.outputDirectory);
   const manifestPath = path.resolve(options.manifestPath);
   const manifest = readJson(manifestPath, "manifest");
   const { validateObservation } = validateManifest(manifest, manifestPath);

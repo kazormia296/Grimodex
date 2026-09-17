@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -33,7 +34,7 @@ function makeWorkspace(selectedFixture = fixtureId) {
   return { directory, fixtureDirectory, outputDirectory, sourceDb };
 }
 
-function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, malformed = false, timeout = false, leakyDescendant = false, detachedDescendant = false } = {}) {
+function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, malformed = false, timeout = false, leakyDescendant = false, detachedDescendant = false, writeProjectMarker = false } = {}) {
   const fixtureCounts = {
     [fixtureId]: { candidateRevisions: 3, qualifiedRevisions: 3, rejectedRevisions: 0, entityRecords: 255, relationRecords: 3, evidenceRecords: 255, qualifiedMaterialRecords: 513, rosterRecords: 513, dependencyEdges: null, reportRecords: null },
     "Q2044/evidence-shared": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, reportRecords: null },
@@ -53,6 +54,7 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
     timeout ? "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);" : "",
     leakyDescendant ? "const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit' }); descendant.unref();" : "",
     detachedDescendant ? "const descendant = spawn('setsid', ['env', '-i', process.execPath, '-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit' }); if (projectId) writeFileSync(projectId, String(descendant.pid)); descendant.unref();" : "",
+    writeProjectMarker ? "if (projectId) writeFileSync(projectId, 'child-ran');" : "",
     mutate ? "writeFileSync(database, `mutated-main-${process.pid}`);" : "",
     mutate ? "writeFileSync(`${database}-wal`, `mutated-wal-${process.pid}`);" : "",
     mutate ? "writeFileSync(`${database}-shm`, `mutated-shm-${process.pid}`);" : "",
@@ -230,25 +232,38 @@ test("a failed rerun removes a prior success artifact", () => {
   }
 });
 
-test("required positional paths reject option tokens and missing output directories", () => {
+test("required positional paths reject option tokens without report or child side effects", () => {
   const workspace = makeWorkspace();
   try {
-    const binary = makeChild(workspace.directory, {});
-    const accidentalOutput = path.join(workspace.directory, "--fixture");
-    rmSync(accidentalOutput, { recursive: true, force: true });
-    assert.throws(
-      () =>
-        execFileSync(
-          process.execPath,
-          [probePath, binary, manifestPath, workspace.fixtureDirectory, "--fixture", fixtureId],
-          { cwd: workspace.directory, encoding: "utf8" },
-        ),
-      (error) => {
-        assert.match(error.stderr, /output directory must be a positional argument/);
-        return true;
-      },
-    );
-    assert.equal(existsSync(accidentalOutput), false);
+    const binary = makeChild(workspace.directory, { writeProjectMarker: true });
+    mkdirSync(workspace.outputDirectory);
+    const reportPath = path.join(workspace.outputDirectory, "capacity-report.json");
+    writeFileSync(reportPath, "prior-report");
+    const childMarker = path.join(workspace.directory, "child-ran");
+    const beforeEntries = readdirSync(workspace.directory).sort();
+    const invalidPositionals = [
+      ["binary", "--binary", manifestPath, workspace.fixtureDirectory, workspace.outputDirectory, childMarker],
+      ["manifest", binary, "--manifest", workspace.fixtureDirectory, workspace.outputDirectory, childMarker],
+      ["fixture", binary, manifestPath, "--fixture", workspace.outputDirectory, childMarker],
+      ["output", binary, manifestPath, workspace.fixtureDirectory, "--output", childMarker],
+    ];
+    for (const [label, ...args] of invalidPositionals) {
+      assert.throws(
+        () =>
+          execFileSync(process.execPath, [probePath, ...args], {
+            cwd: workspace.directory,
+            encoding: "utf8",
+          }),
+        (error) => {
+          assert.match(error.stderr, new RegExp(`${label}.*positional argument|usage:`));
+          return true;
+        },
+        `${label} option token should be rejected before side effects`,
+      );
+      assert.equal(readFileSync(reportPath, "utf8"), "prior-report");
+      assert.equal(existsSync(childMarker), false);
+      assert.deepEqual(readdirSync(workspace.directory).sort(), beforeEntries);
+    }
     assert.throws(
       () =>
         execFileSync(
