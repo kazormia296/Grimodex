@@ -397,6 +397,8 @@ export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
   "electron/main/index.ts",
   "electron/main/foregroundBarrierRelease.test.ts",
   "electron/main/narrativeMaintenance.ts",
+  "electron/main/narrativeMaintenanceAttempt.ts",
+  "electron/main/narrativeMaintenanceAttempt.test.ts",
   "electron/main/narrativeMaintenance.test.ts",
   "electron/main/narrativeMaintenance.phase1.test.ts",
   "electron/main/narrativeMaintenance.followup.test.ts",
@@ -408,6 +410,8 @@ export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
   "electron/main/narrativeMaintenanceBootstrap.test.ts",
   "electron/main/narrativeMaintenanceCiSeam.ts",
   "electron/main/narrativeMaintenanceCiSeam.test.ts",
+  "electron/main/narrativeMaintenanceShutdown.ts",
+  "electron/main/narrativeMaintenanceShutdown.test.ts",
   "electron/main/narrativeMaintenanceTriggers.ts",
   "electron/main/narrativeMaintenanceTriggers.test.ts",
 ]);
