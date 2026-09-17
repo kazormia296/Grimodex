@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use flate2::read::GzDecoder;
-use grimodex_core::narrative_nir1::{estimate_nir1_context_tokens, PackingPurpose};
+use grimodex_core::narrative_nir1::PackingPurpose;
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::agent_writes::{agent_codex_create_impl, AgentCodexCreatePayload};
 use grimodex_db::domain_writes::{
@@ -621,181 +621,15 @@ fn normal_current_human_approved_child_is_eligible_for_distinct_later_s2() {
 }
 
 #[test]
-fn native_a2_packing_path_rereads_and_packs_inside_one_transaction() {
+fn native_a2_packing_rejects_chronicle_revision_without_typed_reader() {
     let fixture = Fixture::new();
     let db = Database::new(&fixture.path).expect("Native private fixture");
     let request = native_packing_request(&fixture, "nir1-db-adapter", 4096);
-    let packed = read_and_pack_native_a2_context(&db, request.clone())
-        .expect("DB rereads and projects the current reader result");
-    assert_eq!(
-        packed.selected_ids.first().map(String::as_str),
-        Some("nir1-db-adapter-raw")
-    );
-    assert_eq!(
-        packed.selected_ids.len(),
-        6,
-        "Raw plus all five reader parts"
-    );
-
-    let stale_conn = fixture.read_only();
-    let stale_tx = stale_conn
-        .unchecked_transaction()
-        .expect("historical reader snapshot");
-    let stale = read_revision_retrieval_eligibility(
-        &stale_tx,
-        fixture.project(),
-        fixture.root(),
-        fixture.scene("s2"),
-    )
-    .expect("stale denial is typed");
-    assert!(matches!(
-        stale,
-        RevisionEligibilityRead::Unavailable {
-            reason: RevisionEligibilityReason::RevisionNotCurrentHumanApproved
-        }
-    ));
-
-    native_human_decision(&db, &fixture, fixture.child(), "rejected");
+    let error = read_and_pack_native_a2_context(&db, request)
+        .expect_err("Chronicle revisions are outside the typed Entity/Relation adapter");
     assert!(
-        read_and_pack_native_a2_context(&db, request).is_err(),
-        "the public path rereads the current Decision instead of reusing an old marker"
-    );
-}
-
-#[test]
-fn native_a2_packing_rejects_committed_evidence_mutation_on_same_database_and_request() {
-    let fixture = Fixture::new();
-    let db = Database::new(&fixture.path).expect("Native private fixture");
-    let request = native_packing_request(&fixture, "nir1-db-adapter-evidence", 4096);
-    read_and_pack_native_a2_context(&db, request.clone())
-        .expect("the initial current reader result is packable");
-
-    let evidence_conn = fixture.corruption_connection();
-    assert_eq!(
-        evidence_conn
-            .execute(
-                "DELETE FROM narrative_extraction_artifacts
-                 WHERE run_id = (SELECT s.run_id
-                   FROM narrative_proposal_revisions r
-                   JOIN narrative_proposals p ON p.id = r.proposal_id
-                   JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
-                  WHERE r.id = ?1)
-                   AND artifact_kind = 'source.snapshot@1'",
-                [fixture.child()],
-            )
-            .expect("commit the source snapshot membership mutation"),
-        1
-    );
-    drop(evidence_conn);
-    assert!(
-        read_and_pack_native_a2_context(&db, request).is_err(),
-        "the same public request rereads committed Evidence membership"
-    );
-}
-
-#[test]
-fn native_a2_packing_uses_the_canonical_estimator_for_compact_reader_parts() {
-    let fixture = Fixture::new();
-    let db = Database::new(&fixture.path).expect("Native private fixture");
-    native_human_decision(&db, &fixture, fixture.child(), "approved");
-    let (group_tokens, part_tokens) = db
-        .with_read_transaction(|conn| {
-            let reader = match read_revision_retrieval_eligibility(
-                conn,
-                fixture.project(),
-                fixture.child(),
-                fixture.scene("s2"),
-            )? {
-                RevisionEligibilityRead::Eligible(reader) => reader,
-                RevisionEligibilityRead::Unavailable { reason } => {
-                    anyhow::bail!("fixture unexpectedly unavailable: {reason:?}")
-                }
-            };
-            let statement = reader.document().serialized_statement.clone();
-            let statement_value: Value = serde_json::from_str(&statement)?;
-            let negation = statement_value
-                .get("actuality")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("statement actuality"))?
-                .to_owned();
-            let attribution = statement_value
-                .get("attribution")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("statement attribution"))?
-                .to_owned();
-            let evidence = serde_json::to_string(reader.evidence())?;
-            let decision = reader.current_decision().decision_json().to_owned();
-            let parts = [statement, negation, attribution, evidence, decision];
-            let counts = parts
-                .iter()
-                .map(|part| estimate_nir1_context_tokens(part))
-                .collect::<Vec<_>>();
-            Ok((counts.iter().sum(), counts))
-        })
-        .expect("reader parts have a fixed token measurement");
-    assert!(
-        group_tokens > 5,
-        "compact reader text must not be five tokens"
-    );
-    assert!(part_tokens[0] > 1, "compact Japanese Statement is measured");
-    assert!(part_tokens[3] > 1, "compact Evidence JSON is measured");
-    assert!(part_tokens[4] > 1, "compact Decision JSON is measured");
-
-    let request = native_packing_request(&fixture, "nir1-db-adapter-token-budget", group_tokens);
-    let packed = read_and_pack_native_a2_context(&db, request)
-        .expect("Raw remains available when the reader group is over budget");
-    assert_eq!(packed.selected_ids, vec!["nir1-db-adapter-raw"]);
-    assert_eq!(
-        packed.omitted_ids.len(),
-        5,
-        "the atomic group is omitted whole"
-    );
-    assert_eq!(packed.used_tokens, 1);
-    assert!(packed.used_tokens <= group_tokens);
-}
-
-#[test]
-fn native_a2_packing_rejects_committed_source_and_freshness_mutation_on_same_request() {
-    let fixture = Fixture::new();
-    let db = Database::new(&fixture.path).expect("Native private fixture");
-    let request = native_packing_request(&fixture, "nir1-db-adapter-source", 4096);
-    read_and_pack_native_a2_context(&db, request.clone())
-        .expect("the initial current reader result is packable");
-
-    native_patch_node(
-        &db,
-        &fixture,
-        fixture.scene("s1"),
-        json!({"content":"The committed source changed."}),
-        false,
-    );
-    assert!(
-        read_and_pack_native_a2_context(&db, request).is_err(),
-        "the same public request rereads source membership and Freshness"
-    );
-}
-
-#[test]
-fn native_a2_packing_rejects_committed_scope_mutation_on_same_request() {
-    let fixture = Fixture::new();
-    let db = Database::new(&fixture.path).expect("Native private fixture");
-    let request = native_packing_request(&fixture, "nir1-db-adapter-scope", 4096);
-    read_and_pack_native_a2_context(&db, request.clone())
-        .expect("the initial current reader result is packable");
-
-    update_live_scene_scope(
-        &db,
-        &fixture,
-        fixture.scene("s1"),
-        "nir1-db-adapter-scope-mutation",
-        |scope| {
-            scope["materialConstraint"]["worldline"] =
-                json!({"kind":"exact","ref":"worldline:prime"});
-        },
-    );
-    assert!(
-        read_and_pack_native_a2_context(&db, request).is_err(),
-        "the same public request rereads the current Scope authority"
+        error.to_string().contains("NIR1_NATIVE_A2_UNAVAILABLE"),
+        "typed Native reader denial: {error:#}"
     );
 }
 
