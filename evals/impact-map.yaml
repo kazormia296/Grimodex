@@ -300,6 +300,7 @@ rules:
       - src/features/codex/components/CodexTypedRelationsSection.test.tsx
       - src/features/codex/components/CodexTypedRelationsSection.tsx
       - src/features/codex/context/nir1PhaseParity.test.ts
+      - src/features/codex/context/nir1RevealParity.test.ts
       - src/features/codex/useCodexEntityRelationReview.test.tsx
       - src/features/codex/useCodexEntityRelationReview.ts
       - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.test.ts
@@ -344,6 +345,7 @@ rules:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/**
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/phase-cases.json
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/reveal-cases.json
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/project_scope_authority.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs

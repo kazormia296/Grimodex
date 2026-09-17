@@ -5,7 +5,7 @@
 //! generated revision identity; it is not a promotion of the mutable Codex
 //! catalog and it does not create a Graph index or a product-facing reader.
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
 use grimodex_core::narrative_project_scope_authority::{
     compare_utf16, NarrativeProjectScopeAuthorityMappingV1, NarrativeProjectScopeAuthorityV1,
 };
@@ -125,7 +125,7 @@ pub struct Nir1EntityRelationRevisionPrepareRequest {
     pub relation_ids: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Nir1EntityRelationRevision {
     pub project_id: String,
@@ -144,7 +144,7 @@ pub struct Nir1EntityRelationRevision {
     pub bundle: EntityRelationBundle,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Nir1EntityRelationFreshness {
     pub semantic_epoch_id: String,
@@ -2045,6 +2045,11 @@ pub fn evaluate_nir1_entity_relation_disclosure(
             });
         }
     };
+    // Story inheritance is derived once for this read snapshot and reused by
+    // the query-axis guard, phase resolver, explicit Scope checks, and reveal
+    // comparator. Recomputing it per pair would both waste work and make it
+    // too easy for callers to accidentally mix axes.
+    let story_statuses = build_a3_story_status_index(&authority);
 
     let query_source = match super::retrieval_admission::read_retrieval_scene_source(
         conn,
@@ -2090,7 +2095,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
     };
     if effective_axis == "story"
         && !matches!(
-            inherited_story_key(&authority, &query_mapping.scene_ref),
+            story_statuses.status(&query_mapping.scene_ref),
             A3StoryKeyStatus::Resolved(_)
         )
     {
@@ -2205,6 +2210,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
             &authority,
             query_mapping,
             effective_axis,
+            &story_statuses,
         )?;
         if let Some(reason) = reveal.failure_reason {
             return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
@@ -2216,21 +2222,15 @@ pub fn evaluate_nir1_entity_relation_disclosure(
             "foreshadows": reveal.saved,
         }));
         let phases = load_a3_phases(conn, project_id, &entity.entity_id)?;
-        phase_state.push(json!({
-            "entityId": entity.entity_id,
-            "phases": phases
-                .iter()
-                .map(|phase| {
-                    json!({
-                        "id": &phase.id,
-                        "anchorSceneId": &phase.anchor_scene_id,
-                        "label": &phase.label,
-                        "createdAt": &phase.created_at,
-                    })
-                })
-                .collect::<Vec<_>>(),
-        }));
-
+        let phase_resolution = evaluate_a3_phase(
+            &entity.scope.phase,
+            &authority,
+            query_mapping,
+            &query_source.phase_resolution_mode,
+            effective_axis,
+            &phases,
+            &story_statuses,
+        );
         if let Some(reason) = evaluate_a3_entity_scope(
             conn,
             project_id,
@@ -2238,14 +2238,39 @@ pub fn evaluate_nir1_entity_relation_disclosure(
             &authority,
             query_mapping,
             query_viewpoint.as_deref(),
-            &query_source.phase_resolution_mode,
             effective_axis,
             &reveal,
+            &story_statuses,
+            &phase_resolution,
         )? {
             return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
                 reason: reason.into(),
             });
         }
+        phase_state.push(json!({
+            "entityId": entity.entity_id,
+            "baseContextMode": phases.base_context_mode,
+            "phases": phases
+                .phases
+                .iter()
+                .map(|phase| {
+                    json!({
+                        "id": &phase.id,
+                        "anchorSceneId": &phase.anchor_scene_id,
+                        "label": &phase.label,
+                        "createdAt": &phase.created_at,
+                        "contextModeOverride": &phase.context_mode_override,
+                        "version": phase.version,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "applicablePhaseIds": phase_resolution
+                .applicable
+                .iter()
+                .map(|phase| phase.id.as_str())
+                .collect::<Vec<_>>(),
+            "effectiveContextMode": phase_resolution.effective_context_mode,
+        }));
     }
 
     let reveal_state_token = canonical_json_digest(&json!({
@@ -2304,9 +2329,8 @@ fn disclosure_identity_matches(
     expected: &Nir1EntityRelationDisclosure,
     current: &Nir1EntityRelationDisclosure,
 ) -> bool {
-    expected.revision.project_id == current.revision.project_id
+    expected.revision.as_ref() == current.revision.as_ref()
         && expected.revision.revision_id == current.revision.revision_id
-        && expected.revision.bundle_digest == current.revision.bundle_digest
         && expected.decision_token == current.decision_token
         && expected.freshness_token == current.freshness_token
         && expected.query_scene_id == current.query_scene_id
@@ -2478,12 +2502,28 @@ enum A3StoryKeyStatus {
     Ambiguous,
 }
 
-fn inherited_story_key(
-    authority: &NarrativeProjectScopeAuthorityV1,
-    scene_ref: &str,
-) -> A3StoryKeyStatus {
+#[derive(Clone, Debug, Default)]
+struct A3StoryStatusIndex {
+    by_scene: HashMap<String, A3StoryKeyStatus>,
+}
+
+impl A3StoryStatusIndex {
+    fn status(&self, scene_ref: &str) -> A3StoryKeyStatus {
+        self.by_scene
+            .get(scene_ref)
+            .cloned()
+            .unwrap_or(A3StoryKeyStatus::Unresolved)
+    }
+}
+
+fn build_a3_story_status_index(authority: &NarrativeProjectScopeAuthorityV1) -> A3StoryStatusIndex {
     let mut mappings = authority.mappings.iter().collect::<Vec<_>>();
-    mappings.sort_by_key(|mapping| mapping.reading_rank);
+    mappings.sort_by(|left, right| {
+        left.reading_rank
+            .cmp(&right.reading_rank)
+            .then_with(|| compare_utf16(&left.scene_ref, &right.scene_ref))
+    });
+    let mut index = A3StoryStatusIndex::default();
     let mut current = A3StoryKeyStatus::Unresolved;
     for mapping in mappings {
         match &mapping.story_time_order {
@@ -2493,27 +2533,37 @@ fn inherited_story_key(
             NarrativeScopeAuthorityStoryTimeOrderV2::Unresolved {
                 reason: NarrativeScopeAuthorityUnresolvedReasonV2::Ambiguous,
                 ..
-            } => current = A3StoryKeyStatus::Ambiguous,
+            } => {
+                current = A3StoryKeyStatus::Ambiguous;
+            }
             NarrativeScopeAuthorityStoryTimeOrderV2::Unresolved { .. } => {}
         }
-        if mapping.scene_ref == scene_ref {
-            return current;
-        }
+        index
+            .by_scene
+            .insert(mapping.scene_ref.clone(), current.clone());
     }
-    A3StoryKeyStatus::Unresolved
+    index
 }
 
-fn temporal_position(
+#[cfg(test)]
+fn inherited_story_key(
+    authority: &NarrativeProjectScopeAuthorityV1,
+    scene_ref: &str,
+) -> A3StoryKeyStatus {
+    build_a3_story_status_index(authority).status(scene_ref)
+}
+
+fn temporal_position_cached(
     source: &NarrativeProjectScopeAuthorityMappingV1,
     query: &NarrativeProjectScopeAuthorityMappingV1,
-    authority: &NarrativeProjectScopeAuthorityV1,
+    story_statuses: &A3StoryStatusIndex,
     axis: &str,
 ) -> Option<Ordering> {
     if axis == "reading" {
         return Some(source.reading_rank.cmp(&query.reading_rank));
     }
-    let source_story = inherited_story_key(authority, &source.scene_ref);
-    let query_story = inherited_story_key(authority, &query.scene_ref);
+    let source_story = story_statuses.status(&source.scene_ref);
+    let query_story = story_statuses.status(&query.scene_ref);
     match (source_story, query_story) {
         (A3StoryKeyStatus::Resolved(source_key), A3StoryKeyStatus::Resolved(query_key)) => Some(
             compare_utf16(&source_key, &query_key)
@@ -2522,6 +2572,42 @@ fn temporal_position(
         // An explicit duplicate story key is a distinct unresolved authority
         // state. Never carry an earlier key through it.
         _ => None,
+    }
+}
+
+#[cfg(test)]
+fn temporal_position(
+    source: &NarrativeProjectScopeAuthorityMappingV1,
+    query: &NarrativeProjectScopeAuthorityMappingV1,
+    authority: &NarrativeProjectScopeAuthorityV1,
+    axis: &str,
+) -> Option<Ordering> {
+    let story_statuses = build_a3_story_status_index(authority);
+    temporal_position_cached(source, query, &story_statuses, axis)
+}
+
+/// Reveal timing follows the existing TypeScript pair-wise comparator. An
+/// ordinary unresolved pair is safe to compare in Reading order, while an
+/// ambiguous authority remains unavailable. This fallback is intentionally
+/// reveal-only; explicit Story Scope and phase resolution stay strict.
+fn reveal_temporal_position(
+    source: &NarrativeProjectScopeAuthorityMappingV1,
+    query: &NarrativeProjectScopeAuthorityMappingV1,
+    story_statuses: &A3StoryStatusIndex,
+    axis: &str,
+) -> Option<Ordering> {
+    if axis == "reading" {
+        return Some(source.reading_rank.cmp(&query.reading_rank));
+    }
+    let source_story = story_statuses.status(&source.scene_ref);
+    let query_story = story_statuses.status(&query.scene_ref);
+    match (source_story, query_story) {
+        (A3StoryKeyStatus::Ambiguous, _) | (_, A3StoryKeyStatus::Ambiguous) => None,
+        (A3StoryKeyStatus::Resolved(source_key), A3StoryKeyStatus::Resolved(query_key)) => Some(
+            compare_utf16(&source_key, &query_key)
+                .then(source.reading_rank.cmp(&query.reading_rank)),
+        ),
+        _ => Some(source.reading_rank.cmp(&query.reading_rank)),
     }
 }
 
@@ -2558,6 +2644,7 @@ fn read_a3_reveal_state(
     authority: &NarrativeProjectScopeAuthorityV1,
     query_mapping: &NarrativeProjectScopeAuthorityMappingV1,
     effective_axis: &str,
+    story_statuses: &A3StoryStatusIndex,
 ) -> anyhow::Result<A3RevealState> {
     let mut statement = conn.prepare(
         "SELECT foreshadow.id, foreshadow.secret, foreshadow.abandoned,
@@ -2590,7 +2677,7 @@ fn read_a3_reveal_state(
                 .find(|mapping| mapping.scene_ref == format!("scene:{scene_id}"))
         });
         let payoff_order = payoff_mapping.and_then(|mapping| {
-            temporal_position(mapping, query_mapping, authority, effective_axis)
+            reveal_temporal_position(mapping, query_mapping, story_statuses, effective_axis)
         });
         let disclosed = if secret == 0 || abandoned != 0 {
             true
@@ -2627,9 +2714,10 @@ fn evaluate_a3_entity_scope(
     authority: &NarrativeProjectScopeAuthorityV1,
     query_mapping: &NarrativeProjectScopeAuthorityMappingV1,
     query_viewpoint: Option<&str>,
-    phase_resolution_mode: &str,
     effective_axis: &str,
     reveal: &A3RevealState,
+    story_statuses: &A3StoryStatusIndex,
+    phase_resolution: &A3PhaseResolution<'_>,
 ) -> anyhow::Result<Option<&'static str>> {
     let scope = &entity.scope;
     if scope_value_is_unavailable(&scope.reading) {
@@ -2652,7 +2740,7 @@ fn evaluate_a3_entity_scope(
         // An explicit Story constraint remains a Story-authority check even
         // when ADR002 selected Reading for the phase/auto axis.  Fallback on
         // one axis must never reinterpret another explicit axis.
-        match temporal_position(story_mapping, query_mapping, authority, "story") {
+        match temporal_position_cached(story_mapping, query_mapping, story_statuses, "story") {
             None => return Ok(Some("a3-story-scope-unavailable")),
             Some(Ordering::Greater) => return Ok(Some("a3-story-scope-future")),
             Some(Ordering::Less | Ordering::Equal) => {}
@@ -2662,7 +2750,8 @@ fn evaluate_a3_entity_scope(
         let Some(auto_mapping) = find_auto_mapping(authority, &scope.auto) else {
             return Ok(Some("a3-auto-scope-unavailable"));
         };
-        match temporal_position(auto_mapping, query_mapping, authority, effective_axis) {
+        match temporal_position_cached(auto_mapping, query_mapping, story_statuses, effective_axis)
+        {
             None => return Ok(Some("a3-auto-scope-unavailable")),
             Some(Ordering::Greater) => return Ok(Some("a3-auto-scope-future")),
             Some(Ordering::Less | Ordering::Equal) => {}
@@ -2698,16 +2787,7 @@ fn evaluate_a3_entity_scope(
         }
     }
 
-    evaluate_a3_phase(
-        conn,
-        project_id,
-        &entity.entity_id,
-        &scope.phase,
-        authority,
-        query_mapping,
-        phase_resolution_mode,
-        effective_axis,
-    )
+    Ok(phase_resolution.reason)
 }
 
 #[derive(Clone, Debug)]
@@ -2716,34 +2796,62 @@ struct A3PhaseRow {
     anchor_scene_id: Option<String>,
     label: String,
     created_at: String,
+    context_mode_override: Option<String>,
+    version: i64,
+}
+
+#[derive(Clone, Debug)]
+struct A3PhaseSet {
+    base_context_mode: String,
+    phases: Vec<A3PhaseRow>,
+}
+
+struct A3PhaseResolution<'a> {
+    reason: Option<&'static str>,
+    applicable: Vec<&'a A3PhaseRow>,
+    effective_context_mode: String,
 }
 
 fn load_a3_phases(
     conn: &Connection,
     project_id: &str,
     entity_id: &str,
-) -> anyhow::Result<Vec<A3PhaseRow>> {
+) -> anyhow::Result<A3PhaseSet> {
     let mut statement = conn.prepare(
-        "SELECT phase.id, phase.anchor_node_id, phase.label, phase.created_at
-           FROM codex_entry_phases phase
-           JOIN codex_entries entry
-             ON entry.id = phase.entry_id
-            AND entry.project_id = ?1
-          WHERE phase.entry_id = ?2
+        "SELECT entry.context_mode,
+                phase.id, phase.anchor_node_id, phase.label, phase.created_at,
+                phase.context_mode_override, phase.version
+           FROM codex_entries entry
+           LEFT JOIN codex_entry_phases phase
+             ON phase.entry_id = entry.id
+          WHERE entry.id = ?2 AND entry.project_id = ?1
           ORDER BY phase.id",
     )?;
     let rows = statement
         .query_map(params![project_id, entity_id], |row| {
-            Ok(A3PhaseRow {
-                id: row.get(0)?,
-                anchor_scene_id: row.get(1)?,
-                label: row.get(2)?,
-                created_at: row.get(3)?,
-            })
+            let phase_id = row.get::<_, Option<String>>(1)?;
+            let phase = if let Some(id) = phase_id {
+                Some(A3PhaseRow {
+                    id,
+                    anchor_scene_id: row.get(2)?,
+                    label: row.get(3)?,
+                    created_at: row.get(4)?,
+                    context_mode_override: row.get(5)?,
+                    version: row.get(6)?,
+                })
+            } else {
+                None
+            };
+            Ok::<_, rusqlite::Error>((row.get::<_, String>(0)?, phase))
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into);
-    rows
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let Some(base_context_mode) = rows.first().map(|(mode, _)| mode.clone()) else {
+        anyhow::bail!("a3-entity-unavailable");
+    };
+    Ok(A3PhaseSet {
+        base_context_mode,
+        phases: rows.into_iter().filter_map(|(_, phase)| phase).collect(),
+    })
 }
 
 fn phase_matches<'a>(phases: &'a [A3PhaseRow], phase_value: &str) -> Vec<&'a A3PhaseRow> {
@@ -2753,71 +2861,129 @@ fn phase_matches<'a>(phases: &'a [A3PhaseRow], phase_value: &str) -> Vec<&'a A3P
         .collect()
 }
 
-fn compare_phase_created_at(left: &str, right: &str) -> Ordering {
-    match (
-        DateTime::parse_from_rfc3339(left),
-        DateTime::parse_from_rfc3339(right),
-    ) {
-        (Ok(left), Ok(right)) => left.timestamp_millis().cmp(&right.timestamp_millis()),
-        (Ok(_), Err(_)) => Ordering::Less,
-        (Err(_), Ok(_)) => Ordering::Greater,
-        (Err(_), Err(_)) => left.encode_utf16().cmp(right.encode_utf16()),
+fn is_sqlite_utc_timestamp_shape(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let valid_digit = |index: usize| bytes.get(index).is_some_and(u8::is_ascii_digit);
+    let valid_base_shape = bytes.len() >= 19
+        && [4, 7].into_iter().all(|index| bytes[index] == b'-')
+        && bytes[10] == b' '
+        && [13, 16].into_iter().all(|index| bytes[index] == b':')
+        && (0..4).all(valid_digit)
+        && (5..7).all(valid_digit)
+        && (8..10).all(valid_digit)
+        && (11..13).all(valid_digit)
+        && (14..16).all(valid_digit)
+        && (17..19).all(valid_digit);
+    if !valid_base_shape {
+        return false;
     }
+    if bytes.len() == 19 {
+        return true;
+    }
+    (21..=29).contains(&bytes.len()) && bytes[19] == b'.' && (20..bytes.len()).all(valid_digit)
 }
 
-struct A3RankedPhase<'a> {
-    phase: &'a A3PhaseRow,
-    mapping: &'a NarrativeProjectScopeAuthorityMappingV1,
+fn parse_phase_created_at(value: &str) -> Option<i64> {
+    let value = value.trim();
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Some(parsed.timestamp_millis());
+    }
+    if !is_sqlite_utc_timestamp_shape(value) {
+        return None;
+    }
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S"))
+        .ok()
+        .map(|parsed| DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc).timestamp_millis())
 }
 
-fn resolve_a3_phase_value(
-    phases: &[A3PhaseRow],
+struct A3RankedPhase<'phase, 'authority> {
+    phase: &'phase A3PhaseRow,
+    mapping: &'authority NarrativeProjectScopeAuthorityMappingV1,
+    story_key: Option<String>,
+    created_at_millis: i64,
+}
+
+fn is_a3_visible_context_mode(context_mode: &str) -> bool {
+    matches!(context_mode, "always" | "mentioned")
+}
+
+fn resolve_a3_phase_set<'a>(
+    phase_set: &'a A3PhaseSet,
     phase_value: &str,
     authority: &NarrativeProjectScopeAuthorityV1,
     query_mapping: &NarrativeProjectScopeAuthorityMappingV1,
     phase_resolution_mode: &str,
     effective_axis: &str,
-) -> Option<&'static str> {
-    if phase_value.trim().is_empty() {
-        return Some("a3-phase-unavailable");
-    }
-    // The typed adapter's `draft` is the existing base state. It intentionally
-    // has no Codex phase row and remains valid at every live scene anchor.
-    if phase_value == "draft" {
-        return None;
-    }
-    let matches = phase_matches(phases, phase_value);
-    if matches.is_empty() {
-        return Some("a3-phase-unavailable");
-    }
-    if matches.len() != 1 {
-        return Some("a3-phase-ambiguous");
-    }
-    let Some(anchor_scene_id) = matches[0].anchor_scene_id.as_deref() else {
-        return Some("a3-phase-anchor-unavailable");
+    story_statuses: &A3StoryStatusIndex,
+) -> A3PhaseResolution<'a> {
+    let unavailable = |reason| A3PhaseResolution {
+        reason: Some(reason),
+        applicable: Vec::new(),
+        effective_context_mode: phase_set.base_context_mode.clone(),
     };
-    let Some(_anchor_mapping) = authority
-        .mappings
+    if phase_value.trim().is_empty() {
+        return unavailable("a3-phase-unavailable");
+    }
+    let target: Option<&'a A3PhaseRow> = if phase_value == "draft" {
+        None
+    } else {
+        let matches = phase_matches(&phase_set.phases, phase_value);
+        if matches.is_empty() {
+            return unavailable("a3-phase-unavailable");
+        }
+        if matches.len() != 1 {
+            return unavailable("a3-phase-ambiguous");
+        }
+        Some(matches[0])
+    };
+
+    let valid_phase_mappings = phase_set
+        .phases
         .iter()
-        .find(|mapping| mapping.scene_ref == format!("scene:{anchor_scene_id}"))
+        .filter_map(|phase| {
+            let scene_id = phase.anchor_scene_id.as_deref()?;
+            let mapping = authority
+                .mappings
+                .iter()
+                .find(|mapping| mapping.scene_ref == format!("scene:{scene_id}"))?;
+            Some((phase, mapping))
+        })
+        .collect::<Vec<_>>();
+    if let Some(target) = target {
+        let Some(anchor_scene_id) = target.anchor_scene_id.as_deref() else {
+            return unavailable("a3-phase-anchor-unavailable");
+        };
+        if !authority
+            .mappings
+            .iter()
+            .any(|mapping| mapping.scene_ref == format!("scene:{anchor_scene_id}"))
+        {
+            return unavailable("a3-phase-anchor-unavailable");
+        }
+    }
+
+    // A valid anchored phase must have a timestamp that can participate in
+    // deterministic cumulative ordering.  Invalid/null anchors are not part
+    // of this set and retain the existing skip behavior.
+    let Some(valid_phase_entries) = valid_phase_mappings
+        .iter()
+        .map(|&(phase, mapping)| {
+            parse_phase_created_at(&phase.created_at)
+                .map(|created_at_millis| (phase, mapping, created_at_millis))
+        })
+        .collect::<Option<Vec<_>>>()
     else {
-        return Some("a3-phase-anchor-unavailable");
+        return unavailable("a3-phase-unavailable");
     };
 
     // Match resolveApplicablePhases: invalid/null anchors are removed before
     // deciding whether an explicit story request must fall back to reading.
     // An ambiguous explicit story key is never silently inherited.
-    let valid_phase_mappings = phases.iter().filter_map(|phase| {
-        let scene_id = phase.anchor_scene_id.as_deref()?;
-        authority
-            .mappings
-            .iter()
-            .find(|mapping| mapping.scene_ref == format!("scene:{scene_id}"))
-    });
     let mut phase_axis = effective_axis;
     if phase_axis == "story" && phase_resolution_mode == "story" {
-        let query_story_resolved = match inherited_story_key(authority, &query_mapping.scene_ref) {
-            A3StoryKeyStatus::Ambiguous => return Some("a3-phase-story-unavailable"),
+        let query_story_resolved = match story_statuses.status(&query_mapping.scene_ref) {
+            A3StoryKeyStatus::Ambiguous => return unavailable("a3-phase-story-unavailable"),
             A3StoryKeyStatus::Unresolved => {
                 phase_axis = "reading";
                 false
@@ -2826,9 +2992,11 @@ fn resolve_a3_phase_value(
         };
         if query_story_resolved {
             let mut has_unresolved_anchor = false;
-            for mapping in valid_phase_mappings {
-                match inherited_story_key(authority, &mapping.scene_ref) {
-                    A3StoryKeyStatus::Ambiguous => return Some("a3-phase-story-unavailable"),
+            for &(_, mapping, _) in &valid_phase_entries {
+                match story_statuses.status(&mapping.scene_ref) {
+                    A3StoryKeyStatus::Ambiguous => {
+                        return unavailable("a3-phase-story-unavailable")
+                    }
                     A3StoryKeyStatus::Unresolved => has_unresolved_anchor = true,
                     A3StoryKeyStatus::Resolved(_) => {}
                 }
@@ -2837,71 +3005,135 @@ fn resolve_a3_phase_value(
                 phase_axis = "reading";
             }
         }
+    } else if phase_axis == "story" && phase_resolution_mode == "auto" {
+        if matches!(
+            story_statuses.status(&query_mapping.scene_ref),
+            A3StoryKeyStatus::Ambiguous
+        ) {
+            return unavailable("a3-phase-story-unavailable");
+        }
+        if valid_phase_entries.iter().any(|(_, mapping, _)| {
+            matches!(
+                story_statuses.status(&mapping.scene_ref),
+                A3StoryKeyStatus::Ambiguous
+            )
+        }) {
+            return unavailable("a3-phase-story-unavailable");
+        }
     }
 
-    let mut ranked = phases
+    let mut ranked = valid_phase_entries
         .iter()
-        .filter_map(|phase| {
-            let scene_id = phase.anchor_scene_id.as_deref()?;
-            let mapping = authority
-                .mappings
-                .iter()
-                .find(|mapping| mapping.scene_ref == format!("scene:{scene_id}"))?;
-            Some(A3RankedPhase { phase, mapping })
+        .filter_map(|&(phase, mapping, created_at_millis)| {
+            let story_key = match phase_axis {
+                "story" => match story_statuses.status(&mapping.scene_ref) {
+                    A3StoryKeyStatus::Resolved(story_key) => Some(story_key),
+                    A3StoryKeyStatus::Unresolved | A3StoryKeyStatus::Ambiguous => return None,
+                },
+                _ => None,
+            };
+            Some(A3RankedPhase {
+                phase,
+                mapping,
+                story_key,
+                created_at_millis,
+            })
         })
         .collect::<Vec<_>>();
     ranked.sort_by(|left, right| {
-        if phase_axis == "story" {
-            let left_story = inherited_story_key(authority, &left.mapping.scene_ref);
-            let right_story = inherited_story_key(authority, &right.mapping.scene_ref);
-            if let (A3StoryKeyStatus::Resolved(left), A3StoryKeyStatus::Resolved(right)) =
-                (&left_story, &right_story)
-            {
-                let story_order = compare_utf16(left, right);
-                if story_order != Ordering::Equal {
-                    return story_order;
-                }
-            }
-        }
-        left.mapping
-            .reading_rank
-            .cmp(&right.mapping.reading_rank)
-            .then_with(|| compare_phase_created_at(&left.phase.created_at, &right.phase.created_at))
+        let story_order = match (&left.story_key, &right.story_key) {
+            (Some(left), Some(right)) => compare_utf16(left, right),
+            _ => Ordering::Equal,
+        };
+        story_order
+            .then_with(|| left.mapping.reading_rank.cmp(&right.mapping.reading_rank))
+            .then_with(|| left.created_at_millis.cmp(&right.created_at_millis))
             .then_with(|| left.phase.id.cmp(&right.phase.id))
     });
-    let Some(target_ranked) = ranked
+
+    let applicable: Vec<&'a A3PhaseRow> = ranked
         .iter()
-        .find(|ranked| ranked.phase.id.as_str() == matches[0].id.as_str())
-    else {
-        return Some("a3-phase-anchor-unavailable");
-    };
-    match temporal_position(target_ranked.mapping, query_mapping, authority, phase_axis) {
-        None => Some("a3-phase-unavailable"),
-        Some(Ordering::Greater) => Some("a3-phase-future"),
-        Some(Ordering::Less | Ordering::Equal) => None,
+        .filter(|ranked| {
+            temporal_position_cached(ranked.mapping, query_mapping, story_statuses, phase_axis)
+                .is_some_and(|order| order != Ordering::Greater)
+        })
+        .map(|ranked| ranked.phase)
+        .collect::<Vec<_>>();
+    if let Some(target) = target {
+        let Some(target_ranked) = ranked.iter().find(|ranked| ranked.phase.id == target.id) else {
+            return unavailable("a3-phase-anchor-unavailable");
+        };
+        match temporal_position_cached(
+            target_ranked.mapping,
+            query_mapping,
+            story_statuses,
+            phase_axis,
+        ) {
+            None => return unavailable("a3-phase-unavailable"),
+            Some(Ordering::Greater) => return unavailable("a3-phase-future"),
+            Some(Ordering::Less | Ordering::Equal) => {}
+        }
+    }
+
+    let mut effective_context_mode = phase_set.base_context_mode.clone();
+    for phase in &applicable {
+        if let Some(context_mode) = phase.context_mode_override.as_deref() {
+            effective_context_mode = context_mode.to_owned();
+        }
+    }
+    let reason = (!is_a3_visible_context_mode(&effective_context_mode))
+        .then_some("a3-phase-context-unavailable");
+    A3PhaseResolution {
+        reason,
+        applicable,
+        effective_context_mode,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn evaluate_a3_phase(
-    conn: &Connection,
-    project_id: &str,
-    entity_id: &str,
+#[cfg(test)]
+fn resolve_a3_phase_value(
+    phases: &[A3PhaseRow],
     phase_value: &str,
     authority: &NarrativeProjectScopeAuthorityV1,
     query_mapping: &NarrativeProjectScopeAuthorityMappingV1,
     phase_resolution_mode: &str,
     effective_axis: &str,
-) -> anyhow::Result<Option<&'static str>> {
-    let phases = load_a3_phases(conn, project_id, entity_id)?;
-    Ok(resolve_a3_phase_value(
-        &phases,
+) -> Option<&'static str> {
+    let phase_set = A3PhaseSet {
+        base_context_mode: "mentioned".into(),
+        phases: phases.to_owned(),
+    };
+    let story_statuses = build_a3_story_status_index(authority);
+    resolve_a3_phase_set(
+        &phase_set,
         phase_value,
         authority,
         query_mapping,
         phase_resolution_mode,
         effective_axis,
-    ))
+        &story_statuses,
+    )
+    .reason
+}
+
+fn evaluate_a3_phase<'a>(
+    phase_value: &str,
+    authority: &NarrativeProjectScopeAuthorityV1,
+    query_mapping: &NarrativeProjectScopeAuthorityMappingV1,
+    phase_resolution_mode: &str,
+    effective_axis: &str,
+    phase_set: &'a A3PhaseSet,
+    story_statuses: &A3StoryStatusIndex,
+) -> A3PhaseResolution<'a> {
+    resolve_a3_phase_set(
+        phase_set,
+        phase_value,
+        authority,
+        query_mapping,
+        phase_resolution_mode,
+        effective_axis,
+        story_statuses,
+    )
 }
 
 fn read_scene_viewpoint(
@@ -5615,7 +5847,7 @@ mod tests {
         let proof = db.with_read_transaction(|conn| {
             evaluate_nir1_entity_relation_disclosure(conn, "default-project", &revision_id, "nir1")
         })?;
-        let proof = match proof {
+        let mut proof = match proof {
             Nir1EntityRelationDisclosureRead::Eligible(proof) => proof,
             Nir1EntityRelationDisclosureRead::Unavailable { reason } => {
                 anyhow::bail!("positive A3 fixture was unavailable: {reason}")
@@ -5624,6 +5856,34 @@ mod tests {
         assert!(db.with_read_transaction(|conn| {
             revalidate_nir1_entity_relation_disclosure(conn, &proof)
         })?);
+
+        let original_label = proof.revision.bundle.entities[0].label.clone();
+        proof.revision.bundle.entities[0].label = "mutated label".into();
+        assert!(!db.with_read_transaction(|conn| {
+            revalidate_nir1_entity_relation_disclosure(conn, &proof)
+        })?);
+        proof.revision.bundle.entities[0].label = original_label;
+
+        let original_material_quote = proof.revision.material_basis.evidence_set[0].quote.clone();
+        proof.revision.material_basis.evidence_set[0].quote = "mutated material".into();
+        assert!(!db.with_read_transaction(|conn| {
+            revalidate_nir1_entity_relation_disclosure(conn, &proof)
+        })?);
+        proof.revision.material_basis.evidence_set[0].quote = original_material_quote;
+
+        let original_run_id = proof.revision.run_id.clone();
+        proof.revision.run_id = "mutated-run".into();
+        assert!(!db.with_read_transaction(|conn| {
+            revalidate_nir1_entity_relation_disclosure(conn, &proof)
+        })?);
+        proof.revision.run_id = original_run_id;
+
+        let original_edge_count = proof.revision.canonical_freshness.edge_count;
+        proof.revision.canonical_freshness.edge_count += 1;
+        assert!(!db.with_read_transaction(|conn| {
+            revalidate_nir1_entity_relation_disclosure(conn, &proof)
+        })?);
+        proof.revision.canonical_freshness.edge_count = original_edge_count;
 
         let original_query_node: (i64, String) = db.with_read_transaction(|conn| {
             conn.query_row(
@@ -5744,6 +6004,73 @@ mod tests {
         assert!(!db.with_read_transaction(|conn| {
             revalidate_nir1_entity_relation_disclosure(conn, &proof)
         })?);
+        Ok(())
+    }
+
+    #[test]
+    fn a3_reveal_story_axis_falls_back_to_reading_for_unresolved_pair() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE projects SET phase_resolution_mode = 'story'
+                  WHERE id = 'default-project'",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE tree_nodes SET story_time_order = CASE id
+                    WHEN 'nir1' THEN 'a0'
+                    ELSE NULL
+                  END
+                  WHERE project_id = 'default-project'
+                    AND id IN ('a3-source', 'nir1', 'a3-future')",
+                [],
+            )?;
+            Ok(())
+        })?;
+        run_incremental_freshness_cycle(&db)?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO foreshadows
+                    (id, project_id, title, payoff_confirmed, abandoned, secret,
+                     payoff_scene_id, created_at, updated_at)
+                 VALUES ('a3-story-fallback', 'default-project', 'Story fallback', 0, 0, 1,
+                         'a3-source', 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO foreshadow_codex_links (foreshadow_id, codex_entry_id)
+                 VALUES ('a3-story-fallback', 'nir1-alice')",
+                [],
+            )?;
+            Ok(())
+        })?;
+
+        let mut typed_request = request(&db);
+        for entity in &mut typed_request.bundle.entities {
+            entity.scope.reading = ScopeValue::Exact {
+                value: "scene:a3-source".into(),
+            };
+        }
+        let created = create_nir1_entity_relation_revision(&db, typed_request)?;
+        let revision_id = created["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("typed revision id missing"))?
+            .to_owned();
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let a2 = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision(conn, "default-project", &revision_id)
+        })?;
+        assert!(matches!(a2, Nir1EntityRelationRevisionRead::Available(_)));
+
+        let read = db.with_read_transaction(|conn| {
+            evaluate_nir1_entity_relation_disclosure(conn, "default-project", &revision_id, "nir1")
+        })?;
+        assert!(
+            matches!(read, Nir1EntityRelationDisclosureRead::Eligible(_)),
+            "story reveal pair should fall back to Reading order: {read:?}"
+        );
         Ok(())
     }
 
@@ -5883,6 +6210,51 @@ mod tests {
     }
 
     #[test]
+    fn a3_auto_duplicate_story_authority_is_unavailable_at_query() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        db.with_conn(|conn| {
+            for (scene_id, story_key) in [("a3-source", "a0"), ("nir1", "a0"), ("a3-future", "a1")]
+            {
+                conn.execute(
+                    "UPDATE tree_nodes SET story_time_order = ?1
+                      WHERE id = ?2 AND project_id = 'default-project'",
+                    params![story_key, scene_id],
+                )?;
+            }
+            conn.execute(
+                "UPDATE projects SET phase_resolution_mode = 'auto'
+                  WHERE id = 'default-project'",
+                [],
+            )?;
+            Ok(())
+        })?;
+        run_incremental_freshness_cycle(&db)?;
+
+        let mut typed_request = request(&db);
+        for entity in &mut typed_request.bundle.entities {
+            entity.scope.reading = ScopeValue::Exact {
+                value: "scene:a3-source".into(),
+            };
+        }
+        let created = create_nir1_entity_relation_revision(&db, typed_request)?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let revision_id = created["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("typed revision id missing"))?;
+        let read = db.with_read_transaction(|conn| {
+            evaluate_nir1_entity_relation_disclosure(conn, "default-project", revision_id, "nir1")
+        })?;
+        assert!(matches!(
+            read,
+            Nir1EntityRelationDisclosureRead::Unavailable { ref reason }
+                if reason == "a3-query-axis-unavailable"
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn a3_live_phase_rows_are_bound_to_the_material_entity() -> anyhow::Result<()> {
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
@@ -5927,7 +6299,7 @@ mod tests {
         db.with_conn(|conn| {
             conn.execute(
                 "UPDATE codex_entry_phases
-                    SET anchor_node_id = 'a3-future', version = version + 1
+                    SET context_mode_override = 'hidden', version = version + 1
                   WHERE id = 'a3-alice-same' AND entry_id = 'nir1-alice'",
                 [],
             )?;
@@ -5935,6 +6307,49 @@ mod tests {
         })?;
         assert!(!db.with_read_transaction(|conn| {
             revalidate_nir1_entity_relation_disclosure(conn, &proof)
+        })?);
+        let hidden = db.with_read_transaction(|conn| {
+            evaluate_nir1_entity_relation_disclosure(conn, "default-project", revision_id, "nir1")
+        })?;
+        assert!(matches!(
+            hidden,
+            Nir1EntityRelationDisclosureRead::Unavailable { ref reason }
+                if reason == "a3-phase-context-unavailable"
+        ));
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entry_phases
+                    SET context_mode_override = 'always', version = version + 1
+                  WHERE id = 'a3-alice-same' AND entry_id = 'nir1-alice'",
+                [],
+            )?;
+            Ok(())
+        })?;
+        let visible = db.with_read_transaction(|conn| {
+            evaluate_nir1_entity_relation_disclosure(conn, "default-project", revision_id, "nir1")
+        })?;
+        let visible_proof = match visible {
+            Nir1EntityRelationDisclosureRead::Eligible(proof) => proof,
+            Nir1EntityRelationDisclosureRead::Unavailable { reason } => {
+                anyhow::bail!("visible phase override was unavailable: {reason}")
+            }
+        };
+        assert!(!db.with_read_transaction(|conn| {
+            revalidate_nir1_entity_relation_disclosure(conn, &proof)
+        })?);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entry_phases
+                    SET anchor_node_id = 'a3-future', version = version + 1
+                  WHERE id = 'a3-alice-same' AND entry_id = 'nir1-alice'",
+                [],
+            )?;
+            Ok(())
+        })?;
+        assert!(!db.with_read_transaction(|conn| {
+            revalidate_nir1_entity_relation_disclosure(conn, &visible_proof)
         })?);
         let future = db.with_read_transaction(|conn| {
             evaluate_nir1_entity_relation_disclosure(conn, "default-project", revision_id, "nir1")
@@ -5986,6 +6401,7 @@ mod tests {
             .iter()
             .find(|mapping| mapping.scene_ref == "scene:nir1")
             .ok_or_else(|| anyhow::anyhow!("query mapping missing"))?;
+        let story_statuses = super::build_a3_story_status_index(&authority);
         let reading_state = db.with_read_transaction(|conn| {
             super::read_a3_reveal_state(
                 conn,
@@ -5994,6 +6410,7 @@ mod tests {
                 &authority,
                 query_mapping,
                 "reading",
+                &story_statuses,
             )
         })?;
         let saved = reading_state
@@ -6041,6 +6458,7 @@ mod tests {
             .iter()
             .find(|mapping| mapping.scene_ref == "scene:nir1")
             .ok_or_else(|| anyhow::anyhow!("story query mapping missing"))?;
+        let story_statuses = super::build_a3_story_status_index(&story_authority);
         let story_state = db.with_read_transaction(|conn| {
             super::read_a3_reveal_state(
                 conn,
@@ -6049,6 +6467,7 @@ mod tests {
                 &story_authority,
                 story_query_mapping,
                 "story",
+                &story_statuses,
             )
         })?;
         let story_saved = story_state
@@ -6828,6 +7247,103 @@ mod tests {
     }
 
     #[test]
+    fn a3_fresh_approved_revision_rejects_all_material_scope_axis_mismatches() -> anyhow::Result<()>
+    {
+        for mismatch in ["timeline", "worldline", "layer", "holder", "audience"] {
+            let db = fresh_migrated_memory()?;
+            seed_run_and_catalog(&db)?;
+            prepare_a3_scope_fixture(&db)?;
+            run_incremental_freshness_cycle(&db)?;
+
+            let source = db.with_read_transaction(|conn| {
+                super::super::scene_scope::read_narrative_scene_scope(
+                    conn,
+                    "default-project",
+                    "a3-source",
+                )
+            })?;
+            let mut updated = source.binding.clone();
+            let exact = |reference: &str| NarrativeScopeConstraintV1::Exact {
+                reference: reference.into(),
+            };
+            match mismatch {
+                "timeline" => updated.material_constraint.timeline = exact("timeline:other"),
+                "worldline" => updated.material_constraint.worldline = exact("worldline:other"),
+                "layer" => updated.material_constraint.narrative_layer = exact("layer:other"),
+                "holder" => {
+                    updated.knowledge_holder = NarrativeScopePrincipalV1::Character {
+                        reference: "nir1-alice".into(),
+                    }
+                }
+                "audience" => {
+                    updated.audience = NarrativeScopePrincipalV1::Character {
+                        reference: "nir1-alice".into(),
+                    }
+                }
+                _ => unreachable!(),
+            }
+            update_narrative_scene_scope(
+                &db,
+                NarrativeSceneScopeUpdatePayload {
+                    project_id: "default-project".into(),
+                    scene_id: "a3-source".into(),
+                    request_id: format!("a3-{mismatch}-mismatch-request"),
+                    session_id: "a3-scope-session".into(),
+                    event_uid: format!("a3-{mismatch}-mismatch-event"),
+                    base_version: source.binding.version,
+                    updated_at: "2026-09-17T00:00:06.000Z".into(),
+                    scope: super::super::scene_scope::NarrativeSceneScopeUpdateV1 {
+                        schema_version: updated.schema_version,
+                        compatibility_marker: updated.compatibility_marker,
+                        query_identity: updated.query_identity,
+                        material_constraint: updated.material_constraint,
+                        knowledge_holder: updated.knowledge_holder,
+                        audience: updated.audience,
+                    },
+                },
+            )?;
+            run_incremental_freshness_cycle(&db)?;
+
+            let mut typed_request = request(&db);
+            for entity in &mut typed_request.bundle.entities {
+                entity.scope.reading = ScopeValue::Exact {
+                    value: "scene:a3-source".into(),
+                };
+            }
+            let created = create_nir1_entity_relation_revision(&db, typed_request)?;
+            let revision_id = created["revisionId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("typed revision id missing"))?
+                .to_owned();
+            approve_typed_revision(&db, "nir1-run", &created)?;
+            let a2 = db.with_read_transaction(|conn| {
+                read_nir1_entity_relation_revision(conn, "default-project", &revision_id)
+            })?;
+            assert!(
+                matches!(a2, Nir1EntityRelationRevisionRead::Available(_)),
+                "A2 must be available for fresh {mismatch} mismatch revision"
+            );
+            let fresh_a3 = db.with_read_transaction(|conn| {
+                evaluate_nir1_entity_relation_disclosure(
+                    conn,
+                    "default-project",
+                    &revision_id,
+                    "nir1",
+                )
+            })?;
+            assert!(
+                matches!(
+                    fresh_a3,
+                    Nir1EntityRelationDisclosureRead::Unavailable { ref reason }
+                        if reason == "a3-material-scope-mismatch"
+                ),
+                "fresh A3 must reject {mismatch} mismatch: {fresh_a3:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn a3_scope_axes_fail_closed_and_keep_strict_reading_boundaries() -> anyhow::Result<()> {
         let authority = build_narrative_project_scope_authority_v1(
             "a3-axes",
@@ -7003,6 +7519,8 @@ mod tests {
                             .as_str()
                             .ok_or_else(|| anyhow::anyhow!("phase createdAt missing"))?
                             .to_owned(),
+                        context_mode_override: None,
+                        version: 0,
                     })
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
@@ -7022,6 +7540,521 @@ mod tests {
                 case["expected"],
                 "{}",
                 case["id"].as_str().unwrap_or("unknown")
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a3_phase_visibility_folds_base_and_applicable_overrides() -> anyhow::Result<()> {
+        let authority = build_narrative_project_scope_authority_v1(
+            "a3-phase-visibility",
+            &[
+                NarrativeProjectScopeAuthoritySceneInputV1 {
+                    scene_id: "s1".into(),
+                    raw_story_key: Some("a0".into()),
+                },
+                NarrativeProjectScopeAuthoritySceneInputV1 {
+                    scene_id: "s2".into(),
+                    raw_story_key: Some("a1".into()),
+                },
+                NarrativeProjectScopeAuthoritySceneInputV1 {
+                    scene_id: "s3".into(),
+                    raw_story_key: Some("a2".into()),
+                },
+                NarrativeProjectScopeAuthoritySceneInputV1 {
+                    scene_id: "s4".into(),
+                    raw_story_key: Some("a3".into()),
+                },
+            ],
+        )?;
+        let query = |scene_id: &str| {
+            authority
+                .mappings
+                .iter()
+                .find(|mapping| mapping.scene_ref == format!("scene:{scene_id}"))
+                .expect("phase fixture query mapping")
+        };
+        let phase = |id: &str,
+                     anchor: &str,
+                     label: &str,
+                     created_at: &str,
+                     context_mode_override: Option<&str>,
+                     version: i64| A3PhaseRow {
+            id: id.into(),
+            anchor_scene_id: Some(anchor.into()),
+            label: label.into(),
+            created_at: created_at.into(),
+            context_mode_override: context_mode_override.map(str::to_owned),
+            version,
+        };
+        let phase_set = super::A3PhaseSet {
+            base_context_mode: "mentioned".into(),
+            phases: vec![
+                phase(
+                    "p-hidden",
+                    "s1",
+                    "Hidden",
+                    "2026-09-17T00:00:01.000Z",
+                    Some("hidden"),
+                    1,
+                ),
+                phase(
+                    "p-inherit",
+                    "s2",
+                    "Inherit",
+                    "2026-09-17T00:00:02.000Z",
+                    None,
+                    2,
+                ),
+                phase(
+                    "p-visible",
+                    "s3",
+                    "Visible",
+                    "2026-09-17T00:00:03.000Z",
+                    Some("always"),
+                    3,
+                ),
+                phase(
+                    "p-future-hidden",
+                    "s4",
+                    "Future hidden",
+                    "2026-09-17T00:00:04.000Z",
+                    Some("hidden"),
+                    4,
+                ),
+            ],
+        };
+        let statuses = super::build_a3_story_status_index(&authority);
+
+        let before_visible = super::resolve_a3_phase_set(
+            &phase_set,
+            "draft",
+            &authority,
+            query("s2"),
+            "reading",
+            "reading",
+            &statuses,
+        );
+        assert_eq!(before_visible.reason, Some("a3-phase-context-unavailable"));
+        assert_eq!(before_visible.effective_context_mode, "hidden");
+        assert_eq!(
+            before_visible
+                .applicable
+                .iter()
+                .map(|phase| phase.id.as_str())
+                .collect::<Vec<_>>(),
+            ["p-hidden", "p-inherit"]
+        );
+
+        let later_visible = super::resolve_a3_phase_set(
+            &phase_set,
+            "draft",
+            &authority,
+            query("s3"),
+            "reading",
+            "reading",
+            &statuses,
+        );
+        assert_eq!(later_visible.reason, None);
+        assert_eq!(later_visible.effective_context_mode, "always");
+        assert_eq!(
+            later_visible
+                .applicable
+                .iter()
+                .map(|phase| phase.id.as_str())
+                .collect::<Vec<_>>(),
+            ["p-hidden", "p-inherit", "p-visible"]
+        );
+
+        let future_hidden = super::resolve_a3_phase_set(
+            &phase_set,
+            "draft",
+            &authority,
+            query("s4"),
+            "reading",
+            "reading",
+            &statuses,
+        );
+        assert_eq!(future_hidden.reason, Some("a3-phase-context-unavailable"));
+        assert_eq!(future_hidden.effective_context_mode, "hidden");
+
+        let explicit_future = super::resolve_a3_phase_set(
+            &phase_set,
+            "p-future-hidden",
+            &authority,
+            query("s2"),
+            "reading",
+            "reading",
+            &statuses,
+        );
+        assert_eq!(explicit_future.reason, Some("a3-phase-future"));
+
+        let base_hidden_set = super::A3PhaseSet {
+            base_context_mode: "hidden".into(),
+            phases: Vec::new(),
+        };
+        let base_hidden = super::resolve_a3_phase_set(
+            &base_hidden_set,
+            "draft",
+            &authority,
+            query("s2"),
+            "reading",
+            "reading",
+            &statuses,
+        );
+        assert_eq!(base_hidden.reason, Some("a3-phase-context-unavailable"));
+        assert_eq!(base_hidden.effective_context_mode, "hidden");
+        Ok(())
+    }
+
+    #[test]
+    fn a3_phase_created_at_matches_ts_mixed_timestamp_ordering() -> anyhow::Result<()> {
+        let authority = build_narrative_project_scope_authority_v1(
+            "a3-phase-created-at",
+            &[NarrativeProjectScopeAuthoritySceneInputV1 {
+                scene_id: "s1".into(),
+                raw_story_key: Some("a0".into()),
+            }],
+        )?;
+        let query = authority
+            .mappings
+            .first()
+            .expect("phase timestamp query mapping");
+        let statuses = super::build_a3_story_status_index(&authority);
+        let phase_set = super::A3PhaseSet {
+            base_context_mode: "mentioned".into(),
+            phases: vec![
+                super::A3PhaseRow {
+                    id: "phase-old-sqlite".into(),
+                    anchor_scene_id: Some("s1".into()),
+                    label: "Old SQLite timestamp".into(),
+                    created_at: "2026-09-17 00:00:01.000".into(),
+                    context_mode_override: Some("always".into()),
+                    version: 1,
+                },
+                super::A3PhaseRow {
+                    id: "phase-new-rfc3339".into(),
+                    anchor_scene_id: Some("s1".into()),
+                    label: "New RFC3339 timestamp".into(),
+                    created_at: "2026-09-17T00:00:02.000Z".into(),
+                    context_mode_override: Some("hidden".into()),
+                    version: 2,
+                },
+            ],
+        };
+        let resolution = super::resolve_a3_phase_set(
+            &phase_set, "draft", &authority, query, "reading", "reading", &statuses,
+        );
+        assert_eq!(resolution.reason, Some("a3-phase-context-unavailable"));
+        assert_eq!(resolution.effective_context_mode, "hidden");
+        assert_eq!(
+            resolution
+                .applicable
+                .iter()
+                .map(|phase| phase.id.as_str())
+                .collect::<Vec<_>>(),
+            ["phase-old-sqlite", "phase-new-rfc3339"]
+        );
+
+        assert_eq!(
+            super::parse_phase_created_at("2026-09-17 00:00:01.000"),
+            super::parse_phase_created_at("2026-09-17T00:00:01.000Z")
+        );
+        assert!(super::is_sqlite_utc_timestamp_shape(
+            "2026-09-17 00:00:01.1"
+        ));
+        assert!(super::parse_phase_created_at("2026-09-17 00:00:01.1").is_some());
+        assert!(super::is_sqlite_utc_timestamp_shape(
+            "2026-09-17 00:00:01.123456789"
+        ));
+        assert!(super::parse_phase_created_at("2026-09-17 00:00:01.123456789").is_some());
+        assert!(!super::is_sqlite_utc_timestamp_shape(
+            "2026-09-17 00:00:01."
+        ));
+        assert!(!super::is_sqlite_utc_timestamp_shape(
+            "2026-09-17 00:00:01.1234567890"
+        ));
+        assert!(!super::is_sqlite_utc_timestamp_shape(
+            "2026-9-17 00:00:01.000"
+        ));
+        assert!(super::parse_phase_created_at("2026-9-17 00:00:01.000").is_none());
+
+        let invalid_phase_set = super::A3PhaseSet {
+            base_context_mode: "mentioned".into(),
+            phases: vec![
+                super::A3PhaseRow {
+                    id: "phase-invalid-hidden".into(),
+                    anchor_scene_id: Some("s1".into()),
+                    label: "Invalid hidden timestamp".into(),
+                    created_at: "invalid-Z".into(),
+                    context_mode_override: Some("hidden".into()),
+                    version: 1,
+                },
+                super::A3PhaseRow {
+                    id: "phase-invalid-visible".into(),
+                    anchor_scene_id: Some("s1".into()),
+                    label: "Invalid visible timestamp".into(),
+                    created_at: "invalid-a".into(),
+                    context_mode_override: Some("always".into()),
+                    version: 2,
+                },
+            ],
+        };
+        let invalid_resolution = super::resolve_a3_phase_set(
+            &invalid_phase_set,
+            "draft",
+            &authority,
+            query,
+            "reading",
+            "reading",
+            &statuses,
+        );
+        assert_eq!(invalid_resolution.reason, Some("a3-phase-unavailable"));
+
+        let unpadded_phase_set = super::A3PhaseSet {
+            base_context_mode: "mentioned".into(),
+            phases: vec![
+                super::A3PhaseRow {
+                    id: "phase-unpadded-hidden".into(),
+                    anchor_scene_id: Some("s1".into()),
+                    label: "Unpadded hidden timestamp".into(),
+                    created_at: "2026-9-17 00:00:01.000".into(),
+                    context_mode_override: Some("hidden".into()),
+                    version: 1,
+                },
+                super::A3PhaseRow {
+                    id: "phase-padded-visible".into(),
+                    anchor_scene_id: Some("s1".into()),
+                    label: "Padded visible timestamp".into(),
+                    created_at: "2026-09-17 00:00:02.000".into(),
+                    context_mode_override: Some("always".into()),
+                    version: 2,
+                },
+            ],
+        };
+        let unpadded_resolution = super::resolve_a3_phase_set(
+            &unpadded_phase_set,
+            "draft",
+            &authority,
+            query,
+            "reading",
+            "reading",
+            &statuses,
+        );
+        assert_eq!(unpadded_resolution.reason, Some("a3-phase-unavailable"));
+        Ok(())
+    }
+
+    #[test]
+    fn a3_auto_duplicate_story_authority_fails_closed_before_phase_fold() -> anyhow::Result<()> {
+        let authority = build_narrative_project_scope_authority_v1(
+            "a3-auto-duplicate",
+            &[
+                NarrativeProjectScopeAuthoritySceneInputV1 {
+                    scene_id: "s1".into(),
+                    raw_story_key: Some("a0".into()),
+                },
+                NarrativeProjectScopeAuthoritySceneInputV1 {
+                    scene_id: "s2".into(),
+                    raw_story_key: Some("a0".into()),
+                },
+            ],
+        )?;
+        let query = authority
+            .mappings
+            .iter()
+            .find(|mapping| mapping.scene_ref == "scene:s2")
+            .expect("duplicate story query mapping");
+        let statuses = super::build_a3_story_status_index(&authority);
+        assert_eq!(
+            statuses.status(&query.scene_ref),
+            super::A3StoryKeyStatus::Ambiguous
+        );
+        let phase_set = super::A3PhaseSet {
+            base_context_mode: "mentioned".into(),
+            phases: Vec::new(),
+        };
+        let resolution = super::resolve_a3_phase_set(
+            &phase_set, "draft", &authority, query, "auto", "story", &statuses,
+        );
+        assert_eq!(resolution.reason, Some("a3-phase-story-unavailable"));
+        Ok(())
+    }
+
+    #[test]
+    fn a3_auto_story_rejects_an_ambiguous_phase_anchor_for_a_resolved_query() -> anyhow::Result<()>
+    {
+        let authority = build_narrative_project_scope_authority_v1(
+            "a3-auto-phase-duplicate",
+            &[
+                NarrativeProjectScopeAuthoritySceneInputV1 {
+                    scene_id: "duplicate-a".into(),
+                    raw_story_key: Some("a0".into()),
+                },
+                NarrativeProjectScopeAuthoritySceneInputV1 {
+                    scene_id: "duplicate-b".into(),
+                    raw_story_key: Some("a0".into()),
+                },
+                NarrativeProjectScopeAuthoritySceneInputV1 {
+                    scene_id: "query".into(),
+                    raw_story_key: Some("b0".into()),
+                },
+            ],
+        )?;
+        let query = authority
+            .mappings
+            .iter()
+            .find(|mapping| mapping.scene_ref == "scene:query")
+            .expect("resolved query mapping");
+        let statuses = super::build_a3_story_status_index(&authority);
+        assert_eq!(
+            statuses.status(&query.scene_ref),
+            super::A3StoryKeyStatus::Resolved("b0".into())
+        );
+        let phase_set = super::A3PhaseSet {
+            base_context_mode: "mentioned".into(),
+            phases: vec![super::A3PhaseRow {
+                id: "phase-ambiguous".into(),
+                anchor_scene_id: Some("duplicate-a".into()),
+                label: "Ambiguous anchor".into(),
+                created_at: "2026-09-17T00:00:01.000Z".into(),
+                context_mode_override: None,
+                version: 1,
+            }],
+        };
+        let resolution = super::resolve_a3_phase_set(
+            &phase_set, "draft", &authority, query, "auto", "story", &statuses,
+        );
+        assert_eq!(resolution.reason, Some("a3-phase-story-unavailable"));
+        Ok(())
+    }
+
+    #[test]
+    fn a3_auto_story_ignores_unrelated_duplicate_story_scenes() -> anyhow::Result<()> {
+        let authority = build_narrative_project_scope_authority_v1(
+            "a3-auto-unrelated-duplicate",
+            &[
+                NarrativeProjectScopeAuthoritySceneInputV1 {
+                    scene_id: "duplicate-a".into(),
+                    raw_story_key: Some("a0".into()),
+                },
+                NarrativeProjectScopeAuthoritySceneInputV1 {
+                    scene_id: "duplicate-b".into(),
+                    raw_story_key: Some("a0".into()),
+                },
+                NarrativeProjectScopeAuthoritySceneInputV1 {
+                    scene_id: "query".into(),
+                    raw_story_key: Some("b0".into()),
+                },
+            ],
+        )?;
+        let query = authority
+            .mappings
+            .iter()
+            .find(|mapping| mapping.scene_ref == "scene:query")
+            .expect("resolved query mapping");
+        let statuses = super::build_a3_story_status_index(&authority);
+        let phase_set = super::A3PhaseSet {
+            base_context_mode: "mentioned".into(),
+            phases: vec![super::A3PhaseRow {
+                id: "phase-query".into(),
+                anchor_scene_id: Some("query".into()),
+                label: "Query phase".into(),
+                created_at: "2026-09-17T00:00:01.000Z".into(),
+                context_mode_override: None,
+                version: 1,
+            }],
+        };
+        let resolution = super::resolve_a3_phase_set(
+            &phase_set, "draft", &authority, query, "auto", "story", &statuses,
+        );
+        assert_eq!(resolution.reason, None);
+        assert_eq!(resolution.effective_context_mode, "mentioned");
+        assert_eq!(
+            resolution
+                .applicable
+                .iter()
+                .map(|phase| phase.id.as_str())
+                .collect::<Vec<_>>(),
+            ["phase-query"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a3_reveal_pair_order_matches_shared_ts_fixture() -> anyhow::Result<()> {
+        let cases: Value = serde_json::from_str(include_str!("reveal-cases.json"))?;
+        for case in cases
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("reveal cases must be an array"))?
+        {
+            let mut scene_values = case["scenes"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("reveal case scenes missing"))?
+                .iter()
+                .map(|scene| {
+                    Ok((
+                        scene["sortOrder"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("reveal sort order missing"))?
+                            .to_owned(),
+                        scene["sceneId"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("reveal scene id missing"))?
+                            .to_owned(),
+                        scene["rawStoryKey"].as_str().map(str::to_owned),
+                    ))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            scene_values.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+            let scenes = scene_values
+                .into_iter()
+                .map(
+                    |(_, scene_id, raw_story_key)| NarrativeProjectScopeAuthoritySceneInputV1 {
+                        scene_id,
+                        raw_story_key,
+                    },
+                )
+                .collect::<Vec<_>>();
+            let authority = build_narrative_project_scope_authority_v1("reveal-parity", &scenes)?;
+            let left_scene_id = case["leftSceneId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("reveal left scene missing"))?;
+            let right_scene_id = case["rightSceneId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("reveal right scene missing"))?;
+            let left = authority
+                .mappings
+                .iter()
+                .find(|mapping| mapping.scene_ref == format!("scene:{left_scene_id}"))
+                .ok_or_else(|| anyhow::anyhow!("reveal left mapping missing"))?;
+            let right = authority
+                .mappings
+                .iter()
+                .find(|mapping| mapping.scene_ref == format!("scene:{right_scene_id}"))
+                .ok_or_else(|| anyhow::anyhow!("reveal right mapping missing"))?;
+            let mode = case["mode"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("reveal mode missing"))?;
+            let axis = super::super::retrieval_admission::scene_axis::resolve(
+                &authority,
+                mode,
+                right_scene_id,
+            )?;
+            let axis = axis.axis_used.as_deref().unwrap_or("reading");
+            let statuses = super::build_a3_story_status_index(&authority);
+            let actual = super::reveal_temporal_position(left, right, &statuses, axis)
+                .map(|order| order as i32)
+                .ok_or_else(|| anyhow::anyhow!("reveal order unavailable"))?;
+            let expected = case["expected"]
+                .as_i64()
+                .ok_or_else(|| anyhow::anyhow!("reveal expected order missing"))?;
+            assert_eq!(
+                actual.signum(),
+                (expected as i32).signum(),
+                "{}",
+                case["id"]
             );
         }
         Ok(())

@@ -312,6 +312,7 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/codex/useCodexEntityRelationReview.test.tsx",
         "src/features/codex/components/CodexTypedRelationsSection.test.tsx",
         "src/features/codex/context/nir1PhaseParity.test.ts",
+        "src/features/codex/context/nir1RevealParity.test.ts",
         "src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.test.ts",
         "src/features/narrative-semantic-core/nir1PackingApi.test.ts",
         "src/features/ai-context/nir1Packing.test.ts",

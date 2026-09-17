@@ -1,0 +1,35 @@
+[
+  {
+    "id": "story-resolved-uses-story-then-reading",
+    "scenes": [
+      { "sceneId": "source", "sortOrder": "a0", "rawStoryKey": "z0" },
+      { "sceneId": "query", "sortOrder": "a1", "rawStoryKey": "a0" }
+    ],
+    "mode": "story",
+    "leftSceneId": "source",
+    "rightSceneId": "query",
+    "expected": 1
+  },
+  {
+    "id": "story-unresolved-pair-falls-back-to-reading",
+    "scenes": [
+      { "sceneId": "source", "sortOrder": "a0", "rawStoryKey": null },
+      { "sceneId": "query", "sortOrder": "a1", "rawStoryKey": "a0" }
+    ],
+    "mode": "story",
+    "leftSceneId": "source",
+    "rightSceneId": "query",
+    "expected": -1
+  },
+  {
+    "id": "reading-always-uses-reading",
+    "scenes": [
+      { "sceneId": "source", "sortOrder": "a0", "rawStoryKey": "z0" },
+      { "sceneId": "query", "sortOrder": "a1", "rawStoryKey": "a0" }
+    ],
+    "mode": "reading",
+    "leftSceneId": "source",
+    "rightSceneId": "query",
+    "expected": -1
+  }
+]
