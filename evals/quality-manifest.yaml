@@ -1049,6 +1049,7 @@ requirements:
       - eval-ground-search-events
       - eval-route-search-codex
       - eval-isolation-ask-user
+      - eval-nir1-capacity-diagnostics
   - id: GDX-TRACE-001
     title: Requirements, changes, suites, results, failures, and deferred work remain linked.
     definedIn: policies/quality/iron-laws.md#GDX-TRACE-001
@@ -1157,6 +1158,7 @@ requirements:
       - eval-route-search-scenes
       - eval-narrative-runtime-authority-fail-closed
       - eval-nir1-entity-relation-review
+      - eval-nir1-capacity-diagnostics
 heavyEvaluations:
   - id: heavy-nir1-raw-retrieval-baseline
     suiteId: retrieval-grounding
