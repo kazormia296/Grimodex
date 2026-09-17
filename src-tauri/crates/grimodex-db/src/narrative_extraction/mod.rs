@@ -152,6 +152,12 @@ mod semantic_bindings;
 mod semantic_epoch;
 mod semantic_index_diagnostics;
 mod source_revision;
+#[allow(unused_imports)]
+pub(crate) use source_revision::{
+    is_validation_terminated, resolve_current_source_state_with_control,
+    resolve_source_revision_with_control, validation_terminated, ValidationTerminated,
+    ValidationTerminationReason,
+};
 mod stage_provenance;
 mod task_leases;
 mod temporal_constraints;
@@ -300,8 +306,10 @@ pub(crate) use publish_runtime::{
 };
 #[allow(unused_imports)]
 pub(crate) use restore_rebuild::{
-    rebuild_repair_dependency_edges_in_tx, rebuild_verify_dependency_edges,
-    rotate_epoch_for_restore_in_tx, RebuildVerifyReport,
+    durable_graph_state_digest_with_control, rebuild_repair_dependency_edges_in_tx,
+    rebuild_verify_dependency_edges, rotate_epoch_for_restore_in_tx,
+    validate_graph_state_digest_with_control, verify_dependency_graph_snapshot_with_control,
+    RebuildVerifyReport,
 };
 pub(crate) use task_leases::with_immediate_transaction;
 pub use terminal_failure::{

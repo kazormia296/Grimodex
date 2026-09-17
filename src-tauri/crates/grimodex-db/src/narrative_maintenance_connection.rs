@@ -7,26 +7,115 @@
 //! the lifetime of the `Database` value.
 
 use super::Database;
+use crate::narrative_extraction::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
+use crate::narrative_extraction::{validation_terminated, ValidationTerminationReason};
 use anyhow::{anyhow, Result};
-use rusqlite::Connection;
-use std::cell::Cell;
+use rusqlite::{Connection, Error as SqliteError, ErrorCode};
+use std::cell::RefCell;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering},
     Arc, Mutex, MutexGuard,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const UNUSABLE_CODE: &str = "NIR1_MAINTENANCE_CONNECTION_UNUSABLE";
+
+const TERMINATION_NONE: u8 = 0;
+const TERMINATION_CANCELLED: u8 = 1;
+const TERMINATION_TIMEOUT: u8 = 2;
+const TERMINATION_CLOSED: u8 = 3;
+const TERMINATION_WORKSPACE_GENERATION: u8 = 4;
+const TERMINATION_FOREGROUND: u8 = 5;
+
+#[derive(Clone, Debug)]
+struct TerminationLatch(Arc<AtomicU8>);
+
+impl Default for TerminationLatch {
+    fn default() -> Self {
+        Self(Arc::new(AtomicU8::new(TERMINATION_NONE)))
+    }
+}
+
+impl TerminationLatch {
+    fn set(&self, reason: ValidationTerminationReason) {
+        let code = match reason {
+            ValidationTerminationReason::Cancelled => TERMINATION_CANCELLED,
+            ValidationTerminationReason::TimedOut => TERMINATION_TIMEOUT,
+            ValidationTerminationReason::Closed => TERMINATION_CLOSED,
+            ValidationTerminationReason::WorkspaceGenerationChanged => {
+                TERMINATION_WORKSPACE_GENERATION
+            }
+            ValidationTerminationReason::ForegroundPreempted => TERMINATION_FOREGROUND,
+            ValidationTerminationReason::CleanupFailed => TERMINATION_NONE,
+        };
+        if code != TERMINATION_NONE {
+            let _ = self.0.compare_exchange(
+                TERMINATION_NONE,
+                code,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+
+    fn get(&self) -> Option<ValidationTerminationReason> {
+        Some(match self.0.load(Ordering::Acquire) {
+            TERMINATION_CANCELLED => ValidationTerminationReason::Cancelled,
+            TERMINATION_TIMEOUT => ValidationTerminationReason::TimedOut,
+            TERMINATION_CLOSED => ValidationTerminationReason::Closed,
+            TERMINATION_WORKSPACE_GENERATION => {
+                ValidationTerminationReason::WorkspaceGenerationChanged
+            }
+            TERMINATION_FOREGROUND => ValidationTerminationReason::ForegroundPreempted,
+            _ => return None,
+        })
+    }
+}
 
 thread_local! {
     /// A top-level owner installs connection-local hooks and settings. Nested
     /// readers on that same owner must inherit them instead of replacing the
     /// hook and later clearing the owner's cancellation handler.
-    static SCOPE_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static SCOPE_CONNECTIONS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 
     #[cfg(test)]
     static FAILPOINTS: std::cell::RefCell<MaintenanceCleanupFailpoints> =
         const { std::cell::RefCell::new(MaintenanceCleanupFailpoints::NONE) };
+}
+
+struct ScopeConnectionGuard {
+    connection_id: usize,
+}
+
+impl Drop for ScopeConnectionGuard {
+    fn drop(&mut self) {
+        SCOPE_CONNECTIONS.with(|connections| {
+            let mut connections = connections.borrow_mut();
+            // A panic must still unwind the scope marker. Do not leave a
+            // later, unrelated connection on this worker classified as a
+            // nested scope.
+            if connections.last().copied() == Some(self.connection_id) {
+                connections.pop();
+            } else if let Some(index) = connections
+                .iter()
+                .rposition(|connection_id| *connection_id == self.connection_id)
+            {
+                connections.remove(index);
+            }
+        });
+    }
+}
+
+fn enter_scope(conn: &Connection) -> (bool, ScopeConnectionGuard) {
+    let connection_id = conn as *const Connection as usize;
+    let nested = SCOPE_CONNECTIONS.with(|connections| {
+        let mut connections = connections.borrow_mut();
+        let nested = connections.last().copied() == Some(connection_id);
+        connections.push(connection_id);
+        nested
+    });
+    (nested, ScopeConnectionGuard { connection_id })
 }
 
 #[derive(Debug)]
@@ -102,6 +191,169 @@ pub(crate) struct NarrativeMaintenanceConnectionResult<T> {
     pub(crate) receipt: NarrativeMaintenanceConnectionReceipt,
 }
 
+/// Process-local controls supplied by the one maintenance owner to a Graph
+/// whole-project operation. The Graph producer deliberately depends on this
+/// narrow shape instead of learning about scheduler or workspace state.
+#[derive(Clone)]
+pub(crate) struct NarrativeMaintenanceGraphControlConfig {
+    pub(crate) deadline: Option<Instant>,
+    /// `(current_generation, expected_generation)` is supplied by the active
+    /// workspace owner. A mismatch is a typed terminal condition and never a
+    /// stale Source/missing Edge result.
+    pub(crate) workspace_generation: Option<(Arc<AtomicU64>, u64)>,
+    /// A close is distinct from an ordinary user cancellation so terminal
+    /// receipts can preserve the owner supplied reason.
+    pub(crate) closed: Option<Arc<AtomicBool>>,
+    /// Optional owner-owned counter for the progress hook installed by this
+    /// outer scope. This is diagnostic telemetry only; callback count is not
+    /// an SQL work total.
+    pub(crate) progress_callbacks: Option<Arc<AtomicU64>>,
+    /// Latched by the outer SQLite progress hook without re-entering the
+    /// Database. A long-running SQL statement is converted to the same typed
+    /// terminal reason at the operation boundary.
+    termination_latch: TerminationLatch,
+}
+
+impl Default for NarrativeMaintenanceGraphControlConfig {
+    fn default() -> Self {
+        Self {
+            deadline: None,
+            workspace_generation: None,
+            closed: None,
+            progress_callbacks: None,
+            termination_latch: TerminationLatch::default(),
+        }
+    }
+}
+
+impl NarrativeMaintenanceGraphControlConfig {
+    pub(crate) fn with_progress_callbacks(progress_callbacks: Arc<AtomicU64>) -> Self {
+        Self {
+            progress_callbacks: Some(progress_callbacks),
+            ..Self::default()
+        }
+    }
+}
+
+/// Concrete GraphWorkControl owned by the outer no-wait maintenance scope.
+/// Every Rust boundary uses the same stop/deadline/generation/foreground
+/// ordering, while the outer SQLite progress hook handles the stop flag while
+/// SQLite is executing.
+pub(crate) struct NarrativeMaintenanceGraphControl<'a> {
+    db: &'a Database,
+    stop: Arc<AtomicBool>,
+    config: NarrativeMaintenanceGraphControlConfig,
+}
+
+impl<'a> NarrativeMaintenanceGraphControl<'a> {
+    pub(crate) fn new(
+        db: &'a Database,
+        stop: Arc<AtomicBool>,
+        config: NarrativeMaintenanceGraphControlConfig,
+    ) -> Self {
+        Self { db, stop, config }
+    }
+
+    fn terminal(reason: ValidationTerminationReason, stage: GraphWorkStage) -> anyhow::Error {
+        validation_terminated(
+            reason,
+            format!("NIR1 maintenance stopped at Graph {stage:?} boundary"),
+        )
+    }
+}
+
+impl GraphWorkControl for NarrativeMaintenanceGraphControl<'_> {
+    fn check(&mut self, stage: GraphWorkStage) -> Result<()> {
+        if let Some(reason) = self.config.termination_latch.get() {
+            return Err(Self::terminal(reason, stage));
+        }
+        if self
+            .config
+            .closed
+            .as_ref()
+            .is_some_and(|closed| closed.load(Ordering::Acquire))
+        {
+            self.config
+                .termination_latch
+                .set(ValidationTerminationReason::Closed);
+            return Err(Self::terminal(ValidationTerminationReason::Closed, stage));
+        }
+        if self.stop.load(Ordering::Acquire) {
+            self.config
+                .termination_latch
+                .set(ValidationTerminationReason::Cancelled);
+            return Err(Self::terminal(
+                ValidationTerminationReason::Cancelled,
+                stage,
+            ));
+        }
+        if self
+            .config
+            .workspace_generation
+            .as_ref()
+            .is_some_and(|(current, expected)| current.load(Ordering::Acquire) != *expected)
+        {
+            self.config
+                .termination_latch
+                .set(ValidationTerminationReason::WorkspaceGenerationChanged);
+            return Err(Self::terminal(
+                ValidationTerminationReason::WorkspaceGenerationChanged,
+                stage,
+            ));
+        }
+        if self
+            .config
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.config
+                .termination_latch
+                .set(ValidationTerminationReason::TimedOut);
+            return Err(Self::terminal(ValidationTerminationReason::TimedOut, stage));
+        }
+        if self.db.foreground_connection_waiting() {
+            self.config
+                .termination_latch
+                .set(ValidationTerminationReason::ForegroundPreempted);
+            return Err(Self::terminal(
+                ValidationTerminationReason::ForegroundPreempted,
+                stage,
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Run a controlled Graph operation while the caller owns the exact
+/// maintenance connection scope. The connection scope installs the only
+/// SQLite hook/settings and quarantines the connection when cleanup fails.
+pub(crate) fn with_narrative_maintenance_graph_control<T, F>(
+    db: &Database,
+    timeout: Duration,
+    progress_interval: i32,
+    stop: Arc<AtomicBool>,
+    config: NarrativeMaintenanceGraphControlConfig,
+    operation: F,
+) -> Result<Option<NarrativeMaintenanceConnectionResult<T>>>
+where
+    F: FnOnce(&Connection, &mut dyn GraphWorkControl) -> Result<T>,
+{
+    let db_ref = db;
+    let hook_config = config.clone();
+    let config_ref = config;
+    with_narrative_maintenance_connection_with_latch(
+        db,
+        timeout,
+        progress_interval,
+        stop.clone(),
+        hook_config,
+        move |conn| {
+            let mut control = NarrativeMaintenanceGraphControl::new(db_ref, stop, config_ref);
+            operation(conn, &mut control)
+        },
+    )
+}
+
 impl<T> NarrativeMaintenanceConnectionResult<T> {
     pub(crate) fn into_result(self) -> Result<T> {
         match (self.value, self.operation_error, self.cleanup_error) {
@@ -168,16 +420,50 @@ pub(crate) fn with_narrative_maintenance_connection<T, F>(
 where
     F: FnOnce(&Connection) -> Result<T>,
 {
-    let Some(conn) = try_lock_narrative_maintenance(db)? else {
-        return Ok(None);
-    };
-    let result = with_narrative_maintenance_connection_scope(
-        &conn,
+    with_narrative_maintenance_connection_with_latch(
+        db,
         timeout,
         progress_interval,
         stop,
+        NarrativeMaintenanceGraphControlConfig::default(),
         operation,
-    );
+    )
+}
+
+fn with_narrative_maintenance_connection_with_latch<T, F>(
+    db: &Database,
+    timeout: Duration,
+    progress_interval: i32,
+    stop: Arc<AtomicBool>,
+    hook_config: NarrativeMaintenanceGraphControlConfig,
+    operation: F,
+) -> Result<Option<NarrativeMaintenanceConnectionResult<T>>>
+where
+    F: FnOnce(&Connection) -> Result<T>,
+{
+    let Some(conn) = try_lock_narrative_maintenance(db)? else {
+        return Ok(None);
+    };
+    let result = match catch_unwind(AssertUnwindSafe(|| {
+        with_narrative_maintenance_connection_scope_with_latch(
+            &conn,
+            timeout,
+            progress_interval,
+            stop,
+            hook_config,
+            Some(Arc::clone(&db.foreground_connection_waiters)),
+            operation,
+        )
+    })) {
+        Ok(result) => result,
+        Err(payload) => {
+            // run_outer_scope cleans the SQLite state before rethrowing. A
+            // panic is nevertheless terminal for this shared connection;
+            // fail closed before the mutex guard is returned to callers.
+            db.quarantine_connection("maintenance operation panicked");
+            std::panic::resume_unwind(payload);
+        }
+    };
     if !result.receipt.connection_reusable {
         let reason = result
             .cleanup_error
@@ -203,15 +489,33 @@ pub(crate) fn with_narrative_maintenance_connection_scope<T, F>(
 where
     F: FnOnce(&Connection) -> Result<T>,
 {
-    let nested = SCOPE_DEPTH.with(|depth| {
-        let current = depth.get();
-        depth.set(current.saturating_add(1));
-        current > 0
-    });
+    with_narrative_maintenance_connection_scope_with_latch(
+        conn,
+        timeout,
+        progress_interval,
+        stop,
+        NarrativeMaintenanceGraphControlConfig::default(),
+        None,
+        operation,
+    )
+}
+
+fn with_narrative_maintenance_connection_scope_with_latch<T, F>(
+    conn: &Connection,
+    timeout: Duration,
+    progress_interval: i32,
+    stop: Arc<AtomicBool>,
+    hook_config: NarrativeMaintenanceGraphControlConfig,
+    foreground_waiters: Option<Arc<AtomicUsize>>,
+    operation: F,
+) -> NarrativeMaintenanceConnectionResult<T>
+where
+    F: FnOnce(&Connection) -> Result<T>,
+{
+    let (nested, _scope_guard) = enter_scope(conn);
 
     if nested {
         let operation_result = operation(conn);
-        SCOPE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
         return match operation_result {
             Ok(value) => NarrativeMaintenanceConnectionResult {
                 value: Some(value),
@@ -228,9 +532,15 @@ where
         };
     }
 
-    let result = run_outer_scope(conn, timeout, progress_interval, stop, operation);
-    SCOPE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
-    result
+    run_outer_scope(
+        conn,
+        timeout,
+        progress_interval,
+        stop,
+        hook_config,
+        foreground_waiters,
+        operation,
+    )
 }
 
 fn run_outer_scope<T, F>(
@@ -238,6 +548,8 @@ fn run_outer_scope<T, F>(
     timeout: Duration,
     progress_interval: i32,
     stop: Arc<AtomicBool>,
+    hook_config: NarrativeMaintenanceGraphControlConfig,
+    foreground_waiters: Option<Arc<AtomicUsize>>,
     operation: F,
 ) -> NarrativeMaintenanceConnectionResult<T>
 where
@@ -246,18 +558,18 @@ where
     let mut receipt = NarrativeMaintenanceConnectionReceipt::clean();
     let mut setup_error = None;
 
-    let original_timeout_ms = match conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))
-    {
-        Ok(value) if value >= 0 => value,
-        Ok(value) => {
-            setup_error = Some(anyhow!("SQLite returned a negative busy_timeout: {value}"));
-            0
-        }
-        Err(error) => {
-            setup_error = Some(error.into());
-            0
-        }
-    };
+    let original_timeout_ms: i64 =
+        match conn.pragma_query_value(None, "busy_timeout", |row| row.get(0)) {
+            Ok(value) if value >= 0 => value,
+            Ok(value) => {
+                setup_error = Some(anyhow!("SQLite returned a negative busy_timeout: {value}"));
+                0
+            }
+            Err(error) => {
+                setup_error = Some(error.into());
+                0
+            }
+        };
 
     if setup_error.is_none() {
         if let Err(error) = conn.busy_timeout(timeout) {
@@ -267,10 +579,52 @@ where
 
     if setup_error.is_none() {
         let stop_for_hook = Arc::clone(&stop);
+        let latch_for_hook = hook_config.termination_latch.clone();
+        let closed_for_hook = hook_config.closed.clone();
+        let generation_for_hook = hook_config.workspace_generation.clone();
+        let deadline_for_hook = hook_config.deadline;
+        let progress_callbacks_for_hook = hook_config.progress_callbacks.clone();
+        let foreground_waiters_for_hook = foreground_waiters.clone();
         let hook_result = if progress_interval > 0 {
             conn.progress_handler(
                 progress_interval,
-                Some(move || stop_for_hook.load(Ordering::Acquire)),
+                Some(move || {
+                    if let Some(counter) = progress_callbacks_for_hook.as_ref() {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if closed_for_hook
+                        .as_ref()
+                        .is_some_and(|closed| closed.load(Ordering::Acquire))
+                    {
+                        latch_for_hook.set(ValidationTerminationReason::Closed);
+                        return true;
+                    }
+                    if stop_for_hook.load(Ordering::Acquire) {
+                        latch_for_hook.set(ValidationTerminationReason::Cancelled);
+                        return true;
+                    }
+                    if generation_for_hook
+                        .as_ref()
+                        .is_some_and(|(current, expected)| {
+                            current.load(Ordering::Acquire) != *expected
+                        })
+                    {
+                        latch_for_hook.set(ValidationTerminationReason::WorkspaceGenerationChanged);
+                        return true;
+                    }
+                    if deadline_for_hook.is_some_and(|deadline| Instant::now() >= deadline) {
+                        latch_for_hook.set(ValidationTerminationReason::TimedOut);
+                        return true;
+                    }
+                    if foreground_waiters_for_hook
+                        .as_ref()
+                        .is_some_and(|waiters| waiters.load(Ordering::Acquire) > 0)
+                    {
+                        latch_for_hook.set(ValidationTerminationReason::ForegroundPreempted);
+                        return true;
+                    }
+                    false
+                }),
             )
         } else {
             conn.progress_handler(0, None::<fn() -> bool>)
@@ -280,13 +634,26 @@ where
         }
     }
 
-    let (value, operation_error) = match setup_error {
-        Some(error) => (None, Some(error)),
-        None => match operation(conn) {
-            Ok(value) => (Some(value), None),
-            Err(error) => (None, Some(error)),
+    let (value, mut operation_error, panic_payload) = match setup_error {
+        Some(error) => (None, Some(error), None),
+        None => match catch_unwind(AssertUnwindSafe(|| operation(conn))) {
+            Ok(Ok(value)) => (Some(value), None, None),
+            Ok(Err(error)) => (None, Some(error), None),
+            Err(payload) => (
+                None,
+                Some(anyhow!("maintenance operation panicked")),
+                Some(payload),
+            ),
         },
     };
+
+    // SQLite reports a progress-hook stop as SQLITE_INTERRUPT. Preserve the
+    // owner-selected terminal reason instead of exposing a generic SQL error
+    // or allowing Source/Verify callers to classify the interruption as
+    // missing/stale.
+    if let Some(error) = operation_error.take() {
+        operation_error = Some(map_interrupted_error(error, &hook_config.termination_latch));
+    }
 
     let mut cleanup_error = None;
 
@@ -360,12 +727,19 @@ where
         && receipt.busy_timeout_restored
         && cleanup_error.is_none();
 
-    NarrativeMaintenanceConnectionResult {
+    let result = NarrativeMaintenanceConnectionResult {
         value,
         operation_error,
         cleanup_error,
         receipt,
+    };
+    if let Some(payload) = panic_payload {
+        // All cleanup checks above have run. The outer owner catches this
+        // unwind, quarantines the connection, and resumes the original panic
+        // after the connection state is no longer shared with later work.
+        std::panic::resume_unwind(payload);
     }
+    result
 }
 
 fn append_cleanup_error(slot: &mut Option<anyhow::Error>, error: anyhow::Error) {
@@ -373,6 +747,19 @@ fn append_cleanup_error(slot: &mut Option<anyhow::Error>, error: anyhow::Error) 
         *slot = Some(anyhow!("{existing}; {error}"));
     } else {
         *slot = Some(error);
+    }
+}
+
+fn map_interrupted_error(error: anyhow::Error, latch: &TerminationLatch) -> anyhow::Error {
+    let interrupted = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<SqliteError>()
+            .is_some_and(|sqlite| matches!(sqlite, SqliteError::SqliteFailure(code, _) if code.code == ErrorCode::OperationInterrupted))
+    });
+    if let (true, Some(reason)) = (interrupted, latch.get()) {
+        validation_terminated(reason, "SQLite progress hook interrupted maintenance work")
+    } else {
+        error
     }
 }
 
@@ -466,6 +853,8 @@ fn set_maintenance_cleanup_failpoints_for_test(failpoints: MaintenanceCleanupFai
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::narrative_extraction::nir1_entity_relation_index::GraphWorkStage;
+    use crate::narrative_extraction::{is_validation_terminated, ValidationTerminated};
     use std::sync::mpsc;
     use std::thread;
 
@@ -477,6 +866,106 @@ mod tests {
 
     fn stop_flag() -> Arc<AtomicBool> {
         Arc::new(AtomicBool::new(false))
+    }
+
+    fn termination_reason(error: anyhow::Error) -> ValidationTerminationReason {
+        assert!(is_validation_terminated(&error), "{error}");
+        error
+            .downcast_ref::<ValidationTerminated>()
+            .expect("typed validation termination")
+            .reason
+    }
+
+    #[test]
+    fn graph_control_maps_stop_deadline_close_and_generation_to_typed_terms() {
+        let db = test_db();
+
+        let stopped = Arc::new(AtomicBool::new(true));
+        let mut control = NarrativeMaintenanceGraphControl::new(
+            &db,
+            stopped,
+            NarrativeMaintenanceGraphControlConfig::default(),
+        );
+        assert_eq!(
+            termination_reason(control.check(GraphWorkStage::Page).expect_err("cancel")),
+            ValidationTerminationReason::Cancelled
+        );
+
+        let mut control = NarrativeMaintenanceGraphControl::new(
+            &db,
+            stop_flag(),
+            NarrativeMaintenanceGraphControlConfig {
+                deadline: Some(Instant::now() - Duration::from_millis(1)),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            termination_reason(control.check(GraphWorkStage::Digest).expect_err("deadline")),
+            ValidationTerminationReason::TimedOut
+        );
+
+        let closed = Arc::new(AtomicBool::new(true));
+        let mut control = NarrativeMaintenanceGraphControl::new(
+            &db,
+            stop_flag(),
+            NarrativeMaintenanceGraphControlConfig {
+                closed: Some(closed),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            termination_reason(control.check(GraphWorkStage::Restore).expect_err("closed")),
+            ValidationTerminationReason::Closed
+        );
+
+        let generation = Arc::new(AtomicU64::new(2));
+        let mut control = NarrativeMaintenanceGraphControl::new(
+            &db,
+            stop_flag(),
+            NarrativeMaintenanceGraphControlConfig {
+                workspace_generation: Some((generation, 1)),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            termination_reason(
+                control
+                    .check(GraphWorkStage::ColdReopen)
+                    .expect_err("workspace generation")
+            ),
+            ValidationTerminationReason::WorkspaceGenerationChanged
+        );
+    }
+
+    #[test]
+    fn graph_control_preempts_after_connection_acquisition_when_foreground_arrives() {
+        let db = Arc::new(test_db());
+        let owner = try_lock_narrative_maintenance(&db)
+            .expect("try lock")
+            .expect("maintenance owner");
+        let foreground_db = Arc::clone(&db);
+        let foreground = thread::spawn(move || foreground_db.with_conn(|_| Ok(())));
+        for _ in 0..1_000 {
+            if db.foreground_connection_waiting() {
+                break;
+            }
+            thread::yield_now();
+        }
+        assert!(db.foreground_connection_waiting());
+        let mut control = NarrativeMaintenanceGraphControl::new(
+            &db,
+            stop_flag(),
+            NarrativeMaintenanceGraphControlConfig::default(),
+        );
+        assert_eq!(
+            termination_reason(control.check(GraphWorkStage::Edge).expect_err("preempt")),
+            ValidationTerminationReason::ForegroundPreempted
+        );
+        drop(owner);
+        foreground
+            .join()
+            .expect("foreground join")
+            .expect("foreground");
     }
 
     #[test]
@@ -531,6 +1020,29 @@ mod tests {
             .with_conn(|conn| Ok(conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?))
             .expect("read timeout");
         assert_eq!(timeout, 5_000);
+    }
+
+    #[test]
+    fn sqlite_progress_interrupt_is_returned_as_typed_termination() {
+        let db = test_db();
+        let stop = Arc::new(AtomicBool::new(true));
+        let result = with_narrative_maintenance_connection(&db, Duration::ZERO, 1, stop, |conn| {
+            conn.execute_batch(
+                "WITH RECURSIVE walk(value) AS (
+                         SELECT 1
+                         UNION ALL SELECT value + 1 FROM walk WHERE value < 1000000
+                     ) SELECT sum(value) FROM walk;",
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("acquisition")
+        .expect("scope");
+        let error = result.into_result().expect_err("interrupt must stop work");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(db.connection_reusable());
     }
 
     #[test]
@@ -605,5 +1117,30 @@ mod tests {
         assert!(message.contains("progress handler reset failpoint"));
         assert!(message.contains("autocommit verification failpoint"));
         assert!(!db.connection_reusable());
+    }
+
+    #[test]
+    fn panic_unwinds_scope_cleanup_and_quarantines_connection() {
+        let db = test_db();
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: Result<Option<NarrativeMaintenanceConnectionResult<()>>> =
+                with_narrative_maintenance_connection(
+                    &db,
+                    Duration::ZERO,
+                    1,
+                    stop_flag(),
+                    |conn| {
+                        conn.execute_batch("BEGIN")?;
+                        panic!("maintenance panic test")
+                    },
+                );
+        }));
+        assert!(panic_result.is_err());
+        assert!(!db.connection_reusable());
+        assert!(db
+            .connection_unusable_reason()
+            .expect("quarantine reason")
+            .contains("panicked"));
+        assert!(db.with_conn(|_| Ok(())).is_err());
     }
 }

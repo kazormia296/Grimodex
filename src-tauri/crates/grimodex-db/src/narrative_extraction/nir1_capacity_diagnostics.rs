@@ -1,17 +1,16 @@
 //! Diagnostic-only measurements for the proposed whole-project NIR-1 B build.
 //!
-//! This module deliberately does not build or publish an Index.  It opens an
-//! existing database read-only, reuses the public A2 reader for the exact
-//! current Revision qualification step, and reports the shape and resources
-//! observed while walking those Revisions.  The JavaScript driver owns the
-//! fresh-process/fresh-copy protocol; this module owns the Native-side
-//! statement and process measurements.
+//! This module is diagnostic-only, but it exercises the real whole-project
+//! Graph prepare and publish transaction on a disposable database copy. The
+//! JavaScript driver owns the fresh-process/fresh-copy protocol; this module
+//! owns Native-side statement, process, and lifecycle measurements.
 
 use anyhow::{Context, Result};
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, StatementStatus};
 use serde::Serialize;
 use serde_json::Value;
+use sha2::Digest;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
@@ -22,16 +21,27 @@ use std::sync::{
 };
 use std::time::Instant;
 
+use super::restore_rebuild::{
+    verify_dependency_graph_snapshot_with_control, DependencyGraphVerifyReport,
+};
 use super::{
-    read_nir1_entity_relation_revision, Nir1EntityRelationRevisionRead,
+    nir1_chronicle_index::NirChronicleIndexRuntime,
+    nir1_entity_relation::{read_nir1_entity_relation_revision, Nir1EntityRelationRevisionRead},
+    nir1_entity_relation_index::{
+        cold_reopen_graph_index_with_control, prepare_graph_index_build_with_control,
+        publish_nir1_entity_relation_index_in_tx_with_control,
+    },
     NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
 };
+use crate::narrative_maintenance_connection::{
+    with_narrative_maintenance_graph_control, NarrativeMaintenanceGraphControlConfig,
+};
+use crate::Database;
 
-/// This is the current per-request admission boundary.  It is intentionally
-/// used only to label the diagnostic result while the whole-project Index
-/// builder is not yet wired into this probe.  It is not a proposed build
-/// capacity and must not be read as a supported-size contract.
-pub const CURRENT_ADMISSION_MATERIAL_LIMIT: usize = 512;
+/// The A2 per-Revision admission envelope remains part of the observed
+/// contract. It is deliberately not applied to the whole-project roster.
+pub const PER_REVISION_MATERIAL_LIMIT: usize = 512;
+pub const PER_REVISION_INPUT_BYTE_LIMIT: usize = 2 * 1024 * 1024;
 const PROGRESS_CADENCE_VM_STEPS: i32 = 1_000;
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,15 +69,18 @@ pub struct CapacityBytes {
     pub envelope_bytes: u64,
     pub source_basis_bytes: u64,
     pub live_source_bytes: Option<u64>,
-    pub roster_bytes: u64,
+    pub roster_serialized_bytes: u64,
+    pub edge_serialized_bytes: Option<u64>,
     pub revision_id_overhead_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapacitySqlMetrics {
-    /// Available because this probe prepares each statement itself and reads
-    /// SQLite's `SQLITE_STMTSTATUS_VM_STEP` immediately after completion.
+    /// A conservative profile upper bound. Trace `StmtRef` exposes a
+    /// cumulative VM-step counter but not prepared-statement identity or
+    /// reset, so reused statements are intentionally summed at each profile
+    /// callback. Exact lifecycle VM steps remain explicitly unmeasured below.
     pub statement_vm_steps: u64,
     pub exact_vm_steps: bool,
     /// Progress callbacks are a cancellation cadence signal only.  They are
@@ -94,13 +107,37 @@ pub struct ProcessMetrics {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapacityOccupancy {
-    /// This is the read-only connection hold interval in this process.
+    /// The total diagnostic connection hold interval, including the manual
+    /// A2 observation and every controlled Graph lifecycle scope.
     pub connection_hold_ms: f64,
-    /// No publish transaction is opened by this diagnostic.
+    /// The controlled Graph publish transaction interval.
     pub publish_transaction_ms: Option<f64>,
     /// Foreground waiter coordination belongs to the maintenance owner and
     /// is not observable from a standalone read-only child.
     pub foreground_wait_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphLifecycleMetrics {
+    pub prepared: bool,
+    pub published: bool,
+    pub rolled_back: bool,
+    pub cold_reopened: bool,
+    pub restore_verified: bool,
+    pub initial_copy_digest: String,
+    pub post_run_copy_digest: String,
+    pub published_generation: Option<i64>,
+    pub prepare_ms: Option<f64>,
+    /// Time owned by the publish maintenance scope, including connection
+    /// admission and cleanup. This is separate from the transaction interval
+    /// below so the two measurements are not conflated.
+    pub publish_owner_ms: Option<f64>,
+    pub publish_transaction_ms: Option<f64>,
+    pub cold_reopen_ms: Option<f64>,
+    pub restore_verify_ms: Option<f64>,
+    pub restore_report_records: Option<u64>,
+    pub terminal_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -125,6 +162,7 @@ pub struct CapacityObservation {
     pub process: ProcessMetrics,
     pub sql: CapacitySqlMetrics,
     pub occupancy: CapacityOccupancy,
+    pub graph_lifecycle: GraphLifecycleMetrics,
     pub cancel: CancelMeasurement,
     pub rejection_reasons: BTreeMap<String, usize>,
     pub not_measured: Vec<&'static str>,
@@ -136,15 +174,23 @@ struct SqlAccumulator {
     statements: u64,
 }
 
-#[derive(Default)]
 struct ProgressCounter {
-    callbacks: AtomicU64,
+    callbacks: Arc<AtomicU64>,
+}
+
+impl Default for ProgressCounter {
+    fn default() -> Self {
+        Self {
+            callbacks: Arc::new(AtomicU64::new(0)),
+        }
+    }
 }
 
 #[derive(Default)]
 struct TraceCounter {
     statement_vm_steps: AtomicU64,
     statements: AtomicU64,
+    exact_vm_steps: std::sync::atomic::AtomicBool,
 }
 
 thread_local! {
@@ -155,10 +201,17 @@ fn trace_profile(event: TraceEvent<'_>) {
     if let TraceEvent::Profile(statement, _) = event {
         ACTIVE_TRACE.with(|active| {
             if let Some(counter) = active.borrow().as_ref() {
-                counter.statement_vm_steps.fetch_add(
-                    u64::try_from(statement.get_status(StatementStatus::VmStep)).unwrap_or(0),
-                    Ordering::Relaxed,
-                );
+                let cumulative =
+                    u64::try_from(statement.get_status(StatementStatus::VmStep).max(0))
+                        .unwrap_or(0);
+                // StmtRef exposes the cumulative SQLite counter, but not the
+                // prepared-statement identity or reset operation. Summing the
+                // cumulative value is a conservative upper bound for reused
+                // statements; it is deliberately not advertised as exact.
+                counter.exact_vm_steps.store(false, Ordering::Relaxed);
+                counter
+                    .statement_vm_steps
+                    .fetch_add(cumulative, Ordering::Relaxed);
                 counter.statements.fetch_add(1, Ordering::Relaxed);
             }
         });
@@ -435,8 +488,8 @@ fn row_bytes(
         return Ok((0, 0));
     }
     let sql = if project_id.is_some() {
-        "SELECT COALESCE(SUM(length(revision.payload_json)),0),
-                       COALESCE(SUM(length(revision.reconciliation_envelope_json)),0)
+        "SELECT COALESCE(SUM(length(CAST(revision.payload_json AS BLOB))),0),
+                       COALESCE(SUM(length(CAST(revision.reconciliation_envelope_json AS BLOB))),0)
            FROM narrative_proposal_revisions revision
           WHERE revision.id IN (
                 SELECT DISTINCT proposal.current_revision_id
@@ -452,8 +505,8 @@ fn row_bytes(
                    AND proposal.current_revision_id IS NOT NULL
           )"
     } else {
-        "SELECT COALESCE(SUM(length(payload_json)),0),
-                       COALESCE(SUM(length(reconciliation_envelope_json)),0)
+        "SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))),0),
+                       COALESCE(SUM(length(CAST(reconciliation_envelope_json AS BLOB))),0)
            FROM narrative_proposal_revisions revision
           WHERE revision.id IN (
                 SELECT DISTINCT proposal.current_revision_id
@@ -517,17 +570,6 @@ fn decision_id(
     Ok(result)
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RosterRecord<'a> {
-    material_kind: &'a str,
-    material_id: &'a str,
-    source_key: &'a str,
-    revision_id: &'a str,
-    decision_id: Option<&'a str>,
-    source_token: &'a str,
-}
-
 fn observe_revision(
     conn: &Connection,
     project_id: &str,
@@ -561,52 +603,9 @@ fn observe_revision(
             bytes.revision_id_overhead_bytes = bytes
                 .revision_id_overhead_bytes
                 .saturating_add(u64::try_from(revision_id_overhead)?);
-            let bundle = serde_json::to_vec(&revision.bundle)?;
-            let material = serde_json::to_vec(&revision.material_basis)?;
-            bytes.roster_bytes = bytes
-                .roster_bytes
-                .saturating_add(u64::try_from(bundle.len().saturating_add(material.len()))?);
-            for entity in &revision.bundle.entities {
-                let source = entity.source_token.as_str();
-                let record = RosterRecord {
-                    material_kind: "entity",
-                    material_id: entity.entity_id.as_str(),
-                    source_key: source,
-                    revision_id,
-                    decision_id: decision.as_deref(),
-                    source_token: source,
-                };
-                bytes.roster_bytes = bytes
-                    .roster_bytes
-                    .saturating_add(u64::try_from(serde_json::to_vec(&record)?.len())?);
-            }
-            for relation in &revision.bundle.relations {
-                let source = relation.source_token.as_str();
-                let record = RosterRecord {
-                    material_kind: "relation",
-                    material_id: relation.edge_id.as_str(),
-                    source_key: source,
-                    revision_id,
-                    decision_id: decision.as_deref(),
-                    source_token: source,
-                };
-                bytes.roster_bytes = bytes
-                    .roster_bytes
-                    .saturating_add(u64::try_from(serde_json::to_vec(&record)?.len())?);
-            }
-            for evidence in &revision.material_basis.evidence_set {
-                let record = RosterRecord {
-                    material_kind: "evidence",
-                    material_id: evidence.evidence_ref.as_str(),
-                    source_key: evidence.source_key.as_str(),
-                    revision_id,
-                    decision_id: decision.as_deref(),
-                    source_token: evidence.revision_token.as_str(),
-                };
-                bytes.roster_bytes = bytes
-                    .roster_bytes
-                    .saturating_add(u64::try_from(serde_json::to_vec(&record)?.len())?);
-            }
+            // Graph roster bytes are measured from the sealed request-local
+            // snapshot after prepare. The A2 observation deliberately does
+            // not substitute full bundle/material JSON for that metric.
             bytes.source_basis_bytes = bytes.source_basis_bytes.saturating_add(
                 revision
                     .material_basis
@@ -630,11 +629,13 @@ fn observe_revision(
             *rejection_reasons.entry(reason).or_default() += 1;
         }
         Err(error) => {
-            counts.rejected_revisions = counts.rejected_revisions.saturating_add(1);
-            *rejection_reasons
-                .entry("reader-error".to_owned())
-                .or_default() += 1;
-            tracing::debug!(revision_id, error = %error, "capacity diagnostic A2 reader error");
+            // Only the reader's typed `Unavailable` result is an ineligible
+            // candidate. Operational errors (including validation
+            // termination) must leave the diagnostic as failed rather than
+            // silently changing the observed Q/R/D shape.
+            return Err(error.context(format!(
+                "A2 reader failed for diagnostic revision {revision_id}"
+            )));
         }
     }
     Ok(())
@@ -644,7 +645,387 @@ fn diff_u64(after: Option<u64>, before: Option<u64>) -> Option<u64> {
     Some(after?.saturating_sub(before?))
 }
 
-/// Measure one read-only child process's view of the current A2 material.
+#[derive(Debug)]
+struct GraphLifecycleRun {
+    shape: Option<super::nir1_entity_relation_index::GraphSnapshotCapacity>,
+    prepared: bool,
+    published: bool,
+    rolled_back: bool,
+    cold_reopened: bool,
+    restore_verified: bool,
+    published_generation: Option<i64>,
+    prepare_ms: Option<f64>,
+    publish_owner_ms: Option<f64>,
+    publish_transaction_ms: Option<f64>,
+    cold_reopen_ms: Option<f64>,
+    restore_verify_ms: Option<f64>,
+    restore_report_records: Option<u64>,
+    terminal_error: Option<String>,
+}
+
+/// Count report observations emitted by Verify.  The JSON object field count
+/// is only a serialization detail; it stays constant when a report accumulates
+/// thousands of findings.  This count follows the concrete finding and
+/// incomplete-evidence entries that Verify actually collected.
+fn report_observation_count(report: &DependencyGraphVerifyReport) -> Result<u64> {
+    let mut count = 0usize;
+    count = count.saturating_add(report.edge_ids_with_missing_source.len());
+    count = count.saturating_add(report.duplicate_edge_keys.len());
+    count = count.saturating_add(report.edge_ids_with_cross_project_consumer.len());
+    count = count.saturating_add(report.edge_ids_with_malformed_keys.len());
+    count = count.saturating_add(report.edge_state_ids_outside_current_epoch.len());
+    count = count.saturating_add(report.edge_ids_without_current_epoch_state.len());
+    count = count.saturating_add(report.finding_observation_ids_outside_current_epoch.len());
+    count = count.saturating_add(report.consumer_keys_without_current_epoch_freshness.len());
+    count = count.saturating_add(report.duplicate_edge_ids_to_deactivate.len());
+    count = count.saturating_add(report.edge_ids_with_unresolvable_consumer_scope.len());
+    count = count.saturating_add(report.consumer_keys_with_stale_dependency_set_digest.len());
+    count = count.saturating_add(
+        report
+            .consumer_keys_with_uncomputed_dependency_set_digest
+            .len(),
+    );
+    count = count.saturating_add(report.orphaned_attention_finding_keys.len());
+    count = count.saturating_add(report.orphaned_attention_rehome_ambiguities.len());
+    for check in [
+        &report.application_revision_artifact_references,
+        &report.semantic_index_dependency_set_digest,
+        &report.contribution_to_application_commit_correspondence,
+        &report.legacy_mirror_migration_parity,
+        &report.cursor_and_feed_head_consistency,
+        &report.semantic_index_generation_correspondence,
+    ] {
+        count = count.saturating_add(check.issues.len());
+        count = count.saturating_add(check.incomplete.len());
+    }
+    Ok(u64::try_from(count)?)
+}
+
+fn install_connection_metadata(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta (
+             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+             epoch TEXT NOT NULL
+         );
+         DELETE FROM temp.grimodex_connection_meta;",
+    )?;
+    conn.execute(
+        "INSERT INTO temp.grimodex_connection_meta (singleton, epoch)
+         VALUES (1, ?1)",
+        params![uuid::Uuid::new_v4().to_string()],
+    )?;
+    Ok(())
+}
+
+fn database_state_digest(path: &Path) -> Result<String> {
+    let mut hasher = sha2::Sha256::new();
+    for suffix in ["", "-wal", "-shm"] {
+        let mut state_path = path.as_os_str().to_owned();
+        state_path.push(suffix);
+        let state_path = Path::new(&state_path);
+        hasher.update(suffix.as_bytes());
+        match fs::File::open(state_path) {
+            Ok(mut file) => {
+                let mut buffer = [0_u8; 64 * 1024];
+                loop {
+                    let read = std::io::Read::read(&mut file, &mut buffer)?;
+                    if read == 0 {
+                        break;
+                    }
+                    hasher.update(&buffer[..read]);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                hasher.update(b"<absent>");
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("open database state for digest {}", state_path.display())
+                });
+            }
+        }
+    }
+    Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
+}
+
+fn run_graph_lifecycle(
+    conn: Connection,
+    database_path: &Path,
+    project_id: Option<&str>,
+    progress_callbacks: Option<Arc<AtomicU64>>,
+) -> Result<GraphLifecycleRun> {
+    let Some(project_id) = project_id else {
+        return Ok(GraphLifecycleRun {
+            shape: None,
+            prepared: false,
+            published: false,
+            rolled_back: false,
+            cold_reopened: false,
+            restore_verified: false,
+            published_generation: None,
+            prepare_ms: None,
+            publish_owner_ms: None,
+            publish_transaction_ms: None,
+            cold_reopen_ms: None,
+            restore_verify_ms: None,
+            restore_report_records: None,
+            terminal_error: Some("project-id-required-for-graph-lifecycle".to_owned()),
+        });
+    };
+    install_connection_metadata(&conn)?;
+    let db = Database::from_connection(conn);
+    let runtime = NirChronicleIndexRuntime::new(&db, 1);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let config = progress_callbacks.as_ref().map_or_else(
+        NarrativeMaintenanceGraphControlConfig::default,
+        |callbacks| {
+            NarrativeMaintenanceGraphControlConfig::with_progress_callbacks(Arc::clone(callbacks))
+        },
+    );
+    let prepare_started = Instant::now();
+    let prepared = with_narrative_maintenance_graph_control(
+        &db,
+        std::time::Duration::ZERO,
+        PROGRESS_CADENCE_VM_STEPS,
+        Arc::clone(&stop),
+        config.clone(),
+        |conn, control| {
+            let tx = conn.unchecked_transaction()?;
+            let result = prepare_graph_index_build_with_control(&tx, &runtime, project_id, control);
+            match result {
+                Ok(snapshot) => {
+                    tx.commit()?;
+                    Ok(snapshot)
+                }
+                Err(error) => {
+                    let _ = tx.rollback();
+                    Err(error)
+                }
+            }
+        },
+    )?;
+    let prepare_ms = Some(prepare_started.elapsed().as_secs_f64() * 1000.0);
+    let Some(prepared) = prepared else {
+        return Ok(GraphLifecycleRun {
+            shape: None,
+            prepared: false,
+            published: false,
+            rolled_back: false,
+            cold_reopened: false,
+            restore_verified: false,
+            published_generation: None,
+            prepare_ms,
+            publish_owner_ms: None,
+            publish_transaction_ms: None,
+            cold_reopen_ms: None,
+            restore_verify_ms: None,
+            restore_report_records: None,
+            terminal_error: Some("maintenance-connection-deferred".to_owned()),
+        });
+    };
+    let snapshot = match prepared.into_result() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return Ok(GraphLifecycleRun {
+                shape: None,
+                prepared: false,
+                published: false,
+                rolled_back: true,
+                cold_reopened: false,
+                restore_verified: false,
+                published_generation: None,
+                prepare_ms,
+                publish_owner_ms: None,
+                publish_transaction_ms: None,
+                cold_reopen_ms: None,
+                restore_verify_ms: None,
+                restore_report_records: None,
+                terminal_error: Some(error.to_string()),
+            });
+        }
+    };
+    let mut shape = None;
+    let publish_started = Instant::now();
+    let mut publish_transaction_ms = None;
+    let published = with_narrative_maintenance_graph_control(
+        &db,
+        std::time::Duration::ZERO,
+        PROGRESS_CADENCE_VM_STEPS,
+        stop,
+        config,
+        |conn, control| {
+            let tx = conn.unchecked_transaction()?;
+            let transaction_started = Instant::now();
+            shape = Some(snapshot.capacity_shape_with_control(control)?);
+            let result = publish_nir1_entity_relation_index_in_tx_with_control(
+                &tx, &runtime, snapshot, control,
+            );
+            match result {
+                Ok(binding) => {
+                    tx.commit()?;
+                    publish_transaction_ms =
+                        Some(transaction_started.elapsed().as_secs_f64() * 1000.0);
+                    Ok(binding)
+                }
+                Err(error) => {
+                    let _ = tx.rollback();
+                    publish_transaction_ms =
+                        Some(transaction_started.elapsed().as_secs_f64() * 1000.0);
+                    Err(error)
+                }
+            }
+        },
+    )?;
+    let publish_owner_ms = Some(publish_started.elapsed().as_secs_f64() * 1000.0);
+    let Some(published) = published else {
+        return Ok(GraphLifecycleRun {
+            shape,
+            prepared: true,
+            published: false,
+            rolled_back: true,
+            cold_reopened: false,
+            restore_verified: false,
+            published_generation: None,
+            prepare_ms,
+            publish_owner_ms,
+            publish_transaction_ms,
+            cold_reopen_ms: None,
+            restore_verify_ms: None,
+            restore_report_records: None,
+            terminal_error: Some("maintenance-connection-deferred".to_owned()),
+        });
+    };
+    let binding = match published.into_result() {
+        Ok(binding) => binding,
+        Err(error) => {
+            return Ok(GraphLifecycleRun {
+                shape,
+                prepared: true,
+                published: false,
+                rolled_back: true,
+                cold_reopened: false,
+                restore_verified: false,
+                published_generation: None,
+                prepare_ms,
+                publish_owner_ms,
+                publish_transaction_ms,
+                cold_reopen_ms: None,
+                restore_verify_ms: None,
+                restore_report_records: None,
+                terminal_error: Some(error.to_string()),
+            });
+        }
+    };
+
+    // Close the publishing owner before declaring this a cold reopen. A
+    // second transaction on the same Database/Connection would only prove a
+    // warm re-read and could retain connection-local state from publication.
+    drop(runtime);
+    drop(db);
+    let reopened_conn =
+        Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .with_context(|| format!("reopen diagnostic database {}", database_path.display()))?;
+    install_connection_metadata(&reopened_conn)?;
+    let reopened_db = Database::from_connection(reopened_conn);
+
+    let cold_reopen_started = Instant::now();
+    let cold_reopened = with_narrative_maintenance_graph_control(
+        &reopened_db,
+        std::time::Duration::ZERO,
+        PROGRESS_CADENCE_VM_STEPS,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        progress_callbacks.as_ref().map_or_else(
+            NarrativeMaintenanceGraphControlConfig::default,
+            |callbacks| {
+                NarrativeMaintenanceGraphControlConfig::with_progress_callbacks(Arc::clone(
+                    callbacks,
+                ))
+            },
+        ),
+        |conn, control| {
+            let tx = conn.unchecked_transaction()?;
+            let result = cold_reopen_graph_index_with_control(&tx, project_id, control);
+            match result {
+                Ok(value) => {
+                    tx.commit()?;
+                    Ok(value)
+                }
+                Err(error) => {
+                    let _ = tx.rollback();
+                    Err(error)
+                }
+            }
+        },
+    )?;
+    let cold_reopen_ms = Some(cold_reopen_started.elapsed().as_secs_f64() * 1000.0);
+    let (cold_reopened, cold_error) = match cold_reopened {
+        Some(result) => match result.into_result() {
+            Ok(value) => (value, None),
+            Err(error) => (false, Some(error.to_string())),
+        },
+        None => (false, Some("maintenance-connection-deferred".to_owned())),
+    };
+
+    let restore_started = Instant::now();
+    let restored = with_narrative_maintenance_graph_control(
+        &reopened_db,
+        std::time::Duration::ZERO,
+        PROGRESS_CADENCE_VM_STEPS,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        progress_callbacks.map_or_else(
+            NarrativeMaintenanceGraphControlConfig::default,
+            NarrativeMaintenanceGraphControlConfig::with_progress_callbacks,
+        ),
+        |conn, control| {
+            let tx = conn.unchecked_transaction()?;
+            let result = verify_dependency_graph_snapshot_with_control(&tx, project_id, control);
+            match result {
+                Ok((report, _digest)) => {
+                    control
+                        .check(super::nir1_entity_relation_index::GraphWorkStage::ResultAssembly)?;
+                    let records = report_observation_count(&report)?;
+                    tx.commit()?;
+                    Ok((report, records))
+                }
+                Err(error) => {
+                    let _ = tx.rollback();
+                    Err(error)
+                }
+            }
+        },
+    )?;
+    let restore_verify_ms = Some(restore_started.elapsed().as_secs_f64() * 1000.0);
+    let (restore_verified, restore_report_records, restore_error) = match restored {
+        Some(result) => match result.into_result() {
+            Ok((_report, records)) => (true, Some(records), None),
+            Err(error) => (false, None, Some(error.to_string())),
+        },
+        None => (
+            false,
+            None,
+            Some("maintenance-connection-deferred".to_owned()),
+        ),
+    };
+    let terminal_error = cold_error.or(restore_error);
+    Ok(GraphLifecycleRun {
+        shape,
+        prepared: true,
+        published: true,
+        rolled_back: false,
+        cold_reopened,
+        restore_verified,
+        published_generation: Some(binding.generation),
+        prepare_ms,
+        publish_owner_ms,
+        publish_transaction_ms,
+        cold_reopen_ms,
+        restore_verify_ms,
+        restore_report_records,
+        terminal_error,
+    })
+}
+
+/// Measure one disposable child process's whole-project Graph build.
 /// `fixture_id` is an opaque manifest key; this function never treats the
 /// declared Q/R/D shape as observed data.
 pub fn measure_capacity(
@@ -654,14 +1035,16 @@ pub fn measure_capacity(
 ) -> Result<CapacityObservation> {
     anyhow::ensure!(!fixture_id.trim().is_empty(), "fixture id must be nonempty");
     let started = Instant::now();
+    let initial_copy_digest = database_state_digest(database_path)?;
     let before_process = sample_process();
     // Read once before opening the child connection to make the measurement
     // boundary explicit. The report retains the post-run value and highwater;
     // the process is fresh per orchestrator run, so the baseline is zeroed by
     // the child boundary rather than silently folded into the result.
     let _sqlite_before = sqlite_memory_used();
-    let conn = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let conn = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
         .with_context(|| format!("open diagnostic database {}", database_path.display()))?;
+    install_connection_metadata(&conn)?;
     let progress = Arc::new(ProgressCounter::default());
     let progress_for_hook = Arc::clone(&progress);
     conn.progress_handler(
@@ -694,7 +1077,8 @@ pub fn measure_capacity(
         envelope_bytes: 0,
         source_basis_bytes: 0,
         live_source_bytes: None,
-        roster_bytes: 0,
+        roster_serialized_bytes: 0,
+        edge_serialized_bytes: None,
         revision_id_overhead_bytes: 0,
     };
     let mut rejection_reasons = BTreeMap::new();
@@ -736,40 +1120,72 @@ pub fn measure_capacity(
             read_persisted_verify_report_records_with_metrics(&transaction, project_id, &mut sql)?;
     }
     transaction.commit()?;
+    // The same connection is handed to the real Graph maintenance scope so
+    // the lifecycle's SQL and in-process containers belong to this fresh
+    // measurement. Its publish transaction may mutate only this disposable
+    // copy; the orchestrator separately proves the preseed source is stable.
+    let lifecycle = run_graph_lifecycle(
+        conn,
+        database_path,
+        project_id,
+        Some(Arc::clone(&progress.callbacks)),
+    )?;
     let connection_hold_ms = transaction_started.elapsed().as_secs_f64() * 1000.0;
-    conn.progress_handler(0, None::<fn() -> bool>)?;
-    conn.trace_v2(TraceEventCodes::empty(), None);
     ACTIVE_TRACE.with(|active| {
         *active.borrow_mut() = None;
     });
+    if let Some(shape) = lifecycle.shape.as_ref() {
+        anyhow::ensure!(
+            shape.qualified_revisions == counts.qualified_revisions,
+            "diagnostic Q/R shape mismatch: A2 qualified revisions={} Graph roster qualified revisions={}",
+            counts.qualified_revisions,
+            shape.qualified_revisions
+        );
+        anyhow::ensure!(
+            shape.roster_records == counts.qualified_material_records,
+            "diagnostic Q/R shape mismatch: A2 qualified materials={} Graph roster records={}",
+            counts.qualified_material_records,
+            shape.roster_records
+        );
+        counts.roster_records = shape.roster_records;
+        counts.dependency_edges = Some(u64::try_from(shape.dependency_edges)?);
+        bytes.roster_serialized_bytes = u64::try_from(shape.roster_serialized_bytes)?;
+        bytes.edge_serialized_bytes = Some(u64::try_from(shape.edge_serialized_bytes)?);
+    }
+    counts.report_records = lifecycle.restore_report_records;
+    let post_run_copy_digest = database_state_digest(database_path)?;
     let after_process = sample_process();
     let sqlite_after = sqlite_memory_used();
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let qualified_material_records = counts.qualified_material_records;
-    let (status, admission) = if qualified_material_records > CURRENT_ADMISSION_MATERIAL_LIMIT {
-        (
-            "current-admission-limit",
-            "blocked-by-current-reader-admission-limit",
-        )
+    let status = if lifecycle.published {
+        "measured"
     } else {
-        ("measured", "diagnostic-only")
+        "build-unavailable"
     };
+    let admission = "per-revision-512-record-and-2MiB-envelope";
     let mut not_measured = vec![
         "live-source-content-bytes",
-        "whole-build-total-peak-memory",
-        "simultaneous-roster-edge-high-water",
-        "publish-transaction-occupancy",
+        "retained-roster-edge-high-water",
         "foreground-wait-occupancy",
         "cancel-latency",
         "temporary-file-bytes",
-        "whole-project-index-publication",
-        "persistent-index-generation",
     ];
-    if counts.dependency_edges.is_none() {
-        not_measured.push("dependency-edge-count");
-    }
     if counts.report_records.is_none() {
+        not_measured.push("operation-produced-report-count");
         not_measured.push("report-record-count");
+    }
+    if !lifecycle.prepared {
+        not_measured.push("graph-roster-serialized-bytes");
+        not_measured.push("graph-edge-serialized-bytes");
+    }
+    if !lifecycle.cold_reopened {
+        not_measured.push("cold-reopen");
+    }
+    if !lifecycle.restore_verified {
+        not_measured.push("restore-verify");
+    }
+    if !trace.exact_vm_steps.load(Ordering::Relaxed) {
+        not_measured.push("exact-lifecycle-vm-steps");
     }
     Ok(CapacityObservation {
         diagnostic_only: true,
@@ -795,14 +1211,31 @@ pub fn measure_capacity(
         },
         sql: CapacitySqlMetrics {
             statement_vm_steps: trace.statement_vm_steps.load(Ordering::Relaxed),
-            exact_vm_steps: true,
+            exact_vm_steps: trace.exact_vm_steps.load(Ordering::Relaxed),
             progress_callbacks: progress.callbacks.load(Ordering::Relaxed),
             statements: trace.statements.load(Ordering::Relaxed),
         },
         occupancy: CapacityOccupancy {
             connection_hold_ms,
-            publish_transaction_ms: None,
+            publish_transaction_ms: lifecycle.publish_transaction_ms,
             foreground_wait_ms: None,
+        },
+        graph_lifecycle: GraphLifecycleMetrics {
+            prepared: lifecycle.prepared,
+            published: lifecycle.published,
+            rolled_back: lifecycle.rolled_back,
+            cold_reopened: lifecycle.cold_reopened,
+            restore_verified: lifecycle.restore_verified,
+            initial_copy_digest,
+            post_run_copy_digest,
+            published_generation: lifecycle.published_generation,
+            prepare_ms: lifecycle.prepare_ms,
+            publish_owner_ms: lifecycle.publish_owner_ms,
+            publish_transaction_ms: lifecycle.publish_transaction_ms,
+            cold_reopen_ms: lifecycle.cold_reopen_ms,
+            restore_verify_ms: lifecycle.restore_verify_ms,
+            restore_report_records: lifecycle.restore_report_records,
+            terminal_error: lifecycle.terminal_error,
         },
         cancel: CancelMeasurement {
             status: "not-run",
@@ -819,7 +1252,7 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
-    fn statement_status_is_reported_as_exact_vm_steps() -> Result<()> {
+    fn owned_statement_status_is_reported_as_vm_steps() -> Result<()> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(
             "CREATE TABLE sample(value TEXT); INSERT INTO sample VALUES ('a'), ('b');",
@@ -845,14 +1278,20 @@ mod tests {
     }
 
     #[test]
-    fn admission_label_is_diagnostic_and_does_not_claim_capacity() {
-        assert_eq!(CURRENT_ADMISSION_MATERIAL_LIMIT, 512);
-        let status = if 513 > CURRENT_ADMISSION_MATERIAL_LIMIT {
+    fn per_revision_admission_is_not_a_project_capacity_limit() {
+        assert_eq!(PER_REVISION_MATERIAL_LIMIT, 512);
+        assert_eq!(PER_REVISION_INPUT_BYTE_LIMIT, 2 * 1024 * 1024);
+        assert_ne!(
+            "per-revision-512-record-and-2MiB-envelope",
             "current-admission-limit"
-        } else {
-            "measured"
-        };
-        assert_eq!(status, "current-admission-limit");
+        );
+    }
+
+    #[test]
+    fn profile_upper_bound_sums_cumulative_reused_statement_status() {
+        let values = [5_u64, 10, 15];
+        let total = values.into_iter().sum::<u64>();
+        assert_eq!(total, 30);
     }
 
     #[test]

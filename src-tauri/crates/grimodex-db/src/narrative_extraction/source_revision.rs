@@ -166,6 +166,42 @@ pub(crate) fn resolve_source_revision(
     }
 }
 
+/// Controlled Source re-resolution used by whole-project maintenance. The
+/// ordinary resolver remains the compatibility entry point for short reads;
+/// this variant binds the Graph eligibility Source to the caller's finite
+/// work owner so a cancellation cannot be normalized as missing or stale.
+pub(crate) fn resolve_source_revision_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    source_kind: &str,
+    source_key: &str,
+    control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<CurrentSourceRevision> {
+    control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+    if source_kind == super::nir1_entity_relation_index::SOURCE_KIND {
+        anyhow::ensure!(
+            source_key == super::nir1_entity_relation_index::source_key(project_id),
+            "NEX_SOURCE_KEY_INVALID: Entity/Relation eligibility Source must belong to the exact project"
+        );
+        let source = if conn.is_autocommit() {
+            let tx = conn.unchecked_transaction()?;
+            super::nir1_entity_relation_index::read_eligibility_source_with_control(
+                &tx, project_id, control,
+            )?
+        } else {
+            super::nir1_entity_relation_index::read_eligibility_source_with_control(
+                conn, project_id, control,
+            )?
+        };
+        return ensure_non_empty_token(source.digest);
+    }
+    // Source kinds without a controlled Graph reader retain their existing
+    // canonical implementation. The boundary check above still guarantees a
+    // pending maintenance stop is surfaced before entering them.
+    resolve_source_revision(conn, project_id, run_id, source_kind, source_key)
+}
+
 /// Lazy-load-safe summary of a source's current state. Deliberately has no
 /// `canonical_text` (or any other body-shaped) field: this is the contract
 /// that lets callers cheaply check "did the source I bound to change" on
@@ -210,6 +246,31 @@ pub(crate) fn resolve_current_source_state(
     current_source_state_from_resolution(
         source_kind,
         resolve_source_revision(conn, project_id, run_id, source_kind, source_key),
+    )
+}
+
+/// Controlled counterpart for Verify/Restore paths. It deliberately shares
+/// the same missing/stale normalization as the ordinary reader while keeping
+/// `ValidationTerminated` errors intact.
+pub(crate) fn resolve_current_source_state_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    source_kind: &str,
+    source_key: &str,
+    control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<CurrentSourceState> {
+    control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+    current_source_state_from_resolution(
+        source_kind,
+        resolve_source_revision_with_control(
+            conn,
+            project_id,
+            run_id,
+            source_kind,
+            source_key,
+            control,
+        ),
     )
 }
 

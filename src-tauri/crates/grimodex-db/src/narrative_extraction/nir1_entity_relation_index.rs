@@ -63,8 +63,15 @@ pub(crate) enum GraphWorkStage {
     Row,
     A2,
     Material,
+    Source,
+    CompleteRegistration,
+    Coverage,
+    Restore,
+    ColdReopen,
     Sort,
     Digest,
+    Serialization,
+    ResultAssembly,
     D1,
     Edge,
     Publish,
@@ -80,7 +87,7 @@ pub(crate) trait GraphWorkControl {
     fn check(&mut self, stage: GraphWorkStage) -> Result<()>;
 }
 
-struct NeverStopGraphWorkControl;
+pub(crate) struct NeverStopGraphWorkControl;
 
 impl GraphWorkControl for NeverStopGraphWorkControl {
     fn check(&mut self, _stage: GraphWorkStage) -> Result<()> {
@@ -159,6 +166,15 @@ pub struct GraphIndexBuildSnapshot {
     runtime_epoch: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GraphSnapshotCapacity {
+    pub(crate) qualified_revisions: usize,
+    pub(crate) roster_records: usize,
+    pub(crate) dependency_edges: usize,
+    pub(crate) roster_serialized_bytes: usize,
+    pub(crate) edge_serialized_bytes: usize,
+}
+
 struct GraphReadAdmission<'a> {
     runtime: &'a NirChronicleIndexRuntime,
     owner: u64,
@@ -187,6 +203,57 @@ impl GraphIndexBuildSnapshot {
 
     pub(crate) fn replace_edges_for_test(&mut self, edges: Vec<DependencyEdge>) {
         self.edges = edges;
+    }
+}
+
+impl GraphIndexBuildSnapshot {
+    pub(crate) fn capacity_shape(&self) -> Result<GraphSnapshotCapacity> {
+        let mut control = NeverStopGraphWorkControl;
+        self.capacity_shape_with_control(&mut control)
+    }
+
+    pub(crate) fn capacity_shape_with_control(
+        &self,
+        control: &mut dyn GraphWorkControl,
+    ) -> Result<GraphSnapshotCapacity> {
+        control.check(GraphWorkStage::Serialization)?;
+        let roster_bytes = serde_json::to_vec(&self.source.roster)?.len();
+        // DependencyEdge is an internal DB projection and intentionally does
+        // not implement Serialize.  Serialize the same request-local edge
+        // container shape explicitly so both reported byte fields have the
+        // same meaning; neither is presented as retained/live memory.
+        let mut edge_payload = Vec::with_capacity(self.edges.len());
+        for edge in &self.edges {
+            control.check(GraphWorkStage::Serialization)?;
+            edge_payload.push(serde_json::json!({
+                "id": edge.id,
+                "projectId": edge.project_id,
+                "consumerKind": edge.consumer_kind,
+                "consumerKey": edge.consumer_key,
+                "sourceObjectIdentity": edge.source_object_identity,
+                "readSetJson": edge.read_set_json,
+                "generatedByTransactionId": edge.generated_by_transaction_id,
+                "createdAt": edge.created_at,
+                "owningRunId": edge.owning_run_id,
+            }));
+        }
+        control.check(GraphWorkStage::Serialization)?;
+        let edge_bytes = serde_json::to_vec(&edge_payload)?.len();
+        let qualified_revisions = self
+            .source
+            .roster
+            .iter()
+            .map(|entry| entry.revision_id.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
+        control.check(GraphWorkStage::ResultAssembly)?;
+        Ok(GraphSnapshotCapacity {
+            qualified_revisions,
+            roster_records: self.source.roster.len(),
+            dependency_edges: self.edges.len(),
+            roster_serialized_bytes: roster_bytes,
+            edge_serialized_bytes: edge_bytes,
+        })
     }
 }
 
@@ -275,7 +342,10 @@ pub(crate) fn graph_source_from_roster_with_control(
     let mut material_tuples = HashSet::with_capacity(roster.len());
     for entry in &roster {
         ensure!(
-            matches!(entry.material_kind.as_str(), "entity" | "relation" | "evidence"),
+            matches!(
+                entry.material_kind.as_str(),
+                "entity" | "relation" | "evidence"
+            ),
             "NIR1_GRAPH_ROSTER_MATERIAL_KIND_INVALID"
         );
         for value in [
@@ -288,8 +358,7 @@ pub(crate) fn graph_source_from_roster_with_control(
             ensure!(!value.trim().is_empty() && value.trim() == value);
         }
         ensure!(
-            (entry.material_kind == "entity"
-                && entry.source_object_identity.starts_with("codex:"))
+            (entry.material_kind == "entity" && entry.source_object_identity.starts_with("codex:"))
                 || (entry.material_kind == "relation"
                     && entry.source_object_identity.starts_with("codex-relation:"))
                 || entry.material_kind == "evidence",
@@ -325,10 +394,7 @@ pub(crate) fn graph_source_from_roster_with_control(
             ))
     });
     let digest = graph_source_digest_input(project, &roster, control)?;
-    Ok(GraphEligibilitySource {
-        digest,
-        roster,
-    })
+    Ok(GraphEligibilitySource { digest, roster })
 }
 
 /// Read exactly the qualified current typed revisions. The A2 reader performs
@@ -366,10 +432,13 @@ fn read_eligibility_source_for_native_build(
         cancellation_epoch: runtime.native_build_cancellation_epoch(),
     };
     admission.ensure_current(conn)?;
-    let cancellation_epoch = Arc::clone(&admission.cancellation_epoch);
-    with_graph_sql_cancellation(conn, Some((&cancellation_epoch, epoch)), || {
-        read_eligibility_source_bounded(conn, project, Some(&admission), Some(control))
-    })
+    // The outer NarrativeMaintenanceConnection scope owns the SQLite
+    // progress hook and busy-timeout. Installing a second hook here would
+    // replace that owner and clearing it on return would leave the outer
+    // scope unable to interrupt the next statement. Runtime epochs are still
+    // checked at every page/row/material boundary below; the outer hook
+    // handles prompt stop-flag interruption while SQL is executing.
+    read_eligibility_source_bounded(conn, project, Some(&admission), Some(control))
 }
 
 fn with_graph_sql_cancellation<T, F>(
@@ -499,7 +568,8 @@ fn read_eligibility_source_bounded(
             if let Some(admission) = admission {
                 admission.ensure_current(conn)?;
             }
-            let Some(input_stats) = read_revision_input_stats(conn, project, &revision_id, admission)?
+            let Some(input_stats) =
+                read_revision_input_stats(conn, project, &revision_id, admission)?
             else {
                 continue;
             };
@@ -903,8 +973,8 @@ fn preflight_live_source_lengths(
     if basis_count == 0 || basis_count != matched_count {
         return Ok(None);
     }
-    let bytes = usize::try_from(bytes)
-        .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_REVISION_INPUT_LIMIT"))?;
+    let bytes =
+        usize::try_from(bytes).map_err(|_| anyhow::anyhow!("NIR1_GRAPH_REVISION_INPUT_LIMIT"))?;
     if bytes > REVISION_INPUT_BYTE_LIMIT {
         return Ok(None);
     }
@@ -1126,7 +1196,9 @@ fn read_internal(
     }
     if edges.len() != declaration.entries.len()
         || declaration_tuples != edge_tuples
-        || !declaration_tuples.iter().any(|(identity, _, _)| identity == &source_identity)
+        || !declaration_tuples
+            .iter()
+            .any(|(identity, _, _)| identity == &source_identity)
     {
         return Ok(BindingRead::Reserved);
     }
@@ -1174,27 +1246,44 @@ pub(crate) fn is_registered(conn: &Connection, project: &str, key: &str) -> Resu
 
 /// Check whether the exact Graph binding is structurally registered and live.
 pub fn is_complete_registered(conn: &Connection, project: &str, key: &str) -> Result<bool> {
+    let mut control = NeverStopGraphWorkControl;
+    is_complete_registered_with_control(conn, project, key, &mut control)
+}
+
+/// Controlled complete-registration verification for whole-project
+/// maintenance. Structural `is_registered` remains a separate cheap check;
+/// this path re-resolves the exact roster and live freshness under the caller
+/// owned control.
+pub(crate) fn is_complete_registered_with_control(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
     if key != INDEX_KEY {
         return Ok(false);
     }
     if conn.is_autocommit() {
         let tx = conn.unchecked_transaction()?;
-        return is_complete_registered(&tx, project, key);
+        return is_complete_registered_with_control(&tx, project, key, control);
     }
-    let BindingRead::Registered(binding) = read(conn, project)? else {
+    control.check(GraphWorkStage::CompleteRegistration)?;
+    let BindingRead::Registered(binding) = read_with_control(conn, project, control)? else {
         return Ok(false);
     };
     let Some(epoch) = get_current_epoch(conn, project)? else {
         return Ok(false);
     };
-    let source = read_eligibility_source(conn, project)?;
+    control.check(GraphWorkStage::Source)?;
+    let source = read_eligibility_source_with_control(conn, project, control)?;
     if binding.source_digest != source.digest {
         return Ok(false);
     }
     let edges = find_edges_by_consumer(conn, project, CONSUMER_KIND, key)?;
-    if !edges_match_source(&edges, project, &source)? {
+    if !edges_match_source_with_control(&edges, project, &source, control)? {
         return Ok(false);
     }
+    control.check(GraphWorkStage::Coverage)?;
     let freshness = conn
         .query_row(
             "SELECT f.evidence_freshness,f.build_action,f.semantic_epoch_id,
@@ -1264,6 +1353,7 @@ pub fn is_complete_registered(conn: &Connection, project: &str, key: &str) -> Re
     {
         return Ok(false);
     }
+    control.check(GraphWorkStage::CompleteRegistration)?;
     Ok(!binding.dirty)
 }
 
@@ -1272,12 +1362,23 @@ fn edges_match_source(
     project: &str,
     source: &GraphEligibilitySource,
 ) -> Result<bool> {
+    let mut control = NeverStopGraphWorkControl;
+    edges_match_source_with_control(edges, project, source, &mut control)
+}
+
+fn edges_match_source_with_control(
+    edges: &[DependencyEdge],
+    project: &str,
+    source: &GraphEligibilitySource,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
     let mut expected = BTreeMap::<String, BTreeSet<String>>::new();
     expected.insert(
         source_key(project),
         [source.digest.clone()].into_iter().collect(),
     );
     for entry in &source.roster {
+        control.check(GraphWorkStage::Coverage)?;
         expected
             .entry(entry.source_object_identity.clone())
             .or_default()
@@ -1287,6 +1388,7 @@ fn edges_match_source(
         return Ok(false);
     }
     for edge in edges {
+        control.check(GraphWorkStage::Coverage)?;
         let Some(tokens) = expected.get(&edge.source_object_identity) else {
             return Ok(false);
         };
@@ -1338,9 +1440,7 @@ pub(crate) fn prepare_graph_index_build_with_control(
     project: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<GraphIndexBuildSnapshot> {
-    with_graph_no_wait(conn, || {
-        prepare_graph_index_build_in_tx(conn, runtime, project, control)
-    })
+    prepare_graph_index_build_in_tx(conn, runtime, project, control)
 }
 
 fn prepare_graph_index_build_in_tx(
@@ -1500,9 +1600,19 @@ pub(crate) fn publish_nir1_entity_relation_index_in_tx_with_control(
     snapshot: GraphIndexBuildSnapshot,
     control: &mut dyn GraphWorkControl,
 ) -> Result<StoredBinding> {
-    with_graph_no_wait(conn, || {
-        publish_nir1_entity_relation_index_in_tx_inner(conn, runtime, snapshot, control)
-    })
+    publish_nir1_entity_relation_index_in_tx_inner(conn, runtime, snapshot, control)
+}
+
+/// Recheck a complete registration after a workspace reopen using the new
+/// runtime's caller-owned transaction. This keeps cold-reopen validation under
+/// the same cancellation and foreground-preemption owner as build/publish.
+pub(crate) fn cold_reopen_graph_index_with_control(
+    conn: &Connection,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
+    control.check(GraphWorkStage::ColdReopen)?;
+    is_complete_registered_with_control(conn, project, INDEX_KEY, control)
 }
 
 fn publish_nir1_entity_relation_index_in_tx_inner(
@@ -1799,7 +1909,10 @@ mod tests {
         let error = graph_source_from_roster("project-1", roster)
             .expect_err("duplicate material tuples must fail closed")
             .to_string();
-        assert!(error.contains("NIR1_GRAPH_ROSTER_DUPLICATE_MATERIAL"), "{error}");
+        assert!(
+            error.contains("NIR1_GRAPH_ROSTER_DUPLICATE_MATERIAL"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1819,13 +1932,17 @@ mod tests {
         )
         .expect_err("digest cancellation must be terminal")
         .to_string();
-        assert!(error.contains("NIR1_GRAPH_TEST_CANCELLED_Digest"), "{error}");
+        assert!(
+            error.contains("NIR1_GRAPH_TEST_CANCELLED_Digest"),
+            "{error}"
+        );
     }
 
     #[test]
     fn input_edges_group_evidence_by_existing_source_identity() -> Result<()> {
         let source = GraphEligibilitySource {
-            digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .into(),
             roster: vec![
                 roster_entry(
                     "entity",

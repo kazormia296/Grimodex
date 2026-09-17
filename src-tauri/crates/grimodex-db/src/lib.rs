@@ -60,7 +60,7 @@ pub struct BatchStatement {
 
 pub struct Database {
     conn: Mutex<Connection>,
-    foreground_connection_waiters: AtomicUsize,
+    foreground_connection_waiters: std::sync::Arc<AtomicUsize>,
     connection_health: ConnectionHealth,
 }
 
@@ -197,7 +197,7 @@ impl Database {
     pub fn from_connection(conn: Connection) -> Self {
         Self {
             conn: Mutex::new(conn),
-            foreground_connection_waiters: AtomicUsize::new(0),
+            foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
             connection_health: ConnectionHealth::new(),
         }
     }
@@ -274,7 +274,7 @@ impl Database {
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
-            foreground_connection_waiters: AtomicUsize::new(0),
+            foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
             connection_health: ConnectionHealth::new(),
         })
     }

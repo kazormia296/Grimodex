@@ -53,13 +53,15 @@ use super::maintenance_runtime::validate_phase_success_outcome;
 use super::maintenance_skip_evidence::{
     persist_completed_run_skip_evidence_in_tx, CompletedRunSkipEvidence,
 };
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 use super::publish_runtime::publish_freshness_evaluation_edges_only_in_tx;
 #[cfg(test)]
 use super::repository::create_system_run_in_tx;
 use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::source_revision::{
-    is_validation_terminated, resolve_current_source_state, CurrentSourceState,
+    is_validation_terminated, resolve_current_source_state,
+    resolve_current_source_state_with_control, CurrentSourceState,
 };
 use super::task_leases::with_immediate_transaction;
 use super::terminal_failure::{
@@ -1459,6 +1461,27 @@ fn edge_source_is_missing(
     ))
 }
 
+fn edge_source_is_missing_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    edge: &DependencyEdge,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<bool> {
+    control.check(GraphWorkStage::Source)?;
+    let Some(source_kind) = infer_source_kind(&edge.source_object_identity) else {
+        return Ok(true);
+    };
+    edge_source_missing_from_state(resolve_current_source_state_with_control(
+        conn,
+        project_id,
+        run_id,
+        source_kind,
+        &edge.source_object_identity,
+        control,
+    ))
+}
+
 /// Read-only diagnostic: for every Dependency Edge Run `run_id` declared
 /// (Lane G, looked up via `find_edges_by_consumer` under the
 /// [`RUN_CONSUMER_KIND`] convention), resolves the Edge's Source's current
@@ -1770,7 +1793,22 @@ impl DependencyGraphVerifyReport {
 /// deliberately not part of the domain, so the same logical workspace state
 /// has the same fingerprint on every process.
 pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow::Result<String> {
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    durable_graph_state_digest_with_control(conn, project_id, &mut control)
+}
+
+/// Controlled variant used by maintenance owners.  The digest is a read-only
+/// operation, but it can still traverse every durable edge and its live Source
+/// inputs.  Keeping the caller's control through those lookups prevents a
+/// cancellation arriving during digest generation from being converted into a
+/// successful Verify result by a late check after serialization.
+pub(crate) fn durable_graph_state_digest_with_control(
+    conn: &Connection,
+    project_id: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<String> {
     require_non_empty(project_id, "projectId")?;
+    control.check(GraphWorkStage::Digest)?;
 
     let semantic_epochs = {
         let mut statement = conn.prepare(
@@ -1816,6 +1854,7 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
+    control.check(GraphWorkStage::Digest)?;
     let edge_resolution_inputs = {
         let mut statement = conn.prepare(
             "SELECT id, consumer_kind, consumer_key, source_object_identity,
@@ -1835,23 +1874,23 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        edge_rows
-            .into_iter()
-            .map(
-                |(edge_id, consumer_kind, consumer_key, source_identity, owning_run_id)| {
-                    durable_edge_resolution_input(
-                        conn,
-                        project_id,
-                        &edge_id,
-                        &consumer_kind,
-                        &consumer_key,
-                        &source_identity,
-                        owning_run_id.as_deref(),
-                    )
-                },
-            )
-            .collect::<anyhow::Result<Vec<_>>>()?
+        let mut resolved = Vec::with_capacity(edge_rows.len());
+        for (edge_id, consumer_kind, consumer_key, source_identity, owning_run_id) in edge_rows {
+            control.check(GraphWorkStage::Edge)?;
+            resolved.push(durable_edge_resolution_input_with_control(
+                conn,
+                project_id,
+                &edge_id,
+                &consumer_kind,
+                &consumer_key,
+                &source_identity,
+                owning_run_id.as_deref(),
+                control,
+            )?);
+        }
+        resolved
     };
+    control.check(GraphWorkStage::Digest)?;
     let edge_states = {
         let mut statement = conn.prepare(
             "SELECT edge_id, evidence_freshness, reason_code, build_action,
@@ -2474,6 +2513,7 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
         rows
     };
 
+    control.check(GraphWorkStage::Digest)?;
     let state = json!({
         "domain": "grimodex:narrative-graph-state:v1",
         "projectId": project_id,
@@ -2500,6 +2540,7 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
         "findingLifecycle": finding_lifecycle,
         "attention": attention,
     });
+    control.check(GraphWorkStage::Digest)?;
     Ok(format!("sha256:{}", digest_plan(&state)))
 }
 
@@ -2508,11 +2549,23 @@ pub(crate) fn validate_graph_state_digest(
     project_id: &str,
     expected: &str,
 ) -> anyhow::Result<()> {
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    validate_graph_state_digest_with_control(conn, project_id, expected, &mut control)
+}
+
+pub(crate) fn validate_graph_state_digest_with_control(
+    conn: &Connection,
+    project_id: &str,
+    expected: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         is_canonical_graph_state_digest(expected),
         "NEX_VERIFY_GRAPH_STATE_DIGEST_INVALID: graphStateDigest is not a canonical sha256 digest"
     );
-    let live = durable_graph_state_digest(conn, project_id)?;
+    control.check(GraphWorkStage::Digest)?;
+    let live = durable_graph_state_digest_with_control(conn, project_id, control)?;
+    control.check(GraphWorkStage::Digest)?;
     anyhow::ensure!(
         live == expected,
         "NEX_VERIFY_GRAPH_STATE_CHANGED: graph state changed after Verify observed it; run Verify again"
@@ -2706,9 +2759,8 @@ pub fn run_dependency_verify_for_project_with_coordinates(
 
     let verification = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            let report = verify_narrative_dependency_graph_for_project(conn, project_id)?;
-            let graph_state_digest = durable_graph_state_digest(conn, project_id)?;
-            Ok((report, graph_state_digest))
+            let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+            verify_dependency_graph_snapshot_with_control(conn, project_id, &mut control)
         })
     });
     match verification {
@@ -3289,6 +3341,30 @@ fn durable_edge_resolution_input(
     source_identity: &str,
     owning_run_id: Option<&str>,
 ) -> anyhow::Result<Value> {
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    durable_edge_resolution_input_with_control(
+        conn,
+        project_id,
+        edge_id,
+        consumer_kind,
+        consumer_key,
+        source_identity,
+        owning_run_id,
+        &mut control,
+    )
+}
+
+fn durable_edge_resolution_input_with_control(
+    conn: &Connection,
+    project_id: &str,
+    edge_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    source_identity: &str,
+    owning_run_id: Option<&str>,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    control.check(GraphWorkStage::Source)?;
     let (snapshot_run_id, snapshot_parse_error) =
         match parse_snapshot_run_id_from_source_identity(source_identity) {
             Ok(value) => (value.map(str::to_string), None),
@@ -3300,17 +3376,19 @@ fn durable_edge_resolution_input(
         .or(owning_run_id)
         .unwrap_or_default();
     let resolved_source = match source_kind {
-        Some(kind) => durable_resolved_source_value(resolve_current_source_state(
+        Some(kind) => durable_resolved_source_value(resolve_current_source_state_with_control(
             conn,
             project_id,
             source_run_id,
             kind,
             source_identity,
+            control,
         ))?,
         None => json!({
             "status": "unsupported",
         }),
     };
+    control.check(GraphWorkStage::Source)?;
     let source_row = match source_kind {
         Some("snapshot-document") => {
             durable_edge_run_resolution_input(conn, snapshot_run_id.as_deref())?
@@ -3354,12 +3432,28 @@ pub fn verify_narrative_dependency_graph_for_project(
     conn: &Connection,
     project_id: &str,
 ) -> anyhow::Result<DependencyGraphVerifyReport> {
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    verify_narrative_dependency_graph_for_project_with_control(conn, project_id, &mut control)
+}
+
+/// Controlled whole-project Verify entry point. The maintenance owner keeps
+/// the same control across every consumer, Source re-resolution, structural
+/// coverage check, digest, and report assembly boundary. Cancellation is
+/// therefore returned as `ValidationTerminated` instead of being normalized
+/// into a missing Source or an ordinary Verify failure.
+pub(crate) fn verify_narrative_dependency_graph_for_project_with_control(
+    conn: &Connection,
+    project_id: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<DependencyGraphVerifyReport> {
     require_non_empty(project_id, "projectId")?;
+    control.check(GraphWorkStage::Restore)?;
 
     let mut report = DependencyGraphVerifyReport::default();
 
     let consumers = list_distinct_consumers(conn, project_id)?;
     for (consumer_kind, consumer_key) in &consumers {
+        control.check(GraphWorkStage::Restore)?;
         let edges = find_edges_by_consumer(conn, project_id, consumer_kind, consumer_key)?;
         report.total_edges += edges.len();
 
@@ -3386,6 +3480,7 @@ pub fn verify_narrative_dependency_graph_for_project(
         }
 
         for edge in &edges {
+            control.check(GraphWorkStage::Restore)?;
             if consumer_key.trim().is_empty()
                 || infer_source_kind(&edge.source_object_identity).is_none()
             {
@@ -3415,12 +3510,14 @@ pub fn verify_narrative_dependency_graph_for_project(
                     continue;
                 }
             };
-            if edge_source_is_missing(conn, project_id, owning_run_id, edge)? {
+            if edge_source_is_missing_with_control(conn, project_id, owning_run_id, edge, control)?
+            {
                 report.edge_ids_with_missing_source.push(edge.id.clone());
             }
         }
     }
 
+    control.check(GraphWorkStage::Coverage)?;
     report.consumer_keys_with_stale_dependency_set_digest =
         consumer_keys_with_stale_dependency_set_digest(conn, project_id)?;
     report.consumer_keys_with_uncomputed_dependency_set_digest =
@@ -3431,6 +3528,7 @@ pub fn verify_narrative_dependency_graph_for_project(
 
     let current_epoch_id = get_current_epoch(conn, project_id)?.map(|epoch| epoch.id);
     if let Some(current_epoch_id) = current_epoch_id.as_deref() {
+        control.check(GraphWorkStage::Coverage)?;
         report.edge_state_ids_outside_current_epoch =
             edge_state_ids_outside_epoch(conn, project_id, current_epoch_id)?;
         report.finding_observation_ids_outside_current_epoch =
@@ -3441,21 +3539,26 @@ pub fn verify_narrative_dependency_graph_for_project(
             consumer_keys_without_current_epoch_freshness(conn, project_id, current_epoch_id)?;
     }
 
+    control.check(GraphWorkStage::Coverage)?;
     report.application_revision_artifact_references =
         verify_coverage::verify_application_revision_artifact_references(conn, project_id)?;
+    control.check(GraphWorkStage::Coverage)?;
     let (semantic_index_digest, semantic_index_generation) =
         verify_coverage::verify_semantic_index_checks(conn, project_id)?;
     report.semantic_index_dependency_set_digest = semantic_index_digest;
     report.semantic_index_generation_correspondence = semantic_index_generation;
+    control.check(GraphWorkStage::Coverage)?;
     report.contribution_to_application_commit_correspondence =
         verify_coverage::verify_contribution_to_application_commit_correspondence(
             conn, project_id,
         )?;
+    control.check(GraphWorkStage::Coverage)?;
     report.legacy_mirror_migration_parity = verify_coverage::verify_legacy_mirror_migration_parity(
         conn,
         project_id,
         current_epoch_id.as_deref(),
     )?;
+    control.check(GraphWorkStage::Coverage)?;
     report.cursor_and_feed_head_consistency =
         verify_coverage::verify_cursor_and_feed_head_consistency(
             conn,
@@ -3463,6 +3566,7 @@ pub fn verify_narrative_dependency_graph_for_project(
             current_epoch_id.as_deref(),
         )?;
 
+    control.check(GraphWorkStage::Sort)?;
     report.duplicate_edge_keys = duplicate_edge_keys(conn, project_id)?;
     report.duplicate_edge_ids_to_deactivate = {
         let mut ids = duplicate_edge_ids_to_deactivate(conn, project_id)?;
@@ -3473,9 +3577,32 @@ pub fn verify_narrative_dependency_graph_for_project(
     };
     report.edge_ids_with_cross_project_consumer =
         cross_project_run_consumer_edge_ids(conn, project_id)?;
+    control.check(GraphWorkStage::Digest)?;
     report.rebuild_required = report_requires_derived_rebuild(conn, project_id, &report)?;
+    control.check(GraphWorkStage::Digest)?;
 
     Ok(report)
+}
+
+/// Run the complete Verify snapshot, including its CAS graph digest, inside
+/// a caller-owned transaction and control scope. Maintenance attempt owners
+/// use this seam after acquiring the no-wait connection; it does not create a
+/// second connection or silently fall back to an uncontrolled full scan.
+pub(crate) fn verify_dependency_graph_snapshot_with_control(
+    conn: &Connection,
+    project_id: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<(DependencyGraphVerifyReport, String)> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "controlled Verify snapshot requires a transaction"
+    );
+    let report =
+        verify_narrative_dependency_graph_for_project_with_control(conn, project_id, control)?;
+    control.check(GraphWorkStage::Digest)?;
+    let graph_state_digest = durable_graph_state_digest_with_control(conn, project_id, control)?;
+    control.check(GraphWorkStage::Digest)?;
+    Ok((report, graph_state_digest))
 }
 
 /// Keep the automatic phase boundary explicit.  `semantic-index-rebuild`
