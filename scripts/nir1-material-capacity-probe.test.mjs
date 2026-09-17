@@ -34,7 +34,7 @@ function makeWorkspace(selectedFixture = fixtureId) {
   return { directory, fixtureDirectory, outputDirectory, sourceDb };
 }
 
-function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, fixtureShapeReportRecords = null, malformed = false, timeout = false, leakyDescendant = false, detachedDescendant = false, writeProjectMarker = false, omitMode = false, supportedCapacityClaim = false, failedMode = false, operationReportRecords = null } = {}) {
+function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, fixtureShapeReportRecords = null, malformed = false, timeout = false, leakyDescendant = false, detachedDescendant = false, writeProjectMarker = false, omitMode = false, supportedCapacityClaim = false, failedMode = false, operationReportRecords = null, sourceSnapshotDependencyEdges = null } = {}) {
   const fixtureCounts = {
     [fixtureId]: { candidateRevisions: 3, qualifiedRevisions: 3, rejectedRevisions: 0, entityRecords: 255, relationRecords: 3, evidenceRecords: 255, qualifiedMaterialRecords: 513, rosterRecords: 513, dependencyEdges: null, graphSnapshotDependencyEdges: null, reportRecords: null },
     "Q8176/R16": { candidateRevisions: 16, qualifiedRevisions: 16, rejectedRevisions: 0, entityRecords: 4080, relationRecords: 16, evidenceRecords: 4080, qualifiedMaterialRecords: 8176, rosterRecords: 8176, dependencyEdges: null, graphSnapshotDependencyEdges: null, reportRecords: null },
@@ -89,6 +89,9 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
     omitMode ? "" : "report.mode = process.argv.at(-1);",
     `report.supportedCapacityClaim = ${JSON.stringify(supportedCapacityClaim)};`,
     "if (report.mode === 'source-reresolution') report.counts.graphSnapshotDependencyEdges = null;",
+    sourceSnapshotDependencyEdges === null
+      ? ""
+      : `if (report.mode === 'source-reresolution') report.counts.graphSnapshotDependencyEdges = ${JSON.stringify(sourceSnapshotDependencyEdges)};`,
     "if (report.mode === 'restore') report.counts.rosterRecords = 0;",
     failedMode ? "report.status = 'path-unavailable'; report.modeOutcome.success = false; report.modeOutcome.requiredSuccess = false;" : "",
     "if (['full-build', 'coverage', 'restore'].includes(report.mode)) report.modeOutcome.operationReportRecords = report.counts.reportRecords ?? 0;",
@@ -351,6 +354,41 @@ test("report-heavy fixture crosses the default mode matrix without requiring fix
     }
   } finally {
     rmSync(workspace.directory, { recursive: true, force: true });
+  }
+});
+
+test("source re-resolution rejects a Graph snapshot edge when the mode contract requires null", () => {
+  for (const observedEdges of [0, 1]) {
+    const selectedFixture = "D2064/report-heavy";
+    const workspace = makeWorkspace(selectedFixture);
+    try {
+      const binary = makeChild(workspace.directory, {
+        fixtureForReport: selectedFixture,
+        sourceSnapshotDependencyEdges: observedEdges,
+      });
+      assert.throws(
+        () =>
+          runProbe(workspace, binary, [
+            "--fixture",
+            selectedFixture,
+            "--mode",
+            "source-reresolution",
+            "--runs",
+            "5",
+          ]),
+        (error) => {
+          assert.match(
+            error.stderr,
+            new RegExp(
+              `expected null, observed ${observedEdges}`,
+            ),
+          );
+          return true;
+        },
+      );
+    } finally {
+      rmSync(workspace.directory, { recursive: true, force: true });
+    }
   }
 });
 

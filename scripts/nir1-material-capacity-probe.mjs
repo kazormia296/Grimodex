@@ -536,7 +536,7 @@ function validateObservedShape(
   };
   const checked = new Set();
   for (const [key, expected] of Object.entries(shape)) {
-    if (expected === null || expected === undefined) continue;
+    if (expected === undefined) continue;
     if (key === "reportRecords" && modeSpec?.producesReportRecords === false) {
       continue;
     }
