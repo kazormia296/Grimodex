@@ -3259,11 +3259,10 @@ impl NarrativeMaintenanceAttemptGuard {
         // The automatic Native routes currently publish dependency freshness
         // and do not own the NIR-1 Graph publisher. Keep this receipt unset
         // rather than inferring a generation with a post-release read.
-        let receipt = self.state.narrative_maintenance_attempts.settle(
-            &self.attempt_id,
-            granted,
-            None,
-        )?;
+        let receipt =
+            self.state
+                .narrative_maintenance_attempts
+                .settle(&self.attempt_id, granted, None)?;
         self.cleanup_reusable = self.cleanup_reusable
             && receipt.cleanup.status == "clean"
             && receipt.connection_reusable
@@ -3276,11 +3275,10 @@ impl NarrativeMaintenanceAttemptGuard {
     }
 
     fn finalize_interrupted(&mut self) -> anyhow::Result<()> {
-        let receipt = self.state.narrative_maintenance_attempts.settle(
-            &self.attempt_id,
-            false,
-            None,
-        )?;
+        let receipt =
+            self.state
+                .narrative_maintenance_attempts
+                .settle(&self.attempt_id, false, None)?;
         self.cleanup_reusable = self.cleanup_reusable
             && receipt.cleanup.status == "clean"
             && receipt.connection_reusable
@@ -11969,8 +11967,7 @@ mod narrative_maintenance_epoch_event_tests {
 
     #[test]
     fn cleanup_quarantine_cannot_be_classified_as_transient_preemption() {
-        let cleanup = "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: "
-            .to_string()
+        let cleanup = "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: ".to_string()
             + "NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived; "
             + "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed";
         assert!(is_narrative_maintenance_cleanup_failure(&cleanup));
