@@ -17,6 +17,9 @@ use std::sync::{
 };
 use std::time::Duration;
 
+pub(crate) mod narrative_maintenance_connection;
+use narrative_maintenance_connection::ConnectionHealth;
+
 thread_local! {
     static BACKGROUND_CONNECTION_PRIORITY_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
@@ -58,6 +61,7 @@ pub struct BatchStatement {
 pub struct Database {
     conn: Mutex<Connection>,
     foreground_connection_waiters: AtomicUsize,
+    connection_health: ConnectionHealth,
 }
 
 /// Connection-local token used to prove that a renderer snapshot and a
@@ -194,6 +198,7 @@ impl Database {
         Self {
             conn: Mutex::new(conn),
             foreground_connection_waiters: AtomicUsize::new(0),
+            connection_health: ConnectionHealth::new(),
         }
     }
 
@@ -270,6 +275,7 @@ impl Database {
         Ok(Self {
             conn: Mutex::new(conn),
             foreground_connection_waiters: AtomicUsize::new(0),
+            connection_health: ConnectionHealth::new(),
         })
     }
 
@@ -290,8 +296,17 @@ impl Database {
         let restore_result = conn.busy_timeout(Duration::from_millis(original_timeout_ms as u64));
 
         match (operation_result, restore_result) {
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error.into()),
+            (Err(operation), Err(cleanup)) => {
+                self.quarantine_connection(format!("busy timeout restore failed: {cleanup}"));
+                Err(anyhow::anyhow!(
+                    "operation failed: {operation}; busy timeout restore failed: {cleanup}"
+                ))
+            }
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(error)) => {
+                self.quarantine_connection(format!("busy timeout restore failed: {error}"));
+                Err(error.into())
+            }
             (Ok(value), Ok(())) => Ok(value),
         }
     }
@@ -301,9 +316,11 @@ impl Database {
     }
 
     pub(crate) fn lock_conn(&self) -> anyhow::Result<MutexGuard<'_, Connection>> {
+        self.ensure_connection_reusable()?;
         if !Self::background_connection_priority_active() {
             let waiter = ForegroundConnectionWaiter::new(&self.foreground_connection_waiters);
             let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+            self.ensure_connection_reusable()?;
             // Keep the waiter published until this caller owns the connection.
             // A background contender then observes either a waiting foreground
             // caller or the foreground-owned mutex, never an empty hand-off gap.
@@ -318,6 +335,10 @@ impl Database {
             }
             match self.conn.try_lock() {
                 Ok(conn) => {
+                    if let Err(error) = self.ensure_connection_reusable() {
+                        drop(conn);
+                        return Err(error);
+                    }
                     // Close the observation-to-lock race. A foreground caller
                     // that announced itself while try_lock succeeded gets the
                     // next hand-off instead of sitting behind another bulk item.
