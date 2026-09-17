@@ -1086,16 +1086,38 @@ fn recover_workspace_open_lock_after_panic(
 /// swap until the exact old-authority Run is drained.
 fn close_narrative_maintenance_for_workspace_swap(
     state: &Arc<AppState>,
+    allow_restore_only_recovery: bool,
 ) -> std::result::Result<bool, AppError> {
     // Safe Mode and RecoveryRequired deliberately leave admission closed while
-    // no live authority exists. A subsequent valid open is the operation that
-    // repairs that state, so treating an already-closed gate as a second close
-    // would make recovery permanently reject itself. It is safe to reuse the
-    // closed state only after checking that no attempt has appeared behind it.
+    // no live authority exists. Only the shared open path may consume that
+    // state: its pre-swap hook runs while `open_lock` is held, so concurrent
+    // recovery opens cannot queue a second operation behind the same closed
+    // admission. Restore itself requires a live authority and must always own
+    // a fresh close; otherwise it could borrow an earlier operation's close,
+    // wait for `open_lock`, and later swap after admission has reopened.
     let already_closed = state
         .narrative_maintenance_recovery_gate
         .maintenance_admission_is_closed();
     if already_closed {
+        let restore_only_without_authority = if allow_restore_only_recovery {
+            // Keep the lock order used by `active_workspace_snapshot`: inner
+            // first, then SafeMode. A poisoned workspace lock is not evidence
+            // of a safe restore-only state, so fail closed.
+            let no_live_authority = state
+                .ws
+                .inner
+                .lock()
+                .map(|inner| inner.is_none())
+                .unwrap_or(false);
+            no_live_authority && state.ws.safe_mode.is_active()
+        } else {
+            false
+        };
+        if !restore_only_without_authority {
+            return Err(AppError::Anyhow(anyhow::anyhow!(
+                "NEX_MAINTENANCE_ADMISSION_CLOSED: workspace swap admission is owned by another operation"
+            )));
+        }
         state
             .narrative_maintenance_recovery_gate
             .assert_no_active_attempts()
@@ -6071,7 +6093,7 @@ impl Backend {
             let mut admission_guard =
                 NarrativeMaintenanceAdmissionReopenGuard::new(Arc::clone(&state));
             let mut before_swap = || {
-                let owns_close = close_narrative_maintenance_for_workspace_swap(&state)?;
+                let owns_close = close_narrative_maintenance_for_workspace_swap(&state, true)?;
                 if owns_close {
                     admission_guard.arm();
                 }
@@ -6300,7 +6322,7 @@ impl Backend {
         run_blocking(move || {
             let mut admission_guard =
                 NarrativeMaintenanceAdmissionReopenGuard::new(Arc::clone(&state));
-            let owns_close = close_narrative_maintenance_for_workspace_swap(&state)?;
+            let owns_close = close_narrative_maintenance_for_workspace_swap(&state, false)?;
             if owns_close {
                 admission_guard.arm();
             }
@@ -6344,7 +6366,11 @@ impl Backend {
                     )));
                 }
             };
-            admission_guard.reopen()?;
+            // A restore can only run against a live authority and therefore
+            // must own the admission close. If the caller arrived while a
+            // restore-only gate was already closed, preserve that fail-closed
+            // state instead of reopening another operation's gate.
+            admission_guard.reopen_if_armed()?;
             restore_result?;
             let path = active_workspace_path(&state.ws)?;
             state.events.emit(
@@ -12414,6 +12440,101 @@ mod narrative_maintenance_admission_unwind_tests {
         assert!(!state
             .narrative_maintenance_recovery_gate
             .maintenance_admission_is_closed());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_restore_interleaving_rejects_second_before_open_lock() {
+        let (backend, root) = backend_with_active_workspace("restore-interleaving");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        let backups_dir = root.join("workspace/backups");
+        std::fs::create_dir_all(&backups_dir).expect("backups directory");
+        let backup_name = "grimodex-maintenance-interleaving.db";
+        authority
+            .db()
+            .backup_to(&backups_dir.join(backup_name))
+            .expect("restore candidate");
+        drop(authority);
+
+        // Hold the shared restore/open lock so the first restore remains in
+        // the interval after its admission close but before authority
+        // mutation. This makes the second restore's pre-lock decision and the
+        // maintenance begin race deterministic.
+        let backend = Arc::new(backend);
+        let open_guard = backend.state.ws.open_lock.lock().expect("open lock");
+        let first_backend = Arc::clone(&backend);
+        let first = napi::tokio::spawn(async move {
+            first_backend.restore_backup(backup_name.to_string()).await
+        });
+        let mut admission_closed = false;
+        for _ in 0..10_000 {
+            if backend
+                .state
+                .narrative_maintenance_recovery_gate
+                .maintenance_admission_is_closed()
+            {
+                admission_closed = true;
+                break;
+            }
+            napi::tokio::task::yield_now().await;
+        }
+        assert!(
+            admission_closed,
+            "first restore must close admission before waiting for open_lock"
+        );
+
+        let (second_tx, second_rx) = std::sync::mpsc::channel();
+        let second_backend = Arc::clone(&backend);
+        let second = napi::tokio::spawn(async move {
+            let result = second_backend.restore_backup(backup_name.to_string()).await;
+            second_tx
+                .send(
+                    result
+                        .as_ref()
+                        .map(|_| ())
+                        .map_err(|error| error.to_string()),
+                )
+                .expect("second restore result receiver");
+            result
+        });
+        let second_prelock = second_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("second restore must be rejected before waiting for open_lock");
+        let begin_error = backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .register_attempt("restore-interleaving-maintenance", &binding)
+            .expect_err("maintenance begin must remain closed during first restore");
+        assert!(
+            begin_error
+                .to_string()
+                .contains("NEX_MAINTENANCE_ADMISSION_CLOSED"),
+            "unexpected maintenance begin error: {begin_error}"
+        );
+        assert!(
+            second_prelock
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.contains("NEX_MAINTENANCE_ADMISSION_CLOSED")),
+            "second restore must reject the normal closed owner: {second_prelock:?}"
+        );
+
+        drop(open_guard);
+        first
+            .await
+            .expect("first restore task")
+            .expect("first restore succeeds after lock release");
+        second
+            .await
+            .expect("second restore task")
+            .expect_err("second restore remains rejected");
+        assert!(!backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .maintenance_admission_is_closed());
+
+        drop(backend);
         let _ = std::fs::remove_dir_all(root);
     }
 
