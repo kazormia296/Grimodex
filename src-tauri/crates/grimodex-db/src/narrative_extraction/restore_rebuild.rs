@@ -4970,7 +4970,8 @@ pub(crate) fn verify_narrative_dependency_graph_for_project_with_control(
     report.edge_ids_with_cross_project_consumer =
         cross_project_run_consumer_edge_ids(conn, project_id)?;
     control.check(GraphWorkStage::Digest)?;
-    report.rebuild_required = report_requires_derived_rebuild(conn, project_id, &report)?;
+    report.rebuild_required =
+        report_requires_derived_rebuild_with_control(conn, project_id, &report, control)?;
     control.check(GraphWorkStage::Digest)?;
 
     Ok(report)
@@ -5008,6 +5009,23 @@ pub(crate) fn report_requires_derived_rebuild(
     project_id: &str,
     report: &DependencyGraphVerifyReport,
 ) -> anyhow::Result<bool> {
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    report_requires_derived_rebuild_with_control(conn, project_id, report, &mut control)
+}
+
+/// Controlled variant of [`report_requires_derived_rebuild`]. The
+/// repairability decision is part of a controlled Verify snapshot, so every
+/// per-report lookup must observe the same cancellation/preemption owner
+/// before preparing another statement. Keeping the ordinary wrapper above
+/// preserves the existing domain-diagnostic behavior for non-maintenance
+/// callers.
+pub(crate) fn report_requires_derived_rebuild_with_control(
+    conn: &Connection,
+    project_id: &str,
+    report: &DependencyGraphVerifyReport,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<bool> {
+    control.check(GraphWorkStage::Digest)?;
     // The Rebuild writer walks current-project Dependency Edges and publishes
     // their Edge State/Freshness.  A malformed/orphaned derived row can still
     // be observed by Verify, but it is not a Rebuild target: silently routing
@@ -5016,6 +5034,7 @@ pub(crate) fn report_requires_derived_rebuild(
     // same live graph snapshot instead of assuming every derived finding is
     // writable merely because its field name sounds derived.
     for edge_id in &report.edge_state_ids_outside_current_epoch {
+        control.check(GraphWorkStage::Digest)?;
         let has_rebuildable_edge_state: bool = conn.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM narrative_dependency_edges
@@ -5043,6 +5062,7 @@ pub(crate) fn report_requires_derived_rebuild(
                 .iter(),
         )
     {
+        control.check(GraphWorkStage::Digest)?;
         if consumer_kind == "semantic-index" {
             continue;
         }
@@ -5075,7 +5095,18 @@ pub(crate) fn validate_report_rebuild_required(
     project_id: &str,
     report: &DependencyGraphVerifyReport,
 ) -> anyhow::Result<()> {
-    let expected = report_requires_derived_rebuild(conn, project_id, report)?;
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    validate_report_rebuild_required_with_control(conn, project_id, report, &mut control)
+}
+
+pub(crate) fn validate_report_rebuild_required_with_control(
+    conn: &Connection,
+    project_id: &str,
+    report: &DependencyGraphVerifyReport,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<()> {
+    let expected =
+        report_requires_derived_rebuild_with_control(conn, project_id, report, control)?;
     anyhow::ensure!(
         report.rebuild_required == expected,
         "NEX_VERIFY_REBUILD_REQUIRED_MISMATCH: stored rebuildRequired does not match live derived repairability"
@@ -5850,9 +5881,11 @@ mod tests {
         PROPOSAL_REVISION_CONSUMER_KIND,
     };
     use crate::Database;
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     use rusqlite::params;
     use std::collections::BTreeMap;
     use std::path::Path;
+    use std::sync::atomic::AtomicUsize;
 
     type StoredEdgeState = (String, Option<String>, String, String);
     type StoredConsumerState = (String, String, String, Option<String>);
@@ -5978,6 +6011,30 @@ mod tests {
                     ));
                 }
                 self.remaining -= 1;
+            }
+            Ok(())
+        }
+    }
+
+    struct StopOnDigestCheck {
+        stop_on_check: usize,
+        check_count: usize,
+        reason: crate::narrative_extraction::source_revision::ValidationTerminationReason,
+    }
+
+    impl GraphWorkControl for StopOnDigestCheck {
+        fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+            if stage == GraphWorkStage::Digest {
+                self.check_count += 1;
+                if self.check_count == self.stop_on_check {
+                    return Err(crate::narrative_extraction::source_revision::validation_terminated(
+                        self.reason,
+                        format!(
+                            "controlled stop before digest lookup {}/{}",
+                            self.check_count, self.stop_on_check
+                        ),
+                    ));
+                }
             }
             Ok(())
         }
@@ -7681,6 +7738,99 @@ mod tests {
         assert!(report.is_consistent());
         assert!(report.is_complete());
         assert!(report.is_clean());
+    }
+
+    #[test]
+    fn controlled_rebuildability_cancellation_happens_before_the_first_lookup() -> anyhow::Result<()> {
+        let db = current_schema_db();
+        db.with_conn(|conn| {
+            let mut report = DependencyGraphVerifyReport::default();
+            report.edge_state_ids_outside_current_epoch =
+                vec!["stale-edge-1".to_owned(), "stale-edge-2".to_owned()];
+
+            let select_count = Arc::new(AtomicUsize::new(0));
+            let select_count_for_hook = Arc::clone(&select_count);
+            conn.authorizer(Some(move |context: AuthContext<'_>| {
+                if matches!(context.action, AuthAction::Select) {
+                    select_count_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    return Authorization::Deny;
+                }
+                Authorization::Allow
+            }))?;
+
+            let mut control = StopOnDigestCheck {
+                stop_on_check: 2,
+                check_count: 0,
+                reason: crate::narrative_extraction::source_revision::
+                    ValidationTerminationReason::Cancelled,
+            };
+            let error = report_requires_derived_rebuild_with_control(
+                conn,
+                "project-1",
+                &report,
+                &mut control,
+            )
+            .expect_err("cancellation must stop before the first repairability SQL");
+            conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+
+            assert!(is_validation_terminated(&error));
+            assert_eq!(
+                select_count.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "the cancellation boundary must be observed before preparing the first lookup"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn controlled_rebuildability_foreground_preemption_happens_before_the_next_lookup() -> anyhow::Result<()> {
+        let db = current_schema_db();
+        db.with_conn(|conn| {
+            let mut report = DependencyGraphVerifyReport::default();
+            report.edge_state_ids_outside_current_epoch =
+                vec!["stale-edge-1".to_owned(), "stale-edge-2".to_owned()];
+
+            let select_count = Arc::new(AtomicUsize::new(0));
+            let select_count_for_hook = Arc::clone(&select_count);
+            conn.authorizer(Some(move |context: AuthContext<'_>| {
+                if matches!(context.action, AuthAction::Select) {
+                    let count = select_count_for_hook
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        + 1;
+                    // One repairability SELECT contains a top-level EXISTS
+                    // and a nested SELECT. Denying the third SELECT makes a
+                    // second lookup fail loudly if the control boundary is
+                    // moved after statement preparation.
+                    if count > 2 {
+                        return Authorization::Deny;
+                    }
+                }
+                Authorization::Allow
+            }))?;
+
+            let mut control = StopOnDigestCheck {
+                stop_on_check: 3,
+                check_count: 0,
+                reason: crate::narrative_extraction::source_revision::
+                    ValidationTerminationReason::ForegroundPreempted,
+            };
+            let error = report_requires_derived_rebuild_with_control(
+                conn,
+                "project-1",
+                &report,
+                &mut control,
+            )
+            .expect_err("foreground preemption must stop before the next repairability SQL");
+            conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+
+            assert!(is_validation_terminated(&error));
+            assert!(
+                select_count.load(std::sync::atomic::Ordering::SeqCst) <= 2,
+                "foreground preemption must prevent the second lookup from being prepared"
+            );
+            Ok(())
+        })
     }
 
     #[test]
