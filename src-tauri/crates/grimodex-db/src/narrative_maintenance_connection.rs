@@ -922,6 +922,7 @@ fn set_maintenance_cleanup_failpoints_for_test(failpoints: MaintenanceCleanupFai
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ForegroundConnectionWaiter;
     use crate::narrative_extraction::nir1_entity_relation_index::GraphWorkStage;
     use crate::narrative_extraction::{is_validation_terminated, ValidationTerminated};
     use std::sync::mpsc;
