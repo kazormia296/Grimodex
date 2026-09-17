@@ -116,6 +116,8 @@ test("capacity manifest fixes the diagnostic matrix and Graph lifecycle boundary
   assert.equal(schema.properties.diagnosticOnly.const, true);
   assert.equal(schema.properties.admissionBoundary.properties.currentMaterialLimit.const, 512);
   assert.equal(schema.properties.graphLifecycle.$ref, "#/$defs/graphLifecycle");
+  assert.ok(schema.$defs.observationBytes.required.includes("rosterBytes"));
+  assert.equal(schema.$defs.observationBytes.properties.rosterSerializedBytes, undefined);
   assert.equal(manifest.graphLifecycle.queryActivation, "not-activated");
   assert.equal(manifest.graphLifecycle.productDispatch, "not-activated");
   assert.equal(manifest.graphLifecycle.supportedCapacityClaim, false);

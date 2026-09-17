@@ -69,7 +69,7 @@ pub struct CapacityBytes {
     pub envelope_bytes: u64,
     pub source_basis_bytes: u64,
     pub live_source_bytes: Option<u64>,
-    pub roster_serialized_bytes: u64,
+    pub roster_bytes: u64,
     pub edge_serialized_bytes: Option<u64>,
     pub revision_id_overhead_bytes: u64,
 }
@@ -1109,7 +1109,7 @@ pub fn measure_capacity(
         envelope_bytes: 0,
         source_basis_bytes: 0,
         live_source_bytes: None,
-        roster_serialized_bytes: 0,
+        roster_bytes: 0,
         edge_serialized_bytes: None,
         revision_id_overhead_bytes: 0,
     };
@@ -1183,7 +1183,7 @@ pub fn measure_capacity(
         );
         counts.roster_records = shape.roster_records;
         counts.dependency_edges = Some(u64::try_from(shape.dependency_edges)?);
-        bytes.roster_serialized_bytes = u64::try_from(shape.roster_serialized_bytes)?;
+        bytes.roster_bytes = u64::try_from(shape.roster_serialized_bytes)?;
         bytes.edge_serialized_bytes = Some(u64::try_from(shape.edge_serialized_bytes)?);
     }
     counts.report_records = lifecycle.restore_report_records;
@@ -1291,6 +1291,85 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
 
+    fn sample_capacity_observation() -> CapacityObservation {
+        CapacityObservation {
+            diagnostic_only: true,
+            process_id: 1,
+            fixture_id: "Q513/R3/D0".to_owned(),
+            status: "measured",
+            admission: "diagnostic-only",
+            supported_capacity_claim: false,
+            database_path: "fixture.db".to_owned(),
+            counts: CapacityCounts {
+                candidate_revisions: 3,
+                qualified_revisions: 3,
+                rejected_revisions: 0,
+                entity_records: 255,
+                relation_records: 3,
+                evidence_records: 255,
+                qualified_material_records: 513,
+                roster_records: 513,
+                dependency_edges: Some(3),
+                report_records: Some(0),
+            },
+            bytes: CapacityBytes {
+                payload_bytes: 1,
+                envelope_bytes: 2,
+                source_basis_bytes: 3,
+                live_source_bytes: Some(4),
+                roster_bytes: 5,
+                edge_serialized_bytes: Some(6),
+                revision_id_overhead_bytes: 7,
+            },
+            process: ProcessMetrics {
+                elapsed_ms: 1.0,
+                user_cpu_us: Some(2),
+                system_cpu_us: Some(3),
+                rss_bytes: Some(4),
+                hwm_rss_bytes: Some(5),
+                ru_maxrss_bytes: Some(6),
+                sqlite_memory_bytes: Some(7),
+                sqlite_memory_highwater_bytes: Some(8),
+                read_bytes: Some(9),
+                write_bytes: Some(10),
+            },
+            sql: CapacitySqlMetrics {
+                statement_vm_steps: 1,
+                exact_vm_steps: false,
+                progress_callbacks: 2,
+                statements: 3,
+            },
+            occupancy: CapacityOccupancy {
+                connection_hold_ms: 1.0,
+                publish_transaction_ms: Some(2.0),
+                foreground_wait_ms: None,
+            },
+            graph_lifecycle: GraphLifecycleMetrics {
+                prepared: true,
+                published: true,
+                rolled_back: false,
+                cold_reopened: true,
+                restore_verified: true,
+                initial_copy_digest: "initial".to_owned(),
+                post_run_copy_digest: "post".to_owned(),
+                published_generation: Some(1),
+                prepare_ms: Some(1.0),
+                publish_owner_ms: Some(2.0),
+                publish_transaction_ms: Some(3.0),
+                cold_reopen_ms: Some(4.0),
+                restore_verify_ms: Some(5.0),
+                restore_report_records: Some(0),
+                terminal_error: None,
+            },
+            cancel: CancelMeasurement {
+                status: "not-run",
+                latency_ms: None,
+            },
+            rejection_reasons: BTreeMap::new(),
+            not_measured: vec!["cancel-latency"],
+        }
+    }
+
     #[test]
     fn owned_statement_status_is_reported_as_vm_steps() -> Result<()> {
         let conn = Connection::open_in_memory()?;
@@ -1315,6 +1394,43 @@ mod tests {
     fn process_metric_parsers_are_optional_outside_procfs() {
         assert!(proc_status_bytes("definitely-not-a-real-status-key").is_none());
         assert!(proc_io_bytes("definitely-not-a-real-io-key").is_none());
+    }
+
+    #[test]
+    fn serialized_observation_contains_all_schema_required_fields() -> Result<()> {
+        let observation = serde_json::to_value(sample_capacity_observation())?;
+        let schema_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../evals/nir1-capacity/schema.v1.json");
+        let schema: Value = serde_json::from_str(&std::fs::read_to_string(schema_path)?)?;
+        for (definition, instance_key) in [
+            ("capacityObservation", None),
+            ("observationCounts", Some("counts")),
+            ("observationBytes", Some("bytes")),
+            ("observationProcess", Some("process")),
+            ("observationSql", Some("sql")),
+            ("observationOccupancy", Some("occupancy")),
+            ("observationCancel", Some("cancel")),
+        ] {
+            let required = schema
+                .pointer(&format!("/$defs/{definition}/required"))
+                .and_then(Value::as_array)
+                .with_context(|| format!("capacity schema must declare {definition} fields"))?;
+            let object = instance_key
+                .and_then(|key| observation.get(key))
+                .unwrap_or(&observation)
+                .as_object()
+                .with_context(|| format!("serialized observation must contain {definition}"))?;
+            for key in required.iter().filter_map(Value::as_str) {
+                assert!(
+                    object.contains_key(key),
+                    "serialized {definition} missing schema field {key}"
+                );
+            }
+        }
+        let bytes = observation["bytes"].as_object().context("bytes object")?;
+        assert_eq!(bytes.get("rosterBytes"), Some(&Value::from(5_u64)));
+        assert!(bytes.get("rosterSerializedBytes").is_none());
+        Ok(())
     }
 
     #[test]
