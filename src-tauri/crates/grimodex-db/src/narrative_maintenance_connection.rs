@@ -8,7 +8,9 @@
 
 use super::Database;
 use crate::narrative_extraction::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
-use crate::narrative_extraction::{validation_terminated, ValidationTerminationReason};
+use crate::narrative_extraction::{
+    is_validation_terminated, validation_terminated, ValidationTerminationReason,
+};
 use anyhow::{anyhow, Result};
 use rusqlite::{Connection, Error as SqliteError, ErrorCode};
 use std::cell::RefCell;
@@ -362,12 +364,12 @@ impl<T> NarrativeMaintenanceConnectionResult<T> {
             (None, None, Some(cleanup)) => Err(anyhow!(
                 "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: {cleanup}"
             )),
-            (None, Some(operation), Some(cleanup)) => Err(anyhow!(
-                "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: {operation}; NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: {cleanup}"
-            )),
-            (Some(_), Some(operation), Some(cleanup)) => Err(anyhow!(
-                "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: {operation}; NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: {cleanup}"
-            )),
+            (None, Some(operation), Some(cleanup)) => {
+                Err(combine_operation_and_cleanup_errors(operation, cleanup))
+            }
+            (Some(_), Some(operation), Some(cleanup)) => {
+                Err(combine_operation_and_cleanup_errors(operation, cleanup))
+            }
             (Some(_), Some(operation), None) => Err(operation),
             (Some(_), None, Some(cleanup)) => Err(anyhow!(
                 "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: {cleanup}"
@@ -376,6 +378,24 @@ impl<T> NarrativeMaintenanceConnectionResult<T> {
                 "NIR1_MAINTENANCE_CONNECTION_NO_RESULT"
             )),
         }
+    }
+}
+
+fn combine_operation_and_cleanup_errors(
+    operation: anyhow::Error,
+    cleanup: anyhow::Error,
+) -> anyhow::Error {
+    let operation_message = operation.to_string();
+    let cleanup_message = cleanup.to_string();
+    let context = format!(
+        "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: {operation_message}; NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: {cleanup_message}"
+    );
+    if is_validation_terminated(&operation) {
+        operation.context(context)
+    } else if is_validation_terminated(&cleanup) {
+        cleanup.context(context)
+    } else {
+        operation.context(context)
     }
 }
 
@@ -657,8 +677,26 @@ where
 
     let mut cleanup_error = None;
 
-    // The operation owns statement/reader lifetimes. Once it returns, ensure
-    // no transaction survives the scope. A rollback after an operation error
+    // The operation owns statement/reader lifetimes. Once it returns, stop
+    // SQLite from invoking the cancelling progress callback while cleanup is
+    // running. This must precede rollback: with cadence=1, ROLLBACK itself
+    // can otherwise be interrupted and leave the shared connection in a
+    // transaction.
+    let progress_reset_result = conn.progress_handler(0, None::<fn() -> bool>);
+    if let Err(error) = progress_reset_result {
+        append_cleanup_error(&mut cleanup_error, error.into());
+        receipt.progress_handler_cleared = false;
+    }
+    #[cfg(test)]
+    if take_failpoint(MaintenanceCleanupFailpoint::ProgressReset) {
+        append_cleanup_error(
+            &mut cleanup_error,
+            anyhow!("progress handler reset failpoint"),
+        );
+        receipt.progress_handler_cleared = false;
+    }
+
+    // No transaction survives the scope. A rollback after an operation error
     // is successful cleanup; a rollback failure is retained independently.
     if !conn.is_autocommit() {
         #[cfg(test)]
@@ -681,23 +719,6 @@ where
         }
     }
     receipt.transaction_clean = conn.is_autocommit();
-
-    // Always attempt to clear the hook, even when the operation failed. The
-    // failpoint is applied after the real reset so tests model a reported
-    // cleanup failure without leaking a callback into the next operation.
-    let progress_reset_result = conn.progress_handler(0, None::<fn() -> bool>);
-    if let Err(error) = progress_reset_result {
-        append_cleanup_error(&mut cleanup_error, error.into());
-        receipt.progress_handler_cleared = false;
-    }
-    #[cfg(test)]
-    if take_failpoint(MaintenanceCleanupFailpoint::ProgressReset) {
-        append_cleanup_error(
-            &mut cleanup_error,
-            anyhow!("progress handler reset failpoint"),
-        );
-        receipt.progress_handler_cleared = false;
-    }
 
     let restored_timeout = conn.busy_timeout(Duration::from_millis(original_timeout_ms as u64));
     if let Err(error) = restored_timeout {
@@ -1046,6 +1067,41 @@ mod tests {
     }
 
     #[test]
+    fn latched_cancellation_clears_progress_before_rollback() {
+        let db = test_db();
+        let stop = Arc::new(AtomicBool::new(true));
+        let result = with_narrative_maintenance_connection(
+            &db,
+            Duration::ZERO,
+            1,
+            stop,
+            |conn| {
+                conn.execute_batch("BEGIN")?;
+                assert!(!conn.is_autocommit());
+                Err::<(), _>(validation_terminated(
+                    ValidationTerminationReason::Cancelled,
+                    "ordinary cancellation",
+                ))
+            },
+        )
+        .expect("acquisition")
+        .expect("scope");
+        let error = result
+            .into_result()
+            .expect_err("ordinary cancellation must remain an error");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(db.connection_reusable());
+        db.with_conn(|conn| {
+            assert!(conn.is_autocommit());
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("connection must be reusable after cancellation cleanup");
+    }
+
+    #[test]
     fn operation_and_cleanup_errors_are_both_preserved_and_quarantine_connection() {
         let db = test_db();
         set_maintenance_cleanup_failpoints_for_test(MaintenanceCleanupFailpoints {
@@ -1071,6 +1127,41 @@ mod tests {
             .expect("reason")
             .contains("busy timeout restore failpoint"));
         assert!(try_lock_narrative_maintenance(&db).is_err());
+    }
+
+    #[test]
+    fn typed_cancellation_and_cleanup_failure_preserve_both_and_quarantine() {
+        let db = test_db();
+        set_maintenance_cleanup_failpoints_for_test(MaintenanceCleanupFailpoints {
+            rollback: false,
+            autocommit_check: false,
+            progress_reset: true,
+            busy_timeout_restore: false,
+        });
+        let result = with_narrative_maintenance_connection(
+            &db,
+            Duration::ZERO,
+            1,
+            stop_flag(),
+            |conn| {
+                conn.execute_batch("BEGIN")?;
+                Err::<(), _>(validation_terminated(
+                    ValidationTerminationReason::Cancelled,
+                    "typed cancellation",
+                ))
+            },
+        )
+        .expect("acquisition")
+        .expect("scope");
+        assert!(!result.receipt.connection_reusable);
+        let error = result
+            .into_result()
+            .expect_err("operation and cleanup errors must remain errors");
+        assert!(is_validation_terminated(&error));
+        let message = error.to_string();
+        assert!(message.contains("typed cancellation"));
+        assert!(message.contains("progress handler reset failpoint"));
+        assert!(!db.connection_reusable());
     }
 
     #[test]
