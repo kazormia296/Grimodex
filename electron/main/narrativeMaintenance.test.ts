@@ -906,6 +906,178 @@ describe("narrative maintenance scheduler", () => {
     expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledTimes(2);
   });
 
+  it("requeues only interrupted work from a complete effective Native receipt", async () => {
+    const binding = { authorityId: "authority-selective-requeue", generation: 3 };
+    const firstWork = work(
+      "project-selective-requeue",
+      "backfill",
+      "backfill:first",
+      "open",
+    );
+    const secondWork = work(
+      "project-selective-requeue",
+      "backfill",
+      "backfill:second",
+      "open",
+    );
+    const effectiveKey = (item: NarrativeMaintenanceRequest): string =>
+      canonicalNarrativeMaintenanceWorkKey({
+        ...item,
+        semanticEpochId: "epoch-effective",
+      });
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "accepted",
+        hasMore: false,
+        preempted: true,
+      })
+      .mockResolvedValue({ status: "accepted", hasMore: false });
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    let cancelCount = 0;
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      cancelCount += 1;
+      const interrupted = cancelCount === 1;
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: interrupted ? "interrupted" : "succeeded",
+        stopReason: interrupted ? "foreground-preempted" : null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: interrupted ? null : binding.generation,
+        works: interrupted
+          ? [
+              { workKey: effectiveKey(firstWork), status: "succeeded" },
+              { workKey: effectiveKey(secondWork), status: "interrupted" },
+            ]
+          : [{ workKey: effectiveKey(secondWork), status: "succeeded" }],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    });
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+    });
+
+    scheduler.request(firstWork);
+    scheduler.request(secondWork);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0].work).toEqual([
+      expect.objectContaining({
+        projectId: secondWork.projectId,
+        runKind: secondWork.runKind,
+        workKey: secondWork.workKey,
+        semanticEpochId: null,
+      }),
+    ]);
+    expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledTimes(2);
+  });
+
+  it("reconstructs a dynamic effective follow-up from an interrupted receipt", async () => {
+    const binding = { authorityId: "authority-dynamic-requeue", generation: 4 };
+    const initialWork = work(
+      "project-dynamic-requeue",
+      "dependency-verify",
+      "dependency-verify:epoch-effective",
+      "verify-requested",
+    );
+    const dynamicWork: NarrativeMaintenanceRequest = {
+      projectId: initialWork.projectId,
+      runKind: "semantic-index-rebuild",
+      workKey: "dependency-rebuild-derived",
+      semanticEpochId: "epoch-effective",
+      reason: "native-maintenance-interrupted",
+    };
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "accepted",
+        hasMore: false,
+        preempted: true,
+      })
+      .mockResolvedValue({ status: "accepted", hasMore: false });
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    let cancelCount = 0;
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      cancelCount += 1;
+      const interrupted = cancelCount === 1;
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: interrupted ? "interrupted" : "succeeded",
+        stopReason: interrupted ? "foreground-preempted" : null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: interrupted ? null : binding.generation,
+        works: interrupted
+          ? [
+              {
+                workKey: canonicalNarrativeMaintenanceWorkKey(initialWork),
+                status: "succeeded",
+              },
+              {
+                workKey: canonicalNarrativeMaintenanceWorkKey(dynamicWork),
+                status: "not-started",
+              },
+            ]
+          : [
+              {
+                workKey: canonicalNarrativeMaintenanceWorkKey(dynamicWork),
+                status: "succeeded",
+              },
+            ],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    });
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+    });
+
+    scheduler.request(initialWork);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0].work).toEqual([
+      expect.objectContaining({
+        projectId: dynamicWork.projectId,
+        runKind: dynamicWork.runKind,
+        workKey: dynamicWork.workKey,
+        semanticEpochId: dynamicWork.semanticEpochId,
+        reasons: ["native-maintenance-interrupted"],
+      }),
+    ]);
+  });
+
   it("renders only a canonical requeued transient failure as a bounded warning", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()

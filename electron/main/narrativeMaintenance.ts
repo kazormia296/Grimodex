@@ -4,6 +4,7 @@ import {
   createNarrativeMaintenanceAttemptController,
   parseNarrativeMaintenanceBeginReceipt,
   parseNarrativeMaintenanceTerminalReceipt,
+  type NarrativeMaintenanceTerminalReceipt,
   type NarrativeMaintenanceStopReason,
 } from "./narrativeMaintenanceAttempt.js";
 
@@ -589,6 +590,133 @@ function scopedWakeKey(
   binding: NarrativeMaintenanceWorkspaceBinding | null | undefined,
 ): string {
   return `${workspaceBindingKey(binding)}\u0000${projectId}`;
+}
+
+const NARRATIVE_MAINTENANCE_INTERRUPTED_REQUEUE_REASON =
+  "native-maintenance-interrupted";
+
+/**
+ * Parse the canonical identity emitted by Native's terminal receipt.  The
+ * receipt contains effective identities, while the request delivered by main
+ * may still contain an epoch-less or stale wire identity.  Reconstructing a
+ * validated request and round-tripping it through the canonical builder keeps
+ * this bridge structural instead of depending on substring matching.
+ */
+function parseCanonicalMaintenanceWorkKey(
+  value: unknown,
+): NarrativeMaintenanceRequest | null {
+  if (typeof value !== "string") return null;
+  const segments = value.split("/");
+  if (segments.length !== 4 && segments.length !== 6) return null;
+  if (segments[0] !== "narrative-maintenance:v1") return null;
+  if (segments.length === 6 && segments[4] !== "epoch") return null;
+
+  let runKind: NarrativeMaintenanceRunKind;
+  try {
+    runKind = requireAutomaticRunKind(segments[1]);
+  } catch {
+    return null;
+  }
+  const semanticEpochId = segments.length === 6 ? (segments[5] ?? null) : null;
+  const candidate: NarrativeMaintenanceRequest = {
+    projectId: segments[2] ?? "",
+    runKind,
+    workKey: segments[3] ?? "",
+    semanticEpochId,
+    reason: NARRATIVE_MAINTENANCE_INTERRUPTED_REQUEUE_REASON,
+  };
+  try {
+    const validated = validateRequest(candidate);
+    return canonicalNarrativeMaintenanceWorkKey(validated) === value
+      ? validated
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameMaintenanceWorkShape(
+  left: Pick<NarrativeMaintenanceRequest, "projectId" | "runKind" | "workKey">,
+  right: Pick<NarrativeMaintenanceRequest, "projectId" | "runKind" | "workKey">,
+): boolean {
+  return (
+    left.projectId === right.projectId &&
+    left.runKind === right.runKind &&
+    left.workKey === right.workKey
+  );
+}
+
+/**
+ * Selectively retain the work that Native says was interrupted.  `null`
+ * means the receipt cannot prove coverage of the wire batch; callers must
+ * preserve the scheduler's older all-batch retry behavior in that case.
+ *
+ * Native registers normalized/effective keys, including follow-ups discovered
+ * during the cycle.  Initial wire items are matched by exact canonical key,
+ * then by their structured identity with the epoch omitted so stale and
+ * epoch-less Backfill/Verify requests can be rebound.  Any additional,
+ * structurally valid receipt item is a dynamic follow-up and is reconstructed
+ * as a normal pending request.
+ */
+function interruptedMaintenanceWorkToRequeue(
+  backendBatch: readonly PendingNarrativeMaintenanceWork[],
+  receipt: NarrativeMaintenanceTerminalReceipt | null,
+  workspaceBinding: NarrativeMaintenanceWorkspaceBinding | null | undefined,
+): readonly PendingNarrativeMaintenanceWork[] | null {
+  if (receipt === null || receipt.state !== "interrupted") return null;
+
+  const remaining = [...backendBatch];
+  const requeue: PendingNarrativeMaintenanceWork[] = [];
+  for (const terminalWork of receipt.works) {
+    const effective = parseCanonicalMaintenanceWorkKey(terminalWork.workKey);
+    if (effective === null) return null;
+
+    const exactIndex = remaining.findIndex(
+      (candidate) =>
+        canonicalNarrativeMaintenanceWorkKey(candidate) ===
+        terminalWork.workKey,
+    );
+    let shapeIndex = exactIndex;
+    if (shapeIndex < 0) {
+      const shapeMatches = remaining.reduce<number[]>(
+        (matches, candidate, index) => {
+          if (sameMaintenanceWorkShape(candidate, effective)) {
+            matches.push(index);
+          }
+          return matches;
+        },
+        [],
+      );
+      // Two epoch variants with the same project/run/work shape cannot be
+      // rebound safely when Native has normalized both to an identity that
+      // is absent from the wire batch. Preserve the historical full retry
+      // path instead of dropping one by arbitrary array order.
+      if (shapeMatches.length > 1) return null;
+      shapeIndex = shapeMatches[0] ?? -1;
+    }
+    const matched =
+      shapeIndex >= 0 ? remaining.splice(shapeIndex, 1)[0] : undefined;
+    const pendingWork: PendingNarrativeMaintenanceWork = matched ?? {
+      projectId: effective.projectId,
+      runKind: effective.runKind,
+      workKey: effective.workKey,
+      semanticEpochId: effective.semanticEpochId ?? null,
+      reasons: [effective.reason],
+      ...(workspaceBinding !== undefined ? { workspaceBinding } : {}),
+    };
+
+    if (
+      terminalWork.status === "interrupted" ||
+      terminalWork.status === "not-started"
+    ) {
+      requeue.push(pendingWork);
+    }
+  }
+
+  // A valid receipt must account for every wire item.  If Native omitted an
+  // item, retaining the complete batch is safer and preserves the pre-receipt
+  // retry policy instead of silently dropping work.
+  return remaining.length === 0 ? requeue : null;
 }
 
 export function canonicalNarrativeMaintenanceWorkKey(
@@ -1650,7 +1778,18 @@ export function createNarrativeMaintenanceScheduler(
           // clears its park.  This is a typed non-ACK, not a retry failure.
           shouldSchedule = false;
         } else if (interruptedCycle) {
-          for (const work of backendBatch) requeueWork(work);
+          const selectivelyRequeued = interruptedMaintenanceWorkToRequeue(
+            backendBatch,
+            nativeTerminalReceipt,
+            cycleBinding,
+          );
+          // A missing or unusable Native receipt keeps the historical retry
+          // behavior. Once Native has supplied a complete per-work receipt,
+          // retain only interrupted/not-started executions; successful work
+          // has already crossed its durable completion boundary.
+          for (const work of selectivelyRequeued ?? backendBatch) {
+            requeueWork(work);
+          }
           for (const projectId of sendingWakeProjects) {
             const wakeKey = scopedWakeKey(projectId, cycleBinding);
             durableWakeProjects.set(wakeKey, {
