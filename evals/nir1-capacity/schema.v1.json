@@ -5,20 +5,25 @@
   "type": "object",
   "required": [
     "schemaVersion",
+    "schema",
     "diagnosticOnly",
     "status",
+    "scope",
     "capacityDecision",
     "admissionBoundary",
     "runProtocol",
     "fixtures",
     "requiredMetrics",
     "notMeasuredPolicy",
-    "supportedCapacity"
+    "supportedCapacity",
+    "graphLifecycle"
   ],
   "properties": {
     "schemaVersion": { "const": "nir1-capacity/1" },
+    "schema": { "type": "string", "minLength": 1 },
     "diagnosticOnly": { "const": true },
     "status": { "const": "measurement-only-unratified" },
+    "scope": { "type": "string", "minLength": 1 },
     "capacityDecision": {
       "const": "unratified-until-all-major-structures-are-measured"
     },
@@ -27,10 +32,11 @@
       "required": ["currentMaterialLimit", "meaning"],
       "properties": {
         "currentMaterialLimit": { "const": 512 },
-        "meaning": { "type": "string" }
+        "meaning": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     },
+    "graphLifecycle": { "$ref": "#/$defs/graphLifecycle" },
     "runProtocol": {
       "type": "object",
       "required": [
@@ -39,47 +45,254 @@
         "warmupCount",
         "measuredRunCount",
         "freshCopyPerRun",
-        "freshProcessPerRun"
+        "freshProcessPerRun",
+        "sourceState",
+        "childState",
+        "childTimeoutMs"
       ],
       "properties": {
-        "database": { "type": "string" },
-        "process": { "type": "string" },
+        "database": { "type": "string", "minLength": 1 },
+        "process": { "type": "string", "minLength": 1 },
         "warmupCount": { "const": 1 },
         "measuredRunCount": { "type": "integer", "minimum": 5 },
         "freshCopyPerRun": { "const": true },
-        "freshProcessPerRun": { "const": true }
+        "freshProcessPerRun": { "const": true },
+        "sourceState": { "const": "immutable-main-wal-shm" },
+        "childState": { "const": "record-before-and-after" },
+        "childTimeoutMs": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
     },
     "fixtures": {
       "type": "array",
       "minItems": 9,
-      "items": {
-        "type": "object",
-        "required": [
-          "id",
-          "qualifiedMaterials",
-          "qualifiedRevisions",
-          "ineligibleCandidates",
-          "dominantShape"
-        ],
-        "properties": {
-          "id": { "type": "string" },
-          "qualifiedMaterials": { "type": ["integer", "null"], "minimum": 0 },
-          "qualifiedRevisions": { "type": ["integer", "null"], "minimum": 0 },
-          "ineligibleCandidates": { "type": ["integer", "null"], "minimum": 0 },
-          "dominantShape": { "type": "string" }
-        },
-        "additionalProperties": false
-      }
+      "items": { "$ref": "#/$defs/fixture" }
     },
     "requiredMetrics": {
       "type": "array",
-      "items": { "type": "string" },
-      "minItems": 1
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true
     },
-    "notMeasuredPolicy": { "type": "string" },
-    "supportedCapacity": { "type": "string" }
+    "notMeasuredPolicy": { "type": "string", "minLength": 1 },
+    "supportedCapacity": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "nonNegativeCount": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "shape": {
+      "type": "object",
+      "properties": {
+        "candidateRevisions": { "$ref": "#/$defs/nonNegativeCount" },
+        "qualifiedRevisions": { "$ref": "#/$defs/nonNegativeCount" },
+        "qualifiedMaterials": { "$ref": "#/$defs/nonNegativeCount" },
+        "qualifiedMaterialRecords": { "$ref": "#/$defs/nonNegativeCount" },
+        "ineligibleCandidates": { "$ref": "#/$defs/nonNegativeCount" },
+        "rejectedRevisions": { "$ref": "#/$defs/nonNegativeCount" },
+        "rosterRecords": { "$ref": "#/$defs/nonNegativeCount" },
+        "evidenceRecords": { "$ref": "#/$defs/nonNegativeCount" },
+        "dependencyEdges": { "$ref": "#/$defs/nonNegativeCount" },
+        "reportRecords": { "$ref": "#/$defs/nonNegativeCount" }
+      },
+      "additionalProperties": false
+    },
+    "fixture": {
+      "type": "object",
+      "required": [
+        "id",
+        "qualifiedMaterials",
+        "qualifiedRevisions",
+        "ineligibleCandidates",
+        "dominantShape"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "qualifiedMaterials": { "$ref": "#/$defs/nonNegativeCount" },
+        "qualifiedRevisions": { "$ref": "#/$defs/nonNegativeCount" },
+        "ineligibleCandidates": { "$ref": "#/$defs/nonNegativeCount" },
+        "dominantShape": { "type": "string", "minLength": 1 },
+        "shape": { "$ref": "#/$defs/shape" },
+        "observedShape": { "$ref": "#/$defs/shape" }
+      },
+      "additionalProperties": false
+    },
+    "graphLifecycle": {
+      "type": "object",
+      "required": [
+        "status",
+        "queryActivation",
+        "productDispatch",
+        "supportedCapacityClaim",
+        "currentRustOutput"
+      ],
+      "properties": {
+        "status": { "const": "measurement-only" },
+        "queryActivation": { "const": "not-activated" },
+        "productDispatch": { "const": "not-activated" },
+        "supportedCapacityClaim": { "const": false },
+        "currentRustOutput": { "const": "nir1-capacity-observation/1" }
+      },
+      "additionalProperties": false
+    },
+    "optionalNonNegativeInteger": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "optionalNonNegativeNumber": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "capacityObservation": {
+      "type": "object",
+      "required": [
+        "diagnosticOnly",
+        "processId",
+        "fixtureId",
+        "status",
+        "admission",
+        "supportedCapacityClaim",
+        "databasePath",
+        "counts",
+        "bytes",
+        "process",
+        "sql",
+        "occupancy",
+        "cancel",
+        "rejectionReasons",
+        "notMeasured"
+      ],
+      "properties": {
+        "diagnosticOnly": { "const": true },
+        "processId": { "type": "integer", "minimum": 1 },
+        "fixtureId": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "admission": { "type": "string", "minLength": 1 },
+        "supportedCapacityClaim": { "const": false },
+        "databasePath": { "type": "string", "minLength": 1 },
+        "counts": { "$ref": "#/$defs/observationCounts" },
+        "bytes": { "$ref": "#/$defs/observationBytes" },
+        "process": { "$ref": "#/$defs/observationProcess" },
+        "sql": { "$ref": "#/$defs/observationSql" },
+        "occupancy": { "$ref": "#/$defs/observationOccupancy" },
+        "cancel": { "$ref": "#/$defs/observationCancel" },
+        "rejectionReasons": { "type": "object" },
+        "notMeasured": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "publishedGeneration": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "publishedGenerationBefore": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "publishedGenerationAfter": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "graphLifecycle": { "$ref": "#/$defs/graphLifecycleObservation" }
+      },
+      "additionalProperties": true
+    },
+    "observationCounts": {
+      "type": "object",
+      "required": [
+        "candidateRevisions",
+        "qualifiedRevisions",
+        "rejectedRevisions",
+        "entityRecords",
+        "relationRecords",
+        "evidenceRecords",
+        "qualifiedMaterialRecords",
+        "rosterRecords"
+      ],
+      "properties": {
+        "candidateRevisions": { "type": "integer", "minimum": 0 },
+        "qualifiedRevisions": { "type": "integer", "minimum": 0 },
+        "rejectedRevisions": { "type": "integer", "minimum": 0 },
+        "entityRecords": { "type": "integer", "minimum": 0 },
+        "relationRecords": { "type": "integer", "minimum": 0 },
+        "evidenceRecords": { "type": "integer", "minimum": 0 },
+        "qualifiedMaterialRecords": { "type": "integer", "minimum": 0 },
+        "rosterRecords": { "type": "integer", "minimum": 0 },
+        "dependencyEdges": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "reportRecords": { "$ref": "#/$defs/optionalNonNegativeInteger" }
+      },
+      "additionalProperties": true
+    },
+    "observationBytes": {
+      "type": "object",
+      "required": [
+        "payloadBytes",
+        "envelopeBytes",
+        "sourceBasisBytes",
+        "rosterBytes",
+        "revisionIdOverheadBytes"
+      ],
+      "properties": {
+        "payloadBytes": { "type": "integer", "minimum": 0 },
+        "envelopeBytes": { "type": "integer", "minimum": 0 },
+        "sourceBasisBytes": { "type": "integer", "minimum": 0 },
+        "liveSourceBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "rosterBytes": { "type": "integer", "minimum": 0 },
+        "revisionIdOverheadBytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "observationProcess": {
+      "type": "object",
+      "required": ["elapsedMs"],
+      "properties": {
+        "elapsedMs": { "type": "number", "minimum": 0 },
+        "userCpuUs": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "systemCpuUs": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "rssBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "hwmRssBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "ruMaxrssBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "sqliteMemoryBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "sqliteMemoryHighwaterBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "readBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "writeBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" }
+      },
+      "additionalProperties": true
+    },
+    "observationSql": {
+      "type": "object",
+      "required": ["statementVmSteps", "exactVmSteps", "progressCallbacks", "statements"],
+      "properties": {
+        "statementVmSteps": { "type": "integer", "minimum": 0 },
+        "exactVmSteps": { "type": "boolean" },
+        "progressCallbacks": { "type": "integer", "minimum": 0 },
+        "statements": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "observationOccupancy": {
+      "type": "object",
+      "required": ["connectionHoldMs"],
+      "properties": {
+        "connectionHoldMs": { "type": "number", "minimum": 0 },
+        "publishTransactionMs": { "$ref": "#/$defs/optionalNonNegativeNumber" },
+        "foregroundWaitMs": { "$ref": "#/$defs/optionalNonNegativeNumber" }
+      },
+      "additionalProperties": true
+    },
+    "observationCancel": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string", "minLength": 1 },
+        "latencyMs": { "$ref": "#/$defs/optionalNonNegativeNumber" }
+      },
+      "additionalProperties": true
+    },
+    "graphLifecycleObservation": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "minLength": 1 },
+        "activated": { "const": false },
+        "queryActivation": { "const": "not-activated" },
+        "productDispatch": { "const": "not-activated" },
+        "publishedGeneration": { "$ref": "#/$defs/optionalNonNegativeInteger" }
+      },
+      "additionalProperties": true
+    }
   },
   "additionalProperties": false
 }

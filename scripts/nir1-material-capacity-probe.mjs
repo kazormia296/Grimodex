@@ -1,55 +1,267 @@
 // Diagnostic-only NIR-1 B capacity orchestrator.
 //
-// The input fixture databases are prepared elsewhere. This driver never
-// mutates them: every warmup and measured sample receives a fresh copy and a
-// fresh Native child process. A result is an observation, not a capacity
-// approval or a Graph/product activation receipt.
-import assert from "node:assert/strict";
+// Fixture databases are prepared elsewhere. This driver keeps the preseeded
+// main/WAL/SHM source immutable, gives every warmup and measured sample a
+// fresh copy and a fresh child process, and records child state transitions.
+// A result is an observation, not a capacity approval or a Graph/product
+// activation receipt.
+import Ajv2020 from "ajv/dist/2020.js";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-const args = process.argv.slice(2);
-const [binary, manifestPath, fixtureDirectory, outputDirectory] = args;
-assert.ok(
-  binary && manifestPath && fixtureDirectory && outputDirectory,
-  "usage: node scripts/nir1-material-capacity-probe.mjs <binary> <manifest> <fixture-directory> <output-directory> [project-id] [--fixture <id>] [--runs <n>]",
-);
-const projectId = args.find((value, index) => index >= 4 && !value.startsWith("--"));
-const fixtureFilterIndex = args.indexOf("--fixture");
-const fixtureFilter =
-  fixtureFilterIndex === -1 ? null : args[fixtureFilterIndex + 1];
-const runsIndex = args.indexOf("--runs");
-const measuredRuns = runsIndex === -1 ? 5 : Number(args[runsIndex + 1]);
-assert.ok(Number.isInteger(measuredRuns) && measuredRuns >= 5, "--runs must be an integer >= 5");
+const USAGE =
+  "usage: node scripts/nir1-material-capacity-probe.mjs <binary> <manifest> <fixture-directory> <output-directory> [project-id] [--fixture <id>] [--runs <n>] [--timeout-ms <n>]";
+const SOURCE_COMPONENTS = [
+  ["main", ""],
+  ["wal", "-wal"],
+  ["shm", "-shm"],
+];
 
-const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-assert.equal(manifest.diagnosticOnly, true);
-assert.equal(manifest.schemaVersion, "nir1-capacity/1");
-assert.equal(manifest.runProtocol.warmupCount, 1);
-assert.ok(manifest.runProtocol.measuredRunCount >= 5);
-const fixtureSpecs = fixtureFilter
-  ? manifest.fixtures.filter((fixture) => fixture.id === fixtureFilter)
-  : manifest.fixtures;
-assert.ok(fixtureSpecs.length > 0, "fixture not found: " + (fixtureFilter ?? "<none>"));
+function fail(message) {
+  throw new Error(message);
+}
 
-const hash = (file) =>
-  createHash("sha256").update(readFileSync(file)).digest("hex");
-const manifestDigest = createHash("sha256")
-  .update(JSON.stringify(manifest))
-  .digest("hex");
-const scratch = mkdtempSync(path.join(tmpdir(), "nir1-capacity-probe-"));
-mkdirSync(outputDirectory, { recursive: true });
+function parsePositiveInteger(value, label, minimum = 1) {
+  if (!/^\d+$/.test(String(value))) {
+    fail(`${label} must be an integer >= ${minimum}`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+    fail(`${label} must be an integer >= ${minimum}`);
+  }
+  return parsed;
+}
 
-function fixturePath(spec) {
+function parseCli(argv) {
+  if (argv.length < 4) fail(USAGE);
+  const [binary, manifestPath, fixtureDirectory, outputDirectory] = argv;
+  const options = {
+    binary,
+    manifestPath,
+    fixtureDirectory,
+    outputDirectory,
+    projectId: null,
+    fixtureFilter: null,
+    measuredRuns: null,
+    timeoutMs: null,
+  };
+  for (let index = 4; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === "--fixture") {
+      if (!argv[index + 1] || argv[index + 1].startsWith("--"))
+        fail("--fixture requires a fixture id");
+      options.fixtureFilter = argv[++index];
+      continue;
+    }
+    if (value === "--runs") {
+      if (!argv[index + 1] || argv[index + 1].startsWith("--"))
+        fail("--runs requires a count");
+      options.measuredRuns = parsePositiveInteger(argv[++index], "--runs", 5);
+      if (options.measuredRuns < 5) fail("--runs must be an integer >= 5");
+      continue;
+    }
+    if (value === "--timeout-ms" || value === "--timeout") {
+      if (!argv[index + 1] || argv[index + 1].startsWith("--"))
+        fail(`${value} requires a timeout in milliseconds`);
+      options.timeoutMs = parsePositiveInteger(argv[++index], value);
+      continue;
+    }
+    if (value === "--project-id") {
+      if (!argv[index + 1] || argv[index + 1].startsWith("--"))
+        fail("--project-id requires a project id");
+      if (options.projectId !== null) fail("project id was provided more than once");
+      options.projectId = argv[++index];
+      continue;
+    }
+    if (value.startsWith("--")) {
+      fail(`unknown option: ${value}`);
+    }
+    if (options.projectId !== null) {
+      fail(`unexpected positional argument: ${value}`);
+    }
+    // Only unconsumed positional values reach this branch. In particular,
+    // --fixture/--runs/--timeout-ms values are consumed above and can never
+    // become a project id by accident.
+    options.projectId = value;
+  }
+  return options;
+}
+
+function readJson(file, label) {
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    fail(`unable to read ${label} ${file}: ${error.message}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    fail(`invalid JSON in ${label} ${file}: ${error.message}`);
+  }
+}
+
+function formatAjvErrors(errors) {
+  return (errors ?? [])
+    .map((error) => `${error.instancePath || "/"} ${error.message}`)
+    .join("; ");
+}
+
+function validateManifest(manifest, manifestPath) {
+  if (typeof manifest.schema !== "string" || manifest.schema.length === 0) {
+    fail(`manifest ${manifestPath} does not name its JSON schema`);
+  }
+  const schemaPath = path.resolve(path.dirname(manifestPath), manifest.schema);
+  const schema = readJson(schemaPath, "manifest schema");
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  let validate;
+  try {
+    validate = ajv.compile(schema);
+  } catch (error) {
+    fail(`manifest schema ${schemaPath} is invalid: ${error.message}`);
+  }
+  if (!validate(manifest)) {
+    fail(`manifest ${manifestPath} failed JSON schema validation: ${formatAjvErrors(validate.errors)}`);
+  }
+  return { schema, schemaPath };
+}
+
+function assertManifestRuntimeContract(manifest, manifestPath) {
+  if (manifest.diagnosticOnly !== true) {
+    fail(`manifest ${manifestPath} must be diagnosticOnly=true`);
+  }
+  if (manifest.schemaVersion !== "nir1-capacity/1") {
+    fail(`manifest ${manifestPath} has unsupported schemaVersion ${String(manifest.schemaVersion)}`);
+  }
+  if (manifest.runProtocol?.warmupCount !== 1) {
+    fail(`manifest ${manifestPath} must configure exactly one warmup run`);
+  }
+  if (
+    !Number.isSafeInteger(manifest.runProtocol?.measuredRunCount) ||
+    manifest.runProtocol.measuredRunCount < 5
+  ) {
+    fail(`manifest ${manifestPath} must configure at least five measured runs`);
+  }
+  if (
+    manifest.runProtocol?.freshCopyPerRun !== true ||
+    manifest.runProtocol?.freshProcessPerRun !== true
+  ) {
+    fail(`manifest ${manifestPath} must use a fresh copy and process for every run`);
+  }
+  if (
+    manifest.graphLifecycle?.queryActivation !== "not-activated" ||
+    manifest.graphLifecycle?.productDispatch !== "not-activated" ||
+    manifest.graphLifecycle?.supportedCapacityClaim !== false
+  ) {
+    fail(`manifest ${manifestPath} must keep Graph/product activation disabled`);
+  }
+}
+
+function hashBytes(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function componentPath(databasePath, suffix) {
+  return `${databasePath}${suffix}`;
+}
+
+function captureComponent(databasePath, name, suffix) {
+  const file = componentPath(databasePath, suffix);
+  try {
+    const bytes = readFileSync(file);
+    return {
+      name,
+      path: file,
+      present: true,
+      bytes: bytes.length,
+      digest: hashBytes(bytes),
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return { name, path: file, present: false, bytes: 0, digest: null };
+    }
+    fail(`unable to snapshot ${name} database state ${file}: ${error.message}`);
+  }
+}
+
+function captureDatabaseState(databasePath) {
+  const components = Object.fromEntries(
+    SOURCE_COMPONENTS.map(([name, suffix]) => [
+      name,
+      captureComponent(databasePath, name, suffix),
+    ]),
+  );
+  const digest = createHash("sha256");
+  for (const [name, suffix] of SOURCE_COMPONENTS) {
+    const component = components[name];
+    digest.update(`${name}\0${component.present ? "present" : "absent"}\0`);
+    if (component.present) {
+      digest.update(readFileSync(componentPath(databasePath, suffix)));
+    }
+  }
+  return { digest: digest.digest("hex"), ...components };
+}
+
+function comparableDatabaseState(state) {
+  return {
+    digest: state.digest,
+    main: {
+      present: state.main.present,
+      bytes: state.main.bytes,
+      digest: state.main.digest,
+    },
+    wal: {
+      present: state.wal.present,
+      bytes: state.wal.bytes,
+      digest: state.wal.digest,
+    },
+    shm: {
+      present: state.shm.present,
+      bytes: state.shm.bytes,
+      digest: state.shm.digest,
+    },
+  };
+}
+
+function assertSourceStable(sourcePath, expectedState, context) {
+  const actualState = captureDatabaseState(sourcePath);
+  if (
+    JSON.stringify(comparableDatabaseState(actualState)) !==
+    JSON.stringify(comparableDatabaseState(expectedState))
+  ) {
+    fail(
+      `immutable preseed source changed during ${context}: ${sourcePath} ` +
+        `(main/WAL/SHM digest before ${expectedState.digest}, after ${actualState.digest})`,
+    );
+  }
+}
+
+function copyPreseedState(sourcePath, childPath) {
+  copyFileSync(sourcePath, childPath);
+  for (const [, suffix] of SOURCE_COMPONENTS.slice(1)) {
+    const sourceSidecar = componentPath(sourcePath, suffix);
+    const childSidecar = componentPath(childPath, suffix);
+    if (existsSync(sourceSidecar)) {
+      copyFileSync(sourceSidecar, childSidecar);
+    } else {
+      rmSync(childSidecar, { force: true });
+    }
+  }
+}
+
+function fixturePath(spec, fixtureDirectory) {
   const encoded = spec.id.replaceAll("/", "__");
   const candidates = [
     path.join(fixtureDirectory, encoded + ".db"),
@@ -57,66 +269,369 @@ function fixturePath(spec) {
   ];
   const existing = candidates.find((candidate) => {
     try {
-      readFileSync(candidate);
-      return true;
+      return statSync(candidate).isFile();
     } catch {
       return false;
     }
   });
-  assert.ok(
-    existing,
-    "missing preseeded file-backed DB for " +
-      spec.id +
-      "; expected " +
-      candidates.join(" or "),
-  );
+  if (!existing) {
+    fail(
+      `missing preseeded file-backed DB for ${spec.id}; expected ${candidates.join(" or ")}`,
+    );
+  }
   return existing;
 }
 
-function runChild(spec, sourceDb, index, warmup) {
-  const suffix = warmup ? "warmup" : "run-" + index;
-  const copy = path.join(
+function valueAt(object, parts) {
+  let value = object;
+  for (const part of parts) {
+    if (value === null || typeof value !== "object" || !(part in value)) {
+      return undefined;
+    }
+    value = value[part];
+  }
+  return value;
+}
+
+function firstValue(object, paths) {
+  for (const parts of paths) {
+    const value = valueAt(object, parts);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+const OBSERVED_SHAPE_PATHS = {
+  candidateRevisions: [
+    ["counts", "candidateRevisions"],
+    ["counts", "candidateRevisionCount"],
+    ["candidateRevisions"],
+    ["candidateRevisionCount"],
+  ],
+  qualifiedRevisions: [
+    ["counts", "qualifiedRevisions"],
+    ["counts", "qualifiedRevisionCount"],
+    ["qualifiedRevisions"],
+    ["qualifiedRevisionCount"],
+  ],
+  qualifiedMaterials: [
+    ["counts", "qualifiedMaterialRecords"],
+    ["counts", "qualifiedMaterials"],
+    ["qualifiedMaterialRecords"],
+    ["qualifiedMaterials"],
+  ],
+  ineligibleCandidates: [
+    ["counts", "rejectedRevisions"],
+    ["counts", "ineligibleCandidates"],
+    ["rejectedRevisions"],
+    ["ineligibleCandidates"],
+  ],
+  rosterRecords: [
+    ["counts", "rosterRecords"],
+    ["counts", "rosterRecordCount"],
+    ["rosterRecords"],
+    ["rosterRecordCount"],
+  ],
+  evidenceRecords: [
+    ["counts", "evidenceRecords"],
+    ["counts", "evidenceRecordCount"],
+    ["evidenceRecords"],
+    ["evidenceRecordCount"],
+  ],
+  dependencyEdges: [
+    ["counts", "dependencyEdges"],
+    ["counts", "dependencyEdgeCount"],
+    ["dependencyEdges"],
+    ["dependencyEdgeCount"],
+  ],
+  reportRecords: [
+    ["counts", "reportRecords"],
+    ["counts", "reportRecordCount"],
+    ["reportRecords"],
+    ["reportRecordCount"],
+  ],
+};
+
+function expectedShape(spec) {
+  const shape = {
+    ...(spec.shape ?? {}),
+    ...(spec.observedShape ?? {}),
+  };
+  const legacy = {
+    qualifiedMaterials: spec.qualifiedMaterials,
+    qualifiedRevisions: spec.qualifiedRevisions,
+    ineligibleCandidates: spec.ineligibleCandidates,
+  };
+  for (const [key, value] of Object.entries(legacy)) {
+    if (shape[key] === undefined) shape[key] = value;
+  }
+  if (
+    shape.qualifiedMaterialRecords === undefined &&
+    shape.qualifiedMaterials !== undefined
+  ) {
+    shape.qualifiedMaterialRecords = shape.qualifiedMaterials;
+  }
+  if (
+    shape.rejectedRevisions === undefined &&
+    shape.ineligibleCandidates !== undefined
+  ) {
+    shape.rejectedRevisions = shape.ineligibleCandidates;
+  }
+  if (
+    shape.candidateRevisions === undefined &&
+    shape.qualifiedRevisions !== null &&
+    shape.qualifiedRevisions !== undefined &&
+    shape.ineligibleCandidates !== null &&
+    shape.ineligibleCandidates !== undefined
+  ) {
+    shape.candidateRevisions =
+      shape.qualifiedRevisions + shape.ineligibleCandidates;
+  }
+  return shape;
+}
+
+function validateObservedShape(report, spec, context) {
+  const shape = expectedShape(spec);
+  const labels = {
+    qualifiedMaterials: "qualified material records",
+    qualifiedMaterialRecords: "qualified material records",
+    ineligibleCandidates: "ineligible/rejected candidates",
+    rejectedRevisions: "ineligible/rejected candidates",
+    candidateRevisions: "candidate revisions",
+    qualifiedRevisions: "qualified revisions",
+    rosterRecords: "roster records",
+    evidenceRecords: "evidence records",
+    dependencyEdges: "dependency edges",
+    reportRecords: "report records",
+  };
+  const aliases = {
+    qualifiedMaterialRecords: "qualifiedMaterials",
+    rejectedRevisions: "ineligibleCandidates",
+  };
+  const checked = new Set();
+  for (const [key, expected] of Object.entries(shape)) {
+    if (expected === null || expected === undefined) continue;
+    const canonicalKey = aliases[key] ?? key;
+    if (checked.has(canonicalKey)) continue;
+    checked.add(canonicalKey);
+    const observed = firstValue(report, OBSERVED_SHAPE_PATHS[canonicalKey] ?? []);
+    if (
+      !Number.isSafeInteger(expected) ||
+      typeof observed !== "number" ||
+      !Number.isSafeInteger(observed) ||
+      observed !== expected
+    ) {
+      const observedLabel = observed === undefined ? "missing" : String(observed);
+      fail(
+        `${context} shape mismatch for ${labels[key] ?? key}: expected ${expected}, observed ${observedLabel}`,
+      );
+    }
+  }
+}
+
+function assertDiagnosticReport(report, spec, context) {
+  if (!report || typeof report !== "object" || Array.isArray(report)) {
+    fail(`${context} did not emit a JSON object`);
+  }
+  if (report.diagnosticOnly !== true) {
+    fail(`${context} must report diagnosticOnly=true`);
+  }
+  if (report.fixtureId !== spec.id) {
+    fail(`${context} reported fixtureId ${String(report.fixtureId)}, expected ${spec.id}`);
+  }
+  if (
+    report.supportedCapacityClaim !== undefined &&
+    report.supportedCapacityClaim !== false
+  ) {
+    fail(`${context} attempted to claim supported capacity`);
+  }
+  if (report.notMeasured !== undefined) {
+    if (
+      !Array.isArray(report.notMeasured) ||
+      report.notMeasured.some((value) => typeof value !== "string")
+    ) {
+      fail(`${context} notMeasured must be an array of strings`);
+    }
+  }
+  if (report.graphLifecycle?.activated === true) {
+    fail(`${context} activated Graph lifecycle during diagnostic measurement`);
+  }
+  if (
+    report.graphLifecycle?.queryActivation !== undefined &&
+    report.graphLifecycle.queryActivation !== "not-activated"
+  ) {
+    fail(`${context} reported Graph query activation`);
+  }
+  if (
+    report.graphLifecycle?.productDispatch !== undefined &&
+    report.graphLifecycle.productDispatch !== "not-activated"
+  ) {
+    fail(`${context} reported product dispatch activation`);
+  }
+  validateObservedShape(report, spec, context);
+}
+
+function generationValue(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+    return value;
+  if (typeof value === "string" && value.trim().length > 0) return value;
+  return null;
+}
+
+function publishedGeneration(report, phase) {
+  const phaseKey = phase === "before" ? "publishedGenerationBefore" : "publishedGenerationAfter";
+  const paths =
+    phase === "before"
+      ? [
+          ["publishedGeneration", "before"],
+          [phaseKey],
+          ["publication", "publishedGeneration", "before"],
+          ["publication", phaseKey],
+          ["graphLifecycle", phaseKey],
+          ["graphLifecycle", "publishedGeneration", "before"],
+          ["graphLifecycle", "before", "publishedGeneration"],
+          ["publication", "before", "publishedGeneration"],
+        ]
+      : [
+          ["publishedGeneration", "after"],
+          [phaseKey],
+          ["publishedGeneration"],
+          ["publication", "publishedGeneration", "after"],
+          ["publication", phaseKey],
+          ["publication", "publishedGeneration"],
+          ["graphLifecycle", phaseKey],
+          ["graphLifecycle", "publishedGeneration", "after"],
+          ["graphLifecycle", "publishedGeneration"],
+          ["graphLifecycle", "after", "publishedGeneration"],
+          ["publication", "after", "publishedGeneration"],
+          ["terminalReceipt", "publishedGeneration"],
+        ];
+  return generationValue(firstValue(report, paths));
+}
+
+function safeChildName(specId, suffix) {
+  const encoded = specId.replace(/[^A-Za-z0-9._-]+/g, "_");
+  return `${encoded}-${suffix}.db`;
+}
+
+function childFailureMessage(child, context, binary, timeoutMs) {
+  if (child.error?.code === "ETIMEDOUT" || child.timedOut) {
+    return `${context} timed out after ${timeoutMs}ms (binary ${binary})`;
+  }
+  if (child.error) return `${context} could not start: ${child.error.message}`;
+  const status = child.status === null ? "no exit status" : `exit status ${child.status}`;
+  const signal = child.signal ? `, signal ${child.signal}` : "";
+  const stderr = String(child.stderr ?? "").trim();
+  return `${context} failed (${status}${signal})${stderr ? `: ${stderr}` : ""}`;
+}
+
+function parseChildJson(stdout, context) {
+  const text = String(stdout ?? "").trim();
+  if (!text) fail(`${context} emitted no JSON report`);
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    fail(`${context} emitted invalid JSON: ${error.message}`);
+  }
+}
+
+function runChild({
+  binary,
+  projectId,
+  spec,
+  sourceDb,
+  sourceState,
+  scratch,
+  index,
+  warmup,
+  timeoutMs,
+}) {
+  const runLabel = warmup ? "warmup" : `run ${index}`;
+  const context = `${spec.id} ${runLabel}`;
+  const childPath = path.join(
     scratch,
-    spec.id.replaceAll("/", "__") + "-" + suffix + ".db",
+    safeChildName(spec.id, warmup ? "warmup" : `run-${index}`),
   );
-  copyFileSync(sourceDb, copy);
-  const before = hash(copy);
-  const childArgs = [copy, spec.id];
-  if (projectId) childArgs.push(projectId);
+  copyPreseedState(sourceDb, childPath);
+  const before = captureDatabaseState(childPath);
+  const childArgs = [childPath, spec.id];
+  if (projectId !== null) childArgs.push(projectId);
   const child = spawnSync(path.resolve(binary), childArgs, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    timeout: timeoutMs,
+    killSignal: "SIGTERM",
   });
-  assert.equal(
-    child.status,
-    0,
-    spec.id + " " + (warmup ? "warmup" : "run " + index) + " failed: " + child.stderr,
-  );
-  const report = JSON.parse(child.stdout);
-  assert.equal(report.diagnosticOnly, true);
-  assert.equal(report.fixtureId, spec.id);
-  assert.equal(hash(copy), before, "diagnostic child must not write its DB");
-  return report;
+  const after = captureDatabaseState(childPath);
+  assertSourceStable(sourceDb, sourceState, context);
+  if (
+    child.error ||
+    child.status !== 0 ||
+    child.signal !== null ||
+    child.timedOut
+  ) {
+    fail(childFailureMessage(child, context, binary, timeoutMs));
+  }
+  const rawReport = parseChildJson(child.stdout, context);
+  assertDiagnosticReport(rawReport, spec, context);
+  const report = {
+    ...rawReport,
+    supportedCapacityClaim: false,
+    notMeasured: rawReport.notMeasured ?? [],
+  };
+  const generationBefore = publishedGeneration(rawReport, "before");
+  const generationAfter = publishedGeneration(rawReport, "after");
+  const childState = {
+    before,
+    after,
+    digestBefore: before.digest,
+    digestAfter: after.digest,
+    publishedGenerationBefore: generationBefore,
+    publishedGenerationAfter: generationAfter,
+    publishedGeneration: generationAfter,
+  };
+  return {
+    ...report,
+    runKind: warmup ? "warmup" : "measured",
+    runIndex: warmup ? 0 : index,
+    childState,
+    childDatabaseDigestBefore: before.digest,
+    childDatabaseDigestAfter: after.digest,
+    childDigestBefore: before.digest,
+    childDigestAfter: after.digest,
+    publishedGenerationBefore: generationBefore,
+    publishedGenerationAfter: generationAfter,
+  };
+}
+
+function numericValues(reports, selector) {
+  return reports
+    .map(selector)
+    .filter((value) => typeof value === "number" && Number.isFinite(value))
+    .sort((left, right) => left - right);
 }
 
 function summarize(reports) {
-  const values = (selector) =>
-    reports
-      .map(selector)
-      .filter((value) => typeof value === "number" && Number.isFinite(value))
-      .sort((left, right) => left - right);
   const median = (items) =>
     items.length === 0
       ? null
       : items.length % 2 === 0
         ? (items[items.length / 2 - 1] + items[items.length / 2]) / 2
         : items[Math.floor(items.length / 2)];
-  const elapsed = values((report) => report.process.elapsedMs);
-  const peakRss = values(
+  const elapsed = numericValues(reports, (report) => report.process?.elapsedMs);
+  const peakRss = numericValues(
+    reports,
     (report) =>
-      report.process.hwmRssBytes ?? report.process.ruMaxrssBytes ?? null,
+      report.process?.hwmRssBytes ??
+      report.process?.ruMaxrssBytes ??
+      report.process?.rssBytes ??
+      null,
   );
-  const vmSteps = values((report) => report.sql.statementVmSteps);
+  const vmSteps = numericValues(
+    reports,
+    (report) => report.sql?.statementVmSteps,
+  );
   return {
     measuredRunCount: reports.length,
     medianElapsedMs: median(elapsed),
@@ -128,44 +643,128 @@ function summarize(reports) {
   };
 }
 
-const results = [];
-try {
-  for (const spec of fixtureSpecs) {
-    const sourceDb = fixturePath(spec);
-    const sourceDigest = hash(sourceDb);
-    const warmup = runChild(spec, sourceDb, 0, true);
-    const reports = [];
-    for (let index = 1; index <= measuredRuns; index += 1)
-      reports.push(runChild(spec, sourceDb, index, false));
-    assert.equal(hash(sourceDb), sourceDigest);
-    results.push({
-      fixture: spec,
-      sourceDatabaseDigest: sourceDigest,
-      warmup,
-      runs: reports,
-      summary: summarize(reports),
-      diagnosticOnly: true,
-      supportedCapacityClaim: false,
-      notMeasured: [
-        ...new Set(reports.flatMap((report) => report.notMeasured ?? [])),
-      ],
-    });
+function uniqueNotMeasured(reports) {
+  return [
+    ...new Set(
+      reports.flatMap((report) =>
+        Array.isArray(report.notMeasured) ? report.notMeasured : [],
+      ),
+    ),
+  ];
+}
+
+function main() {
+  const options = parseCli(process.argv.slice(2));
+  const manifestPath = path.resolve(options.manifestPath);
+  const manifest = readJson(manifestPath, "manifest");
+  validateManifest(manifest, manifestPath);
+  assertManifestRuntimeContract(manifest, manifestPath);
+  const measuredRuns = options.measuredRuns ?? manifest.runProtocol.measuredRunCount;
+  if (!Number.isSafeInteger(measuredRuns) || measuredRuns < 5) {
+    fail("manifest runProtocol.measuredRunCount and --runs must be integers >= 5");
   }
-  const report = {
-    diagnosticOnly: true,
-    schemaVersion: "nir1-capacity-report/1",
-    manifestDigest,
-    protocol: manifest.runProtocol,
-    capacityDecision: "unratified",
-    graphQueryActivation: "not-activated",
-    productDispatch: "not-activated",
-    results,
-  };
-  writeFileSync(
-    path.join(outputDirectory, "capacity-report.json"),
-    JSON.stringify(report, null, 2) + "\n",
-  );
-  console.log(JSON.stringify(report, null, 2));
-} finally {
-  rmSync(scratch, { recursive: true, force: true });
+  const timeoutMs = options.timeoutMs ?? manifest.runProtocol.childTimeoutMs;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    fail("manifest runProtocol.childTimeoutMs and --timeout-ms must be positive integers");
+  }
+  const fixtureSpecs = options.fixtureFilter
+    ? manifest.fixtures.filter((fixture) => fixture.id === options.fixtureFilter)
+    : manifest.fixtures;
+  if (fixtureSpecs.length === 0) {
+    fail(`fixture not found: ${options.fixtureFilter ?? "<none>"}`);
+  }
+  const fixtureDirectory = path.resolve(options.fixtureDirectory);
+  const outputDirectory = path.resolve(options.outputDirectory);
+  mkdirSync(outputDirectory, { recursive: true });
+  const manifestDigest = hashBytes(Buffer.from(JSON.stringify(manifest)));
+  const scratch = mkdtempSync(path.join(tmpdir(), "nir1-capacity-probe-"));
+  const results = [];
+  try {
+    for (const spec of fixtureSpecs) {
+      const sourceDb = fixturePath(spec, fixtureDirectory);
+      const sourceState = captureDatabaseState(sourceDb);
+      const warmup = runChild({
+        binary: options.binary,
+        projectId: options.projectId,
+        spec,
+        sourceDb,
+        sourceState,
+        scratch,
+        index: 0,
+        warmup: true,
+        timeoutMs,
+      });
+      const reports = [];
+      for (let index = 1; index <= measuredRuns; index += 1) {
+        reports.push(
+          runChild({
+            binary: options.binary,
+            projectId: options.projectId,
+            spec,
+            sourceDb,
+            sourceState,
+            scratch,
+            index,
+            warmup: false,
+            timeoutMs,
+          }),
+        );
+      }
+      assertSourceStable(sourceDb, sourceState, `${spec.id} completed runs`);
+      results.push({
+        fixture: spec,
+        sourceDatabaseDigest: sourceState.digest,
+        sourceState,
+        sourceStateStable: true,
+        warmup,
+        runs: reports,
+        summary: summarize(reports),
+        diagnosticOnly: true,
+        supportedCapacityClaim: false,
+        notMeasured: uniqueNotMeasured([warmup, ...reports]),
+      });
+    }
+    const protocol = {
+      ...manifest.runProtocol,
+      measuredRunCount: measuredRuns,
+      childTimeoutMs: timeoutMs,
+    };
+    const notMeasured = uniqueNotMeasured(
+      results.flatMap((result) => [result.warmup, ...result.runs]),
+    );
+    const report = {
+      diagnosticOnly: true,
+      schemaVersion: "nir1-capacity-report/1",
+      manifestDigest,
+      protocol,
+      capacityDecision: "unratified",
+      supportedCapacityClaim: false,
+      graphQueryActivation: "not-activated",
+      productDispatch: "not-activated",
+      activation: { graphQuery: false, productDispatch: false },
+      graphLifecycle: {
+        status: "not-activated",
+        activated: false,
+        queryActivation: "not-activated",
+        productDispatch: "not-activated",
+        supportedCapacityClaim: false,
+      },
+      notMeasured,
+      results,
+    };
+    writeFileSync(
+      path.join(outputDirectory, "capacity-report.json"),
+      JSON.stringify(report, null, 2) + "\n",
+    );
+    console.log(JSON.stringify(report, null, 2));
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+try {
+  main();
+} catch (error) {
+  console.error(`[nir1-capacity-probe] ${error.message}`);
+  process.exitCode = 1;
 }

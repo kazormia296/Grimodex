@@ -9,13 +9,23 @@
     "currentMaterialLimit": 512,
     "meaning": "current A2/request admission label only; not a whole-project build capacity"
   },
+  "graphLifecycle": {
+    "status": "measurement-only",
+    "queryActivation": "not-activated",
+    "productDispatch": "not-activated",
+    "supportedCapacityClaim": false,
+    "currentRustOutput": "nir1-capacity-observation/1"
+  },
   "runProtocol": {
     "database": "Each measured run copies one preseeded file-backed database to a new temporary path.",
     "process": "Each warmup and measured run starts a fresh child process.",
     "warmupCount": 1,
     "measuredRunCount": 5,
     "freshCopyPerRun": true,
-    "freshProcessPerRun": true
+    "freshProcessPerRun": true,
+    "sourceState": "immutable-main-wal-shm",
+    "childState": "record-before-and-after",
+    "childTimeoutMs": 30000
   },
   "fixtures": [
     {
@@ -23,63 +33,114 @@
       "qualifiedMaterials": 513,
       "qualifiedRevisions": 3,
       "ineligibleCandidates": 0,
-      "dominantShape": "old-512-boundary"
+      "dominantShape": "old-512-boundary",
+      "shape": {
+        "candidateRevisions": 3,
+        "qualifiedRevisions": 3,
+        "qualifiedMaterials": 513,
+        "ineligibleCandidates": 0,
+        "rosterRecords": 513
+      }
     },
     {
       "id": "Q513/R3/D516",
       "qualifiedMaterials": 513,
       "qualifiedRevisions": 3,
       "ineligibleCandidates": 516,
-      "dominantShape": "ineligible-candidate-growth"
+      "dominantShape": "ineligible-candidate-growth",
+      "shape": {
+        "candidateRevisions": 519,
+        "qualifiedRevisions": 3,
+        "qualifiedMaterials": 513,
+        "ineligibleCandidates": 516,
+        "rosterRecords": 513
+      }
     },
     {
       "id": "Q2044/R1022",
       "qualifiedMaterials": 2044,
       "qualifiedRevisions": 1022,
       "ineligibleCandidates": null,
-      "dominantShape": "many-small-revisions"
+      "dominantShape": "many-small-revisions",
+      "shape": {
+        "candidateRevisions": 1022,
+        "qualifiedRevisions": 1022,
+        "qualifiedMaterials": 2044,
+        "rosterRecords": 2044
+      }
     },
     {
       "id": "Q2044/R4",
       "qualifiedMaterials": 2044,
       "qualifiedRevisions": 4,
       "ineligibleCandidates": null,
-      "dominantShape": "few-large-revisions"
+      "dominantShape": "few-large-revisions",
+      "shape": {
+        "candidateRevisions": 4,
+        "qualifiedRevisions": 4,
+        "qualifiedMaterials": 2044,
+        "rosterRecords": 2044
+      }
     },
     {
       "id": "Q2044/byte-heavy",
       "qualifiedMaterials": 2044,
       "qualifiedRevisions": null,
       "ineligibleCandidates": null,
-      "dominantShape": "large-payload-envelope-live-source-within-per-revision-limits"
+      "dominantShape": "large-payload-envelope-live-source-within-per-revision-limits",
+      "shape": {
+        "candidateRevisions": 4,
+        "qualifiedMaterials": 2044,
+        "rosterRecords": 2044
+      }
     },
     {
       "id": "Q2044/evidence-shared",
       "qualifiedMaterials": 2044,
       "qualifiedRevisions": null,
       "ineligibleCandidates": null,
-      "dominantShape": "evidence-reused-across-revisions"
+      "dominantShape": "evidence-reused-across-revisions",
+      "shape": {
+        "candidateRevisions": 4,
+        "qualifiedMaterials": 2044,
+        "rosterRecords": 2044
+      }
     },
     {
       "id": "Q2044/evidence-unique",
       "qualifiedMaterials": 2044,
       "qualifiedRevisions": null,
       "ineligibleCandidates": null,
-      "dominantShape": "many-independent-evidence-edges"
+      "dominantShape": "many-independent-evidence-edges",
+      "shape": {
+        "candidateRevisions": 4,
+        "qualifiedMaterials": 2044,
+        "rosterRecords": 2044
+      }
     },
     {
       "id": "Q8176/R16",
       "qualifiedMaterials": 8176,
       "qualifiedRevisions": 16,
       "ineligibleCandidates": null,
-      "dominantShape": "material-count-growth"
+      "dominantShape": "material-count-growth",
+      "shape": {
+        "candidateRevisions": 16,
+        "qualifiedRevisions": 16,
+        "qualifiedMaterials": 8176,
+        "rosterRecords": 8176
+      }
     },
     {
       "id": "D2064/report-heavy",
       "qualifiedMaterials": null,
       "qualifiedRevisions": null,
       "ineligibleCandidates": 2064,
-      "dominantShape": "full-set-validation-report-accumulation"
+      "dominantShape": "full-set-validation-report-accumulation",
+      "shape": {
+        "candidateRevisions": 2064,
+        "ineligibleCandidates": 2064
+      }
     }
   ],
   "requiredMetrics": [
