@@ -107,8 +107,10 @@ pub struct ProcessMetrics {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapacityOccupancy {
-    /// The total diagnostic connection hold interval, including the manual
-    /// A2 observation and every controlled Graph lifecycle scope.
+    /// Conservative maximum of the separate continuous owner intervals: the
+    /// manual A2 observation, prepare, publish, cold reopen, and restore.
+    /// This is not a sum across released connections or the gaps between
+    /// those scopes. No-wait admission is included in each owner interval.
     pub connection_hold_ms: f64,
     /// The controlled Graph publish transaction interval.
     pub publish_transaction_ms: Option<f64>,
@@ -663,6 +665,22 @@ struct GraphLifecycleRun {
     terminal_error: Option<String>,
 }
 
+fn conservative_connection_hold_ms(
+    manual_a2_owner_ms: f64,
+    lifecycle: &GraphLifecycleRun,
+) -> f64 {
+    [
+        Some(manual_a2_owner_ms),
+        lifecycle.prepare_ms,
+        lifecycle.publish_owner_ms,
+        lifecycle.cold_reopen_ms,
+        lifecycle.restore_verify_ms,
+    ]
+    .into_iter()
+    .flatten()
+    .fold(0.0, f64::max)
+}
+
 /// Count report observations emitted by Verify.  The JSON object field count
 /// is only a serialization detail; it stays constant when a report accumulates
 /// thousands of findings.  This count follows the concrete finding and
@@ -1096,7 +1114,7 @@ pub fn measure_capacity(
         revision_id_overhead_bytes: 0,
     };
     let mut rejection_reasons = BTreeMap::new();
-    let transaction_started = Instant::now();
+    let manual_a2_started = Instant::now();
     let transaction = conn.unchecked_transaction()?;
     let revision_ids = current_revision_ids(&transaction, project_id, &mut sql)?;
     counts.candidate_revisions = revision_ids.len();
@@ -1134,6 +1152,7 @@ pub fn measure_capacity(
             read_persisted_verify_report_records_with_metrics(&transaction, project_id, &mut sql)?;
     }
     transaction.commit()?;
+    let manual_a2_owner_ms = manual_a2_started.elapsed().as_secs_f64() * 1000.0;
     // The same connection is handed to the real Graph maintenance scope so
     // the lifecycle's SQL and in-process containers belong to this fresh
     // measurement. Its publish transaction may mutate only this disposable
@@ -1145,7 +1164,7 @@ pub fn measure_capacity(
         Some(Arc::clone(&progress.callbacks)),
         Some(Arc::clone(&trace)),
     )?;
-    let connection_hold_ms = transaction_started.elapsed().as_secs_f64() * 1000.0;
+    let connection_hold_ms = conservative_connection_hold_ms(manual_a2_owner_ms, &lifecycle);
     ACTIVE_TRACE.with(|active| {
         *active.borrow_mut() = None;
     });
@@ -1343,5 +1362,28 @@ mod tests {
             Some(2)
         );
         Ok(())
+    }
+
+    #[test]
+    fn connection_hold_uses_max_continuous_owner_interval_without_summing_gaps() {
+        let lifecycle = GraphLifecycleRun {
+            shape: None,
+            prepared: true,
+            published: true,
+            rolled_back: false,
+            cold_reopened: true,
+            restore_verified: true,
+            published_generation: Some(3),
+            prepare_ms: Some(17.0),
+            publish_owner_ms: Some(41.0),
+            publish_transaction_ms: Some(29.0),
+            cold_reopen_ms: Some(13.0),
+            restore_verify_ms: Some(23.0),
+            restore_report_records: Some(0),
+            terminal_error: None,
+        };
+        let measured = conservative_connection_hold_ms(19.0, &lifecycle);
+        assert_eq!(measured, 41.0);
+        assert!(measured < 17.0 + 19.0 + 41.0 + 13.0 + 23.0);
     }
 }

@@ -1,8 +1,10 @@
-//! Opt-in, read-only NIR-1 whole-project capacity diagnostic.
+//! Opt-in NIR-1 whole-project capacity diagnostic.
 //!
-//! This binary reports the current A2 reader boundary and process/resource
-//! observations. It never migrates, writes, publishes, or claims a supported
-//! Graph build capacity.
+//! This binary runs the writeful Graph prepare/publish/restore lifecycle on a
+//! disposable child database and reports the current A2 reader boundary plus
+//! process/resource observations. The preseed source database is expected to
+//! remain closed, checkpointed, and immutable; only the disposable child may
+//! be mutated. It never claims a supported Graph build capacity.
 
 use anyhow::{ensure, Result};
 use grimodex_db::narrative_extraction::nir1_capacity_diagnostics::measure_capacity;

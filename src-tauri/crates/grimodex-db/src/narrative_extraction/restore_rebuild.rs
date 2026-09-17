@@ -932,15 +932,11 @@ fn finalize_rebuild_run(
     Ok(())
 }
 
-fn combine_rebuild_errors(
+fn combine_rebuild_error_chain(
     primary: anyhow::Error,
     secondary: anyhow::Error,
+    context: String,
 ) -> anyhow::Error {
-    let primary_message = primary.to_string();
-    let secondary_message = secondary.to_string();
-    let context = format!(
-        "NEX_REBUILD_DERIVED_WORK_AND_FINALIZE_FAILED: work error: {primary_message}; finalization error: {secondary_message}"
-    );
     if is_validation_terminated(&primary) {
         primary.context(context)
     } else if is_validation_terminated(&secondary) {
@@ -948,6 +944,36 @@ fn combine_rebuild_errors(
     } else {
         primary.context(context)
     }
+}
+
+fn combine_rebuild_stop_errors(
+    work_error: anyhow::Error,
+    stop_error: anyhow::Error,
+) -> anyhow::Error {
+    let work_message = work_error.to_string();
+    let stop_message = stop_error.to_string();
+    combine_rebuild_error_chain(
+        work_error,
+        stop_error,
+        format!(
+            "NEX_REBUILD_DERIVED_WORK_AND_STOP_FAILED: work error: {work_message}; stop error: {stop_message}"
+        ),
+    )
+}
+
+fn combine_rebuild_finalization_errors(
+    work_error: anyhow::Error,
+    finalization_error: anyhow::Error,
+) -> anyhow::Error {
+    let work_message = work_error.to_string();
+    let finalization_message = finalization_error.to_string();
+    combine_rebuild_error_chain(
+        work_error,
+        finalization_error,
+        format!(
+            "NEX_REBUILD_DERIVED_WORK_AND_FINALIZE_FAILED: work error: {work_message}; finalization error: {finalization_message}"
+        ),
+    )
 }
 
 fn maintenance_failure_kind_for_message(message: &str) -> MaintenanceFailureKind {
@@ -1121,7 +1147,7 @@ pub(crate) fn rebuild_narrative_derived_state_for_project_with_control(
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(stop_error)) => Err(stop_error),
         (Err(work_error), Err(stop_error)) => {
-            Err(combine_rebuild_errors(stop_error, work_error))
+            Err(combine_rebuild_stop_errors(work_error, stop_error))
         }
     };
     if let Err(finalize_error) =
@@ -1134,7 +1160,7 @@ pub(crate) fn rebuild_narrative_derived_state_for_project_with_control(
             Ok(_) => Err(anyhow::anyhow!(
                 "NEX_REBUILD_DERIVED_FINALIZE_FAILED: {finalize_error}"
             )),
-            Err(work_error) => Err(combine_rebuild_errors(work_error, finalize_error)),
+            Err(work_error) => Err(combine_rebuild_finalization_errors(work_error, finalize_error)),
         };
     }
 
