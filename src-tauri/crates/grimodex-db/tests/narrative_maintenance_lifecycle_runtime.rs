@@ -265,7 +265,7 @@ fn foreground_success_holds_all_three_rows_then_exact_release_shares_one_timesta
         Some(&config),
     )
     .expect("foreground phase succeeds");
-    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+    assert_eq!(result.status, MaintenanceCycleStatus::Deferred);
 
     let barrier = find_running_foreground_system_work_run(&db, &config, &binding)
         .expect("find exact foreground Run")
@@ -342,7 +342,7 @@ fn foreground_backfill_stays_running_when_same_cycle_rediscovery_binds_epoch() {
         Some(&config),
     )
     .expect("foreground Backfill cycle succeeds");
-    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+    assert_eq!(result.status, MaintenanceCycleStatus::Deferred);
 
     let barrier = find_running_foreground_system_work_run(&db, &config, &binding)
         .expect("find exact foreground Backfill")
@@ -391,7 +391,7 @@ fn foreground_backfill_stays_running_across_followup_cycle_only_for_exact_owner(
         Some(&config),
     )
     .expect("first foreground Backfill cycle succeeds");
-    assert_eq!(first.status, MaintenanceCycleStatus::Accepted);
+    assert_eq!(first.status, MaintenanceCycleStatus::Deferred);
     let barrier = find_running_foreground_system_work_run(&db, &config, &binding)
         .expect("find exact foreground owner")
         .expect("first cycle must leave one held Run");
@@ -409,7 +409,7 @@ fn foreground_backfill_stays_running_across_followup_cycle_only_for_exact_owner(
         Some(&barrier),
     )
     .expect("same-process follow-up keeps the exact owner held");
-    assert_eq!(second.status, MaintenanceCycleStatus::Accepted);
+    assert_eq!(second.status, MaintenanceCycleStatus::Deferred);
 
     let rows: Vec<(String, String, Option<String>)> = db
         .with_conn(|conn| {
