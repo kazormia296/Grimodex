@@ -5894,6 +5894,13 @@ mod tests {
         let db = test_db();
         let run = db
             .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_semantic_epochs
+                        (id, project_id, epoch_number, reason, created_at)
+                     VALUES ('epoch-current', 'project-1', 0, 'initial',
+                             '2026-08-23T00:00:00.000Z')",
+                    [],
+                )?;
                 create_system_run_in_tx(
                     conn,
                     "project-1",
