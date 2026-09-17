@@ -2900,9 +2900,6 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
 
         let recovery_work = recovery_work_key_for_item(db, &item)?;
         let recovery_work_key = recovery_work.canonical_key();
-        if terminal_halted_work.contains(&recovery_work_key) {
-            continue;
-        }
         // The RecoveryMode gate and the recovery decision must key on the
         // same effective WorkKey. A stale or epoch-less wire item is
         // normalized to the current Semantic Epoch before recovery, so the
@@ -2918,6 +2915,16 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
             // a follow-up); use that same value for start, adapter dispatch,
             // finalization, and completion.
             (control.work_started)(&effective_item)?;
+        }
+
+        if terminal_halted_work.contains(&recovery_work_key) {
+            // The duplicate is already registered in this attempt (initial
+            // work is registered before dequeue, discovered work before it is
+            // queued). Consume that exact execution before skipping it. If it
+            // were left `running`, attempt finalization would wait forever
+            // and the durable wake would rediscover the same halted key.
+            mark_noop_completed(&effective_item)?;
+            continue;
         }
 
         let foreground_run_is_held = if let Some(candidate) = foreground_durable_run.as_ref() {
@@ -3552,8 +3559,15 @@ fn dispatch_enabled_work(
 /// must not enter the adapter-disabled Deferred lane or the delivery-failure
 /// retry budget.
 pub(crate) fn is_transient_maintenance_preemption(error: &anyhow::Error) -> bool {
-    error_chain_contains(error, "NEX_MAINTENANCE_CONNECTION_PREEMPTED")
-        || error_chain_contains(error, "NEX_VALIDATION_TERMINATED:foreground-preempted")
+    !is_maintenance_connection_cleanup_failure(error)
+        && (error_chain_contains(error, "NEX_MAINTENANCE_CONNECTION_PREEMPTED")
+            || error_chain_contains(error, "NEX_VALIDATION_TERMINATED:foreground-preempted"))
+}
+
+fn is_maintenance_connection_cleanup_failure(error: &anyhow::Error) -> bool {
+    error_chain_contains(error, "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED")
+        || error_chain_contains(error, "NIR1_MAINTENANCE_CONNECTION_UNUSABLE")
+        || error_chain_contains(error, "NEX_MAINTENANCE_CONNECTION_UNUSABLE")
 }
 
 fn is_maintenance_control_or_cleanup_error(error: &anyhow::Error) -> bool {
@@ -6851,16 +6865,25 @@ mod tests {
         let db = open_pending_recovery_db();
         let work = recovery_work(AutomaticRunKind::RebuildDerived, "epoch-current");
         let messages = [
-            "NEX_MAINTENANCE_CONNECTION_PREEMPTED: maintenance connection is busy",
-            "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: NEX_MAINTENANCE_CONNECTION_PREEMPTED: maintenance connection is busy; NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed",
-            "outer operation failed: NEX_VALIDATION_TERMINATED:foreground-preempted: foreground waiter arrived",
+            (
+                "NEX_MAINTENANCE_CONNECTION_PREEMPTED: maintenance connection is busy",
+                true,
+            ),
+            (
+                "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: NEX_MAINTENANCE_CONNECTION_PREEMPTED: maintenance connection is busy; NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed",
+                false,
+            ),
+            (
+                "outer operation failed: NEX_VALIDATION_TERMINATED:foreground-preempted: foreground waiter arrived",
+                true,
+            ),
         ];
 
-        for message in messages {
+        for (message, transient) in messages {
             let error = anyhow::anyhow!(message);
             assert!(
-                is_transient_maintenance_preemption(&error),
-                "wrapped preemption was not classified as transient: {message}"
+                is_transient_maintenance_preemption(&error) == transient,
+                "preemption classification was wrong for: {message}"
             );
             assert!(is_maintenance_control_or_cleanup_error(&error));
             let projection_error = project_ledger_selector_manual_intervention(&db, &work, &error)

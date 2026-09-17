@@ -29,11 +29,10 @@ mod state;
 #[cfg(test)]
 mod test_link_stubs;
 
-use std::collections::HashMap;
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::sync::{atomic::AtomicU64, Arc, Mutex, TryLockError};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Instant;
 
 use napi::bindgen_prelude::*;
@@ -42,7 +41,6 @@ use napi::JsFunction;
 use napi_derive::napi;
 
 use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
-use grimodex_core::narrative_nir1::{ENTITY_RELATION_INDEX_KEY, ENTITY_RELATION_PRODUCER};
 use grimodex_db::agent_writes;
 use grimodex_db::ai_audit::{sanitize_diagnostic_credentials, AppendAiAuditEvent};
 use grimodex_db::backup_restore::{list_backups, restore_backup_core};
@@ -157,54 +155,17 @@ fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
     format!("authority:{}", authority.identity())
 }
 
-/// Read the durable NIR-1 Graph publication generation from the live
-/// authority. The workspace recovery generation is a different, process-local
-/// identity and must never be used as a Graph publication receipt.
-fn narrative_nir1_graph_generation(db: &Database, project_id: &str) -> anyhow::Result<Option<u64>> {
-    db.with_conn(|conn| {
-        let generation: Option<i64> = conn.query_row(
-            "SELECT MAX(generation)
-               FROM narrative_semantic_index_metadata
-              WHERE project_id = ?1
-                AND index_key = ?2
-                AND dirty_cache_flag = 0
-                AND producer_id = ?3",
-            [
-                project_id,
-                ENTITY_RELATION_INDEX_KEY,
-                ENTITY_RELATION_PRODUCER,
-            ],
-            |row| row.get(0),
-        )?;
-        generation
-            .map(|generation| {
-                anyhow::ensure!(
-                    generation > 0,
-                    "NEX_NIR1_GRAPH_GENERATION_INVALID: publication generation must be positive"
-                );
-                u64::try_from(generation).map_err(anyhow::Error::from)
-            })
-            .transpose()
-    })
-}
-
-/// Preserve the greatest newly observed Graph publication generation. A
-/// later interrupted work item must not erase an earlier committed publish.
-fn record_narrative_nir1_graph_publication(
-    signal: &AtomicU64,
-    before: Option<u64>,
-    after: Option<u64>,
-) {
-    let Some(after) = after else {
-        return;
-    };
-    if before.is_some_and(|before| after <= before) {
-        return;
-    }
-    signal.fetch_max(after, std::sync::atomic::Ordering::AcqRel);
+fn is_narrative_maintenance_cleanup_failure(error: &impl std::fmt::Display) -> bool {
+    let message = error.to_string();
+    message.contains("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED")
+        || message.contains("NIR1_MAINTENANCE_CONNECTION_UNUSABLE")
+        || message.contains("NEX_MAINTENANCE_CONNECTION_UNUSABLE")
 }
 
 fn is_narrative_maintenance_preemption(error: &impl std::fmt::Display) -> bool {
+    if is_narrative_maintenance_cleanup_failure(error) {
+        return false;
+    }
     let message = error.to_string();
     message.starts_with("NEX_MAINTENANCE_CONNECTION_PREEMPTED")
         || message.contains("NEX_VALIDATION_TERMINATED:foreground-preempted")
@@ -3270,7 +3231,6 @@ pub struct Backend {
 struct NarrativeMaintenanceAttemptGuard {
     state: Arc<AppState>,
     attempt_id: String,
-    published_generation: Arc<AtomicU64>,
     authority: Option<PinnedWorkspaceDb>,
     finalized: bool,
     cleanup_reusable: bool,
@@ -3281,24 +3241,9 @@ impl NarrativeMaintenanceAttemptGuard {
         Self {
             state,
             attempt_id,
-            published_generation: Arc::new(AtomicU64::new(0)),
             authority: None,
             finalized: false,
             cleanup_reusable: false,
-        }
-    }
-
-    fn published_generation_signal(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.published_generation)
-    }
-
-    fn published_generation_value(&self) -> Option<u64> {
-        match self
-            .published_generation
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            0 => None,
-            generation => Some(generation),
         }
     }
 
@@ -3311,21 +3256,38 @@ impl NarrativeMaintenanceAttemptGuard {
             .state
             .narrative_maintenance_attempts
             .grant_finalize(&self.attempt_id)?;
+        // The automatic Native routes currently publish dependency freshness
+        // and do not own the NIR-1 Graph publisher. Keep this receipt unset
+        // rather than inferring a generation with a post-release read.
         let receipt = self.state.narrative_maintenance_attempts.settle(
             &self.attempt_id,
             granted,
-            self.published_generation_value(),
+            None,
         )?;
+        self.cleanup_reusable = self.cleanup_reusable
+            && receipt.cleanup.status == "clean"
+            && receipt.connection_reusable
+            && self
+                .authority
+                .as_ref()
+                .is_some_and(|authority| authority.db().connection_reusable());
         self.finalized = true;
-        Ok(receipt.state == "succeeded")
+        Ok(receipt.state == "succeeded" && self.cleanup_reusable)
     }
 
     fn finalize_interrupted(&mut self) -> anyhow::Result<()> {
-        self.state.narrative_maintenance_attempts.settle(
+        let receipt = self.state.narrative_maintenance_attempts.settle(
             &self.attempt_id,
             false,
-            self.published_generation_value(),
+            None,
         )?;
+        self.cleanup_reusable = self.cleanup_reusable
+            && receipt.cleanup.status == "clean"
+            && receipt.connection_reusable
+            && self
+                .authority
+                .as_ref()
+                .is_some_and(|authority| authority.db().connection_reusable());
         self.finalized = true;
         Ok(())
     }
@@ -3338,6 +3300,40 @@ impl NarrativeMaintenanceAttemptGuard {
     }
 
     fn mark_cleanup_clean(&mut self, state: &AppState) -> anyhow::Result<()> {
+        let Some(authority) = self.authority.as_ref() else {
+            self.cleanup_reusable = false;
+            state.narrative_maintenance_attempts.set_cleanup_outcome(
+                &self.attempt_id,
+                NarrativeMaintenanceCleanupOutcome {
+                    status: "failed".to_string(),
+                    error: Some(
+                        "NEX_MAINTENANCE_CONNECTION_UNUSABLE: maintenance authority was not bound"
+                            .to_string(),
+                    ),
+                },
+                false,
+            )?;
+            anyhow::bail!(
+                "NEX_MAINTENANCE_CONNECTION_UNUSABLE: maintenance authority was not bound"
+            );
+        };
+        if !authority.db().connection_reusable() {
+            let reason = authority
+                .db()
+                .connection_unusable_reason()
+                .unwrap_or_else(|| "maintenance connection is quarantined".to_string());
+            let error = format!("NEX_MAINTENANCE_CONNECTION_UNUSABLE: {reason}");
+            self.cleanup_reusable = false;
+            state.narrative_maintenance_attempts.set_cleanup_outcome(
+                &self.attempt_id,
+                NarrativeMaintenanceCleanupOutcome {
+                    status: "failed".to_string(),
+                    error: Some(error.clone()),
+                },
+                false,
+            )?;
+            anyhow::bail!(error);
+        }
         state.narrative_maintenance_attempts.set_cleanup_outcome(
             &self.attempt_id,
             NarrativeMaintenanceCleanupOutcome {
@@ -3399,7 +3395,7 @@ impl Drop for NarrativeMaintenanceAttemptGuard {
             self.cleanup_reusable = match self.state.narrative_maintenance_attempts.settle(
                 &self.attempt_id,
                 false,
-                self.published_generation_value(),
+                None,
             ) {
                 Ok(receipt) => {
                     self.cleanup_reusable
@@ -4397,11 +4393,6 @@ impl Backend {
                         .finalization_granted_signal(attempt_id)
                 })
                 .transpose()?;
-            let published_generation_signal_for_control = attempt_guard
-                .as_ref()
-                .map(NarrativeMaintenanceAttemptGuard::published_generation_signal);
-            let graph_generation_before_work: Arc<Mutex<HashMap<String, Option<u64>>>> =
-                Arc::new(Mutex::new(HashMap::new()));
             let should_stop = || -> anyhow::Result<()> {
                 if let Some(attempt_id) = attempt_id_for_control.as_deref() {
                     let signalled = stop_signal_for_control
@@ -4426,22 +4417,6 @@ impl Backend {
                         state_for_control
                             .narrative_maintenance_attempts
                             .mark_work_succeeded(attempt_id, &work_key)?;
-                        if let Some(signal) = published_generation_signal_for_control.as_ref() {
-                            let before = graph_generation_before_work
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                .remove(&work_key)
-                                .flatten();
-                            let after = narrative_nir1_graph_generation(
-                                authority.db(),
-                                &item.project_id,
-                            )?;
-                            record_narrative_nir1_graph_publication(
-                                signal,
-                                before,
-                                after,
-                            );
-                        }
                     }
                     Ok(())
                 };
@@ -4452,10 +4427,6 @@ impl Backend {
                         state_for_control
                             .narrative_maintenance_attempts
                             .mark_work_completed(attempt_id, &work_key)?;
-                        graph_generation_before_work
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(&work_key);
                     }
                     Ok(())
                 };
@@ -4466,10 +4437,6 @@ impl Backend {
                         state_for_control
                             .narrative_maintenance_attempts
                             .mark_work_deferred(attempt_id, &work_key)?;
-                        graph_generation_before_work
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(&work_key);
                     }
                     Ok(())
                 };
@@ -4503,12 +4470,6 @@ impl Backend {
                 |item: &grimodex_db::narrative_extraction::DesiredWork| -> anyhow::Result<()> {
                     if let Some(attempt_id) = attempt_id_for_control.as_deref() {
                         let work_key = item.canonical_key();
-                        let before =
-                            narrative_nir1_graph_generation(authority.db(), &item.project_id)?;
-                        graph_generation_before_work
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .insert(work_key.clone(), before);
                         state_for_control
                             .narrative_maintenance_attempts
                             .mark_work_started(attempt_id, &work_key)?;
@@ -11996,7 +11957,7 @@ mod semantic_reranker_lane_tests {
 
 #[cfg(test)]
 mod narrative_maintenance_epoch_event_tests {
-    use super::should_emit_narrative_epoch_rotated;
+    use super::*;
 
     #[test]
     fn emission_requires_a_first_successful_changed_mutation() {
@@ -12004,6 +11965,19 @@ mod narrative_maintenance_epoch_event_tests {
         assert!(!should_emit_narrative_epoch_rotated(true, true));
         assert!(!should_emit_narrative_epoch_rotated(false, false));
         assert!(!should_emit_narrative_epoch_rotated(true, false));
+    }
+
+    #[test]
+    fn cleanup_quarantine_cannot_be_classified_as_transient_preemption() {
+        let cleanup = "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: "
+            .to_string()
+            + "NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived; "
+            + "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed";
+        assert!(is_narrative_maintenance_cleanup_failure(&cleanup));
+        assert!(!is_narrative_maintenance_preemption(&cleanup));
+        assert!(is_narrative_maintenance_preemption(
+            &"NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived".to_string()
+        ));
     }
 }
 

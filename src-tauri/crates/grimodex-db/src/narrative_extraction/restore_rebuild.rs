@@ -10,7 +10,10 @@
 use std::{
     io,
     io::Write,
-    sync::{atomic::Ordering, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -3750,9 +3753,21 @@ fn clear_finalization_grant(control: &MaintenanceCycleControl<'_>) {
 }
 
 fn is_transient_connection_preemption(error: &anyhow::Error) -> bool {
-    let message = error.to_string();
-    message.starts_with(MAINTENANCE_CONNECTION_PREEMPTED_CODE)
-        || message.contains("NEX_VALIDATION_TERMINATED:foreground-preempted")
+    !is_maintenance_connection_cleanup_failure(error)
+        && error.chain().any(|cause| {
+            let message = cause.to_string();
+            message.starts_with(MAINTENANCE_CONNECTION_PREEMPTED_CODE)
+                || message.contains("NEX_VALIDATION_TERMINATED:foreground-preempted")
+        })
+}
+
+fn is_maintenance_connection_cleanup_failure(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED")
+            || message.contains("NIR1_MAINTENANCE_CONNECTION_UNUSABLE")
+            || message.contains("NEX_MAINTENANCE_CONNECTION_UNUSABLE")
+    })
 }
 
 /// A phase can be preempted after its Run has been created but before the
@@ -3781,29 +3796,50 @@ pub fn try_cancel_preempted_maintenance_run(
     run_id: &str,
     reason: &str,
 ) -> anyhow::Result<bool> {
-    let Some(conn) = db.try_lock_narrative_maintenance()? else {
+    // Keep this cleanup on the same outer scope as every production Graph
+    // phase.  In particular, do not acquire the raw mutex here: that path
+    // bypasses the progress hook/settings receipt and previously held the
+    // Native worker behind the default five-second busy timeout.
+    let stop = Arc::new(AtomicBool::new(false));
+    let result = with_narrative_maintenance_graph_control(
+        db,
+        Duration::ZERO,
+        PRODUCTION_MAINTENANCE_PROGRESS_INTERVAL,
+        stop,
+        NarrativeMaintenanceGraphControlConfig::default(),
+        |conn, graph| {
+            graph.check(GraphWorkStage::ResultAssembly)?;
+            with_immediate_transaction(conn, |conn| {
+                graph.check(GraphWorkStage::ResultAssembly)?;
+                let status: Option<String> = conn
+                    .query_row(
+                        "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                        [run_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let Some(status) = status else {
+                    // A concurrent terminalizer already owns the exact row.
+                    // It is safe to retire the process-local cleanup entry.
+                    return Ok(true);
+                };
+                if status != NarrativeRunStatus::Running.as_str() {
+                    return Ok(true);
+                }
+                let handle = load_maintenance_run_in_tx(conn, run_id)?;
+                cancel_maintenance_run_for_preemption_in_tx(conn, &handle, reason)?;
+                graph.check(GraphWorkStage::ResultAssembly)?;
+                Ok(true)
+            })
+        },
+    )?;
+    let Some(result) = result else {
+        // The exact pending Run remains owned by the process-local retry
+        // ledger.  The caller must leave that entry intact and retry it on a
+        // later wake after the foreground handoff.
         return Ok(false);
     };
-    with_immediate_transaction(&conn, |conn| {
-        let status: Option<String> = conn
-            .query_row(
-                "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
-                [run_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(status) = status else {
-            // A concurrent terminalizer already owns the exact row.  It is
-            // safe to retire the process-local cleanup entry.
-            return Ok(true);
-        };
-        if status != NarrativeRunStatus::Running.as_str() {
-            return Ok(true);
-        }
-        let handle = load_maintenance_run_in_tx(conn, run_id)?;
-        cancel_maintenance_run_for_preemption_in_tx(conn, &handle, reason)?;
-        Ok(true)
-    })
+    result.into_result()
 }
 
 pub(crate) fn run_maintenance_graph_phase_for_run<T, F>(
@@ -3883,6 +3919,7 @@ fn is_maintenance_connection_deferred_or_cleanup(error: &anyhow::Error) -> bool 
     message.starts_with(MAINTENANCE_CONNECTION_PREEMPTED_CODE)
         || message.contains("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED")
         || message.contains("NIR1_MAINTENANCE_CONNECTION_UNUSABLE")
+        || message.contains("NEX_MAINTENANCE_CONNECTION_UNUSABLE")
 }
 
 fn is_maintenance_attempt_stop(error: &anyhow::Error) -> bool {
@@ -4814,7 +4851,7 @@ pub(crate) fn verify_narrative_dependency_graph_for_project_with_control(
                     consumer_key,
                 )?)
             || (is_reserved_semantic_index_consumer_kind(consumer_kind)
-                && super::nir1_entity_relation_index::is_registered_with_control(
+                && super::nir1_entity_relation_index::is_complete_registered_with_control(
                     conn,
                     project_id,
                     consumer_key,
@@ -5832,6 +5869,62 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[test]
+    fn cleanup_quarantine_outweighs_foreground_preemption() {
+        let error = anyhow::anyhow!(
+            "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: "
+                "NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived; "
+                "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed"
+        );
+        assert!(is_maintenance_connection_cleanup_failure(&error));
+        assert!(!is_transient_connection_preemption(&error));
+        assert!(is_maintenance_connection_deferred_or_cleanup(&error));
+
+        let foreground_only = anyhow::anyhow!(
+            "NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived"
+        );
+        assert!(is_transient_connection_preemption(&foreground_only));
+        assert!(!is_maintenance_connection_cleanup_failure(&foreground_only));
+    }
+
+    #[test]
+    fn preempted_run_cleanup_keeps_the_exact_owner_when_mutex_is_busy() {
+        let db = test_db();
+        let run = db
+            .with_conn(|conn| {
+                create_system_run_in_tx(
+                    conn,
+                    "project-1",
+                    "dependency-verify",
+                    "epoch-current",
+                    "dependency-verify:epoch-current",
+                    &json!({"verifyContractVersion": VERIFY_CONTRACT_VERSION}),
+                    "sha256:test",
+                    SystemRunWorkKeyReuse::None,
+                    None,
+                )
+            })
+        .expect("seed exact running Run");
+        let run_id = run
+            .get("runId")
+            .and_then(Value::as_str)
+            .expect("created Run id")
+            .to_string();
+
+        let held = db.lock().expect("hold the maintenance mutex");
+        assert_eq!(
+            try_cancel_preempted_maintenance_run(
+                &db,
+                &run_id,
+                "foreground preemption retry",
+            )
+            .expect("busy cleanup must be fail-fast"),
+            false,
+            "a busy mutex must leave the pending owner for retry"
+        );
+        drop(held);
     }
 
     #[test]
