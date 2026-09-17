@@ -13087,7 +13087,10 @@ mod narrative_maintenance_foreground_release_tests {
                 .expect("foreground cycle"),
         )
         .expect("cycle response JSON");
-        assert_eq!(result["status"], "accepted");
+        // A foreground-held cycle deliberately defers its response while the
+        // durable Run remains running for the exact release callback. Main
+        // parks this Native delivery until that authoring barrier is released.
+        assert_eq!(result["status"], "deferred");
         let config = backend
             .state
             .narrative_maintenance_ci_seam
@@ -13421,8 +13424,11 @@ mod narrative_maintenance_foreground_release_tests {
                 .expect("foreground cycle"),
         )
         .expect("cycle response JSON");
-        assert_eq!(cycle["status"], "accepted");
-        assert_eq!(cycle["hasMore"], true);
+        // The successful foreground adapter keeps its durable lifecycle held;
+        // the N-API contract therefore returns Deferred with no extra work
+        // advertised until the exact barrier release completes.
+        assert_eq!(cycle["status"], "deferred");
+        assert_eq!(cycle["hasMore"], false);
 
         let rows: Vec<(String, String, String)> = authority
             .db()
