@@ -16,8 +16,18 @@ use serde::{Deserialize, Serialize};
 use super::c2z_preparation::inspect_legacy_generic_freshness_parity;
 use super::consumer_identity::APPLICATION_CONSUMER_KIND;
 use super::dependency_edges::{canonical_source_object_identity, PROPOSAL_REVISION_CONSUMER_KIND};
-use super::source_revision::resolve_source_revision;
+use super::nir1_entity_relation_index::{
+    GraphWorkControl, GraphWorkStage, NeverStopGraphWorkControl,
+};
+use super::source_revision::resolve_source_revision_with_control;
 use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
+
+fn check_control(
+    control: &mut dyn GraphWorkControl,
+    stage: GraphWorkStage,
+) -> anyhow::Result<()> {
+    control.check(stage)
+}
 
 const RESERVED_SEMANTIC_INDEX_OBSERVED_COUNT_KEYS: [&str; 4] = [
     "metadataRows",
@@ -127,6 +137,16 @@ pub(crate) fn verify_application_revision_artifact_references(
     conn: &Connection,
     project_id: &str,
 ) -> anyhow::Result<VerifyCoverageCheck> {
+    let mut control = NeverStopGraphWorkControl;
+    verify_application_revision_artifact_references_with_control(conn, project_id, &mut control)
+}
+
+pub(crate) fn verify_application_revision_artifact_references_with_control(
+    conn: &Connection,
+    project_id: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<VerifyCoverageCheck> {
+    check_control(control, GraphWorkStage::Coverage)?;
     let mut check = VerifyCoverageCheck::default();
     let mut applications = Vec::new();
     let mut statement = conn.prepare(
@@ -157,6 +177,7 @@ pub(crate) fn verify_application_revision_artifact_references(
         ))
     })?;
     for row in rows {
+        check_control(control, GraphWorkStage::Coverage)?;
         let (
             application_id,
             commit_id,
@@ -246,6 +267,7 @@ pub(crate) fn verify_application_revision_artifact_references(
             ))
         })?;
         for row in rows {
+            check_control(control, GraphWorkStage::Coverage)?;
             basis_rows.push(row?);
         }
 
@@ -258,6 +280,7 @@ pub(crate) fn verify_application_revision_artifact_references(
         let mut basis_identities = BTreeSet::new();
         let mut expected_ordinals = 0_i64;
         for (ordinal, source_kind, source_key, revision_token) in basis_rows {
+            check_control(control, GraphWorkStage::Coverage)?;
             if ordinal != expected_ordinals {
                 check.issues.push(format!(
                     "application:{application_id}:revision:{revision_id}:source-basis-ordinal:{ordinal}"
@@ -333,12 +356,14 @@ pub(crate) fn verify_application_revision_artifact_references(
                     // still takes a run id for snapshot sources; pass the
                     // intentionally unused empty value here rather than
                     // inventing a Run binding for an artifact.
-                    match resolve_source_revision(
+                    check_control(control, GraphWorkStage::Source)?;
+                    match resolve_source_revision_with_control(
                         conn,
                         project_id,
                         "",
                         &source_kind,
                         &source_key,
+                        control,
                     ) {
                         Ok(current) if current.revision_token == revision_token => {}
                         Ok(current) => check.issues.push(format!(
@@ -366,6 +391,7 @@ pub(crate) fn verify_application_revision_artifact_references(
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )?;
         for edge_row in edge_rows {
+            check_control(control, GraphWorkStage::Coverage)?;
             let (edge_id, source_identity) = edge_row?;
             if source_identity.starts_with("artifact:")
                 && !basis_identities.contains(&source_identity)
@@ -401,9 +427,19 @@ pub(crate) fn verify_semantic_index_checks(
     conn: &Connection,
     project_id: &str,
 ) -> anyhow::Result<(VerifyCoverageCheck, VerifyCoverageCheck)> {
+    let mut control = NeverStopGraphWorkControl;
+    verify_semantic_index_checks_with_control(conn, project_id, &mut control)
+}
+
+pub(crate) fn verify_semantic_index_checks_with_control(
+    conn: &Connection,
+    project_id: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<(VerifyCoverageCheck, VerifyCoverageCheck)> {
+    check_control(control, GraphWorkStage::Coverage)?;
     if conn.is_autocommit() {
         let tx = conn.unchecked_transaction()?;
-        return verify_semantic_index_checks(&tx, project_id);
+        return verify_semantic_index_checks_with_control(&tx, project_id, control);
     }
     let mut observed_counts = BTreeMap::new();
     let reserved_surfaces = [
@@ -429,6 +465,7 @@ pub(crate) fn verify_semantic_index_checks(
         ),
     ];
     for (surface, query) in reserved_surfaces {
+        check_control(control, GraphWorkStage::Coverage)?;
         let raw_count = conn.query_row(query, params![project_id], |row| row.get::<_, i64>(0))?;
         anyhow::ensure!(
             raw_count >= 0,
@@ -443,6 +480,7 @@ pub(crate) fn verify_semantic_index_checks(
     }
 
     let mut reserved_counts = observed_counts.clone();
+    check_control(control, GraphWorkStage::Coverage)?;
     if super::nir1_chronicle_index::is_complete_registered_chronicle_index(
         conn,
         project_id,
@@ -464,10 +502,12 @@ pub(crate) fn verify_semantic_index_checks(
             })?;
         }
     }
-    if super::nir1_entity_relation_index::is_registered(
+    check_control(control, GraphWorkStage::Coverage)?;
+    if super::nir1_entity_relation_index::is_registered_with_control(
         conn,
         project_id,
         super::nir1_entity_relation_index::INDEX_KEY,
+        control,
     )? {
         let known_edge_count: i64 = conn.query_row("SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id=?1 AND consumer_kind='semantic-index' AND consumer_key=?2",
             params![project_id,super::nir1_entity_relation_index::INDEX_KEY],|row|row.get(0))?;
@@ -485,6 +525,7 @@ pub(crate) fn verify_semantic_index_checks(
             })?;
         }
     }
+    check_control(control, GraphWorkStage::Coverage)?;
     let footprint_is_empty = reserved_counts.values().all(|count| *count == 0);
     observed_counts = reserved_counts.clone();
     let mut digest_check = VerifyCoverageCheck {
@@ -520,6 +561,20 @@ pub(crate) fn verify_contribution_to_application_commit_correspondence(
     conn: &Connection,
     project_id: &str,
 ) -> anyhow::Result<VerifyCoverageCheck> {
+    let mut control = NeverStopGraphWorkControl;
+    verify_contribution_to_application_commit_correspondence_with_control(
+        conn,
+        project_id,
+        &mut control,
+    )
+}
+
+pub(crate) fn verify_contribution_to_application_commit_correspondence_with_control(
+    conn: &Connection,
+    project_id: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<VerifyCoverageCheck> {
+    check_control(control, GraphWorkStage::Coverage)?;
     let mut check = VerifyCoverageCheck::default();
     let mut statement = conn.prepare(
         "SELECT id, application_id, commit_id, proposal_id, revision_id, operation_id
@@ -538,6 +593,7 @@ pub(crate) fn verify_contribution_to_application_commit_correspondence(
         ))
     })?;
     for row in rows {
+        check_control(control, GraphWorkStage::Coverage)?;
         let (contribution_id, application_id, commit_id, proposal_id, revision_id, operation_id) =
             row?;
         let label = format!("contribution:{contribution_id}");
@@ -691,6 +747,22 @@ pub(crate) fn verify_legacy_mirror_migration_parity(
     project_id: &str,
     current_epoch_id: Option<&str>,
 ) -> anyhow::Result<VerifyCoverageCheck> {
+    let mut control = NeverStopGraphWorkControl;
+    verify_legacy_mirror_migration_parity_with_control(
+        conn,
+        project_id,
+        current_epoch_id,
+        &mut control,
+    )
+}
+
+pub(crate) fn verify_legacy_mirror_migration_parity_with_control(
+    conn: &Connection,
+    project_id: &str,
+    current_epoch_id: Option<&str>,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<VerifyCoverageCheck> {
+    check_control(control, GraphWorkStage::Coverage)?;
     let mut check = VerifyCoverageCheck::default();
     match inspect_legacy_generic_freshness_parity(conn, project_id) {
         Ok(parity) => {
@@ -757,6 +829,7 @@ pub(crate) fn verify_legacy_mirror_migration_parity(
         Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
     })?;
     for row in rows {
+        check_control(control, GraphWorkStage::Coverage)?;
         let (application_id, generic_epoch) = row?;
         let Some(generic_epoch) = generic_epoch else {
             continue;
@@ -783,7 +856,23 @@ pub(crate) fn verify_cursor_and_feed_head_consistency(
     project_id: &str,
     current_epoch_id: Option<&str>,
 ) -> anyhow::Result<VerifyCoverageCheck> {
+    let mut control = NeverStopGraphWorkControl;
+    verify_cursor_and_feed_head_consistency_with_control(
+        conn,
+        project_id,
+        current_epoch_id,
+        &mut control,
+    )
+}
+
+pub(crate) fn verify_cursor_and_feed_head_consistency_with_control(
+    conn: &Connection,
+    project_id: &str,
+    current_epoch_id: Option<&str>,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<VerifyCoverageCheck> {
     let mut check = VerifyCoverageCheck::default();
+    check_control(control, GraphWorkStage::Coverage)?;
     let (feed_head, feed_count): (i64, i64) = conn.query_row(
         "SELECT COALESCE(MAX(canonical_sequence), 0), COUNT(*)
            FROM narrative_change_events WHERE project_id = ?1",
@@ -812,6 +901,7 @@ pub(crate) fn verify_cursor_and_feed_head_consistency(
     })?;
     let mut has_incremental_cursor = false;
     for row in cursor_rows {
+        check_control(control, GraphWorkStage::Coverage)?;
         let (consumer_id, acknowledged, lease_owner, cursor_epoch, active_run_id, reserved, lease) =
             row?;
         has_incremental_cursor |= consumer_id == INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;

@@ -7,6 +7,8 @@
 //! Edge storage (`dependency_edges.rs`), and Lane E's Source revision
 //! resolver (`source_revision.rs`).
 
+use std::{io, io::Write};
+
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -526,6 +528,39 @@ pub(crate) fn resolve_edge_source_state(
     })
 }
 
+pub(crate) fn resolve_edge_source_state_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    edge: &DependencyEdge,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<ResolvedEdgeSourceState> {
+    control.check(GraphWorkStage::Source)?;
+    let Some(source_kind) = infer_source_kind(&edge.source_object_identity) else {
+        return Ok(ResolvedEdgeSourceState {
+            current_source_exists: false,
+            comparison_available: true,
+            current_revision_token: None,
+            current_digest: None,
+        });
+    };
+    let state = resolve_current_source_state_with_control(
+        conn,
+        project_id,
+        run_id,
+        source_kind,
+        &edge.source_object_identity,
+        control,
+    )?;
+    control.check(GraphWorkStage::Source)?;
+    Ok(ResolvedEdgeSourceState {
+        current_source_exists: state.exists,
+        comparison_available: state.usable,
+        current_revision_token: state.revision_token,
+        current_digest: state.content_digest,
+    })
+}
+
 pub(crate) fn build_edge_comparison_input_from_source_state(
     edge: &DependencyEdge,
     source_state: &ResolvedEdgeSourceState,
@@ -554,6 +589,19 @@ pub(crate) fn build_edge_comparison_input(
     edge: &DependencyEdge,
 ) -> anyhow::Result<EdgeComparisonInput> {
     let source_state = resolve_edge_source_state(conn, project_id, run_id, edge)?;
+    build_edge_comparison_input_from_source_state(edge, &source_state)
+}
+
+pub(crate) fn build_edge_comparison_input_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    edge: &DependencyEdge,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<EdgeComparisonInput> {
+    let source_state =
+        resolve_edge_source_state_with_control(conn, project_id, run_id, edge, control)?;
+    control.check(GraphWorkStage::Edge)?;
     build_edge_comparison_input_from_source_state(edge, &source_state)
 }
 
@@ -594,6 +642,19 @@ pub(crate) fn evaluate_edge_from_db(
     edge: &DependencyEdge,
 ) -> anyhow::Result<EdgeObservation> {
     let input = build_edge_comparison_input(conn, project_id, run_id, edge)?;
+    Ok(evaluate_edge(&input))
+}
+
+pub(crate) fn evaluate_edge_from_db_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    edge: &DependencyEdge,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<EdgeObservation> {
+    let input =
+        build_edge_comparison_input_with_control(conn, project_id, run_id, edge, control)?;
+    control.check(GraphWorkStage::Edge)?;
     Ok(evaluate_edge(&input))
 }
 
@@ -985,10 +1046,21 @@ pub fn rebuild_narrative_derived_state_for_project(
     db: &Database,
     project_id: &str,
 ) -> anyhow::Result<RebuildDerivedStateOutcome> {
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    rebuild_narrative_derived_state_for_project_with_control(db, project_id, &mut control)
+}
+
+pub(crate) fn rebuild_narrative_derived_state_for_project_with_control(
+    db: &Database,
+    project_id: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<RebuildDerivedStateOutcome> {
+    control.check(GraphWorkStage::Restore)?;
     let now = grimodex_core::now_rfc3339_millis();
 
     let (run_id, semantic_epoch_id, already_running) = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            control.check(GraphWorkStage::Restore)?;
             let epoch_id = get_current_epoch(conn, project_id)?
                 .ok_or_else(|| {
                     anyhow::anyhow!(
@@ -1017,9 +1089,16 @@ pub fn rebuild_narrative_derived_state_for_project(
         return Ok(RebuildDerivedStateOutcome::AlreadyRunning { run_id });
     }
 
-    let work_result =
-        rebuild_derived_state_edges_in_project(db, project_id, &run_id, &semantic_epoch_id, &now);
+    let work_result = rebuild_derived_state_edges_in_project_with_control(
+        db,
+        project_id,
+        &run_id,
+        &semantic_epoch_id,
+        &now,
+        control,
+    );
 
+    control.check(GraphWorkStage::ResultAssembly)?;
     if let Err(finalize_error) =
         finalize_rebuild_run(db, project_id, &run_id, &semantic_epoch_id, &work_result)
     {
@@ -1082,6 +1161,16 @@ fn verify_v2_shadow_for_rebuild_in_tx(
     project_id: &str,
     run_id: &str,
 ) -> anyhow::Result<RebuildShadowVerificationSummary> {
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    verify_v2_shadow_for_rebuild_in_tx_with_control(conn, project_id, run_id, &mut control)
+}
+
+pub(crate) fn verify_v2_shadow_for_rebuild_in_tx_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<RebuildShadowVerificationSummary> {
     let mut verification = RebuildShadowVerificationSummary::default();
     let head_keys = match list_dependency_declaration_head_keys_in_tx(conn, project_id) {
         Ok(keys) => keys,
@@ -1102,6 +1191,7 @@ fn verify_v2_shadow_for_rebuild_in_tx(
         }
     };
     for (consumer_kind, consumer_key) in head_keys {
+        control.check(GraphWorkStage::Coverage)?;
         let active_set = match read_active_dependency_declaration_set_in_tx(
             conn,
             project_id,
@@ -1133,11 +1223,13 @@ fn verify_v2_shadow_for_rebuild_in_tx(
         let mut effects = Vec::new();
         let mut unknown_mapping = false;
         for entry in active_set.entries {
-            let base_change_class = rebuild_source_change_class_from_source(
+            control.check(GraphWorkStage::Source)?;
+            let base_change_class = rebuild_source_change_class_from_source_with_control(
                 conn,
                 project_id,
                 run_id,
                 &entry.source_object_identity,
+                control,
             )?;
             let selector_value: Value = match serde_json::from_str(&entry.selector_json) {
                 Ok(value) => value,
@@ -1207,10 +1299,12 @@ fn verify_v2_shadow_for_rebuild_in_tx(
         // Exercise the same independent required/advisory aggregation used by
         // the incremental shadow path. The result is deliberately discarded
         // at this non-authoritative restore boundary.
+        control.check(GraphWorkStage::Coverage)?;
         if !unknown_mapping {
             let _ = aggregate_dependency_build_actions(&effects);
         }
     }
+    control.check(GraphWorkStage::Coverage)?;
     verification.diagnostics.sort();
     Ok(verification)
 }
@@ -1233,6 +1327,24 @@ fn rebuild_source_change_class_from_source(
     run_id: &str,
     source_object_identity: &str,
 ) -> anyhow::Result<SourceChangeClass> {
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    rebuild_source_change_class_from_source_with_control(
+        conn,
+        project_id,
+        run_id,
+        source_object_identity,
+        &mut control,
+    )
+}
+
+pub(crate) fn rebuild_source_change_class_from_source_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    source_object_identity: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<SourceChangeClass> {
+    control.check(GraphWorkStage::Source)?;
     let Some(source_kind) = infer_source_kind(source_object_identity) else {
         return Ok(SourceChangeClass::ComponentUnavailable);
     };
@@ -1249,12 +1361,13 @@ fn rebuild_source_change_class_from_source(
         Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(_) => return Ok(SourceChangeClass::ComponentUnavailable),
     };
-    rebuild_source_change_class_from_state(resolve_current_source_state(
+    rebuild_source_change_class_from_state(resolve_current_source_state_with_control(
         conn,
         project_id,
         resolver_run_id,
         source_kind,
         source_object_identity,
+        control,
     ))
 }
 
@@ -1293,21 +1406,47 @@ fn rebuild_derived_state_edges_in_project(
     semantic_epoch_id: &str,
     now: &str,
 ) -> anyhow::Result<RebuildDerivedStateSummary> {
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    rebuild_derived_state_edges_in_project_with_control(
+        db,
+        project_id,
+        run_id,
+        semantic_epoch_id,
+        now,
+        &mut control,
+    )
+}
+
+pub(crate) fn rebuild_derived_state_edges_in_project_with_control(
+    db: &Database,
+    project_id: &str,
+    run_id: &str,
+    semantic_epoch_id: &str,
+    now: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<RebuildDerivedStateSummary> {
+    control.check(GraphWorkStage::Restore)?;
     let consumers = db.with_conn(|conn| list_distinct_consumers(conn, project_id))?;
     // Full Rebuild verifies the complete active D1 head set once, including
     // V2-only Consumers that have no V1 compatibility Edge. The sidecar is
     // returned in memory and skipped by the persisted Run outcome.
     let mut summary = RebuildDerivedStateSummary {
         v2_shadow: db
-            .with_conn(|conn| verify_v2_shadow_for_rebuild_in_tx(conn, project_id, run_id))?,
+            .with_conn(|conn| {
+                verify_v2_shadow_for_rebuild_in_tx_with_control(
+                    conn, project_id, run_id, control,
+                )
+            })?,
         ..Default::default()
     };
     for (consumer_kind, consumer_key) in consumers {
+        control.check(GraphWorkStage::Restore)?;
         // Counted inside the per-Consumer closure, which cannot borrow
         // `summary` mutably alongside the counters it already updates.
         let mut skipped = 0usize;
         db.with_conn(|conn| {
             with_immediate_transaction(conn, |conn| {
+                control.check(GraphWorkStage::Restore)?;
                 // BEGIN IMMEDIATE serializes this validation with Epoch
                 // rotation and makes the captured Run identity the authority
                 // for every Consumer publish in this pass.
@@ -1342,10 +1481,11 @@ fn rebuild_derived_state_edges_in_project(
                         "NEX_CONSUMER_KIND_UNRESOLVABLE: publishing Unknown for a Consumer \
                          whose kind is outside this build's declared vocabulary"
                     );
-                    let publish_observations = edges
-                        .iter()
-                        .map(|edge| (edge.id.clone(), unknown_edge_observation()))
-                        .collect::<Vec<_>>();
+                    let mut publish_observations = Vec::with_capacity(edges.len());
+                    for edge in &edges {
+                        control.check(GraphWorkStage::Edge)?;
+                        publish_observations.push((edge.id.clone(), unknown_edge_observation()));
+                    }
                     publish_freshness_evaluation_edges_only_in_tx(
                         conn,
                         project_id,
@@ -1364,6 +1504,7 @@ fn rebuild_derived_state_edges_in_project(
                 let mut evaluated_edges = 0usize;
                 let mut skipped_edges = 0usize;
                 for edge in &edges {
+                    control.check(GraphWorkStage::Edge)?;
                     let owning_run_id = match resolve_edge_consumer_scope(
                         conn,
                         project_id,
@@ -1389,7 +1530,13 @@ fn rebuild_derived_state_edges_in_project(
                             continue;
                         }
                     };
-                    let observation = evaluate_edge_from_db(conn, project_id, owning_run_id, edge)?;
+                    let observation = evaluate_edge_from_db_with_control(
+                        conn,
+                        project_id,
+                        owning_run_id,
+                        edge,
+                        control,
+                    )?;
                     publish_observations.push((edge.id.clone(), observation));
                     evaluated_edges += 1;
                 }
@@ -1404,6 +1551,7 @@ fn rebuild_derived_state_edges_in_project(
                     semantic_epoch_id,
                     now,
                 )?;
+                control.check(GraphWorkStage::Publish)?;
                 summary.edges_evaluated += evaluated_edges;
                 if evaluated_edges == 0 {
                     // The explicit Unknown Edge States above invalidate any
@@ -1418,6 +1566,7 @@ fn rebuild_derived_state_edges_in_project(
         })?;
         summary.consumers_skipped_unresolvable_scope += skipped;
     }
+    control.check(GraphWorkStage::ResultAssembly)?;
     Ok(summary)
 }
 
@@ -1496,16 +1645,29 @@ pub(crate) fn rebuild_verify_dependency_edges(
     project_id: &str,
     run_id: &str,
 ) -> anyhow::Result<RebuildVerifyReport> {
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    rebuild_verify_dependency_edges_with_control(conn, project_id, run_id, &mut control)
+}
+
+pub(crate) fn rebuild_verify_dependency_edges_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<RebuildVerifyReport> {
     require_non_empty(project_id, "projectId")?;
     require_non_empty(run_id, "runId")?;
 
+    control.check(GraphWorkStage::Restore)?;
     let edges = find_edges_by_consumer(conn, project_id, RUN_CONSUMER_KIND, run_id)?;
     let mut edge_ids_with_missing_source = Vec::new();
     for edge in &edges {
-        if edge_source_is_missing(conn, project_id, run_id, edge)? {
+        control.check(GraphWorkStage::Source)?;
+        if edge_source_is_missing_with_control(conn, project_id, run_id, edge, control)? {
             edge_ids_with_missing_source.push(edge.id.clone());
         }
     }
+    control.check(GraphWorkStage::ResultAssembly)?;
     Ok(RebuildVerifyReport {
         total_edges: edges.len(),
         missing_sources: edge_ids_with_missing_source.len(),
@@ -2541,7 +2703,174 @@ pub(crate) fn durable_graph_state_digest_with_control(
         "attention": attention,
     });
     control.check(GraphWorkStage::Digest)?;
-    Ok(format!("sha256:{}", digest_plan(&state)))
+    let digest = controlled_digest_plan(&state, control)?;
+    control.check(GraphWorkStage::Digest)?;
+    Ok(digest)
+}
+
+/// Canonicalize and hash a JSON value while preserving the maintenance
+/// owner's cancellation boundary. The ordinary digest helper remains
+/// unchanged; this controlled path keeps its temporary Value and
+/// serialization buffers diagnostic-only and unmeasured.
+fn controlled_digest_plan(
+    value: &Value,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<String> {
+    let mut canonical = clone_json_value_with_control(value, control)?;
+    canonicalize_json_value_with_control(&mut canonical, control)?;
+    control.check(GraphWorkStage::Serialization)?;
+    let digest = {
+        let mut sink = ControlledDigestSink {
+            hasher: Sha256::new(),
+            control,
+        };
+        serde_json::to_writer(&mut sink, &canonical)?;
+        sink.hasher.finalize()
+    };
+    control.check(GraphWorkStage::Digest)?;
+    Ok(format!("sha256:{}", hex::encode(digest)))
+}
+
+fn clone_json_value_with_control(
+    value: &Value,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    control.check(GraphWorkStage::Digest)?;
+    let cloned = match value {
+        Value::Null => Value::Null,
+        Value::Bool(value) => Value::Bool(*value),
+        Value::Number(value) => Value::Number(value.clone()),
+        Value::String(value) => Value::String(value.clone()),
+        Value::Array(values) => {
+            let mut cloned = Vec::with_capacity(values.len());
+            for value in values {
+                cloned.push(clone_json_value_with_control(value, control)?);
+            }
+            Value::Array(cloned)
+        }
+        Value::Object(values) => {
+            let mut cloned = serde_json::Map::new();
+            for (key, value) in values {
+                control.check(GraphWorkStage::Digest)?;
+                cloned.insert(
+                    key.clone(),
+                    clone_json_value_with_control(value, control)?,
+                );
+            }
+            Value::Object(cloned)
+        }
+    };
+    control.check(GraphWorkStage::Digest)?;
+    Ok(cloned)
+}
+
+fn canonicalize_json_value_with_control(
+    value: &mut Value,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<()> {
+    control.check(GraphWorkStage::Sort)?;
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                canonicalize_json_value_with_control(value, control)?;
+            }
+        }
+        Value::Object(object) => {
+            let mut entries: Vec<_> = std::mem::take(object).into_iter().collect();
+            for (_, value) in &mut entries {
+                canonicalize_json_value_with_control(value, control)?;
+            }
+            control.check(GraphWorkStage::Sort)?;
+            sort_json_object_entries_with_control(&mut entries, control)?;
+            control.check(GraphWorkStage::Sort)?;
+            object.extend(entries);
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+    control.check(GraphWorkStage::Sort)?;
+    Ok(())
+}
+
+fn sort_json_object_entries_with_control(
+    entries: &mut Vec<(String, Value)>,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<()> {
+    const CHUNK: usize = 128;
+    const MERGE_CHECK_INTERVAL: usize = 64;
+
+    if entries.len() < 2 {
+        control.check(GraphWorkStage::Sort)?;
+        return Ok(());
+    }
+    for chunk in entries.chunks_mut(CHUNK) {
+        control.check(GraphWorkStage::Sort)?;
+        chunk.sort_by(|left, right| left.0.cmp(&right.0));
+        control.check(GraphWorkStage::Sort)?;
+    }
+
+    let mut width = CHUNK;
+    while width < entries.len() {
+        let mut merged = Vec::with_capacity(entries.len());
+        let mut start = 0;
+        while start < entries.len() {
+            control.check(GraphWorkStage::Sort)?;
+            let middle = (start + width).min(entries.len());
+            let end = (middle + width).min(entries.len());
+            let mut left = start;
+            let mut right = middle;
+            let mut since_check = 0;
+            while left < middle || right < end {
+                if since_check == MERGE_CHECK_INTERVAL {
+                    control.check(GraphWorkStage::Sort)?;
+                    since_check = 0;
+                }
+                match (left < middle, right < end) {
+                    (true, true) if entries[left].0 <= entries[right].0 => {
+                        merged.push(entries[left].clone());
+                        left += 1;
+                    }
+                    (true, true) => {
+                        merged.push(entries[right].clone());
+                        right += 1;
+                    }
+                    (true, false) => {
+                        merged.push(entries[left].clone());
+                        left += 1;
+                    }
+                    (false, true) => {
+                        merged.push(entries[right].clone());
+                        right += 1;
+                    }
+                    (false, false) => break,
+                }
+                since_check += 1;
+            }
+            start = end;
+        }
+        *entries = merged;
+        control.check(GraphWorkStage::Sort)?;
+        width = width.saturating_mul(2);
+    }
+    Ok(())
+}
+
+struct ControlledDigestSink<'a> {
+    hasher: Sha256,
+    control: &'a mut dyn GraphWorkControl,
+}
+
+impl Write for ControlledDigestSink<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.control
+            .check(GraphWorkStage::Digest)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        self.hasher.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub(crate) fn validate_graph_state_digest(
@@ -3468,10 +3797,11 @@ pub(crate) fn verify_narrative_dependency_graph_for_project_with_control(
                     consumer_key,
                 )?)
             || (is_reserved_semantic_index_consumer_kind(consumer_kind)
-                && super::nir1_entity_relation_index::is_registered(
+                && super::nir1_entity_relation_index::is_registered_with_control(
                     conn,
                     project_id,
                     consumer_key,
+                    control,
                 )?);
         if !kind_is_declared {
             report
@@ -3541,29 +3871,37 @@ pub(crate) fn verify_narrative_dependency_graph_for_project_with_control(
 
     control.check(GraphWorkStage::Coverage)?;
     report.application_revision_artifact_references =
-        verify_coverage::verify_application_revision_artifact_references(conn, project_id)?;
+        verify_coverage::verify_application_revision_artifact_references_with_control(
+            conn,
+            project_id,
+            control,
+        )?;
     control.check(GraphWorkStage::Coverage)?;
     let (semantic_index_digest, semantic_index_generation) =
-        verify_coverage::verify_semantic_index_checks(conn, project_id)?;
+        verify_coverage::verify_semantic_index_checks_with_control(conn, project_id, control)?;
     report.semantic_index_dependency_set_digest = semantic_index_digest;
     report.semantic_index_generation_correspondence = semantic_index_generation;
     control.check(GraphWorkStage::Coverage)?;
     report.contribution_to_application_commit_correspondence =
-        verify_coverage::verify_contribution_to_application_commit_correspondence(
+        verify_coverage::verify_contribution_to_application_commit_correspondence_with_control(
             conn, project_id,
+            control,
         )?;
     control.check(GraphWorkStage::Coverage)?;
-    report.legacy_mirror_migration_parity = verify_coverage::verify_legacy_mirror_migration_parity(
-        conn,
-        project_id,
-        current_epoch_id.as_deref(),
-    )?;
-    control.check(GraphWorkStage::Coverage)?;
-    report.cursor_and_feed_head_consistency =
-        verify_coverage::verify_cursor_and_feed_head_consistency(
+    report.legacy_mirror_migration_parity =
+        verify_coverage::verify_legacy_mirror_migration_parity_with_control(
             conn,
             project_id,
             current_epoch_id.as_deref(),
+            control,
+        )?;
+    control.check(GraphWorkStage::Coverage)?;
+    report.cursor_and_feed_head_consistency =
+        verify_coverage::verify_cursor_and_feed_head_consistency_with_control(
+            conn,
+            project_id,
+            current_epoch_id.as_deref(),
+            control,
         )?;
 
     control.check(GraphWorkStage::Sort)?;
@@ -4464,6 +4802,104 @@ mod tests {
 
     type StoredEdgeState = (String, Option<String>, String, String);
     type StoredConsumerState = (String, String, String, Option<String>);
+
+    struct StopAt(GraphWorkStage);
+
+    impl GraphWorkControl for StopAt {
+        fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+            if stage == self.0 {
+                anyhow::bail!("NIR1_GRAPH_TEST_CANCELLED_{stage:?}");
+            }
+            Ok(())
+        }
+    }
+
+    struct StopOnDigestWrite {
+        serialization_started: bool,
+    }
+
+    impl GraphWorkControl for StopOnDigestWrite {
+        fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+            if stage == GraphWorkStage::Serialization {
+                self.serialization_started = true;
+            } else if stage == GraphWorkStage::Digest && self.serialization_started {
+                anyhow::bail!("NIR1_GRAPH_TEST_CANCELLED_DURING_DIGEST_WRITE");
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn controlled_digest_cancels_during_serialization() -> anyhow::Result<()> {
+        let value = Value::Array(
+            (0..1024)
+                .map(|index| Value::String(format!("durable-state-{index}")))
+                .collect(),
+        );
+        let mut control = StopOnDigestWrite {
+            serialization_started: false,
+        };
+        let error = controlled_digest_plan(&value, &mut control)
+            .expect_err("controlled digest serialization must remain cancellable")
+            .to_string();
+        assert!(error.contains("NIR1_GRAPH_TEST_CANCELLED_DURING_DIGEST_WRITE"));
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_coverage_rebuild_and_skip_entrypoints_propagate_stop() -> anyhow::Result<()> {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let mut coverage_control = StopAt(GraphWorkStage::Coverage);
+            let coverage_error =
+                verify_coverage::verify_application_revision_artifact_references_with_control(
+                    conn,
+                    "project-1",
+                    &mut coverage_control,
+                )
+                .expect_err("controlled coverage must propagate cancellation")
+                .to_string();
+            assert!(coverage_error.contains("NIR1_GRAPH_TEST_CANCELLED_Coverage"));
+
+            let mut rebuild_control = StopAt(GraphWorkStage::Coverage);
+            let rebuild_error = verify_v2_shadow_for_rebuild_in_tx_with_control(
+                conn,
+                "project-1",
+                "run-1",
+                &mut rebuild_control,
+            )
+            .expect_err("controlled rebuild shadow must propagate cancellation")
+            .to_string();
+            assert!(rebuild_error.contains("NIR1_GRAPH_TEST_CANCELLED_Coverage"));
+
+            let tx = conn.unchecked_transaction()?;
+            let mut skip_control = StopAt(GraphWorkStage::ResultAssembly);
+            let skip_error =
+                super::super::maintenance_skip_evidence::persist_completed_run_skip_evidence_in_tx_with_control(
+                    &tx,
+                    "run-1",
+                    &super::super::maintenance_skip_evidence::CompletedRunSkipEvidence {
+                        project_id: "project-1".to_owned(),
+                        run_kind: "dependency-verify".to_owned(),
+                        work_key: "dependency-verify:epoch-1".to_owned(),
+                        semantic_epoch_id: "epoch-1".to_owned(),
+                        graph_contract_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+                        rule_registry_digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+                        producer_generation_set_digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_owned(),
+                        rebuild_contract_version: REBUILD_CONTRACT_VERSION.to_owned(),
+                        run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_owned(),
+                        report_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_owned(),
+                        graph_state_digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_owned(),
+                    },
+                    &mut skip_control,
+                )
+                .expect_err("controlled skip sealing must propagate cancellation")
+                .to_string();
+            assert!(skip_error.contains("NIR1_GRAPH_TEST_CANCELLED_ResultAssembly"));
+            tx.rollback()?;
+            Ok(())
+        })
+    }
 
     #[test]
     fn edge_source_classification_preserves_terminal_errors() {

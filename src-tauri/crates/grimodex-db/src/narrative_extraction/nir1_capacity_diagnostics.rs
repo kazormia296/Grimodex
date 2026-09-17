@@ -748,11 +748,19 @@ fn database_state_digest(path: &Path) -> Result<String> {
     Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
 }
 
+fn install_diagnostic_trace(conn: &Connection, _trace: &Arc<TraceCounter>) {
+    // The callback reads the same thread-local Arc installed by the
+    // measurement owner; reinstalling it on a newly opened connection keeps
+    // cold-reopen Restore/Verify SQL inside the same conservative profile.
+    conn.trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(trace_profile));
+}
+
 fn run_graph_lifecycle(
     conn: Connection,
     database_path: &Path,
     project_id: Option<&str>,
     progress_callbacks: Option<Arc<AtomicU64>>,
+    trace: Option<Arc<TraceCounter>>,
 ) -> Result<GraphLifecycleRun> {
     let Some(project_id) = project_id else {
         return Ok(GraphLifecycleRun {
@@ -772,6 +780,9 @@ fn run_graph_lifecycle(
             terminal_error: Some("project-id-required-for-graph-lifecycle".to_owned()),
         });
     };
+    if let Some(trace) = trace.as_ref() {
+        install_diagnostic_trace(&conn, trace);
+    }
     install_connection_metadata(&conn)?;
     let db = Database::from_connection(conn);
     let runtime = NirChronicleIndexRuntime::new(&db, 1);
@@ -925,6 +936,9 @@ fn run_graph_lifecycle(
     let reopened_conn =
         Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
             .with_context(|| format!("reopen diagnostic database {}", database_path.display()))?;
+    if let Some(trace) = trace.as_ref() {
+        install_diagnostic_trace(&reopened_conn, trace);
+    }
     install_connection_metadata(&reopened_conn)?;
     let reopened_db = Database::from_connection(reopened_conn);
 
@@ -1058,7 +1072,7 @@ pub fn measure_capacity(
     ACTIVE_TRACE.with(|active| {
         *active.borrow_mut() = Some(Arc::clone(&trace));
     });
-    conn.trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(trace_profile));
+    install_diagnostic_trace(&conn, &trace);
     let mut sql = SqlAccumulator::default();
     let mut counts = CapacityCounts {
         candidate_revisions: 0,
@@ -1129,6 +1143,7 @@ pub fn measure_capacity(
         database_path,
         project_id,
         Some(Arc::clone(&progress.callbacks)),
+        Some(Arc::clone(&trace)),
     )?;
     let connection_hold_ms = transaction_started.elapsed().as_secs_f64() * 1000.0;
     ACTIVE_TRACE.with(|active| {
@@ -1166,6 +1181,12 @@ pub fn measure_capacity(
     let mut not_measured = vec![
         "live-source-content-bytes",
         "retained-roster-edge-high-water",
+        "d1-declaration-retained-bytes",
+        "declaration-tuple-hashset-retained-bytes",
+        "edge-tuple-hashset-retained-bytes",
+        "verify-report-retained-bytes",
+        "durable-state-value-retained-bytes",
+        "clone-canonical-serialization-buffer-bytes",
         "foreground-wait-occupancy",
         "cancel-latency",
         "temporary-file-bytes",

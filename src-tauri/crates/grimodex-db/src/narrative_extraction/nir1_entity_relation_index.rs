@@ -6,10 +6,11 @@
 //! product query. Adjacency remains the request-local `nir1_graph` primitive.
 
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashSet},
     io::{self, Write},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
         Arc,
     },
     time::Duration,
@@ -185,7 +186,7 @@ struct GraphReadAdmission<'a> {
 impl GraphReadAdmission<'_> {
     fn ensure_current(&self, conn: &Connection) -> Result<()> {
         ensure!(
-            self.cancellation_epoch.load(Ordering::Acquire) == self.epoch
+            self.cancellation_epoch.load(AtomicOrdering::Acquire) == self.epoch
                 && self
                     .runtime
                     .native_build_is_current(conn, self.owner, self.epoch)?,
@@ -216,36 +217,45 @@ impl GraphIndexBuildSnapshot {
         &self,
         control: &mut dyn GraphWorkControl,
     ) -> Result<GraphSnapshotCapacity> {
-        control.check(GraphWorkStage::Serialization)?;
-        let roster_bytes = serde_json::to_vec(&self.source.roster)?.len();
+        let roster_bytes = serialized_json_array_len_with_control(&self.source.roster, control)?;
         // DependencyEdge is an internal DB projection and intentionally does
         // not implement Serialize.  Serialize the same request-local edge
         // container shape explicitly so both reported byte fields have the
         // same meaning; neither is presented as retained/live memory.
-        let mut edge_payload = Vec::with_capacity(self.edges.len());
-        for edge in &self.edges {
-            control.check(GraphWorkStage::Serialization)?;
-            edge_payload.push(serde_json::json!({
-                "id": edge.id,
-                "projectId": edge.project_id,
-                "consumerKind": edge.consumer_kind,
-                "consumerKey": edge.consumer_key,
-                "sourceObjectIdentity": edge.source_object_identity,
-                "readSetJson": edge.read_set_json,
-                "generatedByTransactionId": edge.generated_by_transaction_id,
-                "createdAt": edge.created_at,
-                "owningRunId": edge.owning_run_id,
-            }));
-        }
+        let edge_bytes = {
+            let mut edge_bytes = CountingJsonWriter::new(control);
+            edge_bytes.write_all(b"[")?;
+            for edge in &self.edges {
+                edge_bytes
+                    .control
+                    .check(GraphWorkStage::Serialization)?;
+                if edge_bytes.item_count > 0 {
+                    edge_bytes.write_all(b",")?;
+                }
+                let payload = serde_json::json!({
+                    "id": edge.id,
+                    "projectId": edge.project_id,
+                    "consumerKind": edge.consumer_kind,
+                    "consumerKey": edge.consumer_key,
+                    "sourceObjectIdentity": edge.source_object_identity,
+                    "readSetJson": edge.read_set_json,
+                    "generatedByTransactionId": edge.generated_by_transaction_id,
+                    "createdAt": edge.created_at,
+                    "owningRunId": edge.owning_run_id,
+                });
+                serde_json::to_writer(&mut edge_bytes, &payload)?;
+                edge_bytes.item_count += 1;
+            }
+            edge_bytes.write_all(b"]")?;
+            edge_bytes.len
+        };
         control.check(GraphWorkStage::Serialization)?;
-        let edge_bytes = serde_json::to_vec(&edge_payload)?.len();
-        let qualified_revisions = self
-            .source
-            .roster
-            .iter()
-            .map(|entry| entry.revision_id.as_str())
-            .collect::<BTreeSet<_>>()
-            .len();
+        let mut qualified_revision_ids = BTreeSet::new();
+        for entry in &self.source.roster {
+            control.check(GraphWorkStage::ResultAssembly)?;
+            qualified_revision_ids.insert(entry.revision_id.as_str());
+        }
+        let qualified_revisions = qualified_revision_ids.len();
         control.check(GraphWorkStage::ResultAssembly)?;
         Ok(GraphSnapshotCapacity {
             qualified_revisions,
@@ -255,6 +265,67 @@ impl GraphIndexBuildSnapshot {
             edge_serialized_bytes: edge_bytes,
         })
     }
+}
+
+struct CountingJsonWriter<'a> {
+    len: usize,
+    item_count: usize,
+    control: &'a mut dyn GraphWorkControl,
+}
+
+impl<'a> CountingJsonWriter<'a> {
+    fn new(control: &'a mut dyn GraphWorkControl) -> Self {
+        Self {
+            len: 0,
+            item_count: 0,
+            control,
+        }
+    }
+}
+
+impl Write for CountingJsonWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.control
+            .check(GraphWorkStage::Serialization)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        self.len = self
+            .len
+            .checked_add(bytes.len())
+            .ok_or_else(|| io::Error::other("JSON length overflow"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialized_json_array_len_with_control<T: Serialize>(
+    values: &[T],
+    control: &mut dyn GraphWorkControl,
+) -> Result<usize> {
+    let mut writer = CountingJsonWriter::new(control);
+    writer.write_all(b"[")?;
+    for (index, value) in values.iter().enumerate() {
+        writer
+            .control
+            .check(GraphWorkStage::Serialization)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        if index > 0 {
+            writer.write_all(b",")?;
+        }
+        serde_json::to_writer(&mut writer, value)?;
+        writer
+            .control
+            .check(GraphWorkStage::Serialization)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    }
+    writer.write_all(b"]")?;
+    writer
+        .control
+        .check(GraphWorkStage::Serialization)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    Ok(writer.len)
 }
 
 pub(crate) fn source_key(project: &str) -> String {
@@ -313,12 +384,18 @@ fn graph_source_digest_input(
         control,
         error: None,
     };
-    let write_result = serde_json::to_writer(&mut sink, &input);
-    if let Some(error) = sink.error {
+    let (write_result, sink_error, digest) = {
+        let write_result = serde_json::to_writer(&mut sink, &input);
+        let sink_error = sink.error.take();
+        let digest = sink.hasher.finalize();
+        (write_result, sink_error, digest)
+    };
+    if let Some(error) = sink_error {
         return Err(error);
     }
     write_result?;
-    Ok(format!("sha256:{}", hex::encode(sink.hasher.finalize())))
+    control.check(GraphWorkStage::Digest)?;
+    Ok(format!("sha256:{}", hex::encode(digest)))
 }
 
 struct RevisionInputStats {
@@ -341,6 +418,7 @@ pub(crate) fn graph_source_from_roster_with_control(
     ensure!(!project.trim().is_empty() && project.trim() == project);
     let mut material_tuples = HashSet::with_capacity(roster.len());
     for entry in &roster {
+        control.check(GraphWorkStage::Row)?;
         ensure!(
             matches!(
                 entry.material_kind.as_str(),
@@ -374,27 +452,97 @@ pub(crate) fn graph_source_from_roster_with_control(
             "NIR1_GRAPH_ROSTER_DUPLICATE_MATERIAL"
         );
     }
-    check_graph_work(&mut Some(control), GraphWorkStage::Sort)?;
-    roster.sort_by(|left, right| {
-        (
-            &left.material_kind,
-            &left.material_id,
-            &left.source_object_identity,
-            &left.revision_id,
-            &left.decision_id,
-            &left.source_token,
-        )
-            .cmp(&(
-                &right.material_kind,
-                &right.material_id,
-                &right.source_object_identity,
-                &right.revision_id,
-                &right.decision_id,
-                &right.source_token,
-            ))
-    });
+    sort_roster_with_control(&mut roster, control)?;
     let digest = graph_source_digest_input(project, &roster, control)?;
     Ok(GraphEligibilitySource { digest, roster })
+}
+
+fn compare_roster_entries(
+    left: &GraphObjectRosterEntry,
+    right: &GraphObjectRosterEntry,
+) -> Ordering {
+    (
+        &left.material_kind,
+        &left.material_id,
+        &left.source_object_identity,
+        &left.revision_id,
+        &left.decision_id,
+        &left.source_token,
+    )
+        .cmp(&(
+            &right.material_kind,
+            &right.material_id,
+            &right.source_object_identity,
+            &right.revision_id,
+            &right.decision_id,
+            &right.source_token,
+        ))
+}
+
+/// Sort in bounded chunks so cancellation is observed between comparator-heavy
+/// sections.  The merge is deliberately local to the Graph roster and does
+/// not introduce a reusable sorting framework or persistent staging table.
+fn sort_roster_with_control(
+    roster: &mut Vec<GraphObjectRosterEntry>,
+    control: &mut dyn GraphWorkControl,
+) -> Result<()> {
+    const CHUNK: usize = 128;
+    const MERGE_CHECK_INTERVAL: usize = 64;
+
+    if roster.len() < 2 {
+        control.check(GraphWorkStage::Sort)?;
+        return Ok(());
+    }
+    for chunk in roster.chunks_mut(CHUNK) {
+        control.check(GraphWorkStage::Sort)?;
+        chunk.sort_by(compare_roster_entries);
+        control.check(GraphWorkStage::Sort)?;
+    }
+
+    let mut width = CHUNK;
+    while width < roster.len() {
+        let mut merged = Vec::with_capacity(roster.len());
+        let mut start = 0;
+        while start < roster.len() {
+            control.check(GraphWorkStage::Sort)?;
+            let middle = (start + width).min(roster.len());
+            let end = (middle + width).min(roster.len());
+            let mut left = start;
+            let mut right = middle;
+            let mut since_check = 0;
+            while left < middle || right < end {
+                if since_check == MERGE_CHECK_INTERVAL {
+                    control.check(GraphWorkStage::Sort)?;
+                    since_check = 0;
+                }
+                match (left < middle, right < end) {
+                    (true, true) if compare_roster_entries(&roster[left], &roster[right]) != Ordering::Greater => {
+                        merged.push(roster[left].clone());
+                        left += 1;
+                    }
+                    (true, true) => {
+                        merged.push(roster[right].clone());
+                        right += 1;
+                    }
+                    (true, false) => {
+                        merged.push(roster[left].clone());
+                        left += 1;
+                    }
+                    (false, true) => {
+                        merged.push(roster[right].clone());
+                        right += 1;
+                    }
+                    (false, false) => break,
+                }
+                since_check += 1;
+            }
+            start = end;
+        }
+        *roster = merged;
+        control.check(GraphWorkStage::Sort)?;
+        width = width.saturating_mul(2);
+    }
+    Ok(())
 }
 
 /// Read exactly the qualified current typed revisions. The A2 reader performs
@@ -458,8 +606,8 @@ where
     conn.progress_handler(
         GRAPH_SQL_CHECK_INTERVAL,
         Some(move || {
-            if cancellation_epoch.load(Ordering::Acquire) != expected_epoch {
-                cancelled_for_hook.store(true, Ordering::Release);
+            if cancellation_epoch.load(AtomicOrdering::Acquire) != expected_epoch {
+                cancelled_for_hook.store(true, AtomicOrdering::Release);
                 return true;
             }
             false
@@ -472,7 +620,7 @@ where
             "NIR1_GRAPH_SQL_PROGRESS_HANDLER_RESET_FAILED: {error}"
         ));
     }
-    if cancelled.load(Ordering::Acquire) {
+    if cancelled.load(AtomicOrdering::Acquire) {
         anyhow::bail!("NIR1_GRAPH_ROSTER_CANCELLED");
     }
     result
@@ -1062,6 +1210,7 @@ fn read_internal(
     require_current_freshness: bool,
     mut control: Option<&mut dyn GraphWorkControl>,
 ) -> Result<BindingRead> {
+    check_graph_work(&mut control, GraphWorkStage::Coverage)?;
     let row = conn
         .query_row(
             "SELECT generation,source_digest,dependency_set_digest,dirty_cache_flag,producer_id,producer_version,built_at
@@ -1081,8 +1230,10 @@ fn read_internal(
             },
         )
         .optional()?;
+    check_graph_work(&mut control, GraphWorkStage::Coverage)?;
     let declaration =
         read_active_dependency_declaration_set_in_tx(conn, project, CONSUMER_KIND, INDEX_KEY)?;
+    check_graph_work(&mut control, GraphWorkStage::D1)?;
     let Some((generation, source_digest, dependency_digest, dirty, producer, version, built_at)) =
         row
     else {
@@ -1092,6 +1243,7 @@ fn read_internal(
             params![project, CONSUMER_KIND, INDEX_KEY],
             |row| row.get(0),
         )?;
+        check_graph_work(&mut control, GraphWorkStage::Coverage)?;
         return Ok(
             if !residue && declaration == ActiveDependencyDeclarationSetRead::Missing {
                 BindingRead::Missing
@@ -1109,6 +1261,7 @@ fn read_internal(
     };
     let current_dependency_digest =
         consumer_dependency_set_digest(conn, project, CONSUMER_KIND, INDEX_KEY)?;
+    check_graph_work(&mut control, GraphWorkStage::Digest)?;
     if generation <= 0
         || !matches!(dirty, 0 | 1)
         || !is_digest(&source_digest)
@@ -1131,6 +1284,7 @@ fn read_internal(
         )
         .optional()?
         .unwrap_or(0);
+    check_graph_work(&mut control, GraphWorkStage::D1)?;
     if head_version <= 0 {
         return Ok(BindingRead::Reserved);
     }
@@ -1151,6 +1305,7 @@ fn read_internal(
             },
         )
         .optional()?;
+    check_graph_work(&mut control, GraphWorkStage::Coverage)?;
     match freshness {
         Some((freshness, action, semantic_epoch, freshness_digest, updated_at)) => {
             let freshness_digest_matches =
@@ -1170,6 +1325,7 @@ fn read_internal(
         None => {}
     }
     let edges = find_edges_by_consumer(conn, project, CONSUMER_KIND, INDEX_KEY)?;
+    check_graph_work(&mut control, GraphWorkStage::Edge)?;
     let source_identity = source_key(project);
     let mut declaration_tuples = HashSet::with_capacity(declaration.entries.len());
     for entry in &declaration.entries {
@@ -1207,8 +1363,16 @@ fn read_internal(
         let Ok(tokens) = serde_json::from_str::<Vec<String>>(&edge.read_set_json) else {
             return Ok(BindingRead::Reserved);
         };
-        let canonical_tokens = tokens.iter().cloned().collect::<BTreeSet<_>>();
-        let canonical_tokens = canonical_tokens.iter().cloned().collect::<Vec<_>>();
+        let mut canonical_token_set = BTreeSet::new();
+        for token in &tokens {
+            check_graph_work(&mut control, GraphWorkStage::Edge)?;
+            canonical_token_set.insert(token.clone());
+        }
+        let mut canonical_tokens = Vec::with_capacity(canonical_token_set.len());
+        for token in canonical_token_set {
+            check_graph_work(&mut control, GraphWorkStage::Sort)?;
+            canonical_tokens.push(token);
+        }
         if tokens.is_empty()
             || tokens.iter().any(|token| token.trim().is_empty())
             || canonical_tokens.len() != tokens.len()
@@ -1232,16 +1396,28 @@ fn read_internal(
 }
 
 pub(crate) fn is_registered(conn: &Connection, project: &str, key: &str) -> Result<bool> {
+    let mut control = NeverStopGraphWorkControl;
+    is_registered_with_control(conn, project, key, &mut control)
+}
+
+pub(crate) fn is_registered_with_control(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
+    control.check(GraphWorkStage::Coverage)?;
     if conn.is_autocommit() {
         let tx = conn.unchecked_transaction()?;
-        return is_registered(&tx, project, key);
+        return is_registered_with_control(&tx, project, key, control);
     }
     if key != INDEX_KEY
         || conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))? < 35
     {
         return Ok(false);
     }
-    Ok(matches!(read(conn, project)?, BindingRead::Registered(_)))
+    control.check(GraphWorkStage::Coverage)?;
+    Ok(matches!(read_internal(conn, project, true, true, Some(control))?, BindingRead::Registered(_)))
 }
 
 /// Check whether the exact Graph binding is structurally registered and live.
@@ -1384,6 +1560,7 @@ fn edges_match_source_with_control(
             .or_default()
             .insert(entry.source_token.clone());
     }
+    control.check(GraphWorkStage::Coverage)?;
     if expected.len() != edges.len() {
         return Ok(false);
     }
@@ -1396,8 +1573,13 @@ fn edges_match_source_with_control(
         let Some(actual) = actual else {
             return Ok(false);
         };
-        let actual = actual.into_iter().collect::<BTreeSet<_>>();
-        if &actual != tokens {
+        let mut actual_tokens = BTreeSet::new();
+        for token in actual {
+            control.check(GraphWorkStage::Coverage)?;
+            actual_tokens.insert(token);
+        }
+        control.check(GraphWorkStage::Coverage)?;
+        if &actual_tokens != tokens {
             return Ok(false);
         }
     }
@@ -1507,23 +1689,31 @@ fn input_edges_with_control(
             .or_default()
             .insert(entry.source_token.clone());
     }
-    sources
-        .into_iter()
-        .map(|(identity, tokens)| {
-            control.check(GraphWorkStage::Edge)?;
-            Ok(DependencyEdge {
-                id: String::new(),
-                project_id: project.to_owned(),
-                consumer_kind: CONSUMER_KIND.to_owned(),
-                consumer_key: INDEX_KEY.to_owned(),
-                source_object_identity: identity,
-                read_set_json: serde_json::to_string(&tokens.into_iter().collect::<Vec<_>>())?,
-                generated_by_transaction_id: None,
-                created_at: String::new(),
-                owning_run_id: None,
-            })
-        })
-        .collect()
+    let mut edges = Vec::with_capacity(sources.len());
+    for (identity, tokens) in sources {
+        control.check(GraphWorkStage::Edge)?;
+        let mut ordered_tokens = Vec::with_capacity(tokens.len());
+        for token in tokens {
+            control.check(GraphWorkStage::Sort)?;
+            ordered_tokens.push(token);
+        }
+        control.check(GraphWorkStage::Serialization)?;
+        let read_set_json = serde_json::to_string(&ordered_tokens)?;
+        control.check(GraphWorkStage::Serialization)?;
+        edges.push(DependencyEdge {
+            id: String::new(),
+            project_id: project.to_owned(),
+            consumer_kind: CONSUMER_KIND.to_owned(),
+            consumer_key: INDEX_KEY.to_owned(),
+            source_object_identity: identity,
+            read_set_json,
+            generated_by_transaction_id: None,
+            created_at: String::new(),
+            owning_run_id: None,
+        });
+    }
+    control.check(GraphWorkStage::ResultAssembly)?;
+    Ok(edges)
 }
 
 pub(crate) fn snapshot_current(
@@ -1806,6 +1996,23 @@ mod tests {
         }
     }
 
+    struct StopAfter {
+        stage: GraphWorkStage,
+        remaining: usize,
+    }
+
+    impl GraphWorkControl for StopAfter {
+        fn check(&mut self, stage: GraphWorkStage) -> Result<()> {
+            if stage == self.stage {
+                if self.remaining == 0 {
+                    anyhow::bail!("NIR1_GRAPH_TEST_CANCELLED_AFTER_{stage:?}");
+                }
+                self.remaining -= 1;
+            }
+            Ok(())
+        }
+    }
+
     fn roster_entry(
         material_kind: &str,
         material_id: &str,
@@ -1936,6 +2143,58 @@ mod tests {
             error.contains("NIR1_GRAPH_TEST_CANCELLED_Digest"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn graph_work_control_cancels_long_serialization_and_hash() {
+        let roster = (0..1024)
+            .map(|index| {
+                roster_entry(
+                    "entity",
+                    &format!("entity-{index}"),
+                    &format!("codex:entity-{index}"),
+                    "revision-1",
+                    "decision-1",
+                    &format!("source-token-{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let source = GraphEligibilitySource {
+            digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_owned(),
+            roster: roster.clone(),
+        };
+        let snapshot = GraphIndexBuildSnapshot {
+            project: "project-1".to_owned(),
+            semantic_epoch: "epoch-1".to_owned(),
+            source,
+            prior: None,
+            edges: Vec::new(),
+            runtime_owner: 0,
+            runtime_epoch: 0,
+        };
+        let mut serialization_control = StopAfter {
+            stage: GraphWorkStage::Serialization,
+            remaining: 4,
+        };
+        let serialization_error = snapshot
+            .capacity_shape_with_control(&mut serialization_control)
+            .expect_err("long JSON serialization must remain cancellable")
+            .to_string();
+        assert!(serialization_error.contains("NIR1_GRAPH_TEST_CANCELLED_AFTER_Serialization"));
+
+        let mut digest_control = StopAfter {
+            stage: GraphWorkStage::Digest,
+            remaining: 12,
+        };
+        let digest_error = graph_source_from_roster_with_control(
+            "project-1",
+            roster,
+            &mut digest_control,
+        )
+        .expect_err("long digest serialization must remain cancellable")
+        .to_string();
+        assert!(digest_error.contains("NIR1_GRAPH_TEST_CANCELLED_AFTER_Digest"));
     }
 
     #[test]

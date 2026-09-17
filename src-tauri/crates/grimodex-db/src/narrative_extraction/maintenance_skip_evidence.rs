@@ -22,10 +22,10 @@ use super::maintenance_runtime::{REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFI
 pub use super::restore_rebuild::durable_graph_state_digest;
 use super::restore_rebuild::{
     canonical_verify_outcome_digest, is_canonical_graph_state_digest,
-    validate_report_rebuild_required, validate_verify_check_coverage,
-    verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
+    validate_report_rebuild_required, validate_verify_check_coverage, DependencyGraphVerifyReport,
     RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION,
 };
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage, NeverStopGraphWorkControl};
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
 
@@ -254,6 +254,16 @@ pub fn evaluate_completed_run_skip(
     conn: &Connection,
     expected: &CompletedRunSkipExpectation,
 ) -> Result<CompletedRunSkipDecision> {
+    let mut control = NeverStopGraphWorkControl;
+    evaluate_completed_run_skip_with_control(conn, expected, &mut control)
+}
+
+pub(crate) fn evaluate_completed_run_skip_with_control(
+    conn: &Connection,
+    expected: &CompletedRunSkipExpectation,
+    control: &mut dyn GraphWorkControl,
+) -> Result<CompletedRunSkipDecision> {
+    control.check(GraphWorkStage::Restore)?;
     if validate_expectation_shape(expected).is_err() {
         return Ok(CompletedRunSkipDecision::Rerun {
             reason: CompletedRunSkipReason::EvidenceMalformed,
@@ -283,6 +293,7 @@ pub fn evaluate_completed_run_skip(
         }
         LatestRunSelection::Unique(latest) => *latest,
     };
+    control.check(GraphWorkStage::Restore)?;
 
     // A newer failed/running/cancelled Run must not be bypassed by an older
     // successful Run. `completed_at` is checked as well as status because a
@@ -456,7 +467,13 @@ pub fn evaluate_completed_run_skip(
         // evidence was sealed — including one that produces no defect the
         // report shape can see — refuses reuse with the precise reason.
         // Empty (pre-field) evidence never matches.
-        if evidence.graph_state_digest != durable_graph_state_digest(conn, &expected.project_id)? {
+        if evidence.graph_state_digest
+            != super::restore_rebuild::durable_graph_state_digest_with_control(
+                conn,
+                &expected.project_id,
+                control,
+            )?
+        {
             return Ok(CompletedRunSkipDecision::Rerun {
                 reason: CompletedRunSkipReason::GraphStateMismatch,
             });
@@ -466,11 +483,12 @@ pub fn evaluate_completed_run_skip(
                 reason: CompletedRunSkipReason::DerivedStateInvalid,
             });
         }
-        if !live_verify_report_matches_sealed(
+        if !live_verify_report_matches_sealed_with_control(
             conn,
             &expected.project_id,
             &evidence.report_digest,
             &evidence.graph_state_digest,
+            control,
         )? {
             return Ok(CompletedRunSkipDecision::Rerun {
                 reason: CompletedRunSkipReason::DerivedStateInvalid,
@@ -603,18 +621,44 @@ fn live_verify_report_matches_sealed(
     sealed_report_digest: &str,
     sealed_graph_state_digest: &str,
 ) -> Result<bool> {
+    let mut control = NeverStopGraphWorkControl;
+    live_verify_report_matches_sealed_with_control(
+        conn,
+        project_id,
+        sealed_report_digest,
+        sealed_graph_state_digest,
+        &mut control,
+    )
+}
+
+fn live_verify_report_matches_sealed_with_control(
+    conn: &Connection,
+    project_id: &str,
+    sealed_report_digest: &str,
+    sealed_graph_state_digest: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
+    control.check(GraphWorkStage::Restore)?;
     if !is_canonical_graph_state_digest(sealed_graph_state_digest) {
         return Ok(false);
     }
-    let live_graph_state_digest = durable_graph_state_digest(conn, project_id)?;
+    let live_graph_state_digest =
+        super::restore_rebuild::durable_graph_state_digest_with_control(
+            conn, project_id, control,
+        )?;
     if live_graph_state_digest != sealed_graph_state_digest {
         return Ok(false);
     }
-    let report = verify_narrative_dependency_graph_for_project(conn, project_id)?;
+    let report =
+        super::restore_rebuild::verify_narrative_dependency_graph_for_project_with_control(
+            conn, project_id, control,
+        )?;
     if !report.is_clean() {
         return Ok(false);
     }
+    control.check(GraphWorkStage::Serialization)?;
     let value = serde_json::to_value(report)?;
+    control.check(GraphWorkStage::Serialization)?;
     Ok(format!("sha256:{}", digest_plan(&value)) == sealed_report_digest)
 }
 
@@ -640,6 +684,17 @@ pub fn persist_completed_run_skip_evidence_in_tx(
     run_id: &str,
     evidence: &CompletedRunSkipEvidence,
 ) -> Result<()> {
+    let mut control = NeverStopGraphWorkControl;
+    persist_completed_run_skip_evidence_in_tx_with_control(conn, run_id, evidence, &mut control)
+}
+
+pub(crate) fn persist_completed_run_skip_evidence_in_tx_with_control(
+    conn: &Connection,
+    run_id: &str,
+    evidence: &CompletedRunSkipEvidence,
+    control: &mut dyn GraphWorkControl,
+) -> Result<()> {
+    control.check(GraphWorkStage::ResultAssembly)?;
     ensure!(
         !conn.is_autocommit(),
         "NEX_MAINTENANCE_SKIP_TRANSACTION_REQUIRED: completed-run skip evidence must run inside a caller-owned transaction"
@@ -678,6 +733,7 @@ pub fn persist_completed_run_skip_evidence_in_tx(
             },
         )
         .optional()?;
+    control.check(GraphWorkStage::ResultAssembly)?;
     let Some((
         project_id,
         run_kind,
@@ -725,6 +781,7 @@ pub fn persist_completed_run_skip_evidence_in_tx(
     })?;
     let mut outcome: Value = serde_json::from_str(&outcome_json)
         .with_context(|| format!("NEX_MAINTENANCE_SKIP_OUTCOME_MALFORMED: Run '{run_id}'"))?;
+    control.check(GraphWorkStage::Serialization)?;
     let outcome_digest =
         successful_outcome_digest(&run_kind, &outcome, &evidence.semantic_epoch_id)?;
     ensure!(
@@ -744,9 +801,14 @@ pub fn persist_completed_run_skip_evidence_in_tx(
         "NEX_MAINTENANCE_SKIP_GRAPH_STATE_DIGEST_MISMATCH: evidence graph state digest does not match Run '{run_id}'"
     );
     ensure!(
-        durable_graph_state_digest(conn, &evidence.project_id)? == evidence.graph_state_digest,
+        super::restore_rebuild::durable_graph_state_digest_with_control(
+            conn,
+            &evidence.project_id,
+            control,
+        )? == evidence.graph_state_digest,
         "NEX_MAINTENANCE_SKIP_GRAPH_STATE_CHANGED: graph state changed before skip evidence was sealed"
     );
+    control.check(GraphWorkStage::Coverage)?;
     if run_kind == VERIFY_RUN_KIND {
         let report: DependencyGraphVerifyReport = serde_json::from_value(
             outcome
@@ -757,6 +819,7 @@ pub fn persist_completed_run_skip_evidence_in_tx(
         validate_report_rebuild_required(conn, &evidence.project_id, &report)?;
     }
     let evidence_value = serde_json::to_value(evidence)?;
+    control.check(GraphWorkStage::Serialization)?;
     if let Some(existing) = outcome.get(COMPLETED_RUN_SKIP_EVIDENCE_FIELD) {
         let existing_semantics =
             serde_json::from_value::<CompletedRunSkipEvidence>(existing.clone())
@@ -777,6 +840,7 @@ pub fn persist_completed_run_skip_evidence_in_tx(
             evidence_value,
         );
         let serialized_outcome = serde_json::to_string(&outcome)?;
+        control.check(GraphWorkStage::Serialization)?;
         let changed = conn
             .execute(
                 "UPDATE narrative_extraction_runs
@@ -797,6 +861,7 @@ pub fn persist_completed_run_skip_evidence_in_tx(
             "NEX_MAINTENANCE_SKIP_EVIDENCE_LOST: Run '{run_id}' changed while sealing evidence"
         );
     }
+    control.check(GraphWorkStage::ResultAssembly)?;
     Ok(())
 }
 
