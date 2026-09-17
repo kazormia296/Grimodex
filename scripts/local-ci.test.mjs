@@ -4079,6 +4079,7 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
   assert.deepEqual(rustTestsTask.after, [
     "rust.tests-db-lib",
     "rust.tests-db-integrations",
+    "rust.tests-db-nir1-capacity",
     "rust.tests-other-workspace",
     "rust.tests-db-doctests",
   ]);

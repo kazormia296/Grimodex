@@ -364,7 +364,7 @@ test("child timeout is bounded and reports the fixture/run context", () => {
     assert.throws(
       () => runProbe(workspace, binary, ["--fixture", fixtureId, "--runs", "5", "--timeout-ms", "20", "--kill-grace-ms", "40"]),
       (error) => {
-        assert.match(error.stderr, /Q513\/R3\/D0 warmup timed out after 20ms/);
+        assert.match(error.stderr, /Q513\/R3\/D0 warmup \[full-build\] timed out after 20ms/);
         return true;
       },
     );
