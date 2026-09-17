@@ -35,6 +35,10 @@
       "label": "Source re-resolution",
       "producesReportRecords": false,
       "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 0},
+      "postOperationShape": {
+        "Q8176/R16": {"graphSnapshotDependencyEdges": null},
+        "D2064/report-heavy": {"graphSnapshotDependencyEdges": null}
+      },
       "fixtures": ["Q8176/R16", "D2064/report-heavy"]
     },
     {
@@ -42,6 +46,9 @@
       "label": "complete registration",
       "producesReportRecords": false,
       "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 0},
+      "postOperationShape": {
+        "D2064/report-heavy": {"graphSnapshotDependencyEdges": 1}
+      },
       "fixtures": ["Q8176/R16", "D2064/report-heavy"]
     },
     {
@@ -49,6 +56,9 @@
       "label": "coverage",
       "producesReportRecords": true,
       "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 416},
+      "postOperationShape": {
+        "D2064/report-heavy": {"graphSnapshotDependencyEdges": 1}
+      },
       "fixtures": ["Q8176/R16", "D2064/report-heavy"]
     },
     {
@@ -56,6 +66,10 @@
       "label": "Restore",
       "producesReportRecords": true,
       "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 416},
+      "postOperationShape": {
+        "Q8176/R16": {"rosterRecords": 0},
+        "D2064/report-heavy": {"rosterRecords": 0, "graphSnapshotDependencyEdges": 1}
+      },
       "fixtures": ["Q8176/R16", "D2064/report-heavy"]
     },
     {
@@ -63,6 +77,9 @@
       "label": "cold reopen",
       "producesReportRecords": false,
       "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 0},
+      "postOperationShape": {
+        "D2064/report-heavy": {"graphSnapshotDependencyEdges": 1}
+      },
       "fixtures": ["Q8176/R16", "D2064/report-heavy"]
     }
   ],
@@ -193,7 +210,7 @@
         "reportRecords": 416
       },
       "observedShape": {
-        "graphSnapshotDependencyEdges": 0
+        "graphSnapshotDependencyEdges": 1
       }
     }
   ],

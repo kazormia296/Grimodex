@@ -47,6 +47,22 @@ fn run_capacity(args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).expect("capacity binary emitted JSON")
 }
 
+fn run_capacity_probe(probe: &Path, args: &[String]) -> Value {
+    let output = Command::new("node")
+        .arg(probe)
+        .args(args)
+        .output()
+        .expect("run nir1 material capacity probe");
+    assert!(
+        output.status.success(),
+        "capacity probe failed for {args:?}: {}\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    serde_json::from_slice(&output.stdout).expect("capacity probe emitted JSON")
+}
+
 #[test]
 fn real_binary_report_heavy_crosses_build_coverage_and_restore() {
     let manifest = temp_path("manifest");
@@ -237,6 +253,131 @@ fn real_binary_qualified_roster_restore_preserves_old_state_and_publishes_fresh_
         let _ = fs::remove_file(format!("{}-wal", path.display()));
         let _ = fs::remove_file(format!("{}-shm", path.display()));
     }
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn real_binary_qualified_restore_passes_through_probe_orchestration() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .expect("resolve Grimodex repository root");
+    let canonical_manifest = root.join("evals/nir1-capacity/manifest.v1.json");
+    let canonical_schema = root.join("evals/nir1-capacity/schema.v1.json");
+    let probe_root = temp_path("qualified-roster-probe");
+    let manifest = probe_root.join("manifest.v1.json");
+    let schema = probe_root.join("schema.v1.json");
+    let fixture_directory = probe_root.join("fixtures");
+    let output_directory = probe_root.join("output");
+    let probe = probe_root.join("probe.mjs");
+    let node_modules = probe_root.join("node_modules");
+    fs::create_dir_all(&fixture_directory).expect("create probe fixture directory");
+    fs::create_dir_all(&output_directory).expect("create probe output directory");
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        fs::copy(
+            root.join("scripts/nir1-material-capacity-probe.mjs"),
+            &probe,
+        )
+        .expect("copy capacity probe");
+        let source_node_modules = root
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .map(|parent| parent.join("Grimodex/node_modules"))
+            .filter(|candidate| candidate.is_dir())
+            .or_else(|| {
+                root.join("node_modules")
+                    .is_dir()
+                    .then(|| root.join("node_modules"))
+            })
+            .expect("find Node dependencies for capacity probe");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&source_node_modules, &node_modules)
+            .expect("link temporary Node dependencies for capacity probe");
+        #[cfg(not(unix))]
+        fs::copy(&source_node_modules, &node_modules).expect("copy Node dependencies");
+        let mut manifest_value: Value = serde_json::from_str(
+            &fs::read_to_string(&canonical_manifest).expect("read capacity manifest"),
+        )
+        .expect("parse capacity manifest");
+        let restore = manifest_value["diagnosticModes"]
+            .as_array_mut()
+            .expect("diagnostic modes array")
+            .iter_mut()
+            .find(|mode| mode["id"] == "restore")
+            .expect("restore diagnostic mode");
+        restore["fixtures"]
+            .as_array_mut()
+            .expect("restore fixtures array")
+            .push(Value::String("Q513/R3/D0".to_owned()));
+        restore["minimumOperationReportRecords"]["Q513/R3/D0"] = Value::from(0);
+        restore["postOperationShape"]["Q513/R3/D0"]["rosterRecords"] = Value::from(0);
+        fs::write(
+            &manifest,
+            serde_json::to_vec_pretty(&manifest_value).expect("serialize probe manifest"),
+        )
+        .expect("write probe manifest");
+        fs::copy(&canonical_schema, &schema).expect("copy probe schema");
+
+        let fixture = fixture_directory.join("Q513__R3__D0.db");
+        run_capacity(&[
+            "fixture",
+            manifest.to_str().expect("manifest path"),
+            "Q513/R3/D0",
+            fixture.to_str().expect("fixture path"),
+        ]);
+        let binary = env!("CARGO_BIN_EXE_nir1-material-capacity");
+        let probe_args = vec![
+            binary.to_owned(),
+            manifest.to_str().expect("manifest path").to_owned(),
+            fixture_directory
+                .to_str()
+                .expect("fixture directory")
+                .to_owned(),
+            output_directory
+                .to_str()
+                .expect("output directory")
+                .to_owned(),
+            "nir1-capacity-fixture-project".to_owned(),
+            "--fixture".to_owned(),
+            "Q513/R3/D0".to_owned(),
+            "--mode".to_owned(),
+            "restore".to_owned(),
+            "--runs".to_owned(),
+            "5".to_owned(),
+        ];
+        let report = run_capacity_probe(&probe, &probe_args);
+        assert_eq!(report["diagnosticOnly"], true);
+        assert_eq!(report["supportedCapacityClaim"], false);
+        let result = &report["results"][0];
+        assert_eq!(result["fixture"]["id"], "Q513/R3/D0");
+        assert_eq!(result["modeResults"].as_array().map(Vec::len), Some(1));
+        let mode = &result["modeResults"][0];
+        assert_eq!(mode["mode"], "restore");
+        assert_eq!(mode["fixtureShape"]["rosterRecords"], 513);
+        assert_eq!(mode["warmup"]["fixtureShape"]["rosterRecords"], 513);
+        assert_eq!(mode["warmup"]["counts"]["rosterRecords"], 0);
+        assert!(
+            mode["runs"]
+                .as_array()
+                .expect("measured probe runs")
+                .iter()
+                .all(|run| run["fixtureShape"]["rosterRecords"] == 513
+                    && run["counts"]["rosterRecords"] == 0
+                    && run["modeOutcome"]["success"] == true
+                    && run["modeOutcome"]["requiredSuccess"] == true),
+            "probe must validate pre-run fixture shape separately from Restore Graph shape"
+        );
+        assert_eq!(
+            mode["warmup"]["graphLifecycle"]["restoreProof"]["postRestoreRosterRecords"],
+            0
+        );
+    }));
+
+    let _ = fs::remove_dir_all(&probe_root);
     if let Err(payload) = result {
         std::panic::resume_unwind(payload);
     }

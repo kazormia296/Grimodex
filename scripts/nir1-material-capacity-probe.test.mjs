@@ -40,7 +40,7 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
     "Q8176/R16": { candidateRevisions: 16, qualifiedRevisions: 16, rejectedRevisions: 0, entityRecords: 4080, relationRecords: 16, evidenceRecords: 4080, qualifiedMaterialRecords: 8176, rosterRecords: 8176, dependencyEdges: null, graphSnapshotDependencyEdges: null, reportRecords: null },
     "Q2044/evidence-shared": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, graphSnapshotDependencyEdges: 257, reportRecords: null },
     "Q2044/evidence-unique": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, graphSnapshotDependencyEdges: 1025, reportRecords: null },
-    "D2064/report-heavy": { candidateRevisions: 2064, qualifiedRevisions: 0, rejectedRevisions: 2064, entityRecords: 0, relationRecords: 0, evidenceRecords: 0, qualifiedMaterialRecords: 0, rosterRecords: 0, dependencyEdges: 4128, graphSnapshotDependencyEdges: 0, reportRecords: 416 },
+    "D2064/report-heavy": { candidateRevisions: 2064, qualifiedRevisions: 0, rejectedRevisions: 2064, entityRecords: 0, relationRecords: 0, evidenceRecords: 0, qualifiedMaterialRecords: 0, rosterRecords: 0, dependencyEdges: 4128, graphSnapshotDependencyEdges: 1, reportRecords: 416 },
   };
   const counts = structuredClone(fixtureCounts[fixtureForReport] ?? fixtureCounts[fixtureId]);
   if (mismatch) counts.qualifiedRevisions = 4;
@@ -88,6 +88,8 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
     "report.fixtureId = fixtureId;",
     omitMode ? "" : "report.mode = process.argv.at(-1);",
     `report.supportedCapacityClaim = ${JSON.stringify(supportedCapacityClaim)};`,
+    "if (report.mode === 'source-reresolution') report.counts.graphSnapshotDependencyEdges = null;",
+    "if (report.mode === 'restore') report.counts.rosterRecords = 0;",
     failedMode ? "report.status = 'path-unavailable'; report.modeOutcome.success = false; report.modeOutcome.requiredSuccess = false;" : "",
     "if (['full-build', 'coverage', 'restore'].includes(report.mode)) report.modeOutcome.operationReportRecords = report.counts.reportRecords ?? 0;",
     operationReportRecords === null ? "" : `report.modeOutcome.operationReportRecords = ${operationReportRecords};`,
@@ -172,6 +174,25 @@ test("capacity manifest fixes the diagnostic matrix and Graph lifecycle boundary
     assert.equal(typeof mode.producesReportRecords, "boolean");
     assert.equal(mode.minimumOperationReportRecords["D2064/report-heavy"] >= 0, true);
   }
+  assert.deepEqual(
+    manifest.diagnosticModes.find((mode) => mode.id === "source-reresolution")
+      .postOperationShape,
+    {
+      "Q8176/R16": { graphSnapshotDependencyEdges: null },
+      "D2064/report-heavy": { graphSnapshotDependencyEdges: null },
+    },
+  );
+  assert.deepEqual(
+    manifest.diagnosticModes.find((mode) => mode.id === "restore")
+      .postOperationShape,
+    {
+      "Q8176/R16": { rosterRecords: 0 },
+      "D2064/report-heavy": {
+        rosterRecords: 0,
+        graphSnapshotDependencyEdges: 1,
+      },
+    },
+  );
   for (const fixture of manifest.fixtures) {
     assert.ok(fixture.shape, `${fixture.id} must declare an observed shape`);
   }
@@ -218,6 +239,17 @@ test("target fixtures execute every diagnostic mode in isolated child paths", ()
         modeResult.fixtureShape.rosterRecords,
         modeResult.fixture.shape.rosterRecords,
       );
+      if (modeResult.mode === "restore") {
+        assert.equal(
+          modeResult.fixtureShape.rosterRecords,
+          8176,
+          "Restore fixtureShape must retain the pre-run roster",
+        );
+        assert.ok(
+          modeResult.runs.every((run) => run.counts.rosterRecords === 0),
+          "Restore post-operation Graph shape must have an empty roster",
+        );
+      }
       assert.equal(modeResult.warmup.mode, modeResult.mode);
       assert.equal(modeResult.runs.length, 5);
       assert.equal(modeResult.sourceStateStable, true);
@@ -301,6 +333,7 @@ test("report-heavy fixture crosses the default mode matrix without requiring fix
     for (const modeResult of result.modeResults) {
       assert.ok(modeResult.runs.every((run) => run.status === "measured"));
       const produces = ["full-build", "coverage", "restore"].includes(modeResult.mode);
+      const expectedSnapshotEdges = modeResult.mode === "source-reresolution" ? null : 1;
       assert.ok(
         modeResult.runs.every((run) =>
           produces
@@ -308,6 +341,12 @@ test("report-heavy fixture crosses the default mode matrix without requiring fix
             : run.modeOutcome.operationReportRecords === null,
         ),
         `${modeResult.mode} must distinguish fixture reportRecords from operation output`,
+      );
+      assert.ok(
+        modeResult.runs.every(
+          (run) => run.counts.graphSnapshotDependencyEdges === expectedSnapshotEdges,
+        ),
+        `${modeResult.mode} must report its Graph snapshot edge contract`,
       );
     }
   } finally {

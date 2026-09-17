@@ -251,6 +251,25 @@ function assertManifestRuntimeContract(manifest, manifestPath) {
         );
       }
     }
+    const postOperationShape = mode.postOperationShape;
+    if (postOperationShape !== undefined) {
+      if (
+        postOperationShape === null ||
+        typeof postOperationShape !== "object" ||
+        Array.isArray(postOperationShape)
+      ) {
+        fail(
+          `manifest ${manifestPath} mode ${mode.id} postOperationShape must be an object`,
+        );
+      }
+      for (const fixtureId of Object.keys(postOperationShape)) {
+        if (!mode.fixtures.includes(fixtureId)) {
+          fail(
+            `manifest ${manifestPath} mode ${mode.id} postOperationShape names unconfigured fixture ${fixtureId}`,
+          );
+        }
+      }
+    }
     if (!mode.fixtures.includes("Q8176/R16") || !mode.fixtures.includes("D2064/report-heavy")) {
       fail(
         `manifest ${manifestPath} mode ${mode.id} must cover Q8176/R16 and D2064/report-heavy`,
@@ -491,9 +510,13 @@ function validateObservedShape(
   spec,
   context,
   modeSpec = null,
-  { ignoreKeys = [] } = {},
+  {
+    ignoreKeys = [],
+    expectedShapeOverride = null,
+    requiredNullKeys = [],
+  } = {},
 ) {
-  const shape = expectedShape(spec);
+  const shape = expectedShapeOverride ?? expectedShape(spec);
   const labels = {
     qualifiedMaterials: "qualified material records",
     qualifiedMaterialRecords: "qualified material records",
@@ -522,6 +545,16 @@ function validateObservedShape(
     if (checked.has(canonicalKey)) continue;
     checked.add(canonicalKey);
     const observed = firstValue(report, OBSERVED_SHAPE_PATHS[canonicalKey] ?? []);
+    if (expected === null && requiredNullKeys.includes(canonicalKey)) {
+      if (observed !== null) {
+        const observedLabel = observed === undefined ? "missing" : String(observed);
+        fail(
+          `${context} shape mismatch for ${labels[key] ?? key}: expected null, observed ${observedLabel}`,
+        );
+      }
+      continue;
+    }
+    if (expected === null) continue;
     if (
       !Number.isSafeInteger(expected) ||
       typeof observed !== "number" ||
@@ -534,6 +567,19 @@ function validateObservedShape(
       );
     }
   }
+}
+
+function postOperationShape(spec, modeSpec) {
+  return {
+    ...expectedShape(spec),
+    ...(modeSpec?.postOperationShape?.[spec.id] ?? {}),
+  };
+}
+
+function postOperationRequiredNullKeys(modeSpec, fixtureId) {
+  return Object.entries(modeSpec?.postOperationShape?.[fixtureId] ?? {})
+    .filter(([, value]) => value === null)
+    .map(([key]) => key);
 }
 
 function modeMetricLabel(mode, metric) {
@@ -662,7 +708,16 @@ function assertDiagnosticReport(
       `${context} capacity observation schema mismatch: ${formatAjvErrors(validateObservation.errors)}`,
     );
   }
-  validateObservedShape(report, spec, `${context} observed`, modeSpec);
+  validateObservedShape(
+    report,
+    spec,
+    `${context} post-operation Graph shape`,
+    modeSpec,
+    {
+      expectedShapeOverride: postOperationShape(spec, modeSpec),
+      requiredNullKeys: postOperationRequiredNullKeys(modeSpec, spec.id),
+    },
+  );
   validateObservedShape(
     { counts: report.fixtureShape },
     spec,
