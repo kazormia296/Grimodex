@@ -6,9 +6,10 @@
 //! product query. Adjacency remains the request-local `nir1_graph` primitive.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
+    io::{self, Write},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -48,15 +49,54 @@ pub(crate) const INDEX_KEY: &str = ENTITY_RELATION_INDEX_KEY;
 pub(crate) const SOURCE_KIND: &str = ENTITY_RELATION_SOURCE_KIND;
 const CONSUMER_KIND: &str = "semantic-index";
 
-// These limits are the ratified graph-limited-binding values.  Keep the
-// resource guard separate from the semantic GraphLimits in grimodex-core:
-// this scan must reject an oversized whole Source before it can publish a
-// partial derived binding.
-const GRAPH_RECORD_ADMISSION: usize = narrative_nir1::MAX_GRAPH_RECORDS;
-const GRAPH_INPUT_BYTE_LIMIT: usize = narrative_nir1::MAX_GRAPH_INPUT_BYTES;
-const GRAPH_SQL_VM_STEP_LIMIT: usize = 100_000;
+// These limits remain the per-Revision validation envelope.  They are not
+// whole-project roster/build limits: one project may contain any number of
+// individually valid Revisions.
+const REVISION_RECORD_ADMISSION: usize = narrative_nir1::MAX_GRAPH_RECORDS;
+const REVISION_INPUT_BYTE_LIMIT: usize = narrative_nir1::MAX_GRAPH_INPUT_BYTES;
 const GRAPH_SQL_CHECK_INTERVAL: i32 = 1_000;
-const GRAPH_SQL_MAX_CALLBACKS: usize = GRAPH_SQL_VM_STEP_LIMIT / GRAPH_SQL_CHECK_INTERVAL as usize;
+const GRAPH_SOURCE_PAGE_SIZE: i64 = 64;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GraphWorkStage {
+    Page,
+    Row,
+    A2,
+    Material,
+    Sort,
+    Digest,
+    D1,
+    Edge,
+    Publish,
+}
+
+/// Request-local work control for the full-set producer.
+///
+/// This is intentionally a small internal seam rather than a generic
+/// resource framework. The maintenance lane can provide a finite owner and
+/// cancellation policy while the index keeps all checks in the caller-owned
+/// transaction.
+pub(crate) trait GraphWorkControl {
+    fn check(&mut self, stage: GraphWorkStage) -> Result<()>;
+}
+
+struct NeverStopGraphWorkControl;
+
+impl GraphWorkControl for NeverStopGraphWorkControl {
+    fn check(&mut self, _stage: GraphWorkStage) -> Result<()> {
+        Ok(())
+    }
+}
+
+fn check_graph_work(
+    control: &mut Option<&mut dyn GraphWorkControl>,
+    stage: GraphWorkStage,
+) -> Result<()> {
+    if let Some(control) = control.as_deref_mut() {
+        control.check(stage)?;
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 thread_local! {
@@ -76,7 +116,9 @@ fn take_native_prepare_test_cancellation() -> bool {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GraphObjectRosterEntry {
-    pub object_id: String,
+    pub material_kind: String,
+    pub material_id: String,
+    pub source_object_identity: String,
     pub revision_id: String,
     pub decision_id: String,
     pub source_token: String,
@@ -152,17 +194,6 @@ pub(crate) fn source_key(project: &str) -> String {
     format!("project:nir1-entity-relation-eligibility:{project}")
 }
 
-fn checked_roster_value_bytes(roster: &[GraphObjectRosterEntry]) -> Result<usize> {
-    roster.iter().try_fold(0usize, |total, entry| {
-        total
-            .checked_add(entry.object_id.len())
-            .and_then(|total| total.checked_add(entry.revision_id.len()))
-            .and_then(|total| total.checked_add(entry.decision_id.len()))
-            .and_then(|total| total.checked_add(entry.source_token.len()))
-            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))
-    })
-}
-
 #[derive(Serialize)]
 struct GraphSourceDigestInput<'a> {
     contract: &'static str,
@@ -172,100 +203,130 @@ struct GraphSourceDigestInput<'a> {
     roster: &'a [GraphObjectRosterEntry],
 }
 
-#[derive(Default)]
-struct JsonByteCounter {
+struct GraphDigestSink<'a> {
+    hasher: Sha256,
     len: usize,
+    control: &'a mut dyn GraphWorkControl,
+    error: Option<anyhow::Error>,
 }
 
-impl std::io::Write for JsonByteCounter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+impl Write for GraphDigestSink<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Err(error) = self.control.check(GraphWorkStage::Digest) {
+            let message = error.to_string();
+            self.error = Some(error);
+            return Err(io::Error::other(message));
+        }
+        self.hasher.update(bytes);
         self.len = self
             .len
             .checked_add(bytes.len())
-            .ok_or_else(|| std::io::Error::other("JSON length overflow"))?;
+            .ok_or_else(|| io::Error::other("JSON length overflow"))?;
         Ok(bytes.len())
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
 
-fn graph_source_digest_input(project: &str, roster: &[GraphObjectRosterEntry]) -> Result<Vec<u8>> {
+fn graph_source_digest_input(
+    project: &str,
+    roster: &[GraphObjectRosterEntry],
+    control: &mut dyn GraphWorkControl,
+) -> Result<String> {
     let input = GraphSourceDigestInput {
         contract: "nir1-entity-relation-eligibility/1",
         project_id: project,
         roster,
     };
-    let mut counter = JsonByteCounter::default();
-    serde_json::to_writer(&mut counter, &input)?;
-    ensure!(
-        counter.len <= GRAPH_INPUT_BYTE_LIMIT,
-        "NIR1_GRAPH_ROSTER_INPUT_LIMIT"
-    );
-    let mut bytes = Vec::with_capacity(counter.len);
-    serde_json::to_writer(&mut bytes, &input)?;
-    ensure!(
-        bytes.len() == counter.len,
-        "NIR1_GRAPH_ROSTER_INPUT_SERIALIZATION_MISMATCH"
-    );
-    Ok(bytes)
+    let mut sink = GraphDigestSink {
+        hasher: Sha256::new(),
+        len: 0,
+        control,
+        error: None,
+    };
+    let write_result = serde_json::to_writer(&mut sink, &input);
+    if let Some(error) = sink.error {
+        return Err(error);
+    }
+    write_result?;
+    Ok(format!("sha256:{}", hex::encode(sink.hasher.finalize())))
 }
 
 struct RevisionInputStats {
-    bytes: usize,
     material_records: usize,
 }
 
 pub(crate) fn graph_source_from_roster(
     project: &str,
+    roster: Vec<GraphObjectRosterEntry>,
+) -> Result<GraphEligibilitySource> {
+    let mut control = NeverStopGraphWorkControl;
+    graph_source_from_roster_with_control(project, roster, &mut control)
+}
+
+pub(crate) fn graph_source_from_roster_with_control(
+    project: &str,
     mut roster: Vec<GraphObjectRosterEntry>,
+    control: &mut dyn GraphWorkControl,
 ) -> Result<GraphEligibilitySource> {
     ensure!(!project.trim().is_empty() && project.trim() == project);
-    ensure!(
-        roster
-            .len()
-            .checked_add(1)
-            .is_some_and(|count| count <= GRAPH_RECORD_ADMISSION),
-        "NIR1_GRAPH_ROSTER_RECORD_LIMIT"
-    );
-    ensure!(
-        checked_roster_value_bytes(&roster)? <= GRAPH_INPUT_BYTE_LIMIT,
-        "NIR1_GRAPH_ROSTER_INPUT_LIMIT"
-    );
+    let mut material_tuples = HashSet::with_capacity(roster.len());
     for entry in &roster {
         ensure!(
-            (entry.object_id.starts_with("codex:") && entry.object_id.len() > "codex:".len())
-                || (entry.object_id.starts_with("codex-relation:")
-                    && entry.object_id.len() > "codex-relation:".len()),
-            "NIR1_GRAPH_ROSTER_OBJECT_INVALID"
+            matches!(entry.material_kind.as_str(), "entity" | "relation" | "evidence"),
+            "NIR1_GRAPH_ROSTER_MATERIAL_KIND_INVALID"
         );
         for value in [
-            &entry.object_id,
+            &entry.material_id,
+            &entry.source_object_identity,
             &entry.revision_id,
             &entry.decision_id,
             &entry.source_token,
         ] {
             ensure!(!value.trim().is_empty() && value.trim() == value);
         }
+        ensure!(
+            (entry.material_kind == "entity"
+                && entry.source_object_identity.starts_with("codex:"))
+                || (entry.material_kind == "relation"
+                    && entry.source_object_identity.starts_with("codex-relation:"))
+                || entry.material_kind == "evidence",
+            "NIR1_GRAPH_ROSTER_SOURCE_IDENTITY_INVALID"
+        );
+        ensure!(
+            material_tuples.insert((
+                entry.material_kind.clone(),
+                entry.material_id.clone(),
+                entry.revision_id.clone(),
+                entry.decision_id.clone(),
+            )),
+            "NIR1_GRAPH_ROSTER_DUPLICATE_MATERIAL"
+        );
     }
+    check_graph_work(&mut Some(control), GraphWorkStage::Sort)?;
     roster.sort_by(|left, right| {
         (
-            &left.object_id,
+            &left.material_kind,
+            &left.material_id,
+            &left.source_object_identity,
             &left.revision_id,
             &left.decision_id,
             &left.source_token,
         )
             .cmp(&(
-                &right.object_id,
+                &right.material_kind,
+                &right.material_id,
+                &right.source_object_identity,
                 &right.revision_id,
                 &right.decision_id,
                 &right.source_token,
             ))
     });
-    let bytes = graph_source_digest_input(project, &roster)?;
+    let digest = graph_source_digest_input(project, &roster, control)?;
     Ok(GraphEligibilitySource {
-        digest: format!("sha256:{}", hex::encode(Sha256::digest(bytes))),
+        digest,
         roster,
     })
 }
@@ -278,9 +339,16 @@ pub(crate) fn read_eligibility_source(
     conn: &Connection,
     project: &str,
 ) -> Result<GraphEligibilitySource> {
-    with_graph_sql_budget(conn, None, || {
-        read_eligibility_source_bounded(conn, project, None)
-    })
+    let mut control = NeverStopGraphWorkControl;
+    read_eligibility_source_with_control(conn, project, &mut control)
+}
+
+pub(crate) fn read_eligibility_source_with_control(
+    conn: &Connection,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<GraphEligibilitySource> {
+    read_eligibility_source_bounded(conn, project, None, Some(control))
 }
 
 fn read_eligibility_source_for_native_build(
@@ -289,6 +357,7 @@ fn read_eligibility_source_for_native_build(
     runtime: &NirChronicleIndexRuntime,
     owner: u64,
     epoch: u64,
+    control: &mut dyn GraphWorkControl,
 ) -> Result<GraphEligibilitySource> {
     let admission = GraphReadAdmission {
         runtime,
@@ -298,12 +367,12 @@ fn read_eligibility_source_for_native_build(
     };
     admission.ensure_current(conn)?;
     let cancellation_epoch = Arc::clone(&admission.cancellation_epoch);
-    with_graph_sql_budget(conn, Some((&cancellation_epoch, epoch)), || {
-        read_eligibility_source_bounded(conn, project, Some(&admission))
+    with_graph_sql_cancellation(conn, Some((&cancellation_epoch, epoch)), || {
+        read_eligibility_source_bounded(conn, project, Some(&admission), Some(control))
     })
 }
 
-fn with_graph_sql_budget<T, F>(
+fn with_graph_sql_cancellation<T, F>(
     conn: &Connection,
     cancellation_epoch: Option<(&Arc<AtomicU64>, u64)>,
     operation: F,
@@ -311,26 +380,17 @@ fn with_graph_sql_budget<T, F>(
 where
     F: FnOnce() -> Result<T>,
 {
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let budget_exhausted = Arc::new(AtomicBool::new(false));
+    let Some((cancellation_epoch, expected_epoch)) = cancellation_epoch else {
+        return operation();
+    };
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancelled_for_hook = Arc::clone(&cancelled);
-    let budget_for_hook = Arc::clone(&budget_exhausted);
-    let cancellation_epoch =
-        cancellation_epoch.map(|(epoch, expected)| (Arc::clone(epoch), expected));
-    let mut callbacks = 0usize;
+    let cancellation_epoch = Arc::clone(cancellation_epoch);
     conn.progress_handler(
         GRAPH_SQL_CHECK_INTERVAL,
         Some(move || {
-            callbacks = callbacks.saturating_add(1);
-            if cancellation_epoch
-                .as_ref()
-                .is_some_and(|(epoch, expected)| epoch.load(Ordering::Acquire) != *expected)
-            {
+            if cancellation_epoch.load(Ordering::Acquire) != expected_epoch {
                 cancelled_for_hook.store(true, Ordering::Release);
-                return true;
-            }
-            if callbacks >= GRAPH_SQL_MAX_CALLBACKS {
-                budget_for_hook.store(true, Ordering::Release);
                 return true;
             }
             false
@@ -345,9 +405,6 @@ where
     }
     if cancelled.load(Ordering::Acquire) {
         anyhow::bail!("NIR1_GRAPH_ROSTER_CANCELLED");
-    }
-    if budget_exhausted.load(Ordering::Acquire) {
-        anyhow::bail!("NIR1_GRAPH_SQL_RESOURCE_LIMIT");
     }
     result
 }
@@ -376,6 +433,7 @@ fn read_eligibility_source_bounded(
     conn: &Connection,
     project: &str,
     admission: Option<&GraphReadAdmission<'_>>,
+    mut control: Option<&mut dyn GraphWorkControl>,
 ) -> Result<GraphEligibilitySource> {
     ensure!(
         !conn.is_autocommit(),
@@ -395,14 +453,15 @@ fn read_eligibility_source_bounded(
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
-    let mut scanned_record_count = 0usize;
-    let mut input_bytes = 0usize;
     let mut roster = Vec::new();
-    {
+    let mut cursor = String::new();
+    loop {
+        check_graph_work(&mut control, GraphWorkStage::Page)?;
+        if let Some(admission) = admission {
+            admission.ensure_current(conn)?;
+        }
         let mut statement = conn.prepare(
-            "SELECT DISTINCT
-                    length(CAST(proposal.current_revision_id AS BLOB)),
-                    proposal.current_revision_id
+            "SELECT DISTINCT proposal.current_revision_id
                FROM narrative_proposal_sets proposal_set
                JOIN narrative_extraction_runs extraction_run
                  ON extraction_run.id = proposal_set.run_id
@@ -413,68 +472,47 @@ fn read_eligibility_source_bounded(
                 AND proposal_set.set_kind = ?2
                 AND extraction_run.surface_path_id = ?3
                 AND proposal.current_revision_id IS NOT NULL
+                AND proposal.current_revision_id > ?4
               ORDER BY proposal.current_revision_id ASC
-              LIMIT ?4",
+              LIMIT ?5",
         )?;
         let mut rows = statement.query(params![
             project,
             super::nir1_entity_relation::NIR1_ENTITY_RELATION_SET_KIND,
             super::nir1_entity_relation::NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
-            GRAPH_RECORD_ADMISSION as i64,
+            &cursor,
+            GRAPH_SOURCE_PAGE_SIZE,
         ])?;
+        let mut page = Vec::with_capacity(GRAPH_SOURCE_PAGE_SIZE as usize);
         while let Some(row) = rows.next()? {
-            let revision_id_bytes = usize::try_from(row.get::<_, i64>(0)?)
-                .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
-            ensure!(
-                revision_id_bytes <= GRAPH_INPUT_BYTE_LIMIT,
-                "NIR1_GRAPH_ROSTER_INPUT_LIMIT"
-            );
-            let revision_id = row.get::<_, String>(1)?;
+            page.push(row.get::<_, String>(0)?);
+        }
+        if page.is_empty() {
+            break;
+        }
+        for revision_id in page {
+            // Advance by every scanned id, including an ineligible one. This
+            // is the keyset boundary that prevents an all-ineligible page
+            // from being mistaken for end-of-input.
+            cursor = revision_id.clone();
+            check_graph_work(&mut control, GraphWorkStage::Row)?;
             if let Some(admission) = admission {
                 admission.ensure_current(conn)?;
             }
-            input_bytes = input_bytes
-                .checked_add(revision_id.len())
-                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
-            ensure!(
-                input_bytes <= GRAPH_INPUT_BYTE_LIMIT,
-                "NIR1_GRAPH_ROSTER_INPUT_LIMIT"
-            );
-            scanned_record_count = scanned_record_count
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_RECORD_LIMIT"))?;
-            ensure!(
-                scanned_record_count <= GRAPH_RECORD_ADMISSION,
-                "NIR1_GRAPH_ROSTER_RECORD_LIMIT"
-            );
-            let Some(input_stats) =
-                read_revision_input_stats(conn, project, &revision_id, admission)?
+            let Some(input_stats) = read_revision_input_stats(conn, project, &revision_id, admission)?
             else {
                 continue;
             };
+            if preflight_live_source_lengths(conn, project, &revision_id, admission)?.is_none() {
+                continue;
+            }
             #[cfg(test)]
             if let Some(admission) = admission {
                 if take_native_prepare_test_cancellation() {
                     admission.runtime.pause()?;
                 }
             }
-            input_bytes = input_bytes
-                .checked_add(input_stats.bytes)
-                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
-            ensure!(
-                input_bytes <= GRAPH_INPUT_BYTE_LIMIT,
-                "NIR1_GRAPH_ROSTER_INPUT_LIMIT"
-            );
-            scanned_record_count = scanned_record_count
-                .checked_add(input_stats.material_records)
-                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_RECORD_LIMIT"))?;
-            ensure!(
-                scanned_record_count <= GRAPH_RECORD_ADMISSION,
-                "NIR1_GRAPH_ROSTER_RECORD_LIMIT"
-            );
-            if let Some(admission) = admission {
-                admission.ensure_current(conn)?;
-            }
+            check_graph_work(&mut control, GraphWorkStage::A2)?;
             let Some((revision, decision_id)) =
                 read_nir1_entity_relation_revision_current_for_graph_index(
                     conn,
@@ -493,56 +531,25 @@ fn read_eligibility_source_bounded(
                 .len()
                 .checked_add(revision.bundle.relations.len())
                 .and_then(|count| count.checked_add(revision.material_basis.evidence_set.len()))
-                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_RECORD_LIMIT"))?;
+                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_REVISION_RECORD_LIMIT"))?;
             ensure!(
                 material_records == input_stats.material_records,
                 "NIR1_GRAPH_ROSTER_RECORD_MISMATCH"
             );
-            input_bytes = input_bytes
-                .checked_add(roster_entry_value_bytes(&revision, &decision_id)?)
-                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
-            ensure!(
-                input_bytes <= GRAPH_INPUT_BYTE_LIMIT,
-                "NIR1_GRAPH_ROSTER_INPUT_LIMIT"
-            );
-            append_revision_roster(&mut roster, &revision, &decision_id);
+            append_revision_roster(&mut roster, &revision, &decision_id, &mut control)?;
             if let Some(admission) = admission {
                 admission.ensure_current(conn)?;
             }
         }
     }
-    let has_extra_revision: bool = conn.query_row(
-        "SELECT EXISTS(
-             SELECT 1
-               FROM (
-                 SELECT DISTINCT proposal.current_revision_id
-                   FROM narrative_proposal_sets proposal_set
-                   JOIN narrative_extraction_runs extraction_run
-                     ON extraction_run.id = proposal_set.run_id
-                    AND extraction_run.project_id = proposal_set.project_id
-                   JOIN narrative_proposals proposal
-                     ON proposal.proposal_set_id = proposal_set.id
-                  WHERE proposal_set.project_id = ?1
-                    AND proposal_set.set_kind = ?2
-                    AND extraction_run.surface_path_id = ?3
-                    AND proposal.current_revision_id IS NOT NULL
-                  ORDER BY proposal.current_revision_id ASC
-                  LIMIT 1 OFFSET ?4
-               )
-           )",
-        params![
-            project,
-            super::nir1_entity_relation::NIR1_ENTITY_RELATION_SET_KIND,
-            super::nir1_entity_relation::NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
-            GRAPH_RECORD_ADMISSION as i64,
-        ],
-        |row| row.get(0),
-    )?;
-    ensure!(!has_extra_revision, "NIR1_GRAPH_ROSTER_RECORD_LIMIT");
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
-    let source = graph_source_from_roster(project, roster)?;
+    let source = if let Some(control) = control.as_deref_mut() {
+        graph_source_from_roster_with_control(project, roster, control)?
+    } else {
+        graph_source_from_roster(project, roster)?
+    };
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
@@ -593,10 +600,9 @@ fn read_revision_input_stats(
     let total = payload_bytes
         .checked_add(envelope_bytes)
         .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
-    ensure!(
-        total <= GRAPH_INPUT_BYTE_LIMIT,
-        "NIR1_GRAPH_ROSTER_INPUT_LIMIT"
-    );
+    if total > REVISION_INPUT_BYTE_LIMIT {
+        return Ok(None);
+    }
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
@@ -666,80 +672,139 @@ fn read_revision_input_stats(
         .checked_add(relation_count)
         .and_then(|count| count.checked_add(evidence_count))
         .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_RECORD_LIMIT"))?;
-    Ok(Some(RevisionInputStats {
-        bytes: total,
-        material_records,
-    }))
+    if material_records
+        .checked_add(1)
+        .is_none_or(|count| count > REVISION_RECORD_ADMISSION)
+    {
+        return Ok(None);
+    }
+    Ok(Some(RevisionInputStats { material_records }))
 }
 
-fn roster_entry_value_bytes(
-    revision: &Nir1EntityRelationRevision,
-    decision_id: &str,
-) -> Result<usize> {
-    let revision_bytes = revision.revision_id.len();
-    let decision_bytes = decision_id.len();
-    revision
-        .bundle
-        .entities
-        .iter()
-        .map(|entity| {
-            "codex:"
-                .len()
-                .checked_add(entity.entity_id.len())
-                .and_then(|bytes| bytes.checked_add(revision_bytes))
-                .and_then(|bytes| bytes.checked_add(decision_bytes))
-                .and_then(|bytes| bytes.checked_add(entity.source_token.len()))
-                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))
-        })
-        .chain(revision.bundle.relations.iter().map(|relation| {
-            "codex-relation:"
-                .len()
-                .checked_add(relation.edge_id.len())
-                .and_then(|bytes| bytes.checked_add(revision_bytes))
-                .and_then(|bytes| bytes.checked_add(decision_bytes))
-                .and_then(|bytes| bytes.checked_add(relation.source_token.len()))
-                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))
-        }))
-        .try_fold(0usize, |total, entry| {
-            total
-                .checked_add(entry?)
-                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))
-        })
+/// Preflight the live Source values that the A2 reader will resolve. The
+/// query returns only counts and lengths, so source payloads and JSON are not
+/// allocated until the per-Revision envelope has passed its admission check.
+/// `None` means this candidate is no longer a valid typed Source; callers
+/// skip it as an ordinary A2-unavailable Revision.
+fn preflight_live_source_lengths(
+    conn: &Connection,
+    project: &str,
+    revision_id: &str,
+    admission: Option<&GraphReadAdmission<'_>>,
+) -> Result<Option<usize>> {
+    if let Some(admission) = admission {
+        admission.ensure_current(conn)?;
+    }
+    let (basis_count, matched_count, bytes): (i64, i64, i64) = conn.query_row(
+        "SELECT COUNT(*),
+                SUM(CASE
+                    WHEN basis.source_kind = 'codex-entry'
+                     AND entry.id IS NOT NULL
+                     AND basis.revision_token = 'codex:' || entry.id || '@' || entry.updated_at THEN 1
+                    WHEN basis.source_kind = 'codex-relation'
+                     AND relation.id IS NOT NULL
+                     AND basis.revision_token = 'v' || relation.version || '@'
+                         || relation.updated_at || ':relation:' || relation.id THEN 1
+                    WHEN basis.source_kind = 'project-scope-authority'
+                     AND basis.source_key = ?2 THEN 1
+                    ELSE 0
+                END),
+                COALESCE(SUM(
+                    COALESCE(length(CAST(basis.source_key AS BLOB)), 0)
+                  + COALESCE(length(CAST(basis.revision_token AS BLOB)), 0)
+                  + COALESCE(length(CAST(entry.id AS BLOB)), 0)
+                  + COALESCE(length(CAST(entry.type AS BLOB)), 0)
+                  + COALESCE(length(CAST(entry.name AS BLOB)), 0)
+                  + COALESCE(length(CAST(entry.summary AS BLOB)), 0)
+                  + COALESCE(length(CAST(entry.updated_at AS BLOB)), 0)
+                  + COALESCE(length(CAST(relation.id AS BLOB)), 0)
+                  + COALESCE(length(CAST(relation.from_codex_id AS BLOB)), 0)
+                  + COALESCE(length(CAST(relation.to_codex_id AS BLOB)), 0)
+                  + COALESCE(length(CAST(relation.relation_type AS BLOB)), 0)
+                  + COALESCE(length(CAST(relation.directionality AS BLOB)), 0)
+                  + COALESCE(length(CAST(relation.version AS BLOB)), 0)
+                  + COALESCE(length(CAST(relation.updated_at AS BLOB)), 0)
+                ), 0)
+           FROM narrative_revision_source_basis basis
+           LEFT JOIN codex_entries entry
+             ON basis.source_kind = 'codex-entry'
+            AND basis.source_key = 'codex:' || entry.id
+            AND entry.project_id = ?1
+            AND entry.context_mode NOT IN ('hidden', 'suppress')
+           LEFT JOIN codex_relations relation
+             ON basis.source_kind = 'codex-relation'
+            AND basis.source_key = 'codex-relation:' || relation.id
+            AND relation.project_id = ?1
+          WHERE basis.revision_id = ?3",
+        params![project, format!("project:scope-authority:{project}"), revision_id],
+        |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0), row.get(2)?)),
+    )?;
+    if basis_count == 0 || basis_count != matched_count {
+        return Ok(None);
+    }
+    let bytes = usize::try_from(bytes)
+        .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_REVISION_INPUT_LIMIT"))?;
+    if bytes > REVISION_INPUT_BYTE_LIMIT {
+        return Ok(None);
+    }
+    if let Some(admission) = admission {
+        admission.ensure_current(conn)?;
+    }
+    Ok(Some(bytes))
 }
 
 fn append_revision_roster(
     roster: &mut Vec<GraphObjectRosterEntry>,
     revision: &Nir1EntityRelationRevision,
     decision_id: &str,
-) {
-    roster.extend(
-        revision
-            .bundle
-            .entities
-            .iter()
-            .map(|entity| GraphObjectRosterEntry {
-                object_id: format!("codex:{}", entity.entity_id),
-                revision_id: revision.revision_id.clone(),
-                decision_id: decision_id.to_owned(),
-                source_token: entity.source_token.clone(),
-            }),
-    );
-    roster.extend(
-        revision
-            .bundle
-            .relations
-            .iter()
-            .map(|relation| GraphObjectRosterEntry {
-                object_id: format!("codex-relation:{}", relation.edge_id),
-                revision_id: revision.revision_id.clone(),
-                decision_id: decision_id.to_owned(),
-                source_token: relation.source_token.clone(),
-            }),
-    );
+    control: &mut Option<&mut dyn GraphWorkControl>,
+) -> Result<()> {
+    for entity in &revision.bundle.entities {
+        check_graph_work(control, GraphWorkStage::Material)?;
+        roster.push(GraphObjectRosterEntry {
+            material_kind: "entity".to_owned(),
+            material_id: entity.entity_id.clone(),
+            source_object_identity: format!("codex:{}", entity.entity_id),
+            revision_id: revision.revision_id.clone(),
+            decision_id: decision_id.to_owned(),
+            source_token: entity.source_token.clone(),
+        });
+    }
+    for relation in &revision.bundle.relations {
+        check_graph_work(control, GraphWorkStage::Material)?;
+        roster.push(GraphObjectRosterEntry {
+            material_kind: "relation".to_owned(),
+            material_id: relation.edge_id.clone(),
+            source_object_identity: format!("codex-relation:{}", relation.edge_id),
+            revision_id: revision.revision_id.clone(),
+            decision_id: decision_id.to_owned(),
+            source_token: relation.source_token.clone(),
+        });
+    }
+    for evidence in &revision.material_basis.evidence_set {
+        check_graph_work(control, GraphWorkStage::Material)?;
+        roster.push(GraphObjectRosterEntry {
+            material_kind: "evidence".to_owned(),
+            material_id: evidence.evidence_ref.clone(),
+            source_object_identity: evidence.source_key.clone(),
+            revision_id: revision.revision_id.clone(),
+            decision_id: decision_id.to_owned(),
+            source_token: evidence.revision_token.clone(),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn read(conn: &Connection, project: &str) -> Result<BindingRead> {
-    read_internal(conn, project, true, true)
+    read_internal(conn, project, true, true, None)
+}
+
+fn read_with_control(
+    conn: &Connection,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<BindingRead> {
+    read_internal(conn, project, true, true, Some(control))
 }
 
 /// The Graph producer calls the canonical Freshness writer after it has
@@ -754,7 +819,7 @@ pub(crate) fn is_publish_target(conn: &Connection, project: &str, key: &str) -> 
         return Ok(false);
     }
     Ok(matches!(
-        read_internal(conn, project, false, false)?,
+        read_internal(conn, project, false, false, None)?,
         BindingRead::Registered(_)
     ))
 }
@@ -764,6 +829,7 @@ fn read_internal(
     project: &str,
     require_freshness: bool,
     require_current_freshness: bool,
+    mut control: Option<&mut dyn GraphWorkControl>,
 ) -> Result<BindingRead> {
     let row = conn
         .query_row(
@@ -874,22 +940,37 @@ fn read_internal(
     }
     let edges = find_edges_by_consumer(conn, project, CONSUMER_KIND, INDEX_KEY)?;
     let source_identity = source_key(project);
+    let mut declaration_tuples = HashSet::with_capacity(declaration.entries.len());
+    for entry in &declaration.entries {
+        check_graph_work(&mut control, GraphWorkStage::D1)?;
+        if entry.dependency_role != DependencyRole::RankingOnly
+            || entry.selector_json != "{\"kind\":\"whole-source\"}"
+            || !declaration_tuples.insert((
+                entry.source_object_identity.clone(),
+                entry.dependency_role.as_str().to_owned(),
+                entry.selector_json.clone(),
+            ))
+        {
+            return Ok(BindingRead::Reserved);
+        }
+    }
+    let mut edge_tuples = HashSet::with_capacity(edges.len());
+    for edge in &edges {
+        check_graph_work(&mut control, GraphWorkStage::Edge)?;
+        edge_tuples.insert((
+            edge.source_object_identity.clone(),
+            DependencyRole::RankingOnly.as_str().to_owned(),
+            "{\"kind\":\"whole-source\"}".to_owned(),
+        ));
+    }
     if edges.len() != declaration.entries.len()
-        || declaration.entries.iter().any(|entry| {
-            entry.dependency_role != DependencyRole::RankingOnly
-                || entry.selector_json != "{\"kind\":\"whole-source\"}"
-                || !edges
-                    .iter()
-                    .any(|edge| edge.source_object_identity == entry.source_object_identity)
-        })
-        || !declaration
-            .entries
-            .iter()
-            .any(|entry| entry.source_object_identity == source_identity)
+        || declaration_tuples != edge_tuples
+        || !declaration_tuples.iter().any(|(identity, _, _)| identity == &source_identity)
     {
         return Ok(BindingRead::Reserved);
     }
     for edge in &edges {
+        check_graph_work(&mut control, GraphWorkStage::Edge)?;
         let Ok(tokens) = serde_json::from_str::<Vec<String>>(&edge.read_set_json) else {
             return Ok(BindingRead::Reserved);
         };
@@ -1037,7 +1118,7 @@ fn edges_match_source(
     );
     for entry in &source.roster {
         expected
-            .entry(entry.object_id.clone())
+            .entry(entry.source_object_identity.clone())
             .or_default()
             .insert(entry.source_token.clone());
     }
@@ -1086,8 +1167,18 @@ pub fn prepare_graph_index_build(
     runtime: &NirChronicleIndexRuntime,
     project: &str,
 ) -> Result<GraphIndexBuildSnapshot> {
+    let mut control = NeverStopGraphWorkControl;
+    prepare_graph_index_build_with_control(conn, runtime, project, &mut control)
+}
+
+pub(crate) fn prepare_graph_index_build_with_control(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<GraphIndexBuildSnapshot> {
     with_graph_no_wait(conn, || {
-        prepare_graph_index_build_in_tx(conn, runtime, project)
+        prepare_graph_index_build_in_tx(conn, runtime, project, control)
     })
 }
 
@@ -1095,6 +1186,7 @@ fn prepare_graph_index_build_in_tx(
     conn: &Connection,
     runtime: &NirChronicleIndexRuntime,
     project: &str,
+    control: &mut dyn GraphWorkControl,
 ) -> Result<GraphIndexBuildSnapshot> {
     ensure!(
         !conn.is_autocommit(),
@@ -1106,19 +1198,21 @@ fn prepare_graph_index_build_in_tx(
     let (runtime_owner, runtime_epoch) = runtime
         .admit_native_build(conn)?
         .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_RUNTIME_UNAVAILABLE"))?;
+    control.check(GraphWorkStage::Page)?;
     let source = read_eligibility_source_for_native_build(
         conn,
         project,
         runtime,
         runtime_owner,
         runtime_epoch,
+        control,
     )?;
-    let prior = match read(conn, project)? {
+    let prior = match read_with_control(conn, project, control)? {
         BindingRead::Missing => None,
         BindingRead::Registered(binding) => Some(binding),
         BindingRead::Reserved => anyhow::bail!("NIR1_GRAPH_BINDING_RESERVED"),
     };
-    let edges = input_edges(project, &source)?;
+    let edges = input_edges_with_control(project, &source, control)?;
     Ok(GraphIndexBuildSnapshot {
         project: project.to_owned(),
         semantic_epoch,
@@ -1131,28 +1225,31 @@ fn prepare_graph_index_build_in_tx(
 }
 
 fn input_edges(project: &str, source: &GraphEligibilitySource) -> Result<Vec<DependencyEdge>> {
-    ensure!(
-        source
-            .roster
-            .len()
-            .checked_add(1)
-            .is_some_and(|count| count <= GRAPH_RECORD_ADMISSION),
-        "NIR1_GRAPH_ADMISSION_LIMIT"
-    );
+    let mut control = NeverStopGraphWorkControl;
+    input_edges_with_control(project, source, &mut control)
+}
+
+fn input_edges_with_control(
+    project: &str,
+    source: &GraphEligibilitySource,
+    control: &mut dyn GraphWorkControl,
+) -> Result<Vec<DependencyEdge>> {
     let mut sources = BTreeMap::<String, BTreeSet<String>>::new();
     sources.insert(
         source_key(project),
         [source.digest.clone()].into_iter().collect(),
     );
     for entry in &source.roster {
+        control.check(GraphWorkStage::Edge)?;
         sources
-            .entry(entry.object_id.clone())
+            .entry(entry.source_object_identity.clone())
             .or_default()
             .insert(entry.source_token.clone());
     }
     sources
         .into_iter()
         .map(|(identity, tokens)| {
+            control.check(GraphWorkStage::Edge)?;
             Ok(DependencyEdge {
                 id: String::new(),
                 project_id: project.to_owned(),
@@ -1173,6 +1270,16 @@ pub(crate) fn snapshot_current(
     runtime: &NirChronicleIndexRuntime,
     snapshot: &GraphIndexBuildSnapshot,
 ) -> Result<bool> {
+    let mut control = NeverStopGraphWorkControl;
+    snapshot_current_with_control(conn, runtime, snapshot, &mut control)
+}
+
+fn snapshot_current_with_control(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    snapshot: &GraphIndexBuildSnapshot,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
     if !runtime.native_build_is_current(conn, snapshot.runtime_owner, snapshot.runtime_epoch)? {
         return Ok(false);
     }
@@ -1182,7 +1289,7 @@ pub(crate) fn snapshot_current(
     if epoch.id != snapshot.semantic_epoch {
         return Ok(false);
     }
-    let prior = match read(conn, &snapshot.project)? {
+    let prior = match read_with_control(conn, &snapshot.project, control)? {
         BindingRead::Missing => None,
         BindingRead::Registered(binding) => Some(binding),
         BindingRead::Reserved => return Ok(false),
@@ -1196,13 +1303,18 @@ pub(crate) fn snapshot_current(
         runtime,
         snapshot.runtime_owner,
         snapshot.runtime_epoch,
+        control,
     )?;
-    Ok(source == snapshot.source && input_edges(&snapshot.project, &source)? == snapshot.edges)
+    Ok(source == snapshot.source
+        && input_edges_with_control(&snapshot.project, &source, control)? == snapshot.edges)
 }
 
-fn ensure_snapshot_edges_are_sealed(snapshot: &GraphIndexBuildSnapshot) -> Result<()> {
+fn ensure_snapshot_edges_are_sealed_with_control(
+    snapshot: &GraphIndexBuildSnapshot,
+    control: &mut dyn GraphWorkControl,
+) -> Result<()> {
     ensure!(
-        input_edges(&snapshot.project, &snapshot.source)? == snapshot.edges,
+        input_edges_with_control(&snapshot.project, &snapshot.source, control)? == snapshot.edges,
         "NIR1_GRAPH_SNAPSHOT_EDGES_MISMATCH"
     );
     Ok(())
@@ -1215,8 +1327,20 @@ pub fn publish_nir1_entity_relation_index_in_tx(
     runtime: &NirChronicleIndexRuntime,
     snapshot: GraphIndexBuildSnapshot,
 ) -> Result<StoredBinding> {
+    let mut control = NeverStopGraphWorkControl;
     with_graph_no_wait(conn, || {
-        publish_nir1_entity_relation_index_in_tx_inner(conn, runtime, snapshot)
+        publish_nir1_entity_relation_index_in_tx_inner(conn, runtime, snapshot, &mut control)
+    })
+}
+
+pub(crate) fn publish_nir1_entity_relation_index_in_tx_with_control(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    snapshot: GraphIndexBuildSnapshot,
+    control: &mut dyn GraphWorkControl,
+) -> Result<StoredBinding> {
+    with_graph_no_wait(conn, || {
+        publish_nir1_entity_relation_index_in_tx_inner(conn, runtime, snapshot, control)
     })
 }
 
@@ -1224,6 +1348,7 @@ fn publish_nir1_entity_relation_index_in_tx_inner(
     conn: &Connection,
     runtime: &NirChronicleIndexRuntime,
     snapshot: GraphIndexBuildSnapshot,
+    control: &mut dyn GraphWorkControl,
 ) -> Result<StoredBinding> {
     ensure!(
         !conn.is_autocommit(),
@@ -1233,9 +1358,10 @@ fn publish_nir1_entity_relation_index_in_tx_inner(
     // snapshot is opaque in production, and the exact deterministic edge
     // set is recomputed from its sealed roster so partial, extra, or
     // field-tampered input cannot advance a generation.
-    ensure_snapshot_edges_are_sealed(&snapshot)?;
+    control.check(GraphWorkStage::Publish)?;
+    ensure_snapshot_edges_are_sealed_with_control(&snapshot, control)?;
     ensure!(
-        snapshot_current(conn, runtime, &snapshot)?,
+        snapshot_current_with_control(conn, runtime, &snapshot, control)?,
         "NIR1_GRAPH_SNAPSHOT_STALE"
     );
     let generation = snapshot
@@ -1245,15 +1371,15 @@ fn publish_nir1_entity_relation_index_in_tx_inner(
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("NIR1 Graph generation exhausted"))?;
     let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-    let declarations = snapshot
-        .edges
-        .iter()
-        .map(|edge| DependencyDeclaration {
+    let mut declarations = Vec::with_capacity(snapshot.edges.len());
+    for edge in &snapshot.edges {
+        control.check(GraphWorkStage::D1)?;
+        declarations.push(DependencyDeclaration {
             source_object_identity: edge.source_object_identity.clone(),
             role: DependencyRole::RankingOnly,
             selector: DependencySelector::WholeSource,
-        })
-        .collect();
+        });
+    }
     let d1 = write_dependency_declaration_set_in_tx(
         conn,
         DependencyDeclarationSetRequest {
@@ -1270,8 +1396,10 @@ fn publish_nir1_entity_relation_index_in_tx_inner(
             created_at: now.clone(),
         },
     )?;
+    control.check(GraphWorkStage::Edge)?;
     delete_edges_for_consumer_in_tx(conn, &snapshot.project, CONSUMER_KIND, INDEX_KEY)?;
     for edge in &snapshot.edges {
+        control.check(GraphWorkStage::Edge)?;
         record_dependency_edge_in_tx(
             conn,
             &snapshot.project,
@@ -1284,6 +1412,7 @@ fn publish_nir1_entity_relation_index_in_tx_inner(
             &now,
         )?;
     }
+    control.check(GraphWorkStage::Publish)?;
     conn.execute(
         "INSERT INTO narrative_semantic_index_metadata
             (project_id,index_key,generation,built_at,source_digest,dependency_set_digest,dirty_cache_flag,producer_id,producer_version)
@@ -1307,6 +1436,7 @@ fn publish_nir1_entity_relation_index_in_tx_inner(
     // The write transaction still owns the snapshot. Re-read the qualified
     // roster immediately before Freshness publication; any mismatch aborts
     // the caller's transaction and therefore cannot leave a partial proof.
+    control.check(GraphWorkStage::Publish)?;
     ensure!(
         runtime.native_build_is_current(conn, snapshot.runtime_owner, snapshot.runtime_epoch)?
             && get_current_epoch(conn, &snapshot.project)?
@@ -1317,19 +1447,19 @@ fn publish_nir1_entity_relation_index_in_tx_inner(
                 runtime,
                 snapshot.runtime_owner,
                 snapshot.runtime_epoch,
+                control,
             )? == snapshot.source,
         "NIR1_GRAPH_SNAPSHOT_CHANGED_DURING_PUBLISH"
     );
     let edges = find_edges_by_consumer(conn, &snapshot.project, CONSUMER_KIND, INDEX_KEY)?;
-    let observations = edges
-        .iter()
-        .map(|edge| {
-            Ok((
-                edge.id.clone(),
-                evaluate_graph_edge(conn, &snapshot.project, edge)?,
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let mut observations = Vec::with_capacity(edges.len());
+    for edge in &edges {
+        control.check(GraphWorkStage::Edge)?;
+        observations.push((
+            edge.id.clone(),
+            evaluate_graph_edge(conn, &snapshot.project, edge)?,
+        ));
+    }
     ensure!(
         observations.iter().all(|(_, observation)| {
             observation.freshness == EvidenceFreshness::Fresh
@@ -1339,6 +1469,7 @@ fn publish_nir1_entity_relation_index_in_tx_inner(
         "NIR1_GRAPH_SOURCE_CHANGED_DURING_PUBLISH"
     );
     let freshness_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    control.check(GraphWorkStage::Publish)?;
     publish_complete_runless_graph_freshness_in_tx(
         conn,
         &snapshot.project,
@@ -1354,7 +1485,8 @@ fn publish_nir1_entity_relation_index_in_tx_inner(
           WHERE project_id=?1 AND index_key=?2 AND generation=?3",
         params![snapshot.project, INDEX_KEY, generation],
     )?;
-    let final_read = read(conn, &snapshot.project)?;
+    control.check(GraphWorkStage::Publish)?;
+    let final_read = read_with_control(conn, &snapshot.project, control)?;
     match final_read {
         BindingRead::Registered(binding) if binding.generation == generation && !binding.dirty => {
             Ok(binding)
@@ -1392,26 +1524,59 @@ fn evaluate_graph_edge(
 mod tests {
     use super::*;
 
+    struct StopAt(GraphWorkStage);
+
+    impl GraphWorkControl for StopAt {
+        fn check(&mut self, stage: GraphWorkStage) -> Result<()> {
+            if stage == self.0 {
+                anyhow::bail!("NIR1_GRAPH_TEST_CANCELLED_{stage:?}");
+            }
+            Ok(())
+        }
+    }
+
+    fn roster_entry(
+        material_kind: &str,
+        material_id: &str,
+        source_object_identity: &str,
+        revision_id: &str,
+        decision_id: &str,
+        source_token: &str,
+    ) -> GraphObjectRosterEntry {
+        GraphObjectRosterEntry {
+            material_kind: material_kind.to_owned(),
+            material_id: material_id.to_owned(),
+            source_object_identity: source_object_identity.to_owned(),
+            revision_id: revision_id.to_owned(),
+            decision_id: decision_id.to_owned(),
+            source_token: source_token.to_owned(),
+        }
+    }
+
     #[test]
     fn graph_source_sorts_qualified_roster_and_has_stable_digest() {
         let unsorted = vec![
-            GraphObjectRosterEntry {
-                object_id: "codex-relation:r-2".to_owned(),
-                revision_id: "revision-2".to_owned(),
-                decision_id: "decision-2".to_owned(),
-                source_token: "token-2".to_owned(),
-            },
-            GraphObjectRosterEntry {
-                object_id: "codex:e-1".to_owned(),
-                revision_id: "revision-1".to_owned(),
-                decision_id: "decision-1".to_owned(),
-                source_token: "token-1".to_owned(),
-            },
+            roster_entry(
+                "relation",
+                "r-2",
+                "codex-relation:r-2",
+                "revision-2",
+                "decision-2",
+                "token-2",
+            ),
+            roster_entry(
+                "entity",
+                "e-1",
+                "codex:e-1",
+                "revision-1",
+                "decision-1",
+                "token-1",
+            ),
         ];
 
         let source = graph_source_from_roster("project-1", unsorted).expect("source");
-        assert_eq!(source.roster[0].object_id, "codex-relation:r-2");
-        assert_eq!(source.roster[1].object_id, "codex:e-1");
+        assert_eq!(source.roster[0].material_id, "e-1");
+        assert_eq!(source.roster[1].material_id, "r-2");
         assert_eq!(
             source,
             graph_source_from_roster("project-1", source.roster.clone()).expect("source")
@@ -1420,25 +1585,120 @@ mod tests {
     }
 
     #[test]
-    fn graph_source_enforces_the_512_record_admission_boundary() {
-        let entry = |index: usize| GraphObjectRosterEntry {
-            object_id: format!("codex:entity-{index}"),
-            revision_id: format!("revision-{index}"),
-            decision_id: format!("decision-{index}"),
-            source_token: format!("source-token-{index}"),
-        };
-        let accepted = (0..(GRAPH_RECORD_ADMISSION - 1)).map(entry).collect();
-        assert!(graph_source_from_roster("project-1", accepted).is_ok());
-
-        let rejected = (0..GRAPH_RECORD_ADMISSION).map(entry).collect();
-        let error = graph_source_from_roster("project-1", rejected)
-            .expect_err("the source identity consumes one bounded admission record")
-            .to_string();
-        assert!(error.contains("NIR1_GRAPH_ROSTER_RECORD_LIMIT"), "{error}");
+    fn graph_source_accepts_more_than_512_and_streams_all_material_fields() {
+        let roster = (0..513)
+            .map(|index| {
+                roster_entry(
+                    "entity",
+                    &format!("entity-{index}"),
+                    &format!("codex:entity-{index}"),
+                    "revision-1",
+                    "decision-1",
+                    &format!("source-token-{index}"),
+                )
+            })
+            .collect();
+        let source = graph_source_from_roster("project-1", roster).expect("source");
+        assert_eq!(source.roster.len(), 513);
+        let changed = source
+            .roster
+            .iter()
+            .cloned()
+            .map(|mut entry| {
+                if entry.material_id == "entity-512" {
+                    entry.source_object_identity = "codex:entity-changed".to_owned();
+                }
+                entry
+            })
+            .collect();
+        let changed = graph_source_from_roster("project-1", changed).expect("changed source");
+        assert_ne!(source.digest, changed.digest);
     }
 
     #[test]
-    fn graph_sql_budget_and_cancellation_clear_the_progress_handler() -> Result<()> {
+    fn graph_source_rejects_duplicate_material_tuple_even_when_source_binding_differs() {
+        let roster = vec![
+            roster_entry(
+                "evidence",
+                "evidence-1",
+                "codex:entity-1",
+                "revision-1",
+                "decision-1",
+                "token-1",
+            ),
+            roster_entry(
+                "evidence",
+                "evidence-1",
+                "codex:entity-1",
+                "revision-1",
+                "decision-1",
+                "token-2",
+            ),
+        ];
+        let error = graph_source_from_roster("project-1", roster)
+            .expect_err("duplicate material tuples must fail closed")
+            .to_string();
+        assert!(error.contains("NIR1_GRAPH_ROSTER_DUPLICATE_MATERIAL"), "{error}");
+    }
+
+    #[test]
+    fn graph_work_control_cancels_streamed_digest() {
+        let mut control = StopAt(GraphWorkStage::Digest);
+        let error = graph_source_from_roster_with_control(
+            "project-1",
+            vec![roster_entry(
+                "entity",
+                "entity-1",
+                "codex:entity-1",
+                "revision-1",
+                "decision-1",
+                "token-1",
+            )],
+            &mut control,
+        )
+        .expect_err("digest cancellation must be terminal")
+        .to_string();
+        assert!(error.contains("NIR1_GRAPH_TEST_CANCELLED_Digest"), "{error}");
+    }
+
+    #[test]
+    fn input_edges_group_evidence_by_existing_source_identity() -> Result<()> {
+        let source = GraphEligibilitySource {
+            digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            roster: vec![
+                roster_entry(
+                    "entity",
+                    "entity-1",
+                    "codex:entity-1",
+                    "revision-1",
+                    "decision-1",
+                    "token-1",
+                ),
+                roster_entry(
+                    "evidence",
+                    "evidence-1",
+                    "codex:entity-1",
+                    "revision-1",
+                    "decision-1",
+                    "token-1",
+                ),
+            ],
+        };
+        let edges = input_edges("project-1", &source)?;
+        assert_eq!(edges.len(), 2);
+        assert!(edges
+            .iter()
+            .all(|edge| !edge.source_object_identity.starts_with("codex-evidence:")));
+        let entity_edge = edges
+            .iter()
+            .find(|edge| edge.source_object_identity == "codex:entity-1")
+            .expect("entity source edge");
+        assert_eq!(entity_edge.read_set_json, "[\"token-1\"]");
+        Ok(())
+    }
+
+    #[test]
+    fn graph_sql_cancellation_clears_the_progress_handler_without_a_build_budget() -> Result<()> {
         let connection = Connection::open_in_memory()?;
         let query = "WITH RECURSIVE sequence(value) AS (
                          SELECT 1
@@ -1446,22 +1706,16 @@ mod tests {
                          SELECT value + 1 FROM sequence WHERE value < 1000000
                      )
                      SELECT sum(value) FROM sequence";
-        let budget_error = with_graph_sql_budget(&connection, None, || {
+        with_graph_sql_cancellation(&connection, None, || {
             connection
                 .query_row(query, [], |row| row.get::<_, i64>(0))
-                .map(|_| ())
+                .map(|sum| assert_eq!(sum, 500_000_500_000))
                 .map_err(Into::into)
-        })
-        .expect_err("the bounded SQL budget must interrupt the recursive query")
-        .to_string();
-        assert!(
-            budget_error.contains("NIR1_GRAPH_SQL_RESOURCE_LIMIT"),
-            "{budget_error}"
-        );
+        })?;
 
         let cancellation_epoch = Arc::new(AtomicU64::new(2));
         let cancellation_error =
-            with_graph_sql_budget(&connection, Some((&cancellation_epoch, 1)), || {
+            with_graph_sql_cancellation(&connection, Some((&cancellation_epoch, 1)), || {
                 connection
                     .query_row(query, [], |row| row.get::<_, i64>(0))
                     .map(|_| ())

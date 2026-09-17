@@ -6424,6 +6424,30 @@ mod tests {
         let snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
+        let source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        let evidence = source
+            .roster
+            .iter()
+            .filter(|entry| entry.material_kind == "evidence")
+            .map(|entry| {
+                (
+                    entry.material_id.as_str(),
+                    entry.source_object_identity.as_str(),
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(source.roster.len(), 5);
+        assert_eq!(
+            evidence,
+            [
+                ("nir1-evidence-alice", "codex:nir1-alice"),
+                ("nir1-evidence-bob", "codex:nir1-bob"),
+            ]
+            .into_iter()
+            .collect()
+        );
         let binding = db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
             let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
@@ -6492,6 +6516,74 @@ mod tests {
             Ok((edge_count, generation, graph_dirty, chronicle_dirty))
         })?;
         assert_eq!(counts, (4, 2, 0, 0));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_index_keyset_scans_ineligible_pages_past_512_candidates() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+
+        // These candidates intentionally have no Source basis or Decision.
+        // They are ordered before the valid UUID revision so the first eight
+        // fixed-size pages contain only ineligible rows. The final page still
+        // has to advance past them and discover the qualified revision.
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            for index in 0..513 {
+                let set_id = format!("graph-keyset-decoy-set-{index:03}");
+                let proposal_id = format!("graph-keyset-decoy-proposal-{index:03}");
+                let revision_id = format!("000-graph-keyset-decoy-revision-{index:03}");
+                let proposal_key = format!("graph-keyset-decoy-{index:03}");
+                tx.execute(
+                    "INSERT INTO narrative_proposal_sets
+                        (id, run_id, project_id, set_kind, status, summary_json,
+                         created_at, updated_at, version)
+                     VALUES (?1, 'nir1-run', 'default-project', ?2, 'draft', '{}',
+                             '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z', 0)",
+                    params![set_id, NIR1_ENTITY_RELATION_SET_KIND],
+                )?;
+                tx.execute(
+                    "INSERT INTO narrative_proposals
+                        (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                         current_revision_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, 'unreviewed', '{}', ?5,
+                             '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')",
+                    params![
+                        proposal_id,
+                        set_id,
+                        proposal_key,
+                        NIR1_ENTITY_RELATION_PROPOSAL_KIND,
+                        revision_id,
+                    ],
+                )?;
+                tx.execute(
+                    "INSERT INTO narrative_proposal_revisions
+                        (id, proposal_id, revision_number, payload_json, origin_kind,
+                         created_at, created_by)
+                     VALUES (?1, ?2, 1, '{}', ?3,
+                             '2026-09-17T00:00:00.000Z', 'keyset-test')",
+                    params![revision_id, proposal_id, NIR1_ENTITY_RELATION_REVISION_ORIGIN],
+                )?;
+            }
+            tx.commit()?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+        db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        assert_eq!(source.roster.len(), 5);
+        assert!(source
+            .roster
+            .iter()
+            .all(|entry| !entry.revision_id.starts_with("000-graph-keyset-decoy")));
         Ok(())
     }
 
@@ -7560,6 +7652,50 @@ mod tests {
             assert_eq!(during, before, "rejection must precede every surface write");
             assert_eq!(after, before, "rollback must preserve every Graph surface");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn graph_index_work_control_cancels_before_d1_publish() -> anyhow::Result<()> {
+        let (db, runtime, _) = published_graph_fixture()?;
+        let before = db.with_read_transaction(graph_surface_snapshot)?;
+        let snapshot = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+
+        struct StopAt(nir1_entity_relation_index::GraphWorkStage);
+
+        impl nir1_entity_relation_index::GraphWorkControl for StopAt {
+            fn check(
+                &mut self,
+                stage: nir1_entity_relation_index::GraphWorkStage,
+            ) -> anyhow::Result<()> {
+                if stage == self.0 {
+                    anyhow::bail!("NIR1_GRAPH_TEST_CANCELLED_{stage:?}");
+                }
+                Ok(())
+            }
+        }
+
+        let (error, during, after) = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut control = StopAt(nir1_entity_relation_index::GraphWorkStage::D1);
+            let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx_with_control(
+                &tx,
+                &runtime,
+                snapshot,
+                &mut control,
+            )
+            .expect_err("D1 work cancellation must abort publication")
+            .to_string();
+            let during = graph_surface_snapshot(&tx)?;
+            tx.rollback()?;
+            let after = graph_surface_snapshot(conn)?;
+            Ok::<_, anyhow::Error>((error, during, after))
+        })?;
+        assert!(error.contains("NIR1_GRAPH_TEST_CANCELLED_D1"), "{error}");
+        assert_eq!(during, before);
+        assert_eq!(after, before);
         Ok(())
     }
 
@@ -9076,7 +9212,7 @@ mod tests {
         let approved = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
         })?;
-        assert_eq!(approved.roster.len(), 3);
+        assert_eq!(approved.roster.len(), 5);
         append_typed_decision(&db, "nir1-run", &revoked, "rejected")?;
         let revoked_source = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
@@ -9140,7 +9276,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_index_rejects_oversized_input_before_parse_and_reuses_connection() -> anyhow::Result<()>
+    fn graph_index_skips_oversized_revision_before_parse_and_reuses_connection() -> anyhow::Result<()>
     {
         let (db, runtime, created) = published_graph_fixture()?;
         let revision_id = created["revisionId"]
@@ -9168,13 +9304,16 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })?;
 
-        let error = match db.with_read_transaction(|conn| {
+        let _snapshot = match db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         }) {
-            Ok(_) => anyhow::bail!("a valid oversized row must be rejected before JSON parsing"),
-            Err(error) => error.to_string(),
+            Ok(snapshot) => snapshot,
+            Err(error) => return Err(error),
         };
-        assert!(error.contains("NIR1_GRAPH_ROSTER_INPUT_LIMIT"), "{error}");
+        let source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        assert!(source.roster.is_empty());
         let generation: i64 = db.with_conn(|conn| {
             conn.query_row(
                 "SELECT generation FROM narrative_semantic_index_metadata
@@ -9481,8 +9620,8 @@ mod tests {
     }
 
     #[test]
-    fn graph_prepare_native_material_admission_accepts_512_and_rejects_513() -> anyhow::Result<()> {
-        for (extra_relation, should_prepare) in [(false, true), (true, false)] {
+    fn graph_prepare_native_material_admission_is_project_wide() -> anyhow::Result<()> {
+        for extra_relation in [false, true] {
             let db = fresh_migrated_memory()?;
             seed_run_and_catalog(&db)?;
             let entity_ids = (0..254)
@@ -9553,7 +9692,7 @@ mod tests {
                     project_id: "default-project".into(),
                     scene_id: "nir1".into(),
                     proposal_key: Some(format!("nir1:graph-admission:second:{extra_relation}")),
-                    entity_ids: vec![entity_ids[0].clone()],
+                    entity_ids: entity_ids[..3].to_vec(),
                     relation_ids: vec![],
                 },
             )?;
@@ -9598,26 +9737,28 @@ mod tests {
                     "default-project",
                 )
             });
-            if should_prepare {
-                let source = db.with_read_transaction(|conn| {
-                    nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
-                })?;
-                assert!(eligible_revision_ids.iter().all(|revision_id| {
-                    source
-                        .roster
-                        .iter()
-                        .any(|entry| &entry.revision_id == revision_id)
-                }));
-                graph_result.expect("512 material records must remain within Graph admission");
-            } else {
-                let error = match graph_result {
-                    Ok(_) => anyhow::bail!(
-                        "513 material records must be rejected before snapshot creation"
-                    ),
-                    Err(error) => error.to_string(),
-                };
-                assert!(error.contains("NIR1_GRAPH_ROSTER_RECORD_LIMIT"), "{error}");
-            }
+            let snapshot = graph_result
+                .expect("project-wide valid Revisions must not use the per-Revision admission");
+            let source = db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+            })?;
+            assert!(eligible_revision_ids.iter().all(|revision_id| {
+                source
+                    .roster
+                    .iter()
+                    .any(|entry| &entry.revision_id == revision_id)
+            }));
+            assert_eq!(
+                source.roster.len(),
+                if extra_relation { 515 } else { 514 },
+                "individually valid revisions may exceed the former project-wide 512 roster cap"
+            );
+            assert_eq!(snapshot.edges_for_test().len(), 1 + source
+                .roster
+                .iter()
+                .map(|entry| entry.source_object_identity.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len());
         }
         Ok(())
     }
@@ -9680,15 +9821,16 @@ mod tests {
         append_typed_decision(&db, &ineligible_run, &ineligible, "rejected")?;
 
         let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
-        let error = match db.with_read_transaction(|conn| {
+        let _snapshot = match db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         }) {
-            Ok(_) => anyhow::bail!(
-                "ineligible Revision material must still count toward the whole Source bound"
-            ),
-            Err(error) => error.to_string(),
+            Ok(snapshot) => snapshot,
+            Err(error) => return Err(error),
         };
-        assert!(error.contains("NIR1_GRAPH_ROSTER_RECORD_LIMIT"), "{error}");
+        let source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        assert_eq!(source.roster.len(), 508);
         Ok(())
     }
 
@@ -9755,7 +9897,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_prepare_rejects_oversized_current_revision_id_before_owned_read() -> anyhow::Result<()>
+    fn graph_prepare_skips_oversized_current_revision_id_before_owned_read() -> anyhow::Result<()>
     {
         let (db, runtime, created) = published_graph_fixture()?;
         let proposal_id = created["proposalId"]
@@ -9772,16 +9914,16 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })?;
 
-        let error = match db.with_read_transaction(|conn| {
+        let _snapshot = match db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         }) {
-            Ok(_) => anyhow::bail!("oversized current Revision identity must be rejected"),
-            Err(error) => error,
+            Ok(snapshot) => snapshot,
+            Err(error) => return Err(error),
         };
-        assert!(
-            error.to_string().contains("NIR1_GRAPH_ROSTER_INPUT_LIMIT"),
-            "{error}"
-        );
+        let source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        assert!(source.roster.is_empty());
         Ok(())
     }
 
