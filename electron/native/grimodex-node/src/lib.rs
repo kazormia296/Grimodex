@@ -30,6 +30,7 @@ mod state;
 mod test_link_stubs;
 
 use std::io::Write;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Instant;
@@ -1027,6 +1028,40 @@ fn reopen_narrative_maintenance_admission(
         .narrative_maintenance_recovery_gate
         .reopen_admission(binding.as_ref())
         .map_err(AppError::Anyhow)
+}
+
+/// A panic while the shared open/restore implementation owns `open_lock`
+/// poisons that mutex even when the native owner catches the panic.  Recover
+/// the lock only after the workspace switching and maintenance-admission
+/// invariants have been restored; otherwise fail closed and leave the
+/// workspace in recovery rather than allowing a poisoned or half-swapped
+/// authority to be reused.
+fn recover_workspace_open_lock_after_panic(
+    state: &Arc<AppState>,
+) -> std::result::Result<(), AppError> {
+    if state
+        .ws
+        .switching
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "NEX_WORKSPACE_OPEN_PANIC_UNRECOVERABLE: workspace switch is still active"
+        )));
+    }
+    state
+        .narrative_maintenance_recovery_gate
+        .assert_no_active_attempts()
+        .map_err(AppError::Anyhow)?;
+    if state
+        .narrative_maintenance_recovery_gate
+        .maintenance_admission_is_closed()
+    {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "NEX_WORKSPACE_OPEN_PANIC_UNRECOVERABLE: maintenance admission remains closed"
+        )));
+    }
+    state.ws.open_lock.clear_poison();
+    Ok(())
 }
 
 /// RAII fallback for the narrow interval in which workspace open/restore has
@@ -4142,6 +4177,15 @@ impl Backend {
                     }
                     Ok(())
                 };
+            let work_noop_completed =
+                |item: &grimodex_db::narrative_extraction::DesiredWork| -> anyhow::Result<()> {
+                    if let Some(attempt_id) = attempt_id_for_control.as_deref() {
+                        state_for_control
+                            .narrative_maintenance_attempts
+                            .mark_work_completed(attempt_id, &item.canonical_key())?;
+                    }
+                    Ok(())
+                };
             let grant_finalize = |work_key: &str| -> anyhow::Result<()> {
                 if let Some(attempt_id) = attempt_id_for_control.as_deref() {
                     let granted = state_for_control
@@ -4179,6 +4223,7 @@ impl Backend {
                     register_work: &register_work,
                     work_started: &work_started,
                     work_completed: &work_completed,
+                    work_noop_completed: &work_noop_completed,
                 }
             });
             let result = authority.db().with_background_connection_priority(|| {
@@ -5635,17 +5680,19 @@ impl Backend {
                     .panic_after_admission_close_for_test();
                 Ok(())
             };
-            let opened_result = open_workspace_sync_traced_with_pre_swap(
-                &state.ws,
-                &state.gs,
-                &path,
-                &mut trace,
-                &mut on_swapped,
-                Some(&mut before_swap),
-            );
+            let opened_result = catch_unwind(AssertUnwindSafe(|| {
+                open_workspace_sync_traced_with_pre_swap(
+                    &state.ws,
+                    &state.gs,
+                    &path,
+                    &mut trace,
+                    &mut on_swapped,
+                    Some(&mut before_swap),
+                )
+            }));
             drop(before_swap);
             let result = match opened_result {
-                Ok(opened) => {
+                Ok(Ok(opened)) => {
                     // Safe Mode / RecoveryRequired return before the shared
                     // authority-swap hook by design. Bind that restore target
                     // explicitly before emitting the event, otherwise main
@@ -5682,7 +5729,7 @@ impl Backend {
                         Err(error) => Err(error),
                     }
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     // The pre-swap admission close also covers errors before
                     // authority publication. Reopen against whichever old
                     // binding is still active so a failed open cannot strand
@@ -5690,6 +5737,18 @@ impl Backend {
                     match admission_guard.reopen() {
                         Ok(()) => Err(error),
                         Err(reopen_error) => Err(reopen_error),
+                    }
+                }
+                Err(_) => {
+                    let reopen_result = admission_guard.reopen();
+                    match reopen_result {
+                        Ok(()) => match recover_workspace_open_lock_after_panic(&state) {
+                            Ok(()) => Err(AppError::Anyhow(anyhow::anyhow!(
+                                "NEX_WORKSPACE_OPEN_PANIC: workspace open panicked"
+                            ))),
+                            Err(error) => Err(error),
+                        },
+                        Err(error) => Err(error),
                     }
                 }
             };
@@ -5881,24 +5940,36 @@ impl Backend {
             let workspace_binding = active_workspace_path(&state.ws)
                 .ok()
                 .map(|path| path.to_string_lossy().into_owned());
-            let restore_result = restore_backup_core(&state.ws, &file_name, move || {
-                rotate_ime_workspace(&state_for_hook);
-                state_for_hook
-                    .profile_egress
-                    .bind_workspace(workspace_binding.clone());
-                let mut matcher = match state_for_hook.codex_matcher.lock() {
-                    Ok(matcher) => matcher,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                *matcher = None;
-                state_for_hook.semantic.rotate_workspace_epoch();
-                // Restore publishes a replacement authority through a
-                // separate shared path; advance the maintenance gate here as
-                // well so a late old-authority ACK cannot win the handoff.
-                state_for_hook
-                    .narrative_maintenance_recovery_gate
-                    .mark_workspace_swapped();
-            });
+            let restore_result = catch_unwind(AssertUnwindSafe(|| {
+                restore_backup_core(&state.ws, &file_name, move || {
+                    rotate_ime_workspace(&state_for_hook);
+                    state_for_hook
+                        .profile_egress
+                        .bind_workspace(workspace_binding.clone());
+                    let mut matcher = match state_for_hook.codex_matcher.lock() {
+                        Ok(matcher) => matcher,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    *matcher = None;
+                    state_for_hook.semantic.rotate_workspace_epoch();
+                    // Restore publishes a replacement authority through a
+                    // separate shared path; advance the maintenance gate here as
+                    // well so a late old-authority ACK cannot win the handoff.
+                    state_for_hook
+                        .narrative_maintenance_recovery_gate
+                        .mark_workspace_swapped();
+                })
+            }));
+            let restore_result = match restore_result {
+                Ok(result) => result,
+                Err(_) => {
+                    admission_guard.reopen()?;
+                    recover_workspace_open_lock_after_panic(&state)?;
+                    return Err(AppError::Anyhow(anyhow::anyhow!(
+                        "NEX_WORKSPACE_RESTORE_PANIC: workspace restore panicked"
+                    )));
+                }
+            };
             admission_guard.reopen()?;
             restore_result?;
             let path = active_workspace_path(&state.ws)?;
@@ -11572,6 +11643,7 @@ mod narrative_maintenance_epoch_event_tests {
 #[cfg(test)]
 mod narrative_maintenance_admission_unwind_tests {
     use super::*;
+    use grimodex_db::narrative_extraction::LEGACY_BACKFILL_WORK_KEY;
     use grimodex_db::state::{ActiveWorkspace, WorkspaceAuthority};
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::Ordering;
@@ -11614,6 +11686,246 @@ mod narrative_maintenance_admission_unwind_tests {
             },
             root,
         )
+    }
+
+    async fn begin_and_cancel_after_panic(
+        backend: &Backend,
+        attempt_id: &str,
+        binding: serde_json::Value,
+    ) {
+        let begin: serde_json::Value = serde_json::from_str(
+            &backend
+                .begin_narrative_maintenance_attempt(attempt_id.to_string(), binding)
+                .await
+                .expect("actual begin after workspace panic"),
+        )
+        .expect("begin receipt JSON");
+        assert_eq!(begin["status"], "open");
+        assert_eq!(begin["attemptId"], attempt_id);
+        let terminal: serde_json::Value = serde_json::from_str(
+            &backend
+                .cancel_narrative_maintenance_attempt(attempt_id.to_string(), "closed".to_string())
+                .await
+                .expect("close actual begin after workspace panic"),
+        )
+        .expect("terminal receipt JSON");
+        assert_eq!(terminal["state"], "interrupted");
+        assert_eq!(terminal["connectionReusable"], true);
+    }
+
+    #[tokio::test]
+    async fn native_registry_and_real_db_coalesced_work_uses_noop_completion() {
+        let (backend, root) = backend_with_active_workspace("coalesced-noop");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        authority
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json,
+                         spec_digest, status, coverage_json, created_at, started_at,
+                         completed_at, version, run_kind, semantic_epoch_id, work_key)
+                     VALUES ('coalesced-run', 'project-1', 'maintenance', '{}', '{}',
+                             'sha256:coalesced', 'running', '{}',
+                             '2026-01-01T00:00:00.000Z',
+                             '2026-01-01T00:00:00.000Z', NULL, 0, 'backfill',
+                             NULL, ?1)",
+                    [LEGACY_BACKFILL_WORK_KEY],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed running durable work");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        let canonical_key =
+            format!("narrative-maintenance:v1/backfill/project-1/{LEGACY_BACKFILL_WORK_KEY}");
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .mark_recovered_for_binding(&binding, &canonical_key);
+        drop(authority);
+
+        let attempt_id = "attempt-coalesced-noop";
+        backend
+            .begin_narrative_maintenance_attempt(
+                attempt_id.to_string(),
+                serde_json::to_value(&binding).expect("binding JSON"),
+            )
+            .await
+            .expect("begin Native attempt");
+        let cycle: serde_json::Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "attemptId": attempt_id,
+                    "work": [{
+                        "projectId": "project-1",
+                        "runKind": "backfill",
+                        "workKey": LEGACY_BACKFILL_WORK_KEY,
+                        "semanticEpochId": null,
+                        "reasons": ["same-process-coalesced"]
+                    }],
+                    "wakeProjectIds": [],
+                    "workspaceBinding": binding,
+                }))
+                .await
+                .expect("coalesced Native cycle"),
+        )
+        .expect("cycle JSON");
+        assert_eq!(cycle["status"], "coalesced");
+
+        let receipt: serde_json::Value = serde_json::from_str(
+            &backend
+                .cancel_narrative_maintenance_attempt(attempt_id.to_string(), "closed".to_string())
+                .await
+                .expect("terminal coalesced receipt"),
+        )
+        .expect("receipt JSON");
+        assert_eq!(receipt["state"], "succeeded");
+        assert_eq!(receipt["works"][0]["status"], "succeeded");
+        assert_eq!(receipt["connectionReusable"], true);
+        let authority = active_database(&backend.state.ws).expect("active authority after cycle");
+        let durable_status: String = authority
+            .db()
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = 'coalesced-run'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read coalesced durable run");
+        assert_eq!(
+            durable_status, "running",
+            "no-op must not terminalize the live Run"
+        );
+        drop(authority);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn native_registry_and_real_db_repeated_key_preserves_first_success() {
+        let (backend, root) = backend_with_active_workspace("repeated-key-db");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        let attempt_id = "attempt-repeated-key-db";
+        let key = "narrative-maintenance:v1/dependency-verify/project-1/work:epoch-current";
+
+        backend
+            .begin_narrative_maintenance_attempt(
+                attempt_id.to_string(),
+                serde_json::to_value(&binding).expect("binding JSON"),
+            )
+            .await
+            .expect("begin Native attempt");
+        backend
+            .state
+            .narrative_maintenance_attempts
+            .start(attempt_id, std::iter::empty::<String>())
+            .expect("start native attempt");
+        backend
+            .state
+            .narrative_maintenance_attempts
+            .register_work(attempt_id, key)
+            .expect("register first execution");
+        backend
+            .state
+            .narrative_maintenance_attempts
+            .mark_work_started(attempt_id, key)
+            .expect("start first execution");
+        authority
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT OR REPLACE INTO project_settings (project_id, key, value)
+                     VALUES ('project-1', 'maintenance.repeated-key', 'first-success')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("first execution durable write");
+        assert!(backend
+            .state
+            .narrative_maintenance_attempts
+            .grant_work_finalize(attempt_id, key)
+            .expect("grant first execution"));
+        backend
+            .state
+            .narrative_maintenance_attempts
+            .mark_work_succeeded(attempt_id, key)
+            .expect("complete first execution");
+
+        // Rediscovery registers a second queue execution with the same
+        // effective identity. Cancellation wins before its adapter grant,
+        // while the first durable DB result remains successful.
+        backend
+            .state
+            .narrative_maintenance_attempts
+            .register_work(attempt_id, key)
+            .expect("register repeated execution");
+        backend
+            .state
+            .narrative_maintenance_attempts
+            .mark_work_started(attempt_id, key)
+            .expect("start repeated execution");
+        assert!(backend
+            .state
+            .narrative_maintenance_attempts
+            .request_cancel(attempt_id, "cancel-before-second-finalize")
+            .expect("cancel repeated execution")
+            .is_none());
+        assert!(!backend
+            .state
+            .narrative_maintenance_attempts
+            .grant_work_finalize(attempt_id, key)
+            .expect("second finalization must be denied"));
+        backend
+            .state
+            .narrative_maintenance_attempts
+            .set_cleanup_outcome(
+                attempt_id,
+                NarrativeMaintenanceCleanupOutcome {
+                    status: "clean".to_string(),
+                    error: None,
+                },
+                true,
+            )
+            .expect("record DB cleanup");
+        let receipt = backend
+            .state
+            .narrative_maintenance_attempts
+            .settle(attempt_id, false, None)
+            .expect("settle repeated execution");
+        assert_eq!(receipt.state, "interrupted");
+        assert_eq!(receipt.works.len(), 2);
+        assert_eq!(receipt.works[0].work_key, key);
+        assert_eq!(receipt.works[0].status, "succeeded");
+        assert_eq!(receipt.works[1].work_key, key);
+        assert_eq!(receipt.works[1].status, "interrupted");
+        let durable_value: String = authority
+            .db()
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT value FROM project_settings
+                      WHERE project_id = 'project-1' AND key = 'maintenance.repeated-key'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read first durable DB result");
+        assert_eq!(durable_value, "first-success");
+        drop(authority);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -11760,16 +12072,25 @@ mod narrative_maintenance_admission_unwind_tests {
             .expect("read binding after open panic")
             .expect("active binding after open panic");
         assert_eq!(after, before);
-        let binding: MaintenanceWorkspaceBinding = serde_json::from_str(&after).expect("binding");
+        let binding: serde_json::Value = serde_json::from_str(&after).expect("binding");
+        begin_and_cancel_after_panic(&backend, "post-open-panic-begin", binding).await;
+
+        // The caught panic must also leave the shared open lock reusable by a
+        // real subsequent workspace swap, not only by the begin call above.
         backend
-            .state
-            .narrative_maintenance_recovery_gate
-            .register_attempt("post-open-panic-begin", &binding)
-            .expect("subsequent begin after open panic");
-        backend
-            .state
-            .narrative_maintenance_recovery_gate
-            .release_attempt("post-open-panic-begin");
+            .open_workspace(root.join("replacement").to_string_lossy().into_owned())
+            .await
+            .expect("subsequent workspace open after caught panic");
+        let replacement_binding = backend
+            .get_narrative_maintenance_workspace_binding()
+            .expect("read replacement binding")
+            .expect("replacement binding");
+        begin_and_cancel_after_panic(
+            &backend,
+            "post-open-panic-replacement-begin",
+            serde_json::from_str(&replacement_binding).expect("replacement binding JSON"),
+        )
+        .await;
 
         drop(backend);
         let _ = std::fs::remove_dir_all(root);
@@ -11821,16 +12142,26 @@ mod narrative_maintenance_admission_unwind_tests {
             .expect("read binding after restore panic")
             .expect("active binding after restore panic");
         assert_eq!(after, before);
-        let binding: MaintenanceWorkspaceBinding = serde_json::from_str(&after).expect("binding");
+        let binding: serde_json::Value = serde_json::from_str(&after).expect("binding");
+        begin_and_cancel_after_panic(&backend, "post-restore-panic-begin", binding).await;
+
+        // Exercise the same restore path after the caught panic. This proves
+        // the shared workspace open lock was cleared before a later restore,
+        // rather than only proving that a direct begin can reacquire it.
         backend
-            .state
-            .narrative_maintenance_recovery_gate
-            .register_attempt("post-restore-panic-begin", &binding)
-            .expect("subsequent begin after restore panic");
-        backend
-            .state
-            .narrative_maintenance_recovery_gate
-            .release_attempt("post-restore-panic-begin");
+            .restore_backup(backup_name.to_string())
+            .await
+            .expect("subsequent workspace restore after caught panic");
+        let replacement_binding = backend
+            .get_narrative_maintenance_workspace_binding()
+            .expect("read replacement binding")
+            .expect("replacement binding");
+        begin_and_cancel_after_panic(
+            &backend,
+            "post-restore-panic-replacement-begin",
+            serde_json::from_str(&replacement_binding).expect("replacement binding JSON"),
+        )
+        .await;
 
         drop(backend);
         let _ = std::fs::remove_dir_all(root);

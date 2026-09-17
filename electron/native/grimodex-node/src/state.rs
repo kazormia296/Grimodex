@@ -1117,11 +1117,56 @@ impl NarrativeMaintenanceAttemptRegistry {
         );
         let execution_index = granted_index
             .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"))?;
-        entry.finalize_grants.remove(&execution_index);
+        Self::finish_work_success(entry, execution_index, true)?;
+        Ok(())
+    }
+
+    /// Complete one queue execution that did not dispatch an adapter.
+    /// SkipCompleted, Coalesced, ManualIntervention, and foreground-held
+    /// paths have no durable terminal transaction, so they must not acquire a
+    /// finalization grant. Select an ungranted running execution so repeated
+    /// effective keys remain independent queue instances.
+    pub fn mark_work_completed(&self, attempt_id: &str, work_key: &str) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get_mut(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        // A no-op completion is still a work boundary: cancellation that
+        // linearized first must leave this item requeueable.
+        anyhow::ensure!(
+            entry.state != NarrativeMaintenanceAttemptState::StopRequested,
+            "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won at no-op work boundary"
+        );
+        let execution_index = entry
+            .works
+            .iter()
+            .enumerate()
+            .find(|(index, work)| {
+                work.work_key == work_key
+                    && work.status == "running"
+                    && !entry.finalize_grants.contains(index)
+            })
+            .map(|(index, _)| index)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"))?;
+        Self::finish_work_success(entry, execution_index, false)?;
+        Ok(())
+    }
+
+    fn finish_work_success(
+        entry: &mut NarrativeMaintenanceAttemptEntry,
+        execution_index: usize,
+        consume_finalize_grant: bool,
+    ) -> anyhow::Result<()> {
+        if consume_finalize_grant {
+            entry.finalize_grants.remove(&execution_index);
+        }
         let work = entry
             .works
             .get_mut(execution_index)
-            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN: {work_key}"))?;
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_WORK_UNKNOWN"))?;
         work.status = "succeeded".to_string();
         if entry.finalize_grants.is_empty()
             && !entry.work_registration_open
@@ -2103,6 +2148,108 @@ mod tests {
         assert_eq!(receipt.works[0].status, "succeeded");
         assert_eq!(receipt.works[1].work_key, key);
         assert_eq!(receipt.works[1].status, "interrupted");
+
+        // A real adapter completion cannot use the no-op boundary to bypass
+        // its own grant. The second repeated execution remains independently
+        // cancellable and must reject strict success without that grant.
+        registry
+            .begin("attempt-repeated-key-strict", &binding)
+            .expect("begin strict");
+        registry
+            .start("attempt-repeated-key-strict", std::iter::empty::<String>())
+            .expect("start strict");
+        registry
+            .register_work("attempt-repeated-key-strict", key)
+            .expect("register strict first execution");
+        registry
+            .register_work("attempt-repeated-key-strict", key)
+            .expect("register strict second execution");
+        registry
+            .mark_work_started("attempt-repeated-key-strict", key)
+            .expect("start strict first execution");
+        registry
+            .mark_work_started("attempt-repeated-key-strict", key)
+            .expect("start strict second execution");
+        assert!(registry
+            .grant_work_finalize("attempt-repeated-key-strict", key)
+            .expect("grant strict first execution"));
+        assert!(
+            registry
+                .mark_work_completed("attempt-repeated-key-strict", key)
+                .is_ok(),
+            "no-op must complete only the ungranted repeated execution"
+        );
+        assert!(
+            registry
+                .mark_work_succeeded("attempt-repeated-key-strict", key)
+                .is_ok(),
+            "strict completion must consume the remaining grant"
+        );
+        assert!(registry
+            .close_work_registration("attempt-repeated-key-strict")
+            .expect("close strict discovery"));
+        assert!(registry
+            .settle(
+                "attempt-repeated-key-strict",
+                true,
+                Some(binding.generation)
+            )
+            .expect("settle strict repeated execution")
+            .works
+            .iter()
+            .all(|work| work.status == "succeeded"));
+    }
+
+    #[test]
+    fn no_op_completion_is_distinct_from_granted_adapter_success() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-no-op".to_string(),
+            generation: 7,
+        };
+        registry.begin("attempt-no-op", &binding).expect("begin");
+        registry
+            .start("attempt-no-op", ["verify:epoch-1".to_string()])
+            .expect("start");
+        registry
+            .mark_work_started("attempt-no-op", "verify:epoch-1")
+            .expect("dequeue");
+        assert!(
+            registry
+                .mark_work_succeeded("attempt-no-op", "verify:epoch-1")
+                .is_err(),
+            "adapter success must require a finalization grant"
+        );
+        // SkipCompleted/coalesced/manual paths do not own a final durable
+        // transaction, so they must complete without a finalize grant.
+        registry
+            .mark_work_completed("attempt-no-op", "verify:epoch-1")
+            .expect("complete no-op work");
+        assert!(registry
+            .close_work_registration("attempt-no-op")
+            .expect("close discovery"));
+        let receipt = registry
+            .settle("attempt-no-op", true, Some(binding.generation))
+            .expect("settle no-op");
+        assert_eq!(receipt.state, "succeeded");
+        assert_eq!(receipt.works[0].status, "succeeded");
+
+        registry
+            .begin("attempt-no-op-cancel", &binding)
+            .expect("begin cancel");
+        registry
+            .start("attempt-no-op-cancel", ["verify:epoch-2".to_string()])
+            .expect("start cancel");
+        registry
+            .mark_work_started("attempt-no-op-cancel", "verify:epoch-2")
+            .expect("dequeue cancel");
+        assert!(registry
+            .request_cancel("attempt-no-op-cancel", "cancelled")
+            .expect("cancel no-op")
+            .is_none());
+        assert!(registry
+            .mark_work_completed("attempt-no-op-cancel", "verify:epoch-2")
+            .is_err());
     }
 
     #[test]
