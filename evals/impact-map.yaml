@@ -9,6 +9,7 @@ allSuites:
   - narrative-extraction
   - narrative-semantic-contract
   - nir1-entity-relation-review
+  - nir1-capacity-diagnostics
 rules:
   - id: quality-foundation
     reason: Quality policy, skills, selectors, and evaluation metadata affect every gate.
@@ -365,6 +366,20 @@ rules:
       - GDX-POLICY-001
     suites:
       - nir1-entity-relation-review
+  - id: nir1-capacity-diagnostics
+    reason: NIR-1 B capacity diagnostics require isolated fresh-copy/process paths, a machine-readable manifest, and feature-gated Native fixture coverage without activating Graph capacity claims.
+    paths:
+      - evals/nir1-capacity/**
+      - scripts/nir1-material-capacity-probe.mjs
+      - scripts/nir1-material-capacity-probe.test.mjs
+      - src-tauri/crates/grimodex-db/src/bin/nir1-material-capacity.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_diagnostics.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs
+    requirements:
+      - GDX-ISOLATION-001
+      - GDX-TRACE-001
+    suites:
+      - nir1-capacity-diagnostics
   - id: narrative-extraction
     reason: Narrative source, Evidence, semantic scoring, Detail and Temporal projection contracts, Gold corpus, and Chronicle extraction changes share one release gate.
     paths:

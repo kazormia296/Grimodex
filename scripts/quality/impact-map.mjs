@@ -376,6 +376,24 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
       ],
     ],
   },
+  "nir1-capacity-diagnostics": {
+    failureClasses: ["quality", "artifact"],
+    commands: [
+      ["node", "--test", "scripts/nir1-material-capacity-probe.test.mjs"],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--features",
+        "nir1-material-diagnostics",
+        "--lib",
+        "narrative_extraction::nir1_capacity",
+      ],
+    ],
+  },
   "narrative-extraction": {
     failureClasses: ["quality", "artifact"],
     commands: [["pnpm", "eval:narrative"]],

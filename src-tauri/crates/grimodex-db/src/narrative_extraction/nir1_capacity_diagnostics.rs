@@ -28,8 +28,10 @@ use super::{
     nir1_chronicle_index::NirChronicleIndexRuntime,
     nir1_entity_relation::{read_nir1_entity_relation_revision, Nir1EntityRelationRevisionRead},
     nir1_entity_relation_index::{
-        cold_reopen_graph_index_with_control, prepare_graph_index_build_with_control,
+        cold_reopen_graph_index_with_control, is_complete_registered_with_control,
+        prepare_graph_index_build_with_control,
         publish_nir1_entity_relation_index_in_tx_with_control,
+        read_eligibility_source_with_control, INDEX_KEY as ENTITY_RELATION_INDEX_KEY,
     },
     NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
 };
@@ -43,6 +45,63 @@ use crate::Database;
 pub const PER_REVISION_MATERIAL_LIMIT: usize = 512;
 pub const PER_REVISION_INPUT_BYTE_LIMIT: usize = 2 * 1024 * 1024;
 const PROGRESS_CADENCE_VM_STEPS: i32 = 1_000;
+
+/// A capacity result is one path measurement.  Keeping the path in the
+/// Native observation makes it impossible for the orchestrator to silently
+/// merge Source, registration, coverage, Restore, and reopen measurements.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapacityDiagnosticMode {
+    FullBuild,
+    SourceReresolution,
+    CompleteRegistration,
+    Coverage,
+    Restore,
+    ColdReopen,
+}
+
+impl CapacityDiagnosticMode {
+    pub const ALL: [Self; 6] = [
+        Self::FullBuild,
+        Self::SourceReresolution,
+        Self::CompleteRegistration,
+        Self::Coverage,
+        Self::Restore,
+        Self::ColdReopen,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FullBuild => "full-build",
+            Self::SourceReresolution => "source-reresolution",
+            Self::CompleteRegistration => "complete-registration",
+            Self::Coverage => "coverage",
+            Self::Restore => "restore",
+            Self::ColdReopen => "cold-reopen",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "full-build" | "fullBuild" | "build" => Ok(Self::FullBuild),
+            "source-reresolution" | "sourceReResolution" | "source-reresolve" => {
+                Ok(Self::SourceReresolution)
+            }
+            "complete-registration" | "completeRegistration" => Ok(Self::CompleteRegistration),
+            "coverage" => Ok(Self::Coverage),
+            "restore" => Ok(Self::Restore),
+            "cold-reopen" | "coldReopen" => Ok(Self::ColdReopen),
+            other => anyhow::bail!(
+                "unknown NIR-1 capacity diagnostic mode '{other}'; expected one of {}",
+                Self::ALL
+                    .iter()
+                    .map(|mode| mode.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,11 +156,19 @@ pub struct ProcessMetrics {
     pub system_cpu_us: Option<u64>,
     pub rss_bytes: Option<u64>,
     pub hwm_rss_bytes: Option<u64>,
+    /// Peak RSS for the complete child process.  The probe runs one Native
+    /// child per path, so this is the total process peak for that path.  It is
+    /// kept separate from the point-in-time RSS sample.
+    pub total_peak_rss_bytes: Option<u64>,
     pub ru_maxrss_bytes: Option<u64>,
     pub sqlite_memory_bytes: Option<u64>,
     pub sqlite_memory_highwater_bytes: Option<u64>,
     pub read_bytes: Option<u64>,
     pub write_bytes: Option<u64>,
+    /// SQLite temporary files are not reliably visible through `/proc` on all
+    /// supported hosts.  Keep the value nullable and report the path-local
+    /// notMeasured reason instead of turning an unavailable sample into zero.
+    pub temporary_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -155,6 +222,7 @@ pub struct CapacityObservation {
     pub diagnostic_only: bool,
     pub process_id: u32,
     pub fixture_id: String,
+    pub mode: CapacityDiagnosticMode,
     pub status: &'static str,
     pub admission: &'static str,
     pub supported_capacity_claim: bool,
@@ -167,7 +235,7 @@ pub struct CapacityObservation {
     pub graph_lifecycle: GraphLifecycleMetrics,
     pub cancel: CancelMeasurement,
     pub rejection_reasons: BTreeMap<String, usize>,
-    pub not_measured: Vec<&'static str>,
+    pub not_measured: Vec<String>,
 }
 
 #[derive(Default)]
@@ -647,6 +715,61 @@ fn diff_u64(after: Option<u64>, before: Option<u64>) -> Option<u64> {
     Some(after?.saturating_sub(before?))
 }
 
+fn path_not_measured(mode: CapacityDiagnosticMode, metric: &'static str) -> String {
+    format!("{}:{metric}", mode.as_str())
+}
+
+fn mode_measurement_not_measured(
+    mode: CapacityDiagnosticMode,
+    lifecycle: &GraphLifecycleRun,
+) -> Vec<String> {
+    let mut not_measured = Vec::new();
+    // The current child owns one Native process, so `hwmRssBytes` is also a
+    // total process peak.  Keep this branch explicit for platforms where the
+    // procfs/rusage sample is unavailable.
+    if lifecycle.terminal_error.is_some() {
+        not_measured.push(path_not_measured(mode, "total-peak-rss"));
+    }
+    if matches!(
+        mode,
+        CapacityDiagnosticMode::FullBuild
+            | CapacityDiagnosticMode::CompleteRegistration
+            | CapacityDiagnosticMode::Restore
+            | CapacityDiagnosticMode::ColdReopen
+    ) && lifecycle.publish_owner_ms.is_none()
+    {
+        not_measured.push(path_not_measured(mode, "publish-hold"));
+    }
+    if matches!(
+        mode,
+        CapacityDiagnosticMode::FullBuild
+            | CapacityDiagnosticMode::CompleteRegistration
+            | CapacityDiagnosticMode::Restore
+            | CapacityDiagnosticMode::ColdReopen
+    ) && lifecycle.publish_transaction_ms.is_none()
+    {
+        not_measured.push(path_not_measured(mode, "publish-transaction"));
+    }
+    if matches!(
+        mode,
+        CapacityDiagnosticMode::FullBuild | CapacityDiagnosticMode::ColdReopen
+    ) && lifecycle.cold_reopen_ms.is_none()
+    {
+        not_measured.push(path_not_measured(mode, "cold-reopen"));
+    }
+    if matches!(
+        mode,
+        CapacityDiagnosticMode::FullBuild | CapacityDiagnosticMode::Restore
+    ) && lifecycle.restore_verify_ms.is_none()
+    {
+        not_measured.push(path_not_measured(mode, "restore"));
+    }
+    not_measured.push(path_not_measured(mode, "temporary-bytes"));
+    not_measured.push(path_not_measured(mode, "foreground-wait"));
+    not_measured.push(path_not_measured(mode, "cancel-latency"));
+    not_measured
+}
+
 #[derive(Debug)]
 struct GraphLifecycleRun {
     shape: Option<super::nir1_entity_relation_index::GraphSnapshotCapacity>,
@@ -665,10 +788,7 @@ struct GraphLifecycleRun {
     terminal_error: Option<String>,
 }
 
-fn conservative_connection_hold_ms(
-    manual_a2_owner_ms: f64,
-    lifecycle: &GraphLifecycleRun,
-) -> f64 {
+fn conservative_connection_hold_ms(manual_a2_owner_ms: f64, lifecycle: &GraphLifecycleRun) -> f64 {
     [
         Some(manual_a2_owner_ms),
         lifecycle.prepare_ms,
@@ -771,6 +891,314 @@ fn install_diagnostic_trace(conn: &Connection, _trace: &Arc<TraceCounter>) {
     // measurement owner; reinstalling it on a newly opened connection keeps
     // cold-reopen Restore/Verify SQL inside the same conservative profile.
     conn.trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(trace_profile));
+}
+
+fn empty_lifecycle(error: Option<String>) -> GraphLifecycleRun {
+    GraphLifecycleRun {
+        shape: None,
+        prepared: false,
+        published: false,
+        rolled_back: false,
+        cold_reopened: false,
+        restore_verified: false,
+        published_generation: None,
+        prepare_ms: None,
+        publish_owner_ms: None,
+        publish_transaction_ms: None,
+        cold_reopen_ms: None,
+        restore_verify_ms: None,
+        restore_report_records: None,
+        terminal_error: error,
+    }
+}
+
+fn owned_mode_operation<T, F>(
+    db: &Database,
+    progress_callbacks: Option<Arc<AtomicU64>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    operation: F,
+) -> Result<Option<T>>
+where
+    F: FnOnce(
+        &Connection,
+        &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
+    ) -> Result<T>,
+{
+    let result = with_narrative_maintenance_graph_control(
+        db,
+        std::time::Duration::ZERO,
+        PROGRESS_CADENCE_VM_STEPS,
+        stop,
+        progress_callbacks.map_or_else(
+            NarrativeMaintenanceGraphControlConfig::default,
+            NarrativeMaintenanceGraphControlConfig::with_progress_callbacks,
+        ),
+        operation,
+    )?;
+    match result {
+        Some(result) => match result.into_result() {
+            Ok(value) => Ok(Some(value)),
+            Err(error) => Err(error),
+        },
+        None => Ok(None),
+    }
+}
+
+/// Prepare and publish only the disposable Graph binding required by the
+/// registration, Restore, and cold-reopen paths.  The path-specific operation
+/// is measured by a separate owner call below; the source fixture is still
+/// never mutated by the orchestrator.
+fn prepare_and_publish_for_mode(
+    db: &Database,
+    project_id: &str,
+    progress_callbacks: Option<Arc<AtomicU64>>,
+) -> Result<GraphLifecycleRun> {
+    let runtime = NirChronicleIndexRuntime::new(db, 1);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let prepare_started = Instant::now();
+    let prepared = match owned_mode_operation(
+        db,
+        progress_callbacks.as_ref().map(Arc::clone),
+        Arc::clone(&stop),
+        |conn, control| {
+            let tx = conn.unchecked_transaction()?;
+            let result = prepare_graph_index_build_with_control(&tx, &runtime, project_id, control);
+            match result {
+                Ok(snapshot) => {
+                    tx.commit()?;
+                    Ok(snapshot)
+                }
+                Err(error) => {
+                    let _ = tx.rollback();
+                    Err(error)
+                }
+            }
+        },
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return Ok(GraphLifecycleRun {
+                prepare_ms: Some(prepare_started.elapsed().as_secs_f64() * 1000.0),
+                rolled_back: true,
+                terminal_error: Some(error.to_string()),
+                ..empty_lifecycle(None)
+            });
+        }
+    };
+    let prepare_ms = Some(prepare_started.elapsed().as_secs_f64() * 1000.0);
+    let Some(snapshot) = prepared else {
+        return Ok(GraphLifecycleRun {
+            prepare_ms,
+            terminal_error: Some("maintenance-connection-deferred".to_owned()),
+            ..empty_lifecycle(None)
+        });
+    };
+    let mut shape = None;
+    let publish_started = Instant::now();
+    let mut publish_transaction_ms = None;
+    let published = match owned_mode_operation(db, progress_callbacks, stop, |conn, control| {
+        let tx = conn.unchecked_transaction()?;
+        let transaction_started = Instant::now();
+        shape = Some(snapshot.capacity_shape_with_control(control)?);
+        let result =
+            publish_nir1_entity_relation_index_in_tx_with_control(&tx, &runtime, snapshot, control);
+        publish_transaction_ms = Some(transaction_started.elapsed().as_secs_f64() * 1000.0);
+        match result {
+            Ok(binding) => {
+                tx.commit()?;
+                Ok(binding)
+            }
+            Err(error) => {
+                let _ = tx.rollback();
+                Err(error)
+            }
+        }
+    }) {
+        Ok(published) => published,
+        Err(error) => {
+            return Ok(GraphLifecycleRun {
+                shape,
+                prepared: true,
+                rolled_back: true,
+                prepare_ms,
+                publish_owner_ms: Some(publish_started.elapsed().as_secs_f64() * 1000.0),
+                publish_transaction_ms,
+                terminal_error: Some(error.to_string()),
+                ..empty_lifecycle(None)
+            });
+        }
+    };
+    let publish_owner_ms = Some(publish_started.elapsed().as_secs_f64() * 1000.0);
+    let Some(published) = published else {
+        return Ok(GraphLifecycleRun {
+            shape,
+            prepared: true,
+            rolled_back: true,
+            prepare_ms,
+            publish_owner_ms,
+            publish_transaction_ms,
+            terminal_error: Some("maintenance-connection-deferred".to_owned()),
+            ..empty_lifecycle(None)
+        });
+    };
+    let binding = published;
+    drop(runtime);
+    Ok(GraphLifecycleRun {
+        shape,
+        prepared: true,
+        published: true,
+        rolled_back: false,
+        cold_reopened: false,
+        restore_verified: false,
+        published_generation: Some(binding.generation),
+        prepare_ms,
+        publish_owner_ms,
+        publish_transaction_ms,
+        cold_reopen_ms: None,
+        restore_verify_ms: None,
+        restore_report_records: None,
+        terminal_error: None,
+    })
+}
+
+fn run_mode_operation(
+    conn: Connection,
+    database_path: &Path,
+    project_id: Option<&str>,
+    mode: CapacityDiagnosticMode,
+    progress_callbacks: Option<Arc<AtomicU64>>,
+    trace: Option<Arc<TraceCounter>>,
+) -> Result<GraphLifecycleRun> {
+    if mode == CapacityDiagnosticMode::FullBuild {
+        return run_graph_lifecycle(conn, database_path, project_id, progress_callbacks, trace);
+    }
+    let Some(project_id) = project_id else {
+        return Ok(empty_lifecycle(Some(
+            "project-id-required-for-diagnostic-mode".to_owned(),
+        )));
+    };
+    let db = Database::from_connection(conn);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    match mode {
+        CapacityDiagnosticMode::SourceReresolution => {
+            let operation = owned_mode_operation(&db, progress_callbacks, stop, |conn, control| {
+                let tx = conn.unchecked_transaction()?;
+                let source = read_eligibility_source_with_control(&tx, project_id, control)?;
+                let records = source.roster.len();
+                tx.commit()?;
+                Ok(records)
+            });
+            let mut lifecycle = empty_lifecycle(None);
+            lifecycle.prepared = matches!(&operation, Ok(Some(_)));
+            lifecycle.terminal_error = match operation {
+                Ok(Some(_)) => None,
+                Ok(None) => Some("maintenance-connection-deferred".to_owned()),
+                Err(error) => Some(error.to_string()),
+            };
+            drop(db);
+            Ok(lifecycle)
+        }
+        CapacityDiagnosticMode::Coverage => {
+            let operation = owned_mode_operation(&db, progress_callbacks, stop, |conn, control| {
+                let tx = conn.unchecked_transaction()?;
+                let (report, _) =
+                    verify_dependency_graph_snapshot_with_control(&tx, project_id, control)?;
+                let records = report_observation_count(&report)?;
+                tx.commit()?;
+                Ok(records)
+            });
+            let mut lifecycle = empty_lifecycle(None);
+            lifecycle.prepared = matches!(&operation, Ok(Some(_)));
+            lifecycle.restore_report_records = operation.as_ref().ok().and_then(|value| *value);
+            lifecycle.restore_verified = matches!(operation, Ok(Some(_)));
+            lifecycle.restore_verify_ms = Some(0.0);
+            lifecycle.terminal_error = match operation {
+                Ok(Some(_)) => None,
+                Ok(None) => Some("maintenance-connection-deferred".to_owned()),
+                Err(error) => Some(error.to_string()),
+            };
+            drop(db);
+            Ok(lifecycle)
+        }
+        CapacityDiagnosticMode::CompleteRegistration => {
+            let mut lifecycle = prepare_and_publish_for_mode(&db, project_id, None)?;
+            if lifecycle.published {
+                let operation = owned_mode_operation(&db, None, stop, |conn, control| {
+                    let tx = conn.unchecked_transaction()?;
+                    let complete = is_complete_registered_with_control(
+                        &tx,
+                        project_id,
+                        ENTITY_RELATION_INDEX_KEY,
+                        control,
+                    )?;
+                    tx.commit()?;
+                    Ok(complete)
+                });
+                if let Err(error) = operation {
+                    lifecycle.terminal_error = Some(error.to_string());
+                }
+            }
+            drop(db);
+            Ok(lifecycle)
+        }
+        CapacityDiagnosticMode::Restore => {
+            let mut lifecycle = prepare_and_publish_for_mode(&db, project_id, None)?;
+            if lifecycle.published {
+                let restore_started = Instant::now();
+                let operation = owned_mode_operation(&db, None, stop, |conn, control| {
+                    let tx = conn.unchecked_transaction()?;
+                    let (report, _) =
+                        verify_dependency_graph_snapshot_with_control(&tx, project_id, control)?;
+                    let records = report_observation_count(&report)?;
+                    tx.commit()?;
+                    Ok(records)
+                });
+                lifecycle.restore_verify_ms =
+                    Some(restore_started.elapsed().as_secs_f64() * 1000.0);
+                lifecycle.restore_report_records = operation.as_ref().ok().and_then(|value| *value);
+                lifecycle.restore_verified = matches!(operation, Ok(Some(_)));
+                if let Err(error) = operation {
+                    lifecycle.terminal_error = Some(error.to_string());
+                }
+            }
+            drop(db);
+            Ok(lifecycle)
+        }
+        CapacityDiagnosticMode::ColdReopen => {
+            let lifecycle = prepare_and_publish_for_mode(&db, project_id, None)?;
+            if !lifecycle.published {
+                drop(db);
+                return Ok(lifecycle);
+            }
+            drop(db);
+            let reopened_conn =
+                Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+                    .with_context(|| {
+                        format!("reopen diagnostic database {}", database_path.display())
+                    })?;
+            if let Some(trace) = trace.as_ref() {
+                install_diagnostic_trace(&reopened_conn, trace);
+            }
+            install_connection_metadata(&reopened_conn)?;
+            let reopened_db = Database::from_connection(reopened_conn);
+            let started = Instant::now();
+            let operation = owned_mode_operation(&reopened_db, None, stop, |conn, control| {
+                let tx = conn.unchecked_transaction()?;
+                let result = cold_reopen_graph_index_with_control(&tx, project_id, control)?;
+                tx.commit()?;
+                Ok(result)
+            });
+            let mut result = lifecycle;
+            result.cold_reopen_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+            result.cold_reopened = matches!(operation, Ok(Some(true)));
+            if let Err(error) = operation {
+                result.terminal_error = Some(error.to_string());
+            }
+            drop(reopened_db);
+            Ok(result)
+        }
+        CapacityDiagnosticMode::FullBuild => unreachable!(),
+    }
 }
 
 fn run_graph_lifecycle(
@@ -1065,6 +1493,23 @@ pub fn measure_capacity(
     fixture_id: &str,
     project_id: Option<&str>,
 ) -> Result<CapacityObservation> {
+    measure_capacity_mode(
+        database_path,
+        fixture_id,
+        project_id,
+        CapacityDiagnosticMode::FullBuild,
+    )
+}
+
+/// Measure one disposable child process for one explicitly named diagnostic
+/// path.  The caller (normally `nir1-material-capacity-probe.mjs`) supplies a
+/// fresh database copy and process for every mode/run.
+pub fn measure_capacity_mode(
+    database_path: &Path,
+    fixture_id: &str,
+    project_id: Option<&str>,
+    mode: CapacityDiagnosticMode,
+) -> Result<CapacityObservation> {
     anyhow::ensure!(!fixture_id.trim().is_empty(), "fixture id must be nonempty");
     let started = Instant::now();
     let initial_copy_digest = database_state_digest(database_path)?;
@@ -1157,10 +1602,11 @@ pub fn measure_capacity(
     // the lifecycle's SQL and in-process containers belong to this fresh
     // measurement. Its publish transaction may mutate only this disposable
     // copy; the orchestrator separately proves the preseed source is stable.
-    let lifecycle = run_graph_lifecycle(
+    let lifecycle = run_mode_operation(
         conn,
         database_path,
         project_id,
+        mode,
         Some(Arc::clone(&progress.callbacks)),
         Some(Arc::clone(&trace)),
     )?;
@@ -1189,48 +1635,96 @@ pub fn measure_capacity(
     counts.report_records = lifecycle.restore_report_records;
     let post_run_copy_digest = database_state_digest(database_path)?;
     let after_process = sample_process();
+    let total_peak_rss_bytes = after_process
+        .hwm_rss_bytes
+        .or(after_process.ru_maxrss_bytes);
     let sqlite_after = sqlite_memory_used();
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let status = if lifecycle.published {
+    let status = if mode == CapacityDiagnosticMode::FullBuild {
+        if lifecycle.published {
+            "measured"
+        } else {
+            "build-unavailable"
+        }
+    } else if lifecycle.terminal_error.is_none() {
         "measured"
     } else {
-        "build-unavailable"
+        "path-unavailable"
     };
     let admission = "per-revision-512-record-and-2MiB-envelope";
     let mut not_measured = vec![
-        "live-source-content-bytes",
-        "retained-roster-edge-high-water",
-        "d1-declaration-retained-bytes",
-        "declaration-tuple-hashset-retained-bytes",
-        "edge-tuple-hashset-retained-bytes",
-        "verify-report-retained-bytes",
-        "durable-state-value-retained-bytes",
-        "clone-canonical-serialization-buffer-bytes",
-        "foreground-wait-occupancy",
-        "cancel-latency",
-        "temporary-file-bytes",
+        path_not_measured(mode, "live-source-content-bytes"),
+        path_not_measured(mode, "retained-roster-edge-high-water"),
+        path_not_measured(mode, "d1-declaration-retained-bytes"),
+        path_not_measured(mode, "declaration-tuple-hashset-retained-bytes"),
+        path_not_measured(mode, "edge-tuple-hashset-retained-bytes"),
+        path_not_measured(mode, "verify-report-retained-bytes"),
+        path_not_measured(mode, "durable-state-value-retained-bytes"),
+        path_not_measured(mode, "clone-canonical-serialization-buffer-bytes"),
     ];
+    not_measured.extend(mode_measurement_not_measured(mode, &lifecycle));
+    if total_peak_rss_bytes.is_none() {
+        not_measured.push(path_not_measured(mode, "total-peak-rss"));
+    }
+    for (metric, value) in [
+        (
+            "user-cpu-us",
+            diff_u64(after_process.user_cpu_us, before_process.user_cpu_us),
+        ),
+        (
+            "system-cpu-us",
+            diff_u64(after_process.system_cpu_us, before_process.system_cpu_us),
+        ),
+        ("rss", after_process.rss_bytes),
+        ("hwm-rss", after_process.hwm_rss_bytes),
+        ("ru-maxrss", after_process.ru_maxrss_bytes),
+        ("sqlite-memory", sqlite_after),
+        ("sqlite-memory-highwater", sqlite_memory_highwater()),
+        (
+            "read-bytes",
+            diff_u64(after_process.read_bytes, before_process.read_bytes),
+        ),
+        (
+            "write-bytes",
+            diff_u64(after_process.write_bytes, before_process.write_bytes),
+        ),
+    ] {
+        if value.is_none() {
+            not_measured.push(path_not_measured(mode, metric));
+        }
+    }
     if counts.report_records.is_none() {
-        not_measured.push("operation-produced-report-count");
-        not_measured.push("report-record-count");
+        not_measured.push(path_not_measured(mode, "operation-produced-report-count"));
+        not_measured.push(path_not_measured(mode, "report-record-count"));
     }
-    if !lifecycle.prepared {
-        not_measured.push("graph-roster-serialized-bytes");
-        not_measured.push("graph-edge-serialized-bytes");
+    if lifecycle.shape.is_none() {
+        not_measured.push(path_not_measured(mode, "graph-roster-serialized-bytes"));
+        not_measured.push(path_not_measured(mode, "graph-edge-serialized-bytes"));
     }
-    if !lifecycle.cold_reopened {
-        not_measured.push("cold-reopen");
+    if matches!(
+        mode,
+        CapacityDiagnosticMode::FullBuild | CapacityDiagnosticMode::ColdReopen
+    ) && !lifecycle.cold_reopened
+    {
+        not_measured.push(path_not_measured(mode, "cold-reopen"));
     }
-    if !lifecycle.restore_verified {
-        not_measured.push("restore-verify");
+    if matches!(
+        mode,
+        CapacityDiagnosticMode::FullBuild | CapacityDiagnosticMode::Restore
+    ) && !lifecycle.restore_verified
+    {
+        not_measured.push(path_not_measured(mode, "restore-verify"));
     }
     if !trace.exact_vm_steps.load(Ordering::Relaxed) {
-        not_measured.push("exact-lifecycle-vm-steps");
+        not_measured.push(path_not_measured(mode, "exact-lifecycle-vm-steps"));
     }
+    not_measured.sort_unstable();
+    not_measured.dedup();
     Ok(CapacityObservation {
         diagnostic_only: true,
         process_id: std::process::id(),
         fixture_id: fixture_id.to_owned(),
+        mode,
         status,
         admission,
         supported_capacity_claim: false,
@@ -1243,11 +1737,13 @@ pub fn measure_capacity(
             system_cpu_us: diff_u64(after_process.system_cpu_us, before_process.system_cpu_us),
             rss_bytes: after_process.rss_bytes,
             hwm_rss_bytes: after_process.hwm_rss_bytes,
+            total_peak_rss_bytes,
             ru_maxrss_bytes: after_process.ru_maxrss_bytes,
             sqlite_memory_bytes: sqlite_after,
             sqlite_memory_highwater_bytes: sqlite_memory_highwater(),
             read_bytes: diff_u64(after_process.read_bytes, before_process.read_bytes),
             write_bytes: diff_u64(after_process.write_bytes, before_process.write_bytes),
+            temporary_bytes: None,
         },
         sql: CapacitySqlMetrics {
             statement_vm_steps: trace.statement_vm_steps.load(Ordering::Relaxed),
@@ -1296,6 +1792,7 @@ mod tests {
             diagnostic_only: true,
             process_id: 1,
             fixture_id: "Q513/R3/D0".to_owned(),
+            mode: CapacityDiagnosticMode::FullBuild,
             status: "measured",
             admission: "diagnostic-only",
             supported_capacity_claim: false,
@@ -1327,11 +1824,13 @@ mod tests {
                 system_cpu_us: Some(3),
                 rss_bytes: Some(4),
                 hwm_rss_bytes: Some(5),
+                total_peak_rss_bytes: Some(5),
                 ru_maxrss_bytes: Some(6),
                 sqlite_memory_bytes: Some(7),
                 sqlite_memory_highwater_bytes: Some(8),
                 read_bytes: Some(9),
                 write_bytes: Some(10),
+                temporary_bytes: None,
             },
             sql: CapacitySqlMetrics {
                 statement_vm_steps: 1,
@@ -1366,7 +1865,7 @@ mod tests {
                 latency_ms: None,
             },
             rejection_reasons: BTreeMap::new(),
-            not_measured: vec!["cancel-latency"],
+            not_measured: vec!["full-build:cancel-latency".to_owned()],
         }
     }
 
@@ -1394,6 +1893,27 @@ mod tests {
     fn process_metric_parsers_are_optional_outside_procfs() {
         assert!(proc_status_bytes("definitely-not-a-real-status-key").is_none());
         assert!(proc_io_bytes("definitely-not-a-real-io-key").is_none());
+    }
+
+    #[test]
+    fn diagnostic_modes_have_stable_machine_names() -> Result<()> {
+        let expected = [
+            "full-build",
+            "source-reresolution",
+            "complete-registration",
+            "coverage",
+            "restore",
+            "cold-reopen",
+        ];
+        let actual = CapacityDiagnosticMode::ALL
+            .iter()
+            .map(|mode| mode.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        for (mode, name) in CapacityDiagnosticMode::ALL.into_iter().zip(expected) {
+            assert_eq!(CapacityDiagnosticMode::parse(name)?, mode);
+        }
+        Ok(())
     }
 
     #[test]

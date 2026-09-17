@@ -37,6 +37,7 @@ function makeWorkspace(selectedFixture = fixtureId) {
 function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, malformed = false, timeout = false, leakyDescendant = false, detachedDescendant = false, writeProjectMarker = false } = {}) {
   const fixtureCounts = {
     [fixtureId]: { candidateRevisions: 3, qualifiedRevisions: 3, rejectedRevisions: 0, entityRecords: 255, relationRecords: 3, evidenceRecords: 255, qualifiedMaterialRecords: 513, rosterRecords: 513, dependencyEdges: null, reportRecords: null },
+    "Q8176/R16": { candidateRevisions: 16, qualifiedRevisions: 16, rejectedRevisions: 0, entityRecords: 4080, relationRecords: 16, evidenceRecords: 4080, qualifiedMaterialRecords: 8176, rosterRecords: 8176, dependencyEdges: null, reportRecords: null },
     "Q2044/evidence-shared": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, reportRecords: null },
     "Q2044/evidence-unique": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, reportRecords: null },
     "D2064/report-heavy": { candidateRevisions: 2064, qualifiedRevisions: 0, rejectedRevisions: 2064, entityRecords: 0, relationRecords: 0, evidenceRecords: 0, qualifiedMaterialRecords: 0, rosterRecords: 0, dependencyEdges: 4128, reportRecords: 416 },
@@ -143,8 +144,80 @@ test("capacity manifest fixes the diagnostic matrix and Graph lifecycle boundary
   );
   assert.ok(manifest.requiredMetrics.includes("temporaryBytes"));
   assert.ok(manifest.requiredMetrics.includes("cancelLatency"));
+  assert.ok(manifest.requiredMetrics.includes("totalPeakRss"));
+  assert.equal(manifest.runProtocol.modeIsolation.length > 0, true);
+  assert.deepEqual(
+    manifest.diagnosticModes.map((mode) => mode.id),
+    [
+      "source-reresolution",
+      "complete-registration",
+      "coverage",
+      "restore",
+      "cold-reopen",
+    ],
+  );
+  for (const mode of manifest.diagnosticModes) {
+    assert.deepEqual(mode.fixtures, ["Q8176/R16", "D2064/report-heavy"]);
+  }
   for (const fixture of manifest.fixtures) {
     assert.ok(fixture.shape, `${fixture.id} must declare an observed shape`);
+  }
+});
+
+test("target fixtures execute every diagnostic mode in isolated child paths", () => {
+  const selectedFixture = "Q8176/R16";
+  const workspace = makeWorkspace(selectedFixture);
+  try {
+    const binary = makeChild(workspace.directory, {
+      fixtureForReport: selectedFixture,
+    });
+    const report = JSON.parse(
+      runProbe(workspace, binary, [
+        "--fixture",
+        selectedFixture,
+        "--runs",
+        "5",
+      ]),
+    );
+    const result = report.results[0];
+    assert.deepEqual(
+      result.modeResults.map((modeResult) => modeResult.mode),
+      [
+        "full-build",
+        "source-reresolution",
+        "complete-registration",
+        "coverage",
+        "restore",
+        "cold-reopen",
+      ],
+    );
+    assert.equal(result.modeResults.length, 6);
+    for (const modeResult of result.modeResults) {
+      assert.equal(modeResult.warmup.mode, modeResult.mode);
+      assert.equal(modeResult.runs.length, 5);
+      assert.equal(modeResult.sourceStateStable, true);
+      assert.equal(
+        new Set([
+          modeResult.warmup.processId,
+          ...modeResult.runs.map((run) => run.processId),
+        ]).size,
+        6,
+      );
+      assert.ok(
+        modeResult.runs.every((run) => run.mode === modeResult.mode),
+        `${modeResult.mode} reports must retain their path id`,
+      );
+      assert.ok(
+        modeResult.runs.every((run) =>
+          run.notMeasured.every((metric) =>
+            metric === "cancel-latency" || metric === "publish-transaction-occupancy" || metric.startsWith(`${modeResult.mode}:`),
+          ),
+        ),
+      );
+    }
+    assert.equal(report.paths.length, 6);
+  } finally {
+    rmSync(workspace.directory, { recursive: true, force: true });
   }
 });
 

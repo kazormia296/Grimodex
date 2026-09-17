@@ -19,6 +19,7 @@
   "runProtocol": {
     "database": "Each measured run copies one preseeded file-backed database to a new temporary path.",
     "process": "Each warmup and measured run starts a fresh child process.",
+    "modeIsolation": "Each diagnostic mode is a separate fresh copy and fresh child process; mode results are never pooled.",
     "warmupCount": 1,
     "measuredRunCount": 5,
     "freshCopyPerRun": true,
@@ -28,6 +29,33 @@
     "childTimeoutMs": 30000,
     "childTerminationGraceMs": 250
   },
+  "diagnosticModes": [
+    {
+      "id": "source-reresolution",
+      "label": "Source re-resolution",
+      "fixtures": ["Q8176/R16", "D2064/report-heavy"]
+    },
+    {
+      "id": "complete-registration",
+      "label": "complete registration",
+      "fixtures": ["Q8176/R16", "D2064/report-heavy"]
+    },
+    {
+      "id": "coverage",
+      "label": "coverage",
+      "fixtures": ["Q8176/R16", "D2064/report-heavy"]
+    },
+    {
+      "id": "restore",
+      "label": "Restore",
+      "fixtures": ["Q8176/R16", "D2064/report-heavy"]
+    },
+    {
+      "id": "cold-reopen",
+      "label": "cold reopen",
+      "fixtures": ["Q8176/R16", "D2064/report-heavy"]
+    }
+  ],
   "fixtures": [
     {
       "id": "Q513/R3/D0",
@@ -151,6 +179,7 @@
     }
   ],
   "requiredMetrics": [
+    "diagnosticMode",
     "candidateRevisionCount",
     "qualifiedRevisionCount",
     "payloadBytes",
@@ -160,6 +189,7 @@
     "dependencyEdgeCount",
     "reportRecordCount",
     "totalPeakMemory",
+    "totalPeakRss",
     "rss",
     "hwmRss",
     "ruMaxrss",

@@ -607,6 +607,21 @@
           "obligations": []
         },
         {
+          "label": "NIR-1 capacity diagnostics and fixture tests",
+          "command": "cargo",
+          "args": ["test", "-p", "grimodex-db", "--features", "nir1-material-diagnostics", "--lib", "narrative_extraction::nir1_capacity"],
+          "cwd": "src-tauri",
+          "id": "rust.tests-db-nir1-capacity",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared-db-capacity",
+          "slots": 2,
+          "env": {
+            "CARGO_BUILD_JOBS": "2",
+            "RUST_TEST_THREADS": "2"
+          },
+          "obligations": []
+        },
+        {
           "label": "Shared Rust non-DB workspace tests and doctests",
           "command": "cargo",
           "args": [

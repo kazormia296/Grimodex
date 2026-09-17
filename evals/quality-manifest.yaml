@@ -16,6 +16,7 @@ lightSuites:
   - narrative-extraction
   - narrative-semantic-contract
   - nir1-entity-relation-review
+  - nir1-capacity-diagnostics
 requirements:
   - id: GDX-ROUTE-001
     title: Every production AI route is registered, routed, and assigned a verifier.
@@ -1024,6 +1025,12 @@ requirements:
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
+      - evals/nir1-capacity/manifest.v1.json
+      - evals/nir1-capacity/schema.v1.json
+      - scripts/nir1-material-capacity-probe.mjs
+      - scripts/nir1-material-capacity-probe.test.mjs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_diagnostics.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/eval-fixtures.test.mjs
@@ -1034,6 +1041,7 @@ requirements:
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
+      - scripts/nir1-material-capacity-probe.test.mjs
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4_runner.py

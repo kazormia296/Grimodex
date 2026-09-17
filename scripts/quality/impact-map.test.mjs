@@ -623,6 +623,32 @@ test("semantic recall and reranker runtimes preserve audit impact coverage", asy
   }
 });
 
+test("NIR-1 capacity paths select their feature-gated diagnostic suite", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  for (const changedPath of [
+    "evals/nir1-capacity/manifest.v1.json",
+    "scripts/nir1-material-capacity-probe.test.mjs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_diagnostics.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
+    "src-tauri/crates/grimodex-db/src/bin/nir1-material-capacity.rs",
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("nir1-capacity-diagnostics"), changedPath);
+    assert.ok(selection.suiteIds.includes("nir1-capacity-diagnostics"), changedPath);
+    assert.ok(selection.requirementIds.includes("GDX-ISOLATION-001"), changedPath);
+    assert.ok(selection.requirementIds.includes("GDX-TRACE-001"), changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+  }
+  const suiteCommands = JSON.stringify(LIGHT_SUITE_DEFINITIONS["nir1-capacity-diagnostics"].commands);
+  assert.match(suiteCommands, /nir1-material-capacity-probe\.test\.mjs/);
+  assert.match(suiteCommands, /nir1-material-diagnostics/);
+  assert.match(suiteCommands, /narrative_extraction::nir1_capacity/);
+});
+
 const execFileAsync = promisify(execFile);
 const ALLOWED_SUITES = ["quality-workflow", "ai-routing", "tool-policy"];
 

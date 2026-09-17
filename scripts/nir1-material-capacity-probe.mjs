@@ -25,7 +25,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 
 const USAGE =
-  "usage: node scripts/nir1-material-capacity-probe.mjs <binary> <manifest> <fixture-directory> <output-directory> [project-id] [--fixture <id>] [--runs <n>] [--timeout-ms <n>] [--kill-grace-ms <n>]";
+  "usage: node scripts/nir1-material-capacity-probe.mjs <binary> <manifest> <fixture-directory> <output-directory> [project-id] [--fixture <id>] [--mode <mode>] [--runs <n>] [--timeout-ms <n>] [--kill-grace-ms <n>]";
 const SOURCE_COMPONENTS = [
   ["main", ""],
   ["wal", "-wal"],
@@ -69,6 +69,7 @@ function parseCli(argv) {
     outputDirectory,
     projectId: null,
     fixtureFilter: null,
+    modeFilter: null,
     measuredRuns: null,
     timeoutMs: null,
     terminationGraceMs: null,
@@ -79,6 +80,13 @@ function parseCli(argv) {
       if (!argv[index + 1] || argv[index + 1].startsWith("--"))
         fail("--fixture requires a fixture id");
       options.fixtureFilter = argv[++index];
+      continue;
+    }
+    if (value === "--mode" || value === "--diagnostic-mode") {
+      if (!argv[index + 1] || argv[index + 1].startsWith("--"))
+        fail(`${value} requires a diagnostic mode`);
+      if (options.modeFilter !== null) fail("diagnostic mode was provided more than once");
+      options.modeFilter = argv[++index];
       continue;
     }
     if (value === "--runs") {
@@ -203,6 +211,30 @@ function assertManifestRuntimeContract(manifest, manifestPath) {
     manifest.graphLifecycle?.supportedCapacityClaim !== false
   ) {
     fail(`manifest ${manifestPath} must keep Graph/product activation disabled`);
+  }
+  const requiredModes = [
+    "source-reresolution",
+    "complete-registration",
+    "coverage",
+    "restore",
+    "cold-reopen",
+  ];
+  const configuredModes = manifest.diagnosticModes;
+  if (
+    !Array.isArray(configuredModes) ||
+    configuredModes.length !== requiredModes.length ||
+    JSON.stringify(configuredModes.map((mode) => mode.id)) !== JSON.stringify(requiredModes)
+  ) {
+    fail(
+      `manifest ${manifestPath} must configure the five independent diagnostic modes: ${requiredModes.join(", ")}`,
+    );
+  }
+  for (const mode of configuredModes) {
+    if (!mode.fixtures.includes("Q8176/R16") || !mode.fixtures.includes("D2064/report-heavy")) {
+      fail(
+        `manifest ${manifestPath} mode ${mode.id} must cover Q8176/R16 and D2064/report-heavy`,
+      );
+    }
   }
 }
 
@@ -466,7 +498,41 @@ function validateObservedShape(report, spec, context) {
   }
 }
 
-function assertDiagnosticReport(report, spec, context, validateObservation) {
+function modeMetricLabel(mode, metric) {
+  return `${mode}:${metric}`;
+}
+
+function normalizeDiagnosticReport(report, mode) {
+  const normalized = structuredClone(report);
+  normalized.mode ??= mode;
+  normalized.supportedCapacityClaim = false;
+  normalized.notMeasured = Array.isArray(normalized.notMeasured)
+    ? [...normalized.notMeasured]
+    : [];
+  const processMetrics = normalized.process ?? (normalized.process = {});
+  // Older diagnostic children reported hwmRssBytes only.  Preserve that
+  // evidence as the complete child-process peak while still making the new
+  // field explicit in every path report.
+  processMetrics.totalPeakRssBytes ??= processMetrics.hwmRssBytes ?? null;
+  processMetrics.temporaryBytes ??= null;
+  const missingMetrics = [
+    ["total-peak-rss", processMetrics.totalPeakRssBytes],
+    ["temporary-bytes", processMetrics.temporaryBytes],
+    ["foreground-wait", normalized.occupancy?.foregroundWaitMs],
+    ["cancel-latency", normalized.cancel?.latencyMs],
+    ["publish-hold", normalized.graphLifecycle?.publishOwnerMs],
+  ];
+  for (const [metric, value] of missingMetrics) {
+    if (value === null || value === undefined) {
+      const label = modeMetricLabel(mode, metric);
+      if (!normalized.notMeasured.includes(label)) normalized.notMeasured.push(label);
+    }
+  }
+  normalized.notMeasured = [...new Set(normalized.notMeasured)];
+  return normalized;
+}
+
+function assertDiagnosticReport(report, spec, mode, context, validateObservation) {
   if (!report || typeof report !== "object" || Array.isArray(report)) {
     fail(`${context} did not emit a JSON object`);
   }
@@ -475,6 +541,9 @@ function assertDiagnosticReport(report, spec, context, validateObservation) {
   }
   if (report.fixtureId !== spec.id) {
     fail(`${context} reported fixtureId ${String(report.fixtureId)}, expected ${spec.id}`);
+  }
+  if (report.mode !== mode) {
+    fail(`${context} reported mode ${String(report.mode)}, expected ${mode}`);
   }
   if (
     report.supportedCapacityClaim !== undefined &&
@@ -936,6 +1005,7 @@ async function runChild({
   binary,
   projectId,
   spec,
+  mode,
   sourceDb,
   sourceState,
   scratch,
@@ -946,15 +1016,16 @@ async function runChild({
   validateObservation,
 }) {
   const runLabel = warmup ? "warmup" : `run ${index}`;
-  const context = `${spec.id} ${runLabel}`;
+  const context = `${spec.id} ${runLabel} [${mode}]`;
   const childPath = path.join(
     scratch,
-    safeChildName(spec.id, warmup ? "warmup" : `run-${index}`),
+    safeChildName(spec.id, `${mode}-${warmup ? "warmup" : `run-${index}`}`),
   );
   copyPreseedState(sourceDb, childPath);
   const before = captureDatabaseState(childPath);
   const childArgs = [childPath, spec.id];
   if (projectId !== null) childArgs.push(projectId);
+  childArgs.push("--mode", mode);
   let child = null;
   let after;
   try {
@@ -994,12 +1065,8 @@ async function runChild({
     );
   }
   const rawReport = parseChildJson(child.stdout, context);
-  assertDiagnosticReport(rawReport, spec, context, validateObservation);
-  const report = {
-    ...rawReport,
-    supportedCapacityClaim: false,
-    notMeasured: rawReport.notMeasured ?? [],
-  };
+  const report = normalizeDiagnosticReport(rawReport, mode);
+  assertDiagnosticReport(report, spec, mode, context, validateObservation);
   const generationBefore = publishedGeneration(rawReport, "before");
   const generationAfter = publishedGeneration(rawReport, "after");
   const childState = {
@@ -1043,11 +1110,13 @@ function summarize(reports) {
   const peakRss = numericValues(
     reports,
     (report) =>
+      report.process?.totalPeakRssBytes ??
       report.process?.hwmRssBytes ??
       report.process?.ruMaxrssBytes ??
       report.process?.rssBytes ??
       null,
   );
+  const medianMetric = (selector) => median(numericValues(reports, selector));
   const vmSteps = numericValues(
     reports,
     (report) => report.sql?.statementVmSteps,
@@ -1060,6 +1129,26 @@ function summarize(reports) {
     maxPeakRssBytes: peakRss.at(-1) ?? null,
     medianStatementVmSteps: median(vmSteps),
     maxStatementVmSteps: vmSteps.at(-1) ?? null,
+    medianUserCpuUs: medianMetric((report) => report.process?.userCpuUs),
+    medianSystemCpuUs: medianMetric((report) => report.process?.systemCpuUs),
+    medianReadBytes: medianMetric((report) => report.process?.readBytes),
+    medianWriteBytes: medianMetric((report) => report.process?.writeBytes),
+    medianTemporaryBytes: medianMetric((report) => report.process?.temporaryBytes),
+    medianConnectionHoldMs: medianMetric(
+      (report) => report.occupancy?.connectionHoldMs,
+    ),
+    medianPublishHoldMs: medianMetric(
+      (report) => report.graphLifecycle?.publishOwnerMs,
+    ),
+    medianPublishTransactionMs: medianMetric(
+      (report) => report.occupancy?.publishTransactionMs,
+    ),
+    medianForegroundWaitMs: medianMetric(
+      (report) => report.occupancy?.foregroundWaitMs,
+    ),
+    medianCancelLatencyMs: medianMetric(
+      (report) => report.cancel?.latencyMs,
+    ),
   };
 }
 
@@ -1076,6 +1165,93 @@ function uniqueNotMeasured(reports) {
 function removePreviousReport(outputDirectory) {
   const reportPath = path.join(path.resolve(outputDirectory), "capacity-report.json");
   rmSync(reportPath, { force: true });
+}
+
+function modesForFixture(manifest, spec, requestedMode) {
+  const configuredModes = manifest.diagnosticModes.map((mode) => mode.id);
+  const knownModes = ["full-build", ...configuredModes];
+  if (requestedMode !== null) {
+    if (!knownModes.includes(requestedMode)) {
+      fail(`unknown diagnostic mode: ${requestedMode}`);
+    }
+    if (
+      requestedMode !== "full-build" &&
+      !manifest.diagnosticModes.some(
+        (mode) => mode.id === requestedMode && mode.fixtures.includes(spec.id),
+      )
+    ) {
+      fail(`diagnostic mode ${requestedMode} is not configured for fixture ${spec.id}`);
+    }
+    return [requestedMode];
+  }
+  return [
+    "full-build",
+    ...manifest.diagnosticModes
+      .filter((mode) => mode.fixtures.includes(spec.id))
+      .map((mode) => mode.id),
+  ];
+}
+
+async function runDiagnosticMode({
+  binary,
+  projectId,
+  spec,
+  mode,
+  sourceDb,
+  sourceState,
+  scratch,
+  measuredRuns,
+  timeoutMs,
+  terminationGraceMs,
+  validateObservation,
+}) {
+  const warmup = await runChild({
+    binary,
+    projectId,
+    spec,
+    mode,
+    sourceDb,
+    sourceState,
+    scratch,
+    index: 0,
+    warmup: true,
+    timeoutMs,
+    terminationGraceMs,
+    validateObservation,
+  });
+  const reports = [];
+  for (let index = 1; index <= measuredRuns; index += 1) {
+    reports.push(
+      await runChild({
+        binary,
+        projectId,
+        spec,
+        mode,
+        sourceDb,
+        sourceState,
+        scratch,
+        index,
+        warmup: false,
+        timeoutMs,
+        terminationGraceMs,
+        validateObservation,
+      }),
+    );
+  }
+  assertSourceStable(sourceDb, sourceState, `${spec.id} ${mode} completed runs`);
+  return {
+    fixture: spec,
+    mode,
+    sourceDatabaseDigest: sourceState.digest,
+    sourceState,
+    sourceStateStable: true,
+    warmup,
+    runs: reports,
+    summary: summarize(reports),
+    diagnosticOnly: true,
+    supportedCapacityClaim: false,
+    notMeasured: uniqueNotMeasured([warmup, ...reports]),
+  };
 }
 
 async function main() {
@@ -1126,49 +1302,33 @@ async function main() {
     for (const spec of fixtureSpecs) {
       const sourceDb = fixturePath(spec, fixtureDirectory);
       const sourceState = captureDatabaseState(sourceDb);
-      const warmup = await runChild({
-        binary: options.binary,
-        projectId: options.projectId,
-        spec,
-        sourceDb,
-        sourceState,
-        scratch,
-        index: 0,
-        warmup: true,
-        timeoutMs,
-        terminationGraceMs,
-        validateObservation,
-      });
-      const reports = [];
-      for (let index = 1; index <= measuredRuns; index += 1) {
-        reports.push(
-          await runChild({
+      const modeResults = [];
+      for (const mode of modesForFixture(manifest, spec, options.modeFilter)) {
+        modeResults.push(
+          await runDiagnosticMode({
             binary: options.binary,
             projectId: options.projectId,
             spec,
+            mode,
             sourceDb,
             sourceState,
             scratch,
-            index,
-            warmup: false,
+            measuredRuns,
             timeoutMs,
             terminationGraceMs,
             validateObservation,
           }),
         );
       }
-      assertSourceStable(sourceDb, sourceState, `${spec.id} completed runs`);
+      const primary =
+        modeResults.find((result) => result.mode === "full-build") ?? modeResults[0];
       results.push({
-        fixture: spec,
-        sourceDatabaseDigest: sourceState.digest,
-        sourceState,
-        sourceStateStable: true,
-        warmup,
-        runs: reports,
-        summary: summarize(reports),
-        diagnosticOnly: true,
-        supportedCapacityClaim: false,
-        notMeasured: uniqueNotMeasured([warmup, ...reports]),
+        ...primary,
+        // `modeResults` is the canonical per-path record.  The legacy top
+        // level warmup/runs fields remain the full-build path for consumers
+        // that already understand the original diagnostic artifact.
+        modeResults,
+        paths: modeResults,
       });
     }
     const protocol = {
@@ -1176,9 +1336,15 @@ async function main() {
       measuredRunCount: measuredRuns,
       childTimeoutMs: timeoutMs,
       childTerminationGraceMs: terminationGraceMs,
+      modeFilter: options.modeFilter,
     };
     const notMeasured = uniqueNotMeasured(
-      results.flatMap((result) => [result.warmup, ...result.runs]),
+      results.flatMap((result) =>
+        result.modeResults.flatMap((modeResult) => [
+          modeResult.warmup,
+          ...modeResult.runs,
+        ]),
+      ),
     );
     const report = {
       diagnosticOnly: true,
@@ -1197,6 +1363,10 @@ async function main() {
         productDispatch: "not-activated",
         supportedCapacityClaim: false,
       },
+      diagnosticModes: results.flatMap((result) =>
+        result.modeResults.map((modeResult) => modeResult.mode),
+      ),
+      paths: results.flatMap((result) => result.modeResults),
       notMeasured,
       results,
     };

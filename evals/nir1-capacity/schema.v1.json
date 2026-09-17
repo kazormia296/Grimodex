@@ -12,6 +12,7 @@
     "capacityDecision",
     "admissionBoundary",
     "runProtocol",
+    "diagnosticModes",
     "fixtures",
     "requiredMetrics",
     "notMeasuredPolicy",
@@ -48,6 +49,7 @@
         "freshProcessPerRun",
         "sourceState",
         "childState",
+        "modeIsolation",
         "childTimeoutMs",
         "childTerminationGraceMs"
       ],
@@ -60,10 +62,39 @@
         "freshProcessPerRun": { "const": true },
         "sourceState": { "const": "immutable-main-wal-shm" },
         "childState": { "const": "record-before-and-after" },
+        "modeIsolation": { "type": "string", "minLength": 1 },
         "childTimeoutMs": { "type": "integer", "minimum": 1 },
         "childTerminationGraceMs": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
+    },
+    "diagnosticModes": {
+      "type": "array",
+      "minItems": 5,
+      "uniqueItems": false,
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "fixtures"],
+        "properties": {
+          "id": {
+            "enum": [
+              "source-reresolution",
+              "complete-registration",
+              "coverage",
+              "restore",
+              "cold-reopen"
+            ]
+          },
+          "label": { "type": "string", "minLength": 1 },
+          "fixtures": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      }
     },
     "fixtures": {
       "type": "array",
@@ -152,6 +183,7 @@
         "diagnosticOnly",
         "processId",
         "fixtureId",
+        "mode",
         "status",
         "admission",
         "supportedCapacityClaim",
@@ -169,6 +201,16 @@
         "diagnosticOnly": { "const": true },
         "processId": { "type": "integer", "minimum": 1 },
         "fixtureId": { "type": "string", "minLength": 1 },
+        "mode": {
+          "enum": [
+            "full-build",
+            "source-reresolution",
+            "complete-registration",
+            "coverage",
+            "restore",
+            "cold-reopen"
+          ]
+        },
         "status": { "type": "string", "minLength": 1 },
         "admission": { "type": "string", "minLength": 1 },
         "supportedCapacityClaim": { "const": false },
@@ -248,11 +290,13 @@
         "systemCpuUs",
         "rssBytes",
         "hwmRssBytes",
+        "totalPeakRssBytes",
         "ruMaxrssBytes",
         "sqliteMemoryBytes",
         "sqliteMemoryHighwaterBytes",
         "readBytes",
-        "writeBytes"
+        "writeBytes",
+        "temporaryBytes"
       ],
       "properties": {
         "elapsedMs": { "type": "number", "minimum": 0 },
@@ -260,11 +304,13 @@
         "systemCpuUs": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "rssBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "hwmRssBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "totalPeakRssBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "ruMaxrssBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "sqliteMemoryBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "sqliteMemoryHighwaterBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "readBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
-        "writeBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" }
+        "writeBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "temporaryBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" }
       },
       "additionalProperties": true
     },
