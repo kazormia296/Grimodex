@@ -503,6 +503,10 @@ fn read_eligibility_source_bounded(
             else {
                 continue;
             };
+            check_graph_work(&mut control, GraphWorkStage::A2)?;
+            if !preflight_revision_source_basis(conn, project, &revision_id, admission)? {
+                continue;
+            }
             if preflight_live_source_lengths(conn, project, &revision_id, admission)?.is_none() {
                 continue;
             }
@@ -679,6 +683,128 @@ fn read_revision_input_stats(
         return Ok(None);
     }
     Ok(Some(RevisionInputStats { material_records }))
+}
+
+/// Confirm that the sealed payload names exactly the material Sources bound by
+/// the persisted basis before any live Source body is read. SQLite's JSON
+/// operators inspect only the already-size-bounded payload and return scalar
+/// ids/tokens; the Rust A2 reader therefore cannot allocate a large live body
+/// for a Source whose basis row was deleted or replaced.
+fn preflight_revision_source_basis(
+    conn: &Connection,
+    project: &str,
+    revision_id: &str,
+    admission: Option<&GraphReadAdmission<'_>>,
+) -> Result<bool> {
+    if let Some(admission) = admission {
+        admission.ensure_current(conn)?;
+    }
+    let scope_key = format!("project:scope-authority:{project}");
+    let (
+        payload_source_count,
+        basis_count,
+        scope_count,
+        matched_payload_count,
+        matched_basis_count,
+        payload_scope_count,
+        matched_scope_count,
+    ): (i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
+        "WITH entity_sources AS (
+                 SELECT json_extract(entity.value, '$.entityId') AS material_id,
+                        json_extract(entity.value, '$.sourceToken') AS source_token,
+                        json_extract(entity.value, '$.scope.authorityRevision') AS scope_token
+                   FROM narrative_proposal_revisions revision
+                   JOIN json_each(
+                        CASE WHEN json_valid(revision.payload_json)
+                                  AND json_type(revision.payload_json, '$.bundle.entities') = 'array'
+                             THEN json_extract(revision.payload_json, '$.bundle.entities')
+                             ELSE '[]' END
+                   ) AS entity
+                  WHERE revision.id = ?1
+             ), relation_sources AS (
+                 SELECT json_extract(relation.value, '$.edgeId') AS material_id,
+                        json_extract(relation.value, '$.sourceToken') AS source_token
+                   FROM narrative_proposal_revisions revision
+                   JOIN json_each(
+                        CASE WHEN json_valid(revision.payload_json)
+                                  AND json_type(revision.payload_json, '$.bundle.relations') = 'array'
+                             THEN json_extract(revision.payload_json, '$.bundle.relations')
+                             ELSE '[]' END
+                   ) AS relation
+                  WHERE revision.id = ?1
+             ), payload_sources AS (
+                 SELECT 'codex-entry' AS source_kind,
+                        'codex:' || material_id AS source_key,
+                        source_token
+                   FROM entity_sources
+                  UNION ALL
+                 SELECT 'codex-relation',
+                        'codex-relation:' || material_id,
+                        source_token
+                   FROM relation_sources
+             ), payload_scopes AS (
+                 SELECT scope_token
+                   FROM entity_sources
+                  WHERE scope_token IS NOT NULL
+             ), basis AS (
+                 SELECT source_kind, source_key, revision_token
+                   FROM narrative_revision_source_basis
+                  WHERE revision_id = ?1
+             )
+         SELECT
+             (SELECT COUNT(*) FROM payload_sources),
+             (SELECT COUNT(*) FROM basis),
+             (SELECT COUNT(*) FROM basis
+               WHERE source_kind = 'project-scope-authority' AND source_key = ?2),
+             (SELECT COUNT(*)
+                FROM payload_sources payload
+               WHERE EXISTS (
+                     SELECT 1 FROM basis
+                      WHERE basis.source_kind = payload.source_kind
+                        AND basis.source_key = payload.source_key
+                        AND basis.revision_token = payload.source_token
+               )),
+             (SELECT COUNT(*)
+                FROM basis material
+               WHERE material.source_kind IN ('codex-entry', 'codex-relation')
+                 AND EXISTS (
+                     SELECT 1 FROM payload_sources payload
+                      WHERE payload.source_kind = material.source_kind
+                        AND payload.source_key = material.source_key
+                        AND payload.source_token = material.revision_token
+               )),
+             (SELECT COUNT(*) FROM payload_scopes),
+             (SELECT COUNT(*)
+                FROM payload_scopes payload
+               WHERE EXISTS (
+                     SELECT 1 FROM basis
+                      WHERE basis.source_kind = 'project-scope-authority'
+                        AND basis.source_key = ?2
+                        AND basis.revision_token = payload.scope_token
+               ))",
+        params![revision_id, scope_key],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        },
+    )?;
+    if let Some(admission) = admission {
+        admission.ensure_current(conn)?;
+    }
+    Ok(
+        basis_count == payload_source_count + 1
+            && scope_count == 1
+            && matched_payload_count == payload_source_count
+            && matched_basis_count == payload_source_count
+            && (payload_scope_count == 0 || matched_scope_count == payload_scope_count),
+    )
 }
 
 /// Preflight the live Source values that the A2 reader will resolve. The

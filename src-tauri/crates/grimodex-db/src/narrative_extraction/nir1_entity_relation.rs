@@ -9620,6 +9620,40 @@ mod tests {
     }
 
     #[test]
+    fn graph_index_skips_missing_basis_before_live_source_body_read() -> anyhow::Result<()> {
+        let (db, runtime, created) = published_graph_fixture()?;
+        let revision_id = created["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Graph revision id missing"))?
+            .to_owned();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries
+                    SET summary=?1
+                  WHERE id='nir1-alice' AND project_id='default-project'",
+                ["x".repeat(8 * 1024 * 1024)],
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_revision_source_basis
+                  WHERE revision_id=?1
+                    AND source_kind='codex-entry'
+                    AND source_key='codex:nir1-alice'",
+                [&revision_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        assert!(source.roster.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn graph_prepare_native_material_admission_is_project_wide() -> anyhow::Result<()> {
         for extra_relation in [false, true] {
             let db = fresh_migrated_memory()?;
