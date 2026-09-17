@@ -6527,6 +6527,9 @@ mod tests {
         approve_typed_revision(&db, "nir1-run", &created)?;
 
         // These candidates intentionally have no Source basis or Decision.
+        // The first payload is syntactically malformed and the second has a
+        // non-object entity to prove that bounded ineligible rows cannot abort
+        // the scan.
         // They are ordered before the valid UUID revision so the first eight
         // fixed-size pages contain only ineligible rows. The final page still
         // has to advance past them and discover the qualified revision.
@@ -6568,6 +6571,18 @@ mod tests {
                     params![revision_id, proposal_id, NIR1_ENTITY_RELATION_REVISION_ORIGIN],
                 )?;
             }
+            tx.execute(
+                "UPDATE narrative_proposal_revisions
+                    SET payload_json=?1
+                  WHERE id='000-graph-keyset-decoy-revision-000'",
+                ["{malformed"],
+            )?;
+            tx.execute(
+                "UPDATE narrative_proposal_revisions
+                    SET payload_json=?1
+                  WHERE id='000-graph-keyset-decoy-revision-001'",
+                [r#"{"bundle":{"entities":["bad"],"relations":[]}}"#],
+            )?;
             tx.commit()?;
             Ok::<_, anyhow::Error>(())
         })?;

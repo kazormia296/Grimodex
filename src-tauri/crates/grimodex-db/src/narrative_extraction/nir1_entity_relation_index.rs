@@ -631,7 +631,8 @@ fn read_revision_input_stats(
                                        ELSE 0 END
                               )
                                 FROM json_each(
-                                    CASE WHEN json_type(
+                                    CASE WHEN json_valid(revision.payload_json)
+                                              AND json_type(
                                                revision.payload_json,
                                                '$.bundle.entities'
                                          ) = 'array'
@@ -708,11 +709,23 @@ fn preflight_revision_source_basis(
         matched_basis_count,
         payload_scope_count,
         matched_scope_count,
-    ): (i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
+        invalid_entity_count,
+        invalid_relation_count,
+    ): (i64, i64, i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
         "WITH entity_sources AS (
-                 SELECT json_extract(entity.value, '$.entityId') AS material_id,
-                        json_extract(entity.value, '$.sourceToken') AS source_token,
-                        json_extract(entity.value, '$.scope.authorityRevision') AS scope_token
+                 SELECT entity.type AS element_type,
+                        CASE WHEN entity.type = 'object' AND json_valid(entity.value)
+                             THEN json_extract(entity.value, '$.entityId') END AS material_id,
+                        CASE WHEN entity.type = 'object' AND json_valid(entity.value)
+                             THEN json_extract(entity.value, '$.sourceToken') END AS source_token,
+                        CASE WHEN entity.type = 'object' AND json_valid(entity.value)
+                             THEN json_extract(entity.value, '$.scope.authorityRevision') END AS scope_token,
+                        CASE WHEN entity.type = 'object' AND json_valid(entity.value)
+                             THEN json_type(entity.value, '$.entityId') END AS material_id_type,
+                        CASE WHEN entity.type = 'object' AND json_valid(entity.value)
+                             THEN json_type(entity.value, '$.sourceToken') END AS source_token_type,
+                        CASE WHEN entity.type = 'object' AND json_valid(entity.value)
+                             THEN json_type(entity.value, '$.scope.authorityRevision') END AS scope_token_type
                    FROM narrative_proposal_revisions revision
                    JOIN json_each(
                         CASE WHEN json_valid(revision.payload_json)
@@ -722,8 +735,15 @@ fn preflight_revision_source_basis(
                    ) AS entity
                   WHERE revision.id = ?1
              ), relation_sources AS (
-                 SELECT json_extract(relation.value, '$.edgeId') AS material_id,
-                        json_extract(relation.value, '$.sourceToken') AS source_token
+                 SELECT relation.type AS element_type,
+                        CASE WHEN relation.type = 'object' AND json_valid(relation.value)
+                             THEN json_extract(relation.value, '$.edgeId') END AS material_id,
+                        CASE WHEN relation.type = 'object' AND json_valid(relation.value)
+                             THEN json_extract(relation.value, '$.sourceToken') END AS source_token,
+                        CASE WHEN relation.type = 'object' AND json_valid(relation.value)
+                             THEN json_type(relation.value, '$.edgeId') END AS material_id_type,
+                        CASE WHEN relation.type = 'object' AND json_valid(relation.value)
+                             THEN json_type(relation.value, '$.sourceToken') END AS source_token_type
                    FROM narrative_proposal_revisions revision
                    JOIN json_each(
                         CASE WHEN json_valid(revision.payload_json)
@@ -781,7 +801,18 @@ fn preflight_revision_source_basis(
                       WHERE basis.source_kind = 'project-scope-authority'
                         AND basis.source_key = ?2
                         AND basis.revision_token = payload.scope_token
-               ))",
+               )),
+             (SELECT COUNT(*)
+                FROM entity_sources
+               WHERE COALESCE(element_type, '') <> 'object'
+                  OR COALESCE(material_id_type, '') <> 'text'
+                  OR COALESCE(source_token_type, '') <> 'text'
+                  OR COALESCE(scope_token_type, '') <> 'text'),
+             (SELECT COUNT(*)
+                FROM relation_sources
+               WHERE COALESCE(element_type, '') <> 'object'
+                  OR COALESCE(material_id_type, '') <> 'text'
+                  OR COALESCE(source_token_type, '') <> 'text')",
         params![revision_id, scope_key],
         |row| {
             Ok((
@@ -792,6 +823,8 @@ fn preflight_revision_source_basis(
                 row.get(4)?,
                 row.get(5)?,
                 row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
             ))
         },
     )?;
@@ -803,6 +836,8 @@ fn preflight_revision_source_basis(
             && scope_count == 1
             && matched_payload_count == payload_source_count
             && matched_basis_count == payload_source_count
+            && invalid_entity_count == 0
+            && invalid_relation_count == 0
             && (payload_scope_count == 0 || matched_scope_count == payload_scope_count),
     )
 }
