@@ -8,6 +8,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::Digest;
+use std::fmt;
 
 use super::change_feed;
 use super::project_scope_authority::load_live_project_scope_authority;
@@ -15,6 +16,84 @@ use super::project_scope_authority::load_live_project_scope_authority;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CurrentSourceRevision {
     pub revision_token: String,
+}
+
+/// A validation attempt can be stopped for reasons that are different from a
+/// Source being absent or stale.  The outer maintenance owner supplies this
+/// marker when it stops an attempt; Source, Verify, Rebuild, and disclosure
+/// readers must preserve it through their `anyhow` chains rather than turning
+/// it into an ordinary domain result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ValidationTerminationReason {
+    Cancelled,
+    TimedOut,
+    Closed,
+    WorkspaceGenerationChanged,
+    ForegroundPreempted,
+    CleanupFailed,
+}
+
+impl ValidationTerminationReason {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::TimedOut => "timeout",
+            Self::Closed => "closed",
+            Self::WorkspaceGenerationChanged => "workspace-generation-changed",
+            Self::ForegroundPreempted => "foreground-preempted",
+            Self::CleanupFailed => "cleanup-failed",
+        }
+    }
+}
+
+/// Typed process-local signal for an interrupted validation.  It is not a
+/// persisted authority or a replacement for the maintenance lifecycle
+/// receipt; it exists solely to stop read/verify helpers from coercing an
+/// interruption into `missing`, `stale`, `Unknown`, or a successful result.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct ValidationTerminated {
+    pub(crate) reason: ValidationTerminationReason,
+    message: String,
+}
+
+impl ValidationTerminated {
+    #[allow(dead_code)]
+    pub(crate) fn new(reason: ValidationTerminationReason, message: impl Into<String>) -> Self {
+        Self {
+            reason,
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for ValidationTerminated {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "NEX_VALIDATION_TERMINATED:{}: {}",
+            self.reason.code(),
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for ValidationTerminated {}
+
+#[allow(dead_code)]
+pub(crate) fn validation_terminated(
+    reason: ValidationTerminationReason,
+    message: impl Into<String>,
+) -> anyhow::Error {
+    anyhow::Error::new(ValidationTerminated::new(reason, message))
+}
+
+/// `anyhow` preserves this marker when callers add context.  Keep the check
+/// in one place so every reader makes the same distinction from routine
+/// Source absence/staleness.
+pub(crate) fn is_validation_terminated(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ValidationTerminated>().is_some()
 }
 
 pub(crate) fn resolve_source_revision(
@@ -178,6 +257,7 @@ fn current_source_state_from_resolution(
 ) -> anyhow::Result<CurrentSourceState> {
     let resolved = match resolved {
         Ok(resolved) => resolved,
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(error) if is_source_missing_error(&error) => {
             return Ok(CurrentSourceState {
                 exists: false,
@@ -915,6 +995,27 @@ mod tests {
             Ok(())
         })
         .expect("run malformed key check");
+    }
+
+    #[test]
+    fn validation_termination_survives_source_state_normalization() {
+        let error = validation_terminated(
+            ValidationTerminationReason::ForegroundPreempted,
+            "foreground work arrived while validating",
+        );
+        let normalized = current_source_state_from_resolution(
+            "scene-body",
+            Err::<CurrentSourceRevision, _>(error.context("source resolver context")),
+        )
+        .expect_err("an interruption must not become missing or stale");
+        assert!(is_validation_terminated(&normalized));
+        let marker = normalized
+            .downcast_ref::<ValidationTerminated>()
+            .expect("typed termination marker");
+        assert_eq!(
+            marker.reason,
+            ValidationTerminationReason::ForegroundPreempted
+        );
     }
 
     #[test]

@@ -58,7 +58,9 @@ use super::publish_runtime::publish_freshness_evaluation_edges_only_in_tx;
 use super::repository::create_system_run_in_tx;
 use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
-use super::source_revision::resolve_current_source_state;
+use super::source_revision::{
+    is_validation_terminated, resolve_current_source_state, CurrentSourceState,
+};
 use super::task_leases::with_immediate_transaction;
 use super::terminal_failure::{
     project_terminal_failure_for_run_generated_in_tx,
@@ -1134,7 +1136,7 @@ fn verify_v2_shadow_for_rebuild_in_tx(
                 project_id,
                 run_id,
                 &entry.source_object_identity,
-            );
+            )?;
             let selector_value: Value = match serde_json::from_str(&entry.selector_json) {
                 Ok(value) => value,
                 Err(error) => {
@@ -1211,38 +1213,47 @@ fn verify_v2_shadow_for_rebuild_in_tx(
     Ok(verification)
 }
 
+fn rebuild_source_change_class_from_state(
+    state: anyhow::Result<CurrentSourceState>,
+) -> anyhow::Result<SourceChangeClass> {
+    match state {
+        Ok(state) if !state.exists => Ok(SourceChangeClass::SourceMissing),
+        Ok(state) if !state.usable => Ok(SourceChangeClass::ComponentUnavailable),
+        Ok(_) => Ok(SourceChangeClass::SourceContentChanged),
+        Err(error) if is_validation_terminated(&error) => Err(error),
+        Err(_) => Ok(SourceChangeClass::ComponentUnavailable),
+    }
+}
+
 fn rebuild_source_change_class_from_source(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
     source_object_identity: &str,
-) -> SourceChangeClass {
+) -> anyhow::Result<SourceChangeClass> {
     let Some(source_kind) = infer_source_kind(source_object_identity) else {
-        return SourceChangeClass::ComponentUnavailable;
+        return Ok(SourceChangeClass::ComponentUnavailable);
     };
     let resolver_run_id = match parse_snapshot_run_id_from_source_identity(source_object_identity) {
         Ok(Some(snapshot_run_id)) => match project_id_for_run(conn, snapshot_run_id) {
             Ok(Some(owner)) if owner != project_id => {
-                return SourceChangeClass::ComponentUnavailable;
+                return Ok(SourceChangeClass::ComponentUnavailable);
             }
             Ok(_) => snapshot_run_id,
-            Err(_) => return SourceChangeClass::ComponentUnavailable,
+            Err(error) if is_validation_terminated(&error) => return Err(error),
+            Err(_) => return Ok(SourceChangeClass::ComponentUnavailable),
         },
         Ok(None) => run_id,
-        Err(_) => return SourceChangeClass::ComponentUnavailable,
+        Err(error) if is_validation_terminated(&error) => return Err(error),
+        Err(_) => return Ok(SourceChangeClass::ComponentUnavailable),
     };
-    match resolve_current_source_state(
+    rebuild_source_change_class_from_state(resolve_current_source_state(
         conn,
         project_id,
         resolver_run_id,
         source_kind,
         source_object_identity,
-    ) {
-        Ok(state) if !state.exists => SourceChangeClass::SourceMissing,
-        Ok(state) if !state.usable => SourceChangeClass::ComponentUnavailable,
-        Ok(_) => SourceChangeClass::SourceContentChanged,
-        Err(_) => SourceChangeClass::ComponentUnavailable,
-    }
+    ))
 }
 
 fn rebuild_source_change_class_for_role(
@@ -1411,33 +1422,41 @@ fn rebuild_derived_state_edges_in_project(
 /// `true` when `edge`'s Source is broken: either its `source_object_identity`
 /// does not match any recognized `source_kind` prefix (see
 /// `infer_source_kind`), or `resolve_current_source_state` reports it does
-/// not currently exist, or resolving it errors at all (a malformed key, a
-/// project-scope mismatch, an unsealed/non-current source, ...). Every one
-/// of those outcomes means this diagnostic cannot certify the Edge's Source
-/// is healthy, so -- matching this crate's fail-closed convention elsewhere
-/// (`semantic_epoch::create_epoch_in_tx` on an unrecognized `reason`,
-/// `change_feed`'s continuity check on a lineage mismatch) -- it is counted
-/// as broken rather than silently skipped or allowed to abort the whole
-/// report over one bad Edge.
+/// not currently exist, or resolving it produces an ordinary domain error (a
+/// malformed key, a project-scope mismatch, an unsealed/non-current source,
+/// ...). Every ordinary error means this diagnostic cannot certify the Edge's
+/// Source is healthy, so -- matching this crate's fail-closed convention
+/// elsewhere (`semantic_epoch::create_epoch_in_tx` on an unrecognized
+/// `reason`, `change_feed`'s continuity check on a lineage mismatch) -- it is
+/// counted as broken. A typed validation termination is different: it is
+/// propagated to the maintenance owner and is never reported as a missing
+/// Source.
+fn edge_source_missing_from_state(
+    state: anyhow::Result<CurrentSourceState>,
+) -> anyhow::Result<bool> {
+    match state {
+        Ok(state) => Ok(!state.exists),
+        Err(error) if is_validation_terminated(&error) => Err(error),
+        Err(_) => Ok(true),
+    }
+}
+
 fn edge_source_is_missing(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
     edge: &DependencyEdge,
-) -> bool {
+) -> anyhow::Result<bool> {
     let Some(source_kind) = infer_source_kind(&edge.source_object_identity) else {
-        return true;
+        return Ok(true);
     };
-    match resolve_current_source_state(
+    edge_source_missing_from_state(resolve_current_source_state(
         conn,
         project_id,
         run_id,
         source_kind,
         &edge.source_object_identity,
-    ) {
-        Ok(state) => !state.exists,
-        Err(_) => true,
-    }
+    ))
 }
 
 /// Read-only diagnostic: for every Dependency Edge Run `run_id` declared
@@ -1460,7 +1479,7 @@ pub(crate) fn rebuild_verify_dependency_edges(
     let edges = find_edges_by_consumer(conn, project_id, RUN_CONSUMER_KIND, run_id)?;
     let mut edge_ids_with_missing_source = Vec::new();
     for edge in &edges {
-        if edge_source_is_missing(conn, project_id, run_id, edge) {
+        if edge_source_is_missing(conn, project_id, run_id, edge)? {
             edge_ids_with_missing_source.push(edge.id.clone());
         }
     }
@@ -3234,6 +3253,27 @@ fn durable_edge_scope_authority_source_input(
     }))
 }
 
+fn durable_resolved_source_value(
+    resolved: anyhow::Result<CurrentSourceState>,
+) -> anyhow::Result<Value> {
+    match resolved {
+        Ok(state) => Ok(json!({
+            "status": if state.usable { "usable" } else if state.exists { "stale" } else { "missing" },
+            "exists": state.exists,
+            "usable": state.usable,
+            "revisionToken": state.revision_token,
+            "contentDigest": state.content_digest,
+            "version": state.version,
+            "normalizerVersion": state.normalizer_version,
+        })),
+        Err(error) if is_validation_terminated(&error) => Err(error),
+        Err(error) => Ok(json!({
+            "status": "error",
+            "error": error.to_string(),
+        })),
+    }
+}
+
 /// Capture the exact live scope/source inputs used while Verify resolves one
 /// Edge.  The raw Edge row is not enough: its owning Run and the resolver's
 /// row can be deleted or re-pointed while preserving the Edge itself.  Each
@@ -3260,27 +3300,13 @@ fn durable_edge_resolution_input(
         .or(owning_run_id)
         .unwrap_or_default();
     let resolved_source = match source_kind {
-        Some(kind) => match resolve_current_source_state(
+        Some(kind) => durable_resolved_source_value(resolve_current_source_state(
             conn,
             project_id,
             source_run_id,
             kind,
             source_identity,
-        ) {
-            Ok(state) => json!({
-                "status": if state.usable { "usable" } else if state.exists { "stale" } else { "missing" },
-                "exists": state.exists,
-                "usable": state.usable,
-                "revisionToken": state.revision_token,
-                "contentDigest": state.content_digest,
-                "version": state.version,
-                "normalizerVersion": state.normalizer_version,
-            }),
-            Err(error) => json!({
-                "status": "error",
-                "error": error.to_string(),
-            }),
-        },
+        ))?,
         None => json!({
             "status": "unsupported",
         }),
@@ -3389,7 +3415,7 @@ pub fn verify_narrative_dependency_graph_for_project(
                     continue;
                 }
             };
-            if edge_source_is_missing(conn, project_id, owning_run_id, edge) {
+            if edge_source_is_missing(conn, project_id, owning_run_id, edge)? {
                 report.edge_ids_with_missing_source.push(edge.id.clone());
             }
         }
@@ -4311,6 +4337,82 @@ mod tests {
 
     type StoredEdgeState = (String, Option<String>, String, String);
     type StoredConsumerState = (String, String, String, Option<String>);
+
+    #[test]
+    fn edge_source_classification_preserves_terminal_errors() {
+        let empty_state = CurrentSourceState {
+            exists: false,
+            usable: false,
+            revision_token: None,
+            content_digest: None,
+            version: None,
+            normalizer_version: None,
+        };
+        assert!(edge_source_missing_from_state(Ok(empty_state)).expect("missing state"));
+
+        let stale_state = CurrentSourceState {
+            exists: true,
+            usable: false,
+            revision_token: None,
+            content_digest: None,
+            version: None,
+            normalizer_version: None,
+        };
+        assert!(!edge_source_missing_from_state(Ok(stale_state)).expect("stale state"));
+        assert!(edge_source_missing_from_state(Err(anyhow::anyhow!(
+            "NEX_SOURCE_KEY_INVALID: malformed key"
+        )))
+        .expect("ordinary source errors remain broken"));
+
+        let terminal = crate::narrative_extraction::source_revision::validation_terminated(
+            crate::narrative_extraction::source_revision::ValidationTerminationReason::Cancelled,
+            "maintenance cancellation",
+        );
+        let error = edge_source_missing_from_state(Err(terminal))
+            .expect_err("cancellation must not become a missing Source");
+        assert!(is_validation_terminated(&error));
+    }
+
+    #[test]
+    fn rebuild_source_classification_does_not_coerce_terminal_errors() {
+        let stale = CurrentSourceState {
+            exists: true,
+            usable: false,
+            revision_token: None,
+            content_digest: None,
+            version: None,
+            normalizer_version: None,
+        };
+        assert_eq!(
+            rebuild_source_change_class_from_state(Ok(stale)).expect("stale source"),
+            SourceChangeClass::ComponentUnavailable
+        );
+
+        let terminal = crate::narrative_extraction::source_revision::validation_terminated(
+            crate::narrative_extraction::source_revision::ValidationTerminationReason::TimedOut,
+            "validation deadline",
+        );
+        let error = rebuild_source_change_class_from_state(Err(terminal))
+            .expect_err("timeout must not become ComponentUnavailable");
+        assert!(is_validation_terminated(&error));
+    }
+
+    #[test]
+    fn durable_source_resolution_keeps_terminal_errors_out_of_verify_json() {
+        let ordinary = durable_resolved_source_value(Err(anyhow::anyhow!(
+            "NEX_SOURCE_MISSING: deleted source"
+        )))
+        .expect("ordinary source failure becomes diagnostic JSON");
+        assert_eq!(ordinary["status"], "error");
+
+        let terminal = crate::narrative_extraction::source_revision::validation_terminated(
+            crate::narrative_extraction::source_revision::ValidationTerminationReason::Closed,
+            "workspace closed",
+        );
+        let error = durable_resolved_source_value(Err(terminal))
+            .expect_err("closed validation must abort Verify input assembly");
+        assert!(is_validation_terminated(&error));
+    }
 
     fn test_db() -> Database {
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");

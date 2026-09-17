@@ -67,6 +67,7 @@ use super::repository::{
 };
 use super::revision_eligibility::pending;
 use super::semantic_epoch::get_current_epoch;
+use super::source_revision::is_validation_terminated;
 use super::task_leases::with_immediate_transaction;
 use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
@@ -1271,15 +1272,16 @@ fn read_typed_canonical_freshness(
         return Ok(None);
     }
     if let Some(publisher) = publisher.as_deref() {
-        if validate_current_evaluation_run_reference(
+        if let Err(error) = validate_current_evaluation_run_reference(
             conn,
             project_id,
             &epoch.id,
             revision_id,
             publisher,
-        )
-        .is_err()
-        {
+        ) {
+            if is_validation_terminated(&error) {
+                return Err(error);
+            }
             return Ok(None);
         }
     }
@@ -2013,22 +2015,34 @@ fn read_typed_revision_core(
         Some(Ok(material)) => material,
         _ => return Ok(unavailable("revision-envelope-invalid")),
     };
-    if validate_entity_relation_bundle(&payload.bundle).is_err()
-        || validate_live_sources(conn, project_id, &payload.bundle).is_err()
-    {
+    if validate_entity_relation_bundle(&payload.bundle).is_err() {
+        return Ok(unavailable("source-revision-changed"));
+    }
+    if let Err(error) = validate_live_sources(conn, project_id, &payload.bundle) {
+        if is_validation_terminated(&error) {
+            return Err(error);
+        }
         return Ok(unavailable("source-revision-changed"));
     }
     let expected_material =
         match build_typed_material_basis(conn, project_id, &payload.bundle, &revision_created_at) {
             Ok(material) => material,
+            Err(error) if is_validation_terminated(&error) => return Err(error),
             Err(_) => return Ok(unavailable("revision-material-mismatch")),
         };
     if expected_material != material_basis {
         return Ok(unavailable("revision-material-mismatch"));
     }
-    if validate_typed_persisted_material(conn, project_id, &run_id, revision_id, &expected_material)
-        .is_err()
-    {
+    if let Err(error) = validate_typed_persisted_material(
+        conn,
+        project_id,
+        &run_id,
+        revision_id,
+        &expected_material,
+    ) {
+        if is_validation_terminated(&error) {
+            return Err(error);
+        }
         return Ok(unavailable("revision-material-authority-mismatch"));
     }
     let freshness = match read_typed_canonical_freshness(
@@ -2110,6 +2124,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
         &format!("project:scope-authority:{project_id}"),
     ) {
         Ok(authority) => authority,
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(error)
             if error.downcast_ref::<rusqlite::Error>().is_some()
                 || error.downcast_ref::<std::io::Error>().is_some() =>
@@ -2150,6 +2165,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
         query_scene_id,
     ) {
         Ok(axis) => axis,
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(_) => {
             return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
                 reason: "a3-query-axis-unavailable".into(),
@@ -2184,6 +2200,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
     let query_scope =
         match super::scene_scope::read_narrative_scene_scope(conn, project_id, query_scene_id) {
             Ok(scope) => scope,
+            Err(error) if is_validation_terminated(&error) => return Err(error),
             Err(_) => {
                 return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
                     reason: "a3-query-scope-unavailable".into(),
@@ -2201,6 +2218,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
     }
     let query_viewpoint = match read_scene_viewpoint(conn, project_id, query_scene_id) {
         Ok(viewpoint) => viewpoint,
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(error)
             if error.downcast_ref::<rusqlite::Error>().is_some()
                 || error.downcast_ref::<std::io::Error>().is_some() =>
@@ -2249,6 +2267,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
                 source_scene_id,
             ) {
                 Ok(scope) => scope,
+                Err(error) if is_validation_terminated(&error) => return Err(error),
                 Err(_) => {
                     return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
                         reason: "a3-material-scope-unavailable".into(),
