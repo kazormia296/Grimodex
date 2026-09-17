@@ -1256,7 +1256,6 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx_for_run_with_control(
 /// prefix a second time -- `project:scene:project:scene:s1` -- and every
 /// backfilled Edge then evaluated as `source-missing` because no resolver
 /// could match it back to its Source.
-// NARRATIVE_DEPENDENCY_PRODUCER: legacy-application-projection-dependency
 fn record_legacy_dependency_edges_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -1275,6 +1274,7 @@ fn record_legacy_dependency_edges_in_tx(
     )
 }
 
+// NARRATIVE_DEPENDENCY_PRODUCER: legacy-application-projection-dependency
 fn record_legacy_dependency_edges_in_tx_with_control(
     conn: &Connection,
     project_id: &str,

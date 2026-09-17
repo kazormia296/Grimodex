@@ -46,7 +46,7 @@ const EXPECTED_PRODUCER_WRITERS: &[(&str, &str, &str, &str, &str, Option<i64>)] 
     (
         "legacy-application-projection-dependency",
         "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
-        "record_legacy_dependency_edges_in_tx",
+        "record_legacy_dependency_edges_in_tx_with_control",
         LEGACY_DEPENDENCY_PRODUCER_GENERATION,
         APPLICATION_CONSUMER_KIND,
         None,
