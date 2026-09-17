@@ -44,9 +44,9 @@ use super::maintenance_skip_evidence::{
 use super::restore_rebuild::{
     is_canonical_graph_state_digest, validate_canonical_verify_outcome_digest,
     validate_graph_state_digest, validate_graph_state_digest_with_control,
-    validate_report_rebuild_required, validate_verify_check_coverage,
-    DependencyGraphVerifyReport, RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION,
-    VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
+    validate_report_rebuild_required, validate_report_rebuild_required_with_control,
+    validate_verify_check_coverage, DependencyGraphVerifyReport, RebuildDerivedStateSummary,
+    REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
 use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 use super::source_revision::is_validation_terminated;
@@ -2521,7 +2521,7 @@ fn validate_discovered_verify_outcome(
     )
     .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify report shape is invalid")?;
     control.check(GraphWorkStage::Coverage)?;
-    validate_report_rebuild_required(conn, project_id, &report).context(
+    validate_report_rebuild_required_with_control(conn, project_id, &report, control).context(
         "NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: rebuildRequired does not match live repairability",
     )?;
     anyhow::ensure!(
@@ -4747,9 +4747,10 @@ mod tests {
     use crate::narrative_extraction::run_dependency_verify_for_project;
     use crate::narrative_extraction::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
     use crate::Database;
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     use rusqlite::params;
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
 
@@ -4919,6 +4920,91 @@ mod tests {
         })
         .expect("seed completed Backfill marker");
         db
+    }
+
+    /// Make the persisted Verify report enter the repairability branch during
+    /// rediscovery without changing the live graph-state digest.  The
+    /// deliberately absent edge id means the ordinary (uncontrolled) helper
+    /// would issue a repairability lookup and then reject the forged report;
+    /// the controlled path must observe its stop before preparing that SQL.
+    fn add_repairability_marker_to_persisted_verify(db: &Database) {
+        db.with_conn(|conn| {
+            let (run_id, outcome_json): (String, Option<String>) = conn.query_row(
+                "SELECT id, outcome_summary_json
+                   FROM narrative_extraction_runs
+                  WHERE project_id = 'project-1'
+                    AND run_kind = 'dependency-verify'
+                    AND semantic_epoch_id = 'epoch-current'
+                  ORDER BY completed_at DESC, id DESC
+                  LIMIT 1",
+                [],
+                |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                },
+            )?;
+            let outcome_json = outcome_json
+                .ok_or_else(|| anyhow::anyhow!("persisted Verify outcome is missing"))?;
+            let mut outcome: Value = serde_json::from_str(&outcome_json)?;
+            let mut report: DependencyGraphVerifyReport = serde_json::from_value(
+                outcome
+                    .get("report")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("persisted Verify report is missing"))?,
+            )?;
+            report.edge_state_ids_outside_current_epoch =
+                vec!["edge-absent-from-live-graph".to_owned()];
+            report.rebuild_required = true;
+            let report_value = serde_json::to_value(report)?;
+            outcome["report"] = report_value.clone();
+            outcome["reportDigest"] = Value::String(format!(
+                "sha256:{}",
+                digest_plan(&report_value)
+            ));
+            outcome["outcomeDigest"] = Value::String(
+                super::super::restore_rebuild::canonical_verify_outcome_digest(&outcome)?,
+            );
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET outcome_summary_json = ?1
+                  WHERE id = ?2",
+                params![outcome.to_string(), run_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("add persisted Verify repairability marker");
+    }
+
+    struct StopBeforePersistedVerifyRepairability {
+        select_count: Arc<AtomicUsize>,
+        coverage_checks: usize,
+        baseline_select_count: Option<usize>,
+        reason: crate::narrative_extraction::source_revision::ValidationTerminationReason,
+    }
+
+    impl GraphWorkControl for StopBeforePersistedVerifyRepairability {
+        fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+            match stage {
+                GraphWorkStage::Coverage => {
+                    self.coverage_checks += 1;
+                    // Durable discovery checks Coverage once before opening
+                    // the persisted outcome; validate_discovered_verify_outcome
+                    // checks it a second time immediately before the
+                    // repairability helper.
+                    if self.coverage_checks == 2 {
+                        self.baseline_select_count =
+                            Some(self.select_count.load(Ordering::SeqCst));
+                    }
+                }
+                GraphWorkStage::Digest if self.coverage_checks >= 2 => {
+                    return Err(crate::narrative_extraction::validation_terminated(
+                        self.reason,
+                        "controlled stop before persisted Verify repairability lookup",
+                    ));
+                }
+                _ => {}
+            }
+            Ok(())
+        }
     }
 
     fn insert_pending_recovery_run(
@@ -6954,9 +7040,79 @@ mod tests {
                     |row| row.get(0),
                 )
                 .map_err(Into::into)
-            })
-            .expect("count discovery findings");
+        })
+        .expect("count discovery findings");
         assert_eq!(finding_count, 0);
+    }
+
+    fn assert_persisted_verify_rediscovery_stops_before_repairability_lookup(
+        reason: crate::narrative_extraction::source_revision::ValidationTerminationReason,
+    ) {
+        let db = open_clean_before_cutover_db();
+        add_repairability_marker_to_persisted_verify(&db);
+
+        let select_count = Arc::new(AtomicUsize::new(0));
+        let select_count_for_hook = Arc::clone(&select_count);
+        db.with_conn(|conn| {
+            conn.authorizer(Some(move |context: AuthContext<'_>| {
+                if matches!(context.action, AuthAction::Select) {
+                    select_count_for_hook.fetch_add(1, Ordering::SeqCst);
+                }
+                Authorization::Allow
+            }))?;
+
+            let mut control = StopBeforePersistedVerifyRepairability {
+                select_count: Arc::clone(&select_count),
+                coverage_checks: 0,
+                baseline_select_count: None,
+                reason,
+            };
+            let result = with_immediate_transaction(conn, |conn| {
+                discover_durable_maintenance_work_in_tx_with_control(
+                    conn,
+                    "project-1",
+                    "durable-wake",
+                    None,
+                    &mut control,
+                )
+            });
+            let observed_select_count = select_count.load(Ordering::SeqCst);
+            conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+
+            let error = result.expect_err(
+                "controlled persisted Verify rediscovery must stop before repairability lookup",
+            );
+            assert!(
+                is_validation_terminated(&error),
+                "stop must remain typed through discovery instead of becoming fallback work: {error:#}"
+            );
+            assert_eq!(
+                control.coverage_checks, 2,
+                "the stop boundary must be the Coverage check inside outcome validation"
+            );
+            assert_eq!(
+                Some(observed_select_count),
+                control.baseline_select_count,
+                "cancellation/preemption must prevent the next repairability SELECT"
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("controlled persisted Verify rediscovery boundary");
+    }
+
+    #[test]
+    fn persisted_verify_rediscovery_cancellation_stops_before_repairability_sql() {
+        assert_persisted_verify_rediscovery_stops_before_repairability_lookup(
+            crate::narrative_extraction::source_revision::ValidationTerminationReason::Cancelled,
+        );
+    }
+
+    #[test]
+    fn persisted_verify_rediscovery_foreground_preemption_stops_before_repairability_sql() {
+        assert_persisted_verify_rediscovery_stops_before_repairability_lookup(
+            crate::narrative_extraction::source_revision::ValidationTerminationReason::
+                ForegroundPreempted,
+        );
     }
 
     #[test]
