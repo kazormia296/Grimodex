@@ -145,6 +145,9 @@
         "evidenceRecords": 1020,
         "dependencyEdges": 1028,
         "rosterRecords": 2044
+      },
+      "observedShape": {
+        "graphSnapshotDependencyEdges": 257
       }
     },
     {
@@ -159,6 +162,9 @@
         "evidenceRecords": 1020,
         "dependencyEdges": 1028,
         "rosterRecords": 2044
+      },
+      "observedShape": {
+        "graphSnapshotDependencyEdges": 1025
       }
     },
     {
@@ -185,6 +191,9 @@
         "ineligibleCandidates": 2064,
         "dependencyEdges": 4128,
         "reportRecords": 416
+      },
+      "observedShape": {
+        "graphSnapshotDependencyEdges": 0
       }
     }
   ],

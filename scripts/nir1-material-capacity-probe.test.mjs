@@ -36,16 +36,17 @@ function makeWorkspace(selectedFixture = fixtureId) {
 
 function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, fixtureShapeReportRecords = null, malformed = false, timeout = false, leakyDescendant = false, detachedDescendant = false, writeProjectMarker = false, omitMode = false, supportedCapacityClaim = false, failedMode = false, operationReportRecords = null } = {}) {
   const fixtureCounts = {
-    [fixtureId]: { candidateRevisions: 3, qualifiedRevisions: 3, rejectedRevisions: 0, entityRecords: 255, relationRecords: 3, evidenceRecords: 255, qualifiedMaterialRecords: 513, rosterRecords: 513, dependencyEdges: null, reportRecords: null },
-    "Q8176/R16": { candidateRevisions: 16, qualifiedRevisions: 16, rejectedRevisions: 0, entityRecords: 4080, relationRecords: 16, evidenceRecords: 4080, qualifiedMaterialRecords: 8176, rosterRecords: 8176, dependencyEdges: null, reportRecords: null },
-    "Q2044/evidence-shared": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, reportRecords: null },
-    "Q2044/evidence-unique": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, reportRecords: null },
-    "D2064/report-heavy": { candidateRevisions: 2064, qualifiedRevisions: 0, rejectedRevisions: 2064, entityRecords: 0, relationRecords: 0, evidenceRecords: 0, qualifiedMaterialRecords: 0, rosterRecords: 0, dependencyEdges: 4128, reportRecords: 416 },
+    [fixtureId]: { candidateRevisions: 3, qualifiedRevisions: 3, rejectedRevisions: 0, entityRecords: 255, relationRecords: 3, evidenceRecords: 255, qualifiedMaterialRecords: 513, rosterRecords: 513, dependencyEdges: null, graphSnapshotDependencyEdges: null, reportRecords: null },
+    "Q8176/R16": { candidateRevisions: 16, qualifiedRevisions: 16, rejectedRevisions: 0, entityRecords: 4080, relationRecords: 16, evidenceRecords: 4080, qualifiedMaterialRecords: 8176, rosterRecords: 8176, dependencyEdges: null, graphSnapshotDependencyEdges: null, reportRecords: null },
+    "Q2044/evidence-shared": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, graphSnapshotDependencyEdges: 257, reportRecords: null },
+    "Q2044/evidence-unique": { candidateRevisions: 4, qualifiedRevisions: 4, rejectedRevisions: 0, entityRecords: 1020, relationRecords: 4, evidenceRecords: 1020, qualifiedMaterialRecords: 2044, rosterRecords: 2044, dependencyEdges: 1028, graphSnapshotDependencyEdges: 1025, reportRecords: null },
+    "D2064/report-heavy": { candidateRevisions: 2064, qualifiedRevisions: 0, rejectedRevisions: 2064, entityRecords: 0, relationRecords: 0, evidenceRecords: 0, qualifiedMaterialRecords: 0, rosterRecords: 0, dependencyEdges: 4128, graphSnapshotDependencyEdges: 0, reportRecords: 416 },
   };
   const counts = structuredClone(fixtureCounts[fixtureForReport] ?? fixtureCounts[fixtureId]);
   if (mismatch) counts.qualifiedRevisions = 4;
   if (mismatchField) counts[mismatchField] = Number(counts[mismatchField]) - 1;
   const fixtureShape = structuredClone(counts);
+  fixtureShape.graphSnapshotDependencyEdges = null;
   if (fixtureShapeReportRecords !== null) fixtureShape.reportRecords = fixtureShapeReportRecords;
   return [
     "#!/usr/bin/env node",
@@ -248,6 +249,38 @@ test("target fixtures execute every diagnostic mode in isolated child paths", ()
       );
     }
     assert.equal(report.paths.length, 6);
+  } finally {
+    rmSync(workspace.directory, { recursive: true, force: true });
+  }
+});
+
+test("probe orchestration keeps fixture-wide and Graph-snapshot edge counts separate", () => {
+  const selectedFixture = "Q2044/evidence-shared";
+  const workspace = makeWorkspace(selectedFixture);
+  try {
+    const binary = makeChild(workspace.directory, {
+      fixtureForReport: selectedFixture,
+    });
+    const report = JSON.parse(
+      runProbe(workspace, binary, ["--fixture", selectedFixture, "--runs", "5"]),
+    );
+    const result = report.results[0];
+    assert.equal(result.fixtureShape.dependencyEdges, 1028);
+    assert.equal(result.fixtureShape.graphSnapshotDependencyEdges, 257);
+    for (const modeResult of result.modeResults) {
+      assert.equal(modeResult.fixtureShape.dependencyEdges, 1028);
+      assert.equal(modeResult.fixtureShape.graphSnapshotDependencyEdges, 257);
+      assert.equal(modeResult.warmup.counts.dependencyEdges, 1028);
+      assert.equal(modeResult.warmup.counts.graphSnapshotDependencyEdges, 257);
+      assert.ok(
+        modeResult.runs.every(
+          (run) =>
+            run.counts.dependencyEdges === 1028 &&
+            run.counts.graphSnapshotDependencyEdges === 257,
+        ),
+        `${modeResult.mode} must preserve both edge metrics`,
+      );
+    }
   } finally {
     rmSync(workspace.directory, { recursive: true, force: true });
   }
@@ -590,6 +623,11 @@ test("shared and unique evidence/dependency shapes are independently checked", (
   for (const [selectedFixture, mismatchField, label] of [
     ["Q2044/evidence-shared", "evidenceRecords", "evidence records"],
     ["Q2044/evidence-unique", "dependencyEdges", "dependency edges"],
+    [
+      "Q2044/evidence-shared",
+      "graphSnapshotDependencyEdges",
+      "Graph snapshot dependency edges",
+    ],
   ]) {
     const workspace = makeWorkspace(selectedFixture);
     try {

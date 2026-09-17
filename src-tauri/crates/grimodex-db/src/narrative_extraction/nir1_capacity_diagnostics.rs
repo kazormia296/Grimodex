@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, StatementStatus};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Digest;
 use std::cell::RefCell;
@@ -24,18 +24,26 @@ use std::time::Instant;
 use crate::backup_restore::{read_incomplete_restore_session, restore_backup_core};
 use crate::migration_supervisor::workspace_identity;
 use crate::{ActiveWorkspace, WorkspaceAuthority, WorkspaceState};
+use grimodex_core::narrative_nir1::EntityRelationBundle;
 
 use super::restore_rebuild::{
-    verify_dependency_graph_snapshot_with_control, DependencyGraphVerifyReport,
+    rebuild_narrative_derived_state_for_project, verify_dependency_graph_snapshot_with_control,
+    DependencyGraphVerifyReport, RebuildDerivedStateOutcome,
 };
 use super::{
+    declaration_storage::{
+        read_active_dependency_declaration_set_in_tx, ActiveDependencyDeclarationSetRead,
+    },
+    dependency_edges::{find_edges_by_consumer, DependencyEdge},
+    human_material_basis::MaterialBasis,
     nir1_chronicle_index::NirChronicleIndexRuntime,
     nir1_entity_relation::{read_nir1_entity_relation_revision, Nir1EntityRelationRevisionRead},
     nir1_entity_relation_index::{
         cold_reopen_graph_index_with_control, is_complete_registered_with_control,
         prepare_graph_index_build_with_control,
         publish_nir1_entity_relation_index_in_tx_with_control, read as read_graph_binding,
-        read_eligibility_source_with_control, BindingRead, INDEX_KEY as ENTITY_RELATION_INDEX_KEY,
+        read_eligibility_source_with_control, BindingRead, GraphObjectRosterEntry,
+        INDEX_KEY as ENTITY_RELATION_INDEX_KEY,
     },
     NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
 };
@@ -118,7 +126,14 @@ pub struct CapacityCounts {
     pub evidence_records: usize,
     pub qualified_material_records: usize,
     pub roster_records: usize,
+    /// Count of all dependency edges persisted for the fixture project. This
+    /// is the fixture-wide input shape and is independent of the request-local
+    /// Graph snapshot edge container.
     pub dependency_edges: Option<u64>,
+    /// Count of dependency edges retained by the selected Graph snapshot.
+    /// This is populated only after the Graph producer has materialised its
+    /// request-local snapshot; it must never overwrite the fixture-wide count.
+    pub graph_snapshot_dependency_edges: Option<u64>,
     /// Number of entries in the latest completed dependency Verify report's
     /// missing-Source list. This is deliberately distinct from the historical
     /// `narrative_maintenance_finding_observations` table.
@@ -228,7 +243,41 @@ pub struct GraphLifecycleMetrics {
     pub restore_image_identity: Option<String>,
     pub restore_workspace_identity: Option<String>,
     pub restore_epoch: Option<String>,
+    pub restore_proof: Option<RestoreProof>,
     pub terminal_error: Option<String>,
+}
+
+/// Process-local evidence for the Restore diagnostic.  These fields describe
+/// the old immutable A2/Graph state and the deliberately empty Graph
+/// generation published after Restore; they are not a persisted authority or
+/// a re-acceptance receipt.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreProof {
+    pub binding_persisted: bool,
+    pub generation_preserved: bool,
+    pub source_digest_preserved: bool,
+    pub d1_binding_preserved: bool,
+    pub edge_binding_preserved: bool,
+    pub dirty_cache_flag_cleared: bool,
+    pub eligible_records_after_restore: usize,
+    pub incomplete_rejected: bool,
+    pub cold_reopen_rejected: bool,
+    pub old_a2_revisions_invalidated: bool,
+    pub old_revision_tuples_preserved: bool,
+    pub old_decisions_preserved: bool,
+    pub old_run_epochs_preserved: bool,
+    pub canonical_rebuild_old_a2_revisions_invalidated: bool,
+    pub canonical_rebuild_old_revision_tuples_preserved: bool,
+    pub canonical_rebuild_old_decisions_preserved: bool,
+    pub canonical_rebuild_old_run_epochs_preserved: bool,
+    pub stale_snapshot_publish_rejected: bool,
+    pub stale_snapshot_generation_unchanged: bool,
+    pub post_restore_qualified_revisions: usize,
+    pub post_restore_roster_records: usize,
+    pub post_restore_complete: bool,
+    pub post_restore_verify_succeeded: bool,
+    pub post_restore_cold_reopen_succeeded: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -850,6 +899,7 @@ struct GraphLifecycleRun {
     restore_image_identity: Option<String>,
     restore_workspace_identity: Option<String>,
     restore_epoch: Option<String>,
+    restore_proof: Option<RestoreProof>,
     terminal_error: Option<String>,
 }
 
@@ -989,8 +1039,432 @@ fn empty_lifecycle(error: Option<String>) -> GraphLifecycleRun {
         restore_image_identity: None,
         restore_workspace_identity: None,
         restore_epoch: None,
+        restore_proof: None,
         terminal_error: error,
     }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct RestoreGraphBindingSnapshot {
+    metadata: Option<(
+        i64,
+        Option<String>,
+        Option<String>,
+        i64,
+        Option<String>,
+        Option<String>,
+        String,
+    )>,
+    declaration: ActiveDependencyDeclarationSetRead,
+    edges: Vec<DependencyEdge>,
+    edge_states: Vec<(
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+        String,
+    )>,
+}
+
+fn capture_restore_graph_binding(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<RestoreGraphBindingSnapshot> {
+    let metadata = conn
+        .query_row(
+            "SELECT generation, source_digest, dependency_set_digest,
+                    dirty_cache_flag, producer_id, producer_version, built_at
+               FROM narrative_semantic_index_metadata
+              WHERE project_id = ?1 AND index_key = ?2",
+            params![project_id, ENTITY_RELATION_INDEX_KEY],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    let declaration = read_active_dependency_declaration_set_in_tx(
+        conn,
+        project_id,
+        "semantic-index",
+        ENTITY_RELATION_INDEX_KEY,
+    )?;
+    let edges = find_edges_by_consumer(
+        conn,
+        project_id,
+        "semantic-index",
+        ENTITY_RELATION_INDEX_KEY,
+    )?;
+    let mut statement = conn.prepare(
+        "SELECT state.edge_id, state.evidence_freshness, state.reason_code,
+                state.build_action, state.evaluated_at_epoch_id,
+                state.evaluated_at, edge.source_object_identity
+           FROM narrative_dependency_edge_states state
+           JOIN narrative_dependency_edges edge ON edge.id = state.edge_id
+          WHERE edge.project_id = ?1
+            AND edge.consumer_kind = ?2
+            AND edge.consumer_key = ?3
+          ORDER BY state.edge_id ASC",
+    )?;
+    let edge_states = statement
+        .query_map(
+            params![project_id, "semantic-index", ENTITY_RELATION_INDEX_KEY],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(RestoreGraphBindingSnapshot {
+        metadata,
+        declaration,
+        edges,
+        edge_states,
+    })
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct RestoreDecisionSnapshot {
+    id: String,
+    revision_id: String,
+    decision: String,
+    decision_json: String,
+    created_at: String,
+    created_by: String,
+    actor_kind: String,
+    actor_id: String,
+    authority_scope: Option<String>,
+    override_field_paths_json: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct RestoreRevisionSnapshot {
+    revision_id: String,
+    proposal_id: String,
+    proposal_status: String,
+    current_revision_id: Option<String>,
+    run_id: String,
+    run_epoch_id: String,
+    revision_number: i64,
+    payload_json: String,
+    origin_kind: String,
+    reconciliation_envelope_json: Option<String>,
+    reconciliation_envelope_digest: Option<String>,
+    created_at: String,
+    created_by: String,
+    decisions: Vec<RestoreDecisionSnapshot>,
+    roster: Vec<GraphObjectRosterEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreStoredPayload {
+    bundle: EntityRelationBundle,
+}
+
+fn restore_roster_sort_key(entry: &GraphObjectRosterEntry) -> (&str, &str, &str, &str, &str, &str) {
+    (
+        &entry.material_kind,
+        &entry.material_id,
+        &entry.source_object_identity,
+        &entry.revision_id,
+        &entry.decision_id,
+        &entry.source_token,
+    )
+}
+
+fn roster_from_stored_revision(
+    revision_id: &str,
+    payload_json: &str,
+    envelope_json: Option<&str>,
+    decision_id: &str,
+) -> Result<Vec<GraphObjectRosterEntry>> {
+    let payload: RestoreStoredPayload = serde_json::from_str(payload_json)
+        .context("parse restored typed Revision payload for exact tuple check")?;
+    anyhow::ensure!(
+        payload.bundle.revision_id == revision_id,
+        "restored typed payload Revision identity changed: expected {revision_id}, got {}",
+        payload.bundle.revision_id
+    );
+    let envelope = envelope_json
+        .map(serde_json::from_str::<Value>)
+        .transpose()
+        .context("parse restored typed Revision envelope for exact tuple check")?;
+    let material_basis = envelope
+        .as_ref()
+        .and_then(|value| value.get("effectiveMaterialBasis"))
+        .cloned()
+        .map(serde_json::from_value::<MaterialBasis>)
+        .transpose()
+        .context("parse restored typed material basis for exact tuple check")?
+        .context("restored typed Revision envelope omitted effectiveMaterialBasis")?;
+
+    let mut roster = Vec::with_capacity(
+        payload
+            .bundle
+            .entities
+            .len()
+            .saturating_add(payload.bundle.relations.len())
+            .saturating_add(material_basis.evidence_set.len()),
+    );
+    for entity in &payload.bundle.entities {
+        roster.push(GraphObjectRosterEntry {
+            material_kind: "entity".to_owned(),
+            material_id: entity.entity_id.clone(),
+            source_object_identity: format!("codex:{}", entity.entity_id),
+            revision_id: revision_id.to_owned(),
+            decision_id: decision_id.to_owned(),
+            source_token: entity.source_token.clone(),
+        });
+    }
+    for relation in &payload.bundle.relations {
+        roster.push(GraphObjectRosterEntry {
+            material_kind: "relation".to_owned(),
+            material_id: relation.edge_id.clone(),
+            source_object_identity: format!("codex-relation:{}", relation.edge_id),
+            revision_id: revision_id.to_owned(),
+            decision_id: decision_id.to_owned(),
+            source_token: relation.source_token.clone(),
+        });
+    }
+    for evidence in &material_basis.evidence_set {
+        roster.push(GraphObjectRosterEntry {
+            material_kind: "evidence".to_owned(),
+            material_id: evidence.evidence_ref.clone(),
+            source_object_identity: evidence.source_key.clone(),
+            revision_id: revision_id.to_owned(),
+            decision_id: decision_id.to_owned(),
+            source_token: evidence.revision_token.clone(),
+        });
+    }
+    roster
+        .sort_by(|left, right| restore_roster_sort_key(left).cmp(&restore_roster_sort_key(right)));
+    Ok(roster)
+}
+
+fn restore_revision_snapshot_from_conn(
+    conn: &Connection,
+    project_id: &str,
+    revision_id: &str,
+    roster_override: Option<Vec<GraphObjectRosterEntry>>,
+) -> Result<RestoreRevisionSnapshot> {
+    let row: Option<(
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        i64,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+    )> = conn
+        .query_row(
+            "SELECT revision.id, proposal.id, proposal.status,
+                    proposal.current_revision_id, proposal_set.run_id,
+                    extraction_run.semantic_epoch_id, revision.revision_number,
+                    revision.payload_json, revision.origin_kind,
+                    revision.reconciliation_envelope_json,
+                    revision.reconciliation_envelope_digest,
+                    revision.created_at, revision.created_by
+               FROM narrative_proposal_revisions revision
+               JOIN narrative_proposals proposal
+                 ON proposal.id = revision.proposal_id
+               JOIN narrative_proposal_sets proposal_set
+                 ON proposal_set.id = proposal.proposal_set_id
+               JOIN narrative_extraction_runs extraction_run
+                 ON extraction_run.id = proposal_set.run_id
+                AND extraction_run.project_id = proposal_set.project_id
+              WHERE revision.id = ?1
+                AND proposal_set.project_id = ?2
+                AND proposal_set.set_kind = ?3
+                AND extraction_run.surface_path_id = ?4",
+            params![
+                revision_id,
+                project_id,
+                NIR1_ENTITY_RELATION_SET_KIND,
+                NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        revision_id,
+        proposal_id,
+        proposal_status,
+        current_revision_id,
+        run_id,
+        run_epoch_id,
+        revision_number,
+        payload_json,
+        origin_kind,
+        reconciliation_envelope_json,
+        reconciliation_envelope_digest,
+        created_at,
+        created_by,
+    )) = row
+    else {
+        anyhow::bail!(
+            "restore exact tuple check could not read Revision {revision_id} in project {project_id}"
+        );
+    };
+
+    let mut statement = conn.prepare(
+        "SELECT id, revision_id, decision, decision_json, created_at, created_by,
+                actor_kind, actor_id, authority_scope, override_field_paths_json
+           FROM narrative_proposal_decisions
+          WHERE proposal_id = ?1 AND revision_id = ?2
+          ORDER BY created_at ASC, id ASC",
+    )?;
+    let decisions = statement
+        .query_map(params![proposal_id, revision_id], |row| {
+            Ok(RestoreDecisionSnapshot {
+                id: row.get(0)?,
+                revision_id: row.get(1)?,
+                decision: row.get(2)?,
+                decision_json: row.get(3)?,
+                created_at: row.get(4)?,
+                created_by: row.get(5)?,
+                actor_kind: row.get(6)?,
+                actor_id: row.get(7)?,
+                authority_scope: row.get(8)?,
+                override_field_paths_json: row.get(9)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let roster = if let Some(roster) = roster_override {
+        roster
+    } else {
+        let decision_id = decisions
+            .last()
+            .map(|decision| decision.id.as_str())
+            .unwrap_or("");
+        roster_from_stored_revision(
+            &revision_id,
+            &payload_json,
+            reconciliation_envelope_json.as_deref(),
+            decision_id,
+        )?
+    };
+    Ok(RestoreRevisionSnapshot {
+        revision_id,
+        proposal_id,
+        proposal_status,
+        current_revision_id,
+        run_id,
+        run_epoch_id,
+        revision_number,
+        payload_json,
+        origin_kind,
+        reconciliation_envelope_json,
+        reconciliation_envelope_digest,
+        created_at,
+        created_by,
+        decisions,
+        roster,
+    })
+}
+
+fn capture_restore_revision_snapshots(
+    db: &Database,
+    project_id: &str,
+) -> Result<(String, Vec<RestoreRevisionSnapshot>)> {
+    db.with_read_transaction(|conn| {
+        let source = read_eligibility_source_with_control(
+            conn,
+            project_id,
+            &mut super::nir1_entity_relation_index::NeverStopGraphWorkControl,
+        )?;
+        let mut roster_by_revision = BTreeMap::<String, Vec<GraphObjectRosterEntry>>::new();
+        for entry in source.roster {
+            roster_by_revision
+                .entry(entry.revision_id.clone())
+                .or_default()
+                .push(entry);
+        }
+        let mut snapshots = Vec::with_capacity(roster_by_revision.len());
+        for (revision_id, roster) in roster_by_revision {
+            snapshots.push(restore_revision_snapshot_from_conn(
+                conn,
+                project_id,
+                &revision_id,
+                Some(roster),
+            )?);
+        }
+        Ok((source.digest, snapshots))
+    })
+}
+
+fn read_restore_revision_snapshots_after_restore(
+    db: &Database,
+    project_id: &str,
+    revision_ids: &[String],
+) -> Result<Vec<RestoreRevisionSnapshot>> {
+    db.with_read_transaction(|conn| {
+        revision_ids
+            .iter()
+            .map(|revision_id| {
+                restore_revision_snapshot_from_conn(conn, project_id, revision_id, None)
+            })
+            .collect()
+    })
+}
+
+fn assert_restore_old_revisions_invalidated(
+    db: &Database,
+    project_id: &str,
+    revision_ids: &[String],
+) -> Result<bool> {
+    db.with_read_transaction(|conn| {
+        for revision_id in revision_ids {
+            let result = read_nir1_entity_relation_revision(conn, project_id, revision_id)?;
+            anyhow::ensure!(
+                matches!(
+                    result,
+                    Nir1EntityRelationRevisionRead::Unavailable { ref reason }
+                        if reason == "revision-restore-invalidated"
+                ),
+                "old A2 Revision {revision_id} did not remain revision-restore-invalidated: {result:?}"
+            );
+        }
+        Ok(true)
+    })
 }
 
 fn owned_mode_operation<T, F>(
@@ -1022,6 +1496,47 @@ where
             Err(error) => Err(error),
         },
         None => Ok(None),
+    }
+}
+
+/// Run a cold-reopen check through a newly opened `Database`. Keeping this
+/// helper separate from the restore authority ensures the check observes the
+/// persisted binding after the previous connection has released its state.
+fn cold_reopen_on_fresh_database(
+    database_path: &Path,
+    project_id: &str,
+    progress_callbacks: Option<Arc<AtomicU64>>,
+) -> Result<bool> {
+    let reopened_db = Database::new(database_path).with_context(|| {
+        format!(
+            "cold-reopen diagnostic database {}",
+            database_path.display()
+        )
+    })?;
+    let operation = owned_mode_operation(
+        &reopened_db,
+        progress_callbacks,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        |conn, control| {
+            let tx = conn.unchecked_transaction()?;
+            let result = cold_reopen_graph_index_with_control(&tx, project_id, control);
+            match result {
+                Ok(value) => {
+                    tx.commit()?;
+                    Ok(value)
+                }
+                Err(error) => match tx.rollback() {
+                    Ok(()) => Err(error),
+                    Err(rollback_error) => Err(error.context(format!(
+                        "rollback cold-reopen diagnostic transaction: {rollback_error}"
+                    ))),
+                },
+            }
+        },
+    )?;
+    match operation {
+        Some(value) => Ok(value),
+        None => anyhow::bail!("maintenance-connection-deferred"),
     }
 }
 
@@ -1080,20 +1595,38 @@ fn prepare_and_publish_for_mode(
     let published = match owned_mode_operation(db, progress_callbacks, stop, |conn, control| {
         let tx = conn.unchecked_transaction()?;
         let transaction_started = Instant::now();
-        shape = Some(snapshot.capacity_shape_with_control(control)?);
-        let result =
-            publish_nir1_entity_relation_index_in_tx_with_control(&tx, &runtime, snapshot, control);
+        let transaction_result = match snapshot.capacity_shape_with_control(control) {
+            Ok(capacity_shape) => {
+                shape = Some(capacity_shape);
+                let result = publish_nir1_entity_relation_index_in_tx_with_control(
+                    &tx, &runtime, snapshot, control,
+                );
+                match result {
+                    Ok(binding) => match tx.commit() {
+                        Ok(()) => Ok(binding),
+                        Err(error) => Err(error.into()),
+                    },
+                    Err(error) => match tx.rollback() {
+                        Ok(()) => Err(error),
+                        Err(rollback_error) => Err(error.context(format!(
+                            "rollback diagnostic Graph publish transaction: {rollback_error}"
+                        ))),
+                    },
+                }
+            }
+            Err(error) => match tx.rollback() {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(error.context(format!(
+                    "rollback diagnostic Graph shape transaction: {rollback_error}"
+                ))),
+            },
+        };
+        // The transaction interval includes the terminal commit/rollback and
+        // remains observable when either phase fails. This matches the
+        // FullBuild lifecycle contract and prevents a failed finalization
+        // from disappearing from the occupancy report.
         publish_transaction_ms = Some(transaction_started.elapsed().as_secs_f64() * 1000.0);
-        match result {
-            Ok(binding) => {
-                tx.commit()?;
-                Ok(binding)
-            }
-            Err(error) => {
-                let _ = tx.rollback();
-                Err(error)
-            }
-        }
+        transaction_result
     }) {
         Ok(published) => published,
         Err(error) => {
@@ -1150,6 +1683,7 @@ fn prepare_and_publish_for_mode(
         restore_image_identity: None,
         restore_workspace_identity: None,
         restore_epoch: None,
+        restore_proof: None,
         terminal_error: None,
     })
 }
@@ -1227,6 +1761,42 @@ fn run_real_restore_mode(
             .as_ref()
             .context("restore diagnostic seed omitted Graph roster shape")?
             .roster_records;
+        // Capture the exact qualified roster and its immutable Revision /
+        // Decision / Run tuple before the image is backed up. A second sealed
+        // snapshot is retained solely to prove that an old candidate cannot
+        // be published against the restored connection.
+        let (pre_restore_source_digest, pre_restore_revisions) =
+            capture_restore_revision_snapshots(&live_db, project_id)?;
+        let pre_restore_graph_binding = live_db
+            .with_read_transaction(|conn| capture_restore_graph_binding(conn, project_id))?;
+        anyhow::ensure!(
+            pre_restore_graph_binding
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.1.as_deref())
+                == Some(pre_restore_source_digest.as_str()),
+            "pre-restore Graph metadata Source digest did not match the exact eligibility source"
+        );
+        anyhow::ensure!(
+            pre_restore_revisions
+                .iter()
+                .flat_map(|revision| revision.roster.iter())
+                .count()
+                == expected_roster_records,
+            "restore diagnostic pre-restore roster tuple count does not match Graph shape"
+        );
+        let stale_runtime = NirChronicleIndexRuntime::new(&live_db, 2);
+        let stale_snapshot = live_db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let snapshot = prepare_graph_index_build_with_control(
+                &tx,
+                &stale_runtime,
+                project_id,
+                &mut super::nir1_entity_relation_index::NeverStopGraphWorkControl,
+            )?;
+            tx.commit()?;
+            Ok(snapshot)
+        })?;
         let restored_marker = format!("restored-{}", uuid::Uuid::new_v4());
         live_db.with_conn(|conn| {
             conn.execute(
@@ -1336,37 +1906,269 @@ fn run_real_restore_mode(
         );
 
         // Restore creates a new semantic epoch and therefore invalidates the
-        // pre-restore freshness state. Prove that the sealed binding and
-        // roster survived the image handoff, then perform the required
-        // post-restore rebuild before complete-registration and Verify.
+        // pre-restore A2 Freshness state. Prove all of the following before a
+        // new Graph snapshot is prepared: the old persisted binding remains
+        // at its sealed generation, the exact immutable Revision/Decision/Run
+        // rows survive, old A2 reads return the canonical invalidation reason,
+        // and an old in-memory snapshot cannot publish on the restored
+        // connection. This diagnostic deliberately never manufactures a new
+        // human Decision or re-accepts an old Revision.
+        let revision_ids = pre_restore_revisions
+            .iter()
+            .map(|revision| revision.revision_id.clone())
+            .collect::<Vec<_>>();
         let restored_binding_check = restored_authority.db().with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
+            let metadata: Option<(i64, i64)> = tx
+                .query_row(
+                    "SELECT generation, dirty_cache_flag
+                       FROM narrative_semantic_index_metadata
+                      WHERE project_id=?1 AND index_key=?2",
+                    params![project_id, ENTITY_RELATION_INDEX_KEY],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            let (persisted_generation, dirty_cache_flag) =
+                metadata.context("restored Graph metadata row is missing")?;
+            let binding = read_graph_binding(&tx, project_id)?;
+            let binding_persisted = !matches!(binding, BindingRead::Missing);
+            let generation_preserved = matches!(
+                &binding,
+                BindingRead::Registered(binding) if binding.generation == expected_generation
+            ) || matches!(binding, BindingRead::Reserved);
+            anyhow::ensure!(
+                persisted_generation == expected_generation,
+                "restored Graph generation changed before rebuild: expected {}, got {}",
+                expected_generation,
+                persisted_generation
+            );
+            anyhow::ensure!(
+                binding_persisted,
+                "restored Graph binding disappeared during image handoff"
+            );
+            anyhow::ensure!(
+                generation_preserved,
+                "restored Graph binding generation changed before rebuild: expected {}",
+                expected_generation
+            );
             let source = read_eligibility_source_with_control(
                 &tx,
                 project_id,
                 &mut super::nir1_entity_relation_index::NeverStopGraphWorkControl,
             )?;
-            anyhow::ensure!(
-                source.roster.len() == expected_roster_records,
-                "restored Graph roster changed before rebuild: expected {}, got {}",
-                expected_roster_records,
-                source.roster.len()
-            );
-            let binding = match read_graph_binding(&tx, project_id)? {
-                BindingRead::Registered(binding) => binding,
-                other => anyhow::bail!(
-                    "restored Graph binding is not registered before rebuild: {other:?}"
-                ),
-            };
-            anyhow::ensure!(
-                binding.generation == expected_generation,
-                "restored Graph generation changed before rebuild: expected {}, got {}",
-                expected_generation,
-                binding.generation
-            );
+            let incomplete = !is_complete_registered_with_control(
+                &tx,
+                project_id,
+                ENTITY_RELATION_INDEX_KEY,
+                &mut super::nir1_entity_relation_index::NeverStopGraphWorkControl,
+            )?;
             tx.commit()?;
-            Ok(binding.generation)
+            Ok((
+                persisted_generation,
+                binding_persisted,
+                generation_preserved,
+                dirty_cache_flag == 0,
+                source.roster.len(),
+                incomplete,
+            ))
         })?;
+        anyhow::ensure!(
+            restored_binding_check.4 == 0,
+            "restored A2 eligibility unexpectedly retained {} records",
+            restored_binding_check.4
+        );
+        anyhow::ensure!(
+            restored_binding_check.5,
+            "restored Graph binding remained complete despite A2 restore invalidation"
+        );
+        // Open a distinct Database after the restored authority has completed
+        // its transaction. A same-connection call can retain connection-local
+        // state and is only a warm read.
+        let cold_reopen_rejected = !cold_reopen_on_fresh_database(
+            &live_path,
+            project_id,
+            progress_callbacks.as_ref().map(Arc::clone),
+        )?;
+        anyhow::ensure!(
+            cold_reopen_rejected,
+            "cold reopen accepted the restored Graph binding despite A2 invalidation"
+        );
+
+        let post_restore_graph_binding = restored_authority
+            .db()
+            .with_read_transaction(|conn| capture_restore_graph_binding(conn, project_id))?;
+        let source_digest_preserved = pre_restore_graph_binding
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.1.as_ref())
+            == post_restore_graph_binding
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.1.as_ref());
+        let d1_binding_preserved =
+            pre_restore_graph_binding.declaration == post_restore_graph_binding.declaration;
+        let edge_binding_preserved = pre_restore_graph_binding.edges
+            == post_restore_graph_binding.edges
+            && pre_restore_graph_binding.edge_states == post_restore_graph_binding.edge_states;
+        anyhow::ensure!(
+            source_digest_preserved,
+            "Restore changed the persisted Graph Source digest"
+        );
+        anyhow::ensure!(
+            d1_binding_preserved,
+            "Restore changed the persisted Graph D1 declaration binding"
+        );
+        anyhow::ensure!(
+            edge_binding_preserved,
+            "Restore changed the persisted Graph dependency-edge binding"
+        );
+
+        let post_restore_revisions = read_restore_revision_snapshots_after_restore(
+            restored_authority.db(),
+            project_id,
+            &revision_ids,
+        )?;
+        anyhow::ensure!(
+            post_restore_revisions == pre_restore_revisions,
+            "Restore changed an immutable Entity/Relation/Evidence/Revision/Decision tuple"
+        );
+        let old_revision_tuples_preserved = true;
+        let old_decisions_preserved = pre_restore_revisions
+            .iter()
+            .zip(&post_restore_revisions)
+            .all(|(before, after)| before.decisions == after.decisions);
+        let old_run_epochs_preserved = pre_restore_revisions
+            .iter()
+            .zip(&post_restore_revisions)
+            .all(|(before, after)| {
+                before.run_id == after.run_id && before.run_epoch_id == after.run_epoch_id
+            });
+        anyhow::ensure!(
+            old_decisions_preserved,
+            "Restore changed an old human Decision row"
+        );
+        anyhow::ensure!(
+            old_run_epochs_preserved,
+            "Restore changed the semantic epoch stamped on an old Run"
+        );
+        let old_a2_revisions_invalidated = assert_restore_old_revisions_invalidated(
+            restored_authority.db(),
+            project_id,
+            &revision_ids,
+        )?;
+
+        let stale_generation_before = restored_authority.db().with_conn(|conn| {
+            let generation: i64 = conn.query_row(
+                "SELECT generation FROM narrative_semantic_index_metadata
+                  WHERE project_id=?1 AND index_key=?2",
+                params![project_id, ENTITY_RELATION_INDEX_KEY],
+                |row| row.get(0),
+            )?;
+            Ok(generation)
+        })?;
+        let stale_publish = owned_mode_operation(
+            restored_authority.db(),
+            progress_callbacks.as_ref().map(Arc::clone),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            |conn, control| {
+                let tx = conn.unchecked_transaction()?;
+                let result = publish_nir1_entity_relation_index_in_tx_with_control(
+                    &tx,
+                    &stale_runtime,
+                    stale_snapshot,
+                    control,
+                );
+                match result {
+                    Ok(binding) => match tx.commit() {
+                        Ok(()) => Ok(binding.generation),
+                        Err(error) => Err(error.into()),
+                    },
+                    Err(error) => match tx.rollback() {
+                        Ok(()) => Err(error),
+                        Err(rollback_error) => Err(error.context(format!(
+                            "rollback stale Graph snapshot publish: {rollback_error}"
+                        ))),
+                    },
+                }
+            },
+        );
+        let stale_snapshot_publish_rejected = match stale_publish {
+            Ok(Some(_)) => anyhow::bail!(
+                "old Graph snapshot unexpectedly published on the restored connection"
+            ),
+            Ok(None) => anyhow::bail!(
+                "stale Graph snapshot publish was deferred before its rejection could be proven"
+            ),
+            Err(error) => {
+                let message = error.to_string();
+                anyhow::ensure!(
+                    message.contains("NIR1_GRAPH_SNAPSHOT_STALE"),
+                    "old Graph snapshot failed for an unexpected reason: {message}"
+                );
+                true
+            }
+        };
+        let stale_generation_after = restored_authority.db().with_conn(|conn| {
+            let generation: i64 = conn.query_row(
+                "SELECT generation FROM narrative_semantic_index_metadata
+                  WHERE project_id=?1 AND index_key=?2",
+                params![project_id, ENTITY_RELATION_INDEX_KEY],
+                |row| row.get(0),
+            )?;
+            Ok(generation)
+        })?;
+        let stale_snapshot_generation_unchanged = stale_generation_before == stale_generation_after;
+        anyhow::ensure!(
+            stale_snapshot_generation_unchanged,
+            "rejected old Graph snapshot advanced generation from {} to {}",
+            stale_generation_before,
+            stale_generation_after
+        );
+
+        // The canonical derived-state path is allowed to refresh rebuildable
+        // Freshness rows, but it must not revive an old typed A2 Run. The
+        // subsequent Graph build therefore consumes a genuinely empty
+        // eligibility set and publishes a new generation over the preserved
+        // binding.
+        if !pre_restore_revisions.is_empty() {
+            let freshness_recovery =
+                rebuild_narrative_derived_state_for_project(restored_authority.db(), project_id)
+                    .context("recover canonical Freshness after Restore")?;
+            match freshness_recovery {
+                RebuildDerivedStateOutcome::Ran { summary, .. } => {
+                    anyhow::ensure!(
+                        summary.edges_evaluated > 0,
+                        "canonical Freshness recovery evaluated no dependency edges"
+                    );
+                }
+                RebuildDerivedStateOutcome::AlreadyRunning { run_id } => {
+                    anyhow::bail!(
+                        "canonical Freshness recovery unexpectedly reused running Run {run_id}"
+                    );
+                }
+            }
+        }
+        anyhow::ensure!(
+            assert_restore_old_revisions_invalidated(
+                restored_authority.db(),
+                project_id,
+                &revision_ids,
+            )?,
+            "canonical Freshness recovery unexpectedly made an old A2 Revision readable"
+        );
+        let recovered_roster_records = restored_authority.db().with_read_transaction(|conn| {
+            Ok(read_eligibility_source_with_control(
+                conn,
+                project_id,
+                &mut super::nir1_entity_relation_index::NeverStopGraphWorkControl,
+            )?
+            .roster
+            .len())
+        })?;
+        anyhow::ensure!(
+            recovered_roster_records == 0,
+            "canonical Freshness recovery revived {recovered_roster_records} old Graph records"
+        );
         let rebuilt = prepare_and_publish_for_mode(
             restored_authority.db(),
             project_id,
@@ -1385,31 +2187,75 @@ fn run_real_restore_mode(
             .as_ref()
             .context("restore recovery rebuild omitted Graph roster shape")?
             .roster_records;
+        let rebuilt_qualified_revisions = rebuilt
+            .shape
+            .as_ref()
+            .context("restore recovery rebuild omitted Graph revision shape")?
+            .qualified_revisions;
         anyhow::ensure!(
-            rebuilt_generation > restored_binding_check,
+            rebuilt_generation > restored_binding_check.0,
             "restore recovery rebuild did not advance Graph generation"
         );
         anyhow::ensure!(
-            rebuilt_roster_records == expected_roster_records,
-            "restore recovery rebuild changed Graph roster: expected {}, got {}",
-            expected_roster_records,
+            rebuilt_qualified_revisions == 0 && rebuilt_roster_records == 0,
+            "restore recovery rebuild did not consume the fresh empty eligibility set: revisions={}, roster={}",
+            rebuilt_qualified_revisions,
             rebuilt_roster_records
+        );
+
+        let canonical_rebuild_old_a2_revisions_invalidated =
+            assert_restore_old_revisions_invalidated(
+                restored_authority.db(),
+                project_id,
+                &revision_ids,
+            )?;
+        let post_rebuild_revisions = read_restore_revision_snapshots_after_restore(
+            restored_authority.db(),
+            project_id,
+            &revision_ids,
+        )?;
+        let canonical_rebuild_old_revision_tuples_preserved =
+            post_rebuild_revisions == pre_restore_revisions;
+        let canonical_rebuild_old_decisions_preserved = pre_restore_revisions
+            .iter()
+            .zip(&post_rebuild_revisions)
+            .all(|(before, after)| before.decisions == after.decisions);
+        let canonical_rebuild_old_run_epochs_preserved = pre_restore_revisions
+            .iter()
+            .zip(&post_rebuild_revisions)
+            .all(|(before, after)| {
+                before.run_id == after.run_id && before.run_epoch_id == after.run_epoch_id
+            });
+        anyhow::ensure!(
+            canonical_rebuild_old_a2_revisions_invalidated,
+            "canonical Freshness recovery made an old A2 Revision readable"
+        );
+        anyhow::ensure!(
+            canonical_rebuild_old_revision_tuples_preserved,
+            "canonical Freshness recovery changed an immutable Revision tuple"
+        );
+        anyhow::ensure!(
+            canonical_rebuild_old_decisions_preserved,
+            "canonical Freshness recovery changed an old human Decision row"
+        );
+        anyhow::ensure!(
+            canonical_rebuild_old_run_epochs_preserved,
+            "canonical Freshness recovery changed the semantic epoch stamped on an old Run"
         );
 
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let verify_started = Instant::now();
         let operation = owned_mode_operation(
             restored_authority.db(),
-            progress_callbacks,
+            progress_callbacks.as_ref().map(Arc::clone),
             stop,
             |conn, control| {
                 let tx = conn.unchecked_transaction()?;
                 let restored_source =
                     read_eligibility_source_with_control(&tx, project_id, control)?;
                 anyhow::ensure!(
-                    restored_source.roster.len() == rebuilt_roster_records,
-                    "rebuilt Graph roster changed: expected {}, got {}",
-                    rebuilt_roster_records,
+                    restored_source.roster.is_empty(),
+                    "post-restore eligibility unexpectedly contains {} records",
                     restored_source.roster.len()
                 );
                 let restored_binding = match read_graph_binding(&tx, project_id)? {
@@ -1428,30 +2274,75 @@ fn run_real_restore_mode(
                     ENTITY_RELATION_INDEX_KEY,
                     control,
                 )?;
-                anyhow::ensure!(
-                    complete,
-                    "rebuilt Graph binding is not complete for the exact roster"
-                );
+                anyhow::ensure!(complete, "fresh empty Graph binding is not complete");
                 let (report, _digest) =
                     verify_dependency_graph_snapshot_with_control(&tx, project_id, control)?;
                 control.check(super::nir1_entity_relation_index::GraphWorkStage::ResultAssembly)?;
                 let records = report_observation_count(&report)?;
                 tx.commit()?;
-                Ok((records, restored_binding.generation))
+                Ok((records, restored_binding.generation, complete))
             },
         );
+        let operation_succeeded = matches!(&operation, Ok(Some(_)));
+        let post_restore_cold_reopen = if operation_succeeded {
+            cold_reopen_on_fresh_database(
+                &live_path,
+                project_id,
+                progress_callbacks.as_ref().map(Arc::clone),
+            )?
+        } else {
+            false
+        };
         let restore_verify_ms = Some(verify_started.elapsed().as_secs_f64() * 1000.0);
-        let (restore_verified, operation_report_records, restored_generation, terminal_error) =
-            match operation {
-                Ok(Some((records, generation))) => (true, Some(records), Some(generation), None),
-                Ok(None) => (
-                    false,
-                    None,
-                    None,
-                    Some("maintenance-connection-deferred".to_owned()),
-                ),
-                Err(error) => (false, None, None, Some(error.to_string())),
-            };
+        let (
+            restore_verified,
+            operation_report_records,
+            restored_generation,
+            post_restore_complete,
+            terminal_error,
+        ) = match operation {
+            Ok(Some((records, generation, complete))) => (
+                post_restore_cold_reopen,
+                Some(records),
+                Some(generation),
+                complete,
+                None,
+            ),
+            Ok(None) => (
+                false,
+                None,
+                None,
+                false,
+                Some("maintenance-connection-deferred".to_owned()),
+            ),
+            Err(error) => (false, None, None, false, Some(error.to_string())),
+        };
+        let restore_proof = RestoreProof {
+            binding_persisted: restored_binding_check.1,
+            generation_preserved: restored_binding_check.2,
+            dirty_cache_flag_cleared: restored_binding_check.3,
+            eligible_records_after_restore: restored_binding_check.4,
+            incomplete_rejected: restored_binding_check.5,
+            cold_reopen_rejected,
+            old_a2_revisions_invalidated,
+            old_revision_tuples_preserved,
+            old_decisions_preserved,
+            old_run_epochs_preserved,
+            source_digest_preserved,
+            d1_binding_preserved,
+            edge_binding_preserved,
+            canonical_rebuild_old_a2_revisions_invalidated,
+            canonical_rebuild_old_revision_tuples_preserved,
+            canonical_rebuild_old_decisions_preserved,
+            canonical_rebuild_old_run_epochs_preserved,
+            stale_snapshot_publish_rejected,
+            stale_snapshot_generation_unchanged,
+            post_restore_qualified_revisions: rebuilt_qualified_revisions,
+            post_restore_roster_records: rebuilt_roster_records,
+            post_restore_complete,
+            post_restore_verify_succeeded: restore_verified,
+            post_restore_cold_reopen_succeeded: post_restore_cold_reopen,
+        };
         Ok(GraphLifecycleRun {
             shape: rebuilt.shape,
             prepared: pre_restore_lifecycle.prepared && rebuilt.prepared,
@@ -1460,6 +2351,7 @@ fn run_real_restore_mode(
             restore_verified,
             restore_maintenance_validated: restore_verified,
             published_generation: restored_generation,
+            cold_reopened: post_restore_cold_reopen,
             prepare_ms: match (pre_restore_lifecycle.prepare_ms, rebuilt.prepare_ms) {
                 (Some(before), Some(after)) => Some(before + after),
                 _ => None,
@@ -1473,6 +2365,7 @@ fn run_real_restore_mode(
             restore_image_identity: Some(restore_image_identity),
             restore_workspace_identity: Some(actual_workspace_identity),
             restore_epoch,
+            restore_proof: Some(restore_proof),
             terminal_error,
             ..empty_lifecycle(None)
         })
@@ -1707,6 +2600,7 @@ fn run_graph_lifecycle(
             restore_image_identity: None,
             restore_workspace_identity: None,
             restore_epoch: None,
+            restore_proof: None,
             terminal_error: Some("project-id-required-for-graph-lifecycle".to_owned()),
         });
     };
@@ -1773,6 +2667,7 @@ fn run_graph_lifecycle(
             restore_image_identity: None,
             restore_workspace_identity: None,
             restore_epoch: None,
+            restore_proof: None,
             terminal_error: Some("maintenance-connection-deferred".to_owned()),
         });
     };
@@ -1805,6 +2700,7 @@ fn run_graph_lifecycle(
                 restore_image_identity: None,
                 restore_workspace_identity: None,
                 restore_epoch: None,
+                restore_proof: None,
                 terminal_error: Some(error.to_string()),
             });
         }
@@ -1821,24 +2717,34 @@ fn run_graph_lifecycle(
         |conn, control| {
             let tx = conn.unchecked_transaction()?;
             let transaction_started = Instant::now();
-            shape = Some(snapshot.capacity_shape_with_control(control)?);
-            let result = publish_nir1_entity_relation_index_in_tx_with_control(
-                &tx, &runtime, snapshot, control,
-            );
-            match result {
-                Ok(binding) => {
-                    tx.commit()?;
-                    publish_transaction_ms =
-                        Some(transaction_started.elapsed().as_secs_f64() * 1000.0);
-                    Ok(binding)
+            let transaction_result = match snapshot.capacity_shape_with_control(control) {
+                Ok(capacity_shape) => {
+                    shape = Some(capacity_shape);
+                    let result = publish_nir1_entity_relation_index_in_tx_with_control(
+                        &tx, &runtime, snapshot, control,
+                    );
+                    match result {
+                        Ok(binding) => match tx.commit() {
+                            Ok(()) => Ok(binding),
+                            Err(error) => Err(error.into()),
+                        },
+                        Err(error) => match tx.rollback() {
+                            Ok(()) => Err(error),
+                            Err(rollback_error) => Err(error.context(format!(
+                                "rollback Graph publish transaction: {rollback_error}"
+                            ))),
+                        },
+                    }
                 }
-                Err(error) => {
-                    let _ = tx.rollback();
-                    publish_transaction_ms =
-                        Some(transaction_started.elapsed().as_secs_f64() * 1000.0);
-                    Err(error)
-                }
-            }
+                Err(error) => match tx.rollback() {
+                    Ok(()) => Err(error),
+                    Err(rollback_error) => Err(error.context(format!(
+                        "rollback Graph shape transaction: {rollback_error}"
+                    ))),
+                },
+            };
+            publish_transaction_ms = Some(transaction_started.elapsed().as_secs_f64() * 1000.0);
+            transaction_result
         },
     )?;
     let publish_owner_ms = Some(publish_started.elapsed().as_secs_f64() * 1000.0);
@@ -1869,6 +2775,7 @@ fn run_graph_lifecycle(
             restore_image_identity: None,
             restore_workspace_identity: None,
             restore_epoch: None,
+            restore_proof: None,
             terminal_error: Some("maintenance-connection-deferred".to_owned()),
         });
     };
@@ -1901,6 +2808,7 @@ fn run_graph_lifecycle(
                 restore_image_identity: None,
                 restore_workspace_identity: None,
                 restore_epoch: None,
+                restore_proof: None,
                 terminal_error: Some(error.to_string()),
             });
         }
@@ -2025,6 +2933,7 @@ fn run_graph_lifecycle(
         restore_image_identity: None,
         restore_workspace_identity: None,
         restore_epoch: None,
+        restore_proof: None,
         terminal_error,
     })
 }
@@ -2127,6 +3036,7 @@ pub fn measure_capacity_mode(
         qualified_material_records: 0,
         roster_records: 0,
         dependency_edges: None,
+        graph_snapshot_dependency_edges: None,
         report_records: None,
     };
     let mut bytes = CapacityBytes {
@@ -2196,20 +3106,22 @@ pub fn measure_capacity_mode(
         *active.borrow_mut() = None;
     });
     if let Some(shape) = lifecycle.shape.as_ref() {
-        anyhow::ensure!(
-            shape.qualified_revisions == counts.qualified_revisions,
-            "diagnostic Q/R shape mismatch: A2 qualified revisions={} Graph roster qualified revisions={}",
-            counts.qualified_revisions,
-            shape.qualified_revisions
-        );
-        anyhow::ensure!(
-            shape.roster_records == counts.qualified_material_records,
-            "diagnostic Q/R shape mismatch: A2 qualified materials={} Graph roster records={}",
-            counts.qualified_material_records,
-            shape.roster_records
-        );
+        if mode != CapacityDiagnosticMode::Restore {
+            anyhow::ensure!(
+                shape.qualified_revisions == counts.qualified_revisions,
+                "diagnostic Q/R shape mismatch: A2 qualified revisions={} Graph roster qualified revisions={}",
+                counts.qualified_revisions,
+                shape.qualified_revisions
+            );
+            anyhow::ensure!(
+                shape.roster_records == counts.qualified_material_records,
+                "diagnostic Q/R shape mismatch: A2 qualified materials={} Graph roster records={}",
+                counts.qualified_material_records,
+                shape.roster_records
+            );
+        }
         counts.roster_records = shape.roster_records;
-        counts.dependency_edges = Some(u64::try_from(shape.dependency_edges)?);
+        counts.graph_snapshot_dependency_edges = Some(u64::try_from(shape.dependency_edges)?);
         bytes.roster_bytes = u64::try_from(shape.roster_serialized_bytes)?;
         bytes.edge_serialized_bytes = Some(u64::try_from(shape.edge_serialized_bytes)?);
     }
@@ -2360,6 +3272,7 @@ pub fn measure_capacity_mode(
             restore_image_identity: lifecycle.restore_image_identity,
             restore_workspace_identity: lifecycle.restore_workspace_identity,
             restore_epoch: lifecycle.restore_epoch,
+            restore_proof: lifecycle.restore_proof,
             terminal_error: lifecycle.terminal_error,
         },
         fixture_shape,
@@ -2403,6 +3316,7 @@ mod tests {
                 qualified_material_records: 513,
                 roster_records: 513,
                 dependency_edges: Some(3),
+                graph_snapshot_dependency_edges: Some(3),
                 report_records: Some(0),
             },
             bytes: CapacityBytes {
@@ -2466,6 +3380,7 @@ mod tests {
                 restore_image_identity: None,
                 restore_workspace_identity: None,
                 restore_epoch: None,
+                restore_proof: None,
                 terminal_error: None,
             },
             fixture_shape: CapacityCounts {
@@ -2478,6 +3393,7 @@ mod tests {
                 qualified_material_records: 513,
                 roster_records: 513,
                 dependency_edges: Some(3),
+                graph_snapshot_dependency_edges: None,
                 report_records: Some(0),
             },
             mode_outcome: CapacityModeOutcome {
@@ -2654,6 +3570,7 @@ mod tests {
             restore_image_identity: None,
             restore_workspace_identity: None,
             restore_epoch: None,
+            restore_proof: None,
             terminal_error: None,
         };
         let measured = conservative_connection_hold_ms(19.0, &lifecycle);

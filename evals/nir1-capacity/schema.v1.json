@@ -139,6 +139,7 @@
         "rosterRecords": { "$ref": "#/$defs/nonNegativeCount" },
         "evidenceRecords": { "$ref": "#/$defs/nonNegativeCount" },
         "dependencyEdges": { "$ref": "#/$defs/nonNegativeCount" },
+        "graphSnapshotDependencyEdges": { "$ref": "#/$defs/nonNegativeCount" },
         "reportRecords": { "$ref": "#/$defs/nonNegativeCount" }
       },
       "additionalProperties": false
@@ -263,6 +264,7 @@
         "qualifiedMaterialRecords",
         "rosterRecords",
         "dependencyEdges",
+        "graphSnapshotDependencyEdges",
         "reportRecords"
       ],
       "properties": {
@@ -275,6 +277,7 @@
         "qualifiedMaterialRecords": { "type": "integer", "minimum": 0 },
         "rosterRecords": { "type": "integer", "minimum": 0 },
         "dependencyEdges": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "graphSnapshotDependencyEdges": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "reportRecords": { "$ref": "#/$defs/optionalNonNegativeInteger" }
       },
       "additionalProperties": true

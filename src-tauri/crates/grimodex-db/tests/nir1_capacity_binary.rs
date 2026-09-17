@@ -89,6 +89,14 @@ fn real_binary_report_heavy_crosses_build_coverage_and_restore() {
             assert_eq!(observation["modeOutcome"]["success"], true);
             assert_eq!(observation["modeOutcome"]["requiredSuccess"], true);
             assert!(
+                observation["graphLifecycle"]["publishTransactionMs"].is_number(),
+                "{mode} must retain publish transaction elapsed time"
+            );
+            assert!(
+                observation["occupancy"]["publishTransactionMs"].is_number(),
+                "{mode} must expose publish transaction occupancy"
+            );
+            assert!(
                 observation["modeOutcome"]["operationReportRecords"]
                     .as_u64()
                     .is_some_and(|records| records >= 1),
@@ -122,6 +130,112 @@ fn real_binary_report_heavy_crosses_build_coverage_and_restore() {
         let _ = fs::remove_file(&child);
         let _ = fs::remove_file(format!("{}-wal", child.display()));
         let _ = fs::remove_file(format!("{}-shm", child.display()));
+    }
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn real_binary_qualified_roster_restore_preserves_old_state_and_publishes_fresh_empty_graph() {
+    let manifest = temp_path("manifest-qualified-roster");
+    let source = temp_path("source-qualified-roster");
+    let manifest_text = r#"{
+        "schemaVersion": "nir1-capacity/1",
+        "diagnosticOnly": true,
+        "fixtures": [
+            {"id": "Q513/R3/D0", "qualifiedMaterials": 513, "qualifiedRevisions": 3}
+        ]
+    }"#;
+    fs::write(&manifest, manifest_text).expect("write qualified-roster manifest");
+    let child = temp_path("qualified-roster-restore");
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let fixture = run_capacity(&[
+            "fixture",
+            manifest.to_str().expect("manifest path"),
+            "Q513/R3/D0",
+            source.to_str().expect("source path"),
+        ]);
+        assert_eq!(
+            fixture["observed"]["counts"]["qualifiedMaterialRecords"],
+            513
+        );
+        assert_eq!(fixture["observed"]["counts"]["qualifiedRevisions"], 3);
+
+        copy_database_state(&source, &child);
+        let observation = run_capacity(&[
+            child.to_str().expect("child path"),
+            "Q513/R3/D0",
+            "nir1-capacity-fixture-project",
+            "--mode",
+            "restore",
+        ]);
+        assert_eq!(observation["fixtureId"], "Q513/R3/D0");
+        assert_eq!(observation["mode"], "restore");
+        assert_eq!(observation["status"], "measured");
+        assert_eq!(observation["counts"]["qualifiedMaterialRecords"], 513);
+        assert_eq!(observation["counts"]["qualifiedRevisions"], 3);
+        assert_eq!(observation["fixtureShape"]["rosterRecords"], 513);
+        assert_eq!(observation["counts"]["rosterRecords"], 0);
+        assert_eq!(observation["modeOutcome"]["success"], true);
+        assert_eq!(observation["modeOutcome"]["requiredSuccess"], true);
+        assert!(
+            observation["graphLifecycle"]["publishTransactionMs"].is_number(),
+            "Restore must retain publish transaction elapsed time"
+        );
+        assert!(
+            observation["occupancy"]["publishTransactionMs"].is_number(),
+            "Restore must expose publish transaction occupancy"
+        );
+        assert_eq!(
+            observation["graphLifecycle"]["restoreMaintenanceValidated"],
+            true
+        );
+        assert!(observation["graphLifecycle"]["restoreImageIdentity"]
+            .as_str()
+            .is_some_and(|identity| identity.starts_with("restore-image-sha256:")));
+        assert!(observation["graphLifecycle"]["restoreEpoch"].is_string());
+        let proof = &observation["graphLifecycle"]["restoreProof"];
+        for field in [
+            "bindingPersisted",
+            "generationPreserved",
+            "sourceDigestPreserved",
+            "d1BindingPreserved",
+            "edgeBindingPreserved",
+            "dirtyCacheFlagCleared",
+            "incompleteRejected",
+            "coldReopenRejected",
+            "oldA2RevisionsInvalidated",
+            "oldRevisionTuplesPreserved",
+            "oldDecisionsPreserved",
+            "oldRunEpochsPreserved",
+            "canonicalRebuildOldA2RevisionsInvalidated",
+            "canonicalRebuildOldRevisionTuplesPreserved",
+            "canonicalRebuildOldDecisionsPreserved",
+            "canonicalRebuildOldRunEpochsPreserved",
+            "staleSnapshotPublishRejected",
+            "staleSnapshotGenerationUnchanged",
+            "postRestoreComplete",
+            "postRestoreVerifySucceeded",
+            "postRestoreColdReopenSucceeded",
+        ] {
+            assert_eq!(proof[field], true, "Restore proof field {field}");
+        }
+        assert_eq!(proof["eligibleRecordsAfterRestore"], 0);
+        assert_eq!(proof["postRestoreQualifiedRevisions"], 0);
+        assert_eq!(proof["postRestoreRosterRecords"], 0);
+        assert_eq!(
+            observation["graphLifecycle"]["coldReopened"], true,
+            "post-restore cold reopen must use a fresh Database"
+        );
+    }));
+
+    let _ = fs::remove_file(&manifest);
+    for path in [&source, &child] {
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(format!("{}-wal", path.display()));
+        let _ = fs::remove_file(format!("{}-shm", path.display()));
     }
     if let Err(payload) = result {
         std::panic::resume_unwind(payload);

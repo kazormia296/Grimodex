@@ -434,6 +434,12 @@ const OBSERVED_SHAPE_PATHS = {
     ["dependencyEdges"],
     ["dependencyEdgeCount"],
   ],
+  graphSnapshotDependencyEdges: [
+    ["counts", "graphSnapshotDependencyEdges"],
+    ["counts", "graphSnapshotEdgeCount"],
+    ["graphSnapshotDependencyEdges"],
+    ["graphSnapshotEdgeCount"],
+  ],
   reportRecords: [
     ["counts", "reportRecords"],
     ["counts", "reportRecordCount"],
@@ -480,7 +486,13 @@ function expectedShape(spec) {
   return shape;
 }
 
-function validateObservedShape(report, spec, context, modeSpec = null) {
+function validateObservedShape(
+  report,
+  spec,
+  context,
+  modeSpec = null,
+  { ignoreKeys = [] } = {},
+) {
   const shape = expectedShape(spec);
   const labels = {
     qualifiedMaterials: "qualified material records",
@@ -492,6 +504,7 @@ function validateObservedShape(report, spec, context, modeSpec = null) {
     rosterRecords: "roster records",
     evidenceRecords: "evidence records",
     dependencyEdges: "dependency edges",
+    graphSnapshotDependencyEdges: "Graph snapshot dependency edges",
     reportRecords: "report records",
   };
   const aliases = {
@@ -505,6 +518,7 @@ function validateObservedShape(report, spec, context, modeSpec = null) {
       continue;
     }
     const canonicalKey = aliases[key] ?? key;
+    if (ignoreKeys.includes(canonicalKey)) continue;
     if (checked.has(canonicalKey)) continue;
     checked.add(canonicalKey);
     const observed = firstValue(report, OBSERVED_SHAPE_PATHS[canonicalKey] ?? []);
@@ -654,6 +668,7 @@ function assertDiagnosticReport(
     spec,
     `${context} fixtureShape`,
     null,
+    { ignoreKeys: ["graphSnapshotDependencyEdges"] },
   );
 }
 
