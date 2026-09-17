@@ -938,12 +938,15 @@ fn combine_rebuild_errors(
 ) -> anyhow::Error {
     let primary_message = primary.to_string();
     let secondary_message = secondary.to_string();
+    let context = format!(
+        "NEX_REBUILD_DERIVED_WORK_AND_FINALIZE_FAILED: work error: {primary_message}; finalization error: {secondary_message}"
+    );
     if is_validation_terminated(&primary) {
-        primary.context(format!("secondary rebuild error: {secondary_message}"))
+        primary.context(context)
     } else if is_validation_terminated(&secondary) {
-        secondary.context(format!("primary rebuild error: {primary_message}"))
+        secondary.context(context)
     } else {
-        primary.context(format!("secondary rebuild error: {secondary_message}"))
+        primary.context(context)
     }
 }
 
@@ -1131,9 +1134,7 @@ pub(crate) fn rebuild_narrative_derived_state_for_project_with_control(
             Ok(_) => Err(anyhow::anyhow!(
                 "NEX_REBUILD_DERIVED_FINALIZE_FAILED: {finalize_error}"
             )),
-            Err(work_error) => Err(anyhow::anyhow!(
-                "NEX_REBUILD_DERIVED_WORK_AND_FINALIZE_FAILED: work error: {work_error}; finalization error: {finalize_error}"
-            )),
+            Err(work_error) => Err(combine_rebuild_errors(work_error, finalize_error)),
         };
     }
 
@@ -4926,6 +4927,30 @@ mod tests {
         }
     }
 
+    struct RotateEpochThenStop<'a> {
+        db: &'a Database,
+        rotated: bool,
+    }
+
+    impl GraphWorkControl for RotateEpochThenStop<'_> {
+        fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+            if stage != GraphWorkStage::ResultAssembly {
+                return Ok(());
+            }
+            if !self.rotated {
+                self.db.with_conn(|conn| {
+                    create_epoch_in_tx(conn, "project-1", "restore", None)
+                })?;
+                self.rotated = true;
+                return Ok(());
+            }
+            Err(crate::narrative_extraction::source_revision::validation_terminated(
+                crate::narrative_extraction::source_revision::ValidationTerminationReason::Cancelled,
+                "controlled stop after epoch rotation",
+            ))
+        }
+    }
+
     struct StopOnDigestWrite {
         serialization_started: bool,
     }
@@ -6026,6 +6051,49 @@ mod tests {
         let next = rebuild_narrative_derived_state_for_project(&db, "project-1")
             .expect("a terminal stopped run must not block the next rebuild");
         assert!(matches!(next, RebuildDerivedStateOutcome::Ran { .. }));
+    }
+
+    #[test]
+    fn controlled_rebuild_preserves_typed_stop_when_finalization_sees_epoch_rotation() {
+        let db = test_db();
+        seed_epoch_for_rebuild(&db, "project-1");
+        let mut control = RotateEpochThenStop {
+            db: &db,
+            rotated: false,
+        };
+
+        let error = rebuild_narrative_derived_state_for_project_with_control(
+            &db,
+            "project-1",
+            &mut control,
+        )
+        .expect_err("the typed stop must survive a stale finalization");
+        assert!(is_validation_terminated(&error));
+        assert!(error
+            .to_string()
+            .contains("NEX_REBUILD_DERIVED_STALE_EPOCH"));
+
+        db.with_conn(|conn| {
+            let (status, outcome): (String, String) = conn.query_row(
+                "SELECT status, outcome_summary_json
+                   FROM narrative_extraction_runs
+                  WHERE project_id = 'project-1'
+                    AND run_kind = 'semantic-index-rebuild'
+                  ORDER BY created_at DESC, id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(status, "failed");
+            let outcome: Value = serde_json::from_str(&outcome)?;
+            assert!(outcome["failure"]["workError"]
+                .as_str()
+                .is_some_and(|value| value.contains("controlled stop after epoch rotation")));
+            assert!(outcome["failure"]["finalizationError"]
+                .as_str()
+                .is_some_and(|value| value.contains("NEX_REBUILD_DERIVED_STALE_EPOCH")));
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("stale finalization must leave typed work and finalization evidence");
     }
 
     #[test]
