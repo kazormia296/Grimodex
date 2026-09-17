@@ -3810,6 +3810,7 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "rust.tests-db-integrations",
       "rust.tests-db-lib",
       "rust.tests-db-nir1-capacity",
+      "rust.tests-db-nir1-capacity-binary",
       "rust.tests-other-workspace",
       "rust.check",
       "rust.clippy",
@@ -3893,8 +3894,8 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "journeys.run",
     ],
   );
-  assert.equal(plan.tasks.length, 61);
-  assert.equal(tasksById.size, 61);
+  assert.equal(plan.tasks.length, 62);
+  assert.equal(tasksById.size, 62);
   assert.equal(obligations.length, 52);
   assert.equal(new Set(obligations).size, 52);
   assert.equal(
@@ -4022,6 +4023,18 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       ],
     ],
     [
+      "rust.tests-db-nir1-capacity-binary",
+      [
+        "test",
+        "-p",
+        "grimodex-db",
+        "--features",
+        "nir1-material-diagnostics",
+        "--test",
+        "nir1_capacity_binary",
+      ],
+    ],
+    [
       "rust.tests-db-integrations",
       ["test", "-p", "grimodex-db", "--test", "*", "--bin", "schema-contract"],
     ],
@@ -4080,6 +4093,7 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     "rust.tests-db-lib",
     "rust.tests-db-integrations",
     "rust.tests-db-nir1-capacity",
+    "rust.tests-db-nir1-capacity-binary",
     "rust.tests-other-workspace",
     "rust.tests-db-doctests",
   ]);

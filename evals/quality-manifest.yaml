@@ -1039,6 +1039,7 @@ requirements:
       - scripts/nir1-material-capacity-probe.test.mjs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_diagnostics.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs
+      - src-tauri/crates/grimodex-db/tests/nir1_capacity_binary.rs
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/eval-fixtures.test.mjs

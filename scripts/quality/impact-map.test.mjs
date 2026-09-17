@@ -635,6 +635,7 @@ test("NIR-1 capacity paths select their feature-gated diagnostic suite", async (
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_diagnostics.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
     "src-tauri/crates/grimodex-db/src/bin/nir1-material-capacity.rs",
+    "src-tauri/crates/grimodex-db/tests/nir1_capacity_binary.rs",
   ]) {
     const selection = selectImpact(map, [changedPath]);
     assert.ok(selection.matchedRuleIds.includes("nir1-capacity-diagnostics"), changedPath);
@@ -647,6 +648,15 @@ test("NIR-1 capacity paths select their feature-gated diagnostic suite", async (
   assert.match(suiteCommands, /nir1-material-capacity-probe\.test\.mjs/);
   assert.match(suiteCommands, /nir1-material-diagnostics/);
   assert.match(suiteCommands, /narrative_extraction::nir1_capacity/);
+  assert.ok(
+    LIGHT_SUITE_DEFINITIONS["nir1-capacity-diagnostics"].commands.some(
+      (command) =>
+        command.includes("nir1-material-diagnostics") &&
+        command.includes("--test") &&
+        command.includes("nir1_capacity_binary"),
+    ),
+    "capacity diagnostics must run the feature-gated binary integration target",
+  );
 });
 
 const execFileAsync = promisify(execFile);

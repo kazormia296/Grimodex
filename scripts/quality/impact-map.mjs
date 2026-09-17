@@ -392,6 +392,18 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "--lib",
         "narrative_extraction::nir1_capacity",
       ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--features",
+        "nir1-material-diagnostics",
+        "--test",
+        "nir1_capacity_binary",
+      ],
     ],
   },
   "narrative-extraction": {
