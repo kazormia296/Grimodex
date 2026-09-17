@@ -1061,6 +1061,10 @@ export function createNarrativeMaintenanceScheduler(
   // backends continue through the process-local fallback without being able
   // to fabricate a Native terminal receipt.
   const nativeAttemptIds = new Set<string>();
+  // `nativeAttemptIds` is cleared as soon as cancellation adopts a receipt.
+  // Keep a separate marker while an in-flight cycle still needs to recover
+  // that exact controller-owned receipt after the Native id has disappeared.
+  const nativeTerminalReceiptAttemptIds = new Set<string>();
   const ownedAttemptIds = new Set<string>();
   const cancellationFlights = new Map<string, Promise<unknown>>();
   let terminalReceiptFailure: Error | null = null;
@@ -1346,6 +1350,7 @@ export function createNarrativeMaintenanceScheduler(
           attemptId,
           parsedReceipt,
         );
+        nativeTerminalReceiptAttemptIds.add(attemptId);
         nativeAttemptIds.delete(attemptId);
         terminalReceiptFailure = null;
       }
@@ -1359,6 +1364,7 @@ export function createNarrativeMaintenanceScheduler(
       }
       if (!inFlight || activeAttemptId !== attemptId) {
         releaseAttemptOwner(attemptId);
+        nativeTerminalReceiptAttemptIds.delete(attemptId);
       }
       return nativeReceipt ?? localReceipt;
     })();
@@ -1381,6 +1387,28 @@ export function createNarrativeMaintenanceScheduler(
       activeAttemptId ?? pendingAttemptBegins.keys().next().value ?? null;
     if (typeof attemptId !== "string") return undefined;
     return cancelAttemptById(attemptId, reason);
+  };
+
+  const waitForAdoptedNativeTerminalReceipt = async (
+    attemptId: string,
+  ): Promise<
+    Awaited<ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>> | null
+  > => {
+    if (!nativeTerminalReceiptAttemptIds.has(attemptId)) return null;
+    try {
+      // The controller owns the exact parsed receipt. Waiting is idempotent
+      // for an already-adopted terminal and covers the small window where
+      // adoption is visible before its waiter is released.
+      return await activeAttemptController.waitForTerminal(attemptId);
+    } catch (error) {
+      // A missing controller receipt is not evidence that any work succeeded;
+      // callers retain the historical fail-closed all-batch retry behavior.
+      warn(
+        "[narrative-maintenance] adopted Native terminal receipt unavailable:",
+        error,
+      );
+      return null;
+    }
   };
 
   const runCycle = async (): Promise<void> => {
@@ -1637,9 +1665,14 @@ export function createNarrativeMaintenanceScheduler(
         } else if (!activeAttemptController.grantFinalize(cycleAttemptId)) {
           interruptedCycle = true;
           // A concurrent quiesce/cancel may already have adopted Native's
-          // terminal receipt.  That receipt is authoritative and cannot be
-          // replaced by a local placeholder; only the pre-receipt fallback
-          // remains eligible for local settlement here.
+          // terminal receipt. Recover that exact controller-owned value before
+          // the catch path decides which work to requeue; it cannot be
+          // replaced by a local placeholder.
+          if (nativeTerminalReceipt === null) {
+            nativeTerminalReceipt =
+              await waitForAdoptedNativeTerminalReceipt(cycleAttemptId);
+            nativeReceiptAdopted = nativeTerminalReceipt !== null;
+          }
           const attemptSnapshot =
             activeAttemptController.snapshot(cycleAttemptId);
           if (attemptSnapshot?.state === "stop-requested") {
@@ -1715,6 +1748,19 @@ export function createNarrativeMaintenanceScheduler(
           attemptSnapshotBeforeCleanup?.state === "stop-requested";
         workspaceMismatch =
           workspaceMismatch || isWorkspaceBindingMismatchError(error);
+        if (cycleAttemptId && nativeTerminalReceipt === null) {
+          const adoptedReceipt =
+            await waitForAdoptedNativeTerminalReceipt(cycleAttemptId);
+          if (adoptedReceipt !== null) {
+            nativeTerminalReceipt = adoptedReceipt;
+            nativeReceiptAdopted = true;
+            // A cycle rejection can arrive after external cancellation has
+            // already terminalized the controller, so its snapshot is no
+            // longer `stop-requested`. The receipt is the authoritative
+            // interruption signal for selective requeue in that path.
+            interruptedCycle = adoptedReceipt.state === "interrupted";
+          }
+        }
         const nativeAttemptActive =
           nativeAttemptIds.has(cycleAttemptId ?? "") &&
           cycleAttemptId !== null &&
@@ -1975,6 +2021,9 @@ export function createNarrativeMaintenanceScheduler(
         activeAttemptId !== cycleAttemptId
       ) {
         releaseAttemptOwner(cycleAttemptId);
+      }
+      if (cycleAttemptId) {
+        nativeTerminalReceiptAttemptIds.delete(cycleAttemptId);
       }
       noteMutation();
       if (

@@ -30,10 +30,12 @@ function work(
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function acceptedCycle(hasMore = false): NarrativeMaintenanceCycleResult {
@@ -1077,6 +1079,110 @@ describe("narrative maintenance scheduler", () => {
       }),
     ]);
   });
+
+  it.each(["resolved", "rejected"] as const)(
+    "uses the controller receipt adopted by quiesce before the cycle is %s",
+    async (cycleOutcome) => {
+      const binding = {
+        authorityId: `authority-adopted-race-${cycleOutcome}`,
+        generation: 5,
+      };
+      const firstWork = work(
+        `project-adopted-race-a-${cycleOutcome}`,
+        "backfill",
+        "legacy-dependency-backfill:v3",
+        "open",
+      );
+      const secondWork = work(
+        `project-adopted-race-b-${cycleOutcome}`,
+        "backfill",
+        "legacy-dependency-backfill:v3",
+        "open",
+      );
+      const effectiveKey = (item: NarrativeMaintenanceRequest): string =>
+        canonicalNarrativeMaintenanceWorkKey({
+          ...item,
+          semanticEpochId: "epoch-adopted-race",
+        });
+      const firstCycle = deferred<NarrativeMaintenanceCycleResult>();
+      const runNarrativeMaintenanceCycle = vi
+        .fn()
+        .mockImplementationOnce(() => firstCycle.promise)
+        .mockResolvedValue({ status: "accepted", hasMore: false });
+      const beginNarrativeMaintenanceAttempt = vi.fn(
+        (attemptId: string, receivedBinding: typeof binding) =>
+          JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: receivedBinding.authorityId,
+            generation: receivedBinding.generation,
+          }),
+      );
+      const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+        const firstCancellation =
+          cancelNarrativeMaintenanceAttempt.mock.calls.length === 1;
+        return JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state: firstCancellation ? "interrupted" : "succeeded",
+          stopReason: firstCancellation ? "workspace-generation-changed" : null,
+          generation: binding.generation,
+          workspaceBinding: binding,
+          publishedGeneration: firstCancellation ? null : binding.generation,
+          works: firstCancellation
+            ? [
+                { workKey: effectiveKey(firstWork), status: "succeeded" },
+                { workKey: effectiveKey(secondWork), status: "interrupted" },
+              ]
+            : [{ workKey: effectiveKey(secondWork), status: "succeeded" }],
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        });
+      });
+      const { scheduler } = createScheduler({
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+      });
+
+      scheduler.request(firstWork);
+      scheduler.request(secondWork);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+      const quiescing = scheduler.quiesceForWorkspaceSwitch?.();
+      for (
+        let turn = 0;
+        turn < 6 && cancelNarrativeMaintenanceAttempt.mock.calls.length === 0;
+        turn += 1
+      ) {
+        await Promise.resolve();
+      }
+      expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+
+      if (cycleOutcome === "resolved") {
+        firstCycle.resolve(acceptedCycle());
+      } else {
+        firstCycle.reject(new Error("cycle rejected after receipt adoption"));
+      }
+      const lease = await quiescing;
+      lease?.resume();
+      await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+      expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0].work).toEqual([
+        expect.objectContaining({
+          projectId: secondWork.projectId,
+          runKind: secondWork.runKind,
+          workKey: secondWork.workKey,
+          semanticEpochId: null,
+        }),
+      ]);
+      expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("renders only a canonical requeued transient failure as a bounded warning", async () => {
     const runNarrativeMaintenanceCycle = vi
