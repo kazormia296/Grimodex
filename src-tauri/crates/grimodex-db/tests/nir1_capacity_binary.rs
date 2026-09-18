@@ -348,6 +348,8 @@ fn real_binary_qualified_restore_passes_through_probe_orchestration() {
             "restore".to_owned(),
             "--runs".to_owned(),
             "5".to_owned(),
+            "--timeout-ms".to_owned(),
+            "120000".to_owned(),
         ];
         let report = run_capacity_probe(&probe, &probe_args);
         assert_eq!(report["diagnosticOnly"], true);
