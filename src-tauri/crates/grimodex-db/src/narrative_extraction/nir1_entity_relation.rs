@@ -9359,12 +9359,9 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })?;
 
-        let _snapshot = match db.with_read_transaction(|conn| {
+        let _snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
-        }) {
-            Ok(snapshot) => snapshot,
-            Err(error) => return Err(error),
-        };
+        })?;
         let source = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
         })?;
@@ -9910,12 +9907,9 @@ mod tests {
         append_typed_decision(&db, &ineligible_run, &ineligible, "rejected")?;
 
         let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
-        let _snapshot = match db.with_read_transaction(|conn| {
+        let _snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
-        }) {
-            Ok(snapshot) => snapshot,
-            Err(error) => return Err(error),
-        };
+        })?;
         let source = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
         })?;

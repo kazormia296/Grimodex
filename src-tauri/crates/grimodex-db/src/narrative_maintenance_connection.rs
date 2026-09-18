@@ -196,7 +196,7 @@ pub(crate) struct NarrativeMaintenanceConnectionResult<T> {
 /// Process-local controls supplied by the one maintenance owner to a Graph
 /// whole-project operation. The Graph producer deliberately depends on this
 /// narrow shape instead of learning about scheduler or workspace state.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct NarrativeMaintenanceGraphControlConfig {
     pub(crate) deadline: Option<Instant>,
     /// `(current_generation, expected_generation)` is supplied by the active
@@ -222,20 +222,8 @@ pub(crate) struct NarrativeMaintenanceGraphControlConfig {
     termination_latch: TerminationLatch,
 }
 
-impl Default for NarrativeMaintenanceGraphControlConfig {
-    fn default() -> Self {
-        Self {
-            deadline: None,
-            workspace_generation: None,
-            closed: None,
-            progress_callbacks: None,
-            finalization_granted: None,
-            termination_latch: TerminationLatch::default(),
-        }
-    }
-}
-
 impl NarrativeMaintenanceGraphControlConfig {
+    #[cfg(feature = "nir1-material-diagnostics")]
     pub(crate) fn with_progress_callbacks(progress_callbacks: Arc<AtomicU64>) -> Self {
         Self {
             progress_callbacks: Some(progress_callbacks),
@@ -458,6 +446,10 @@ pub(crate) fn try_lock_narrative_maintenance<'a>(
 /// Execute one top-level Native maintenance scope. The lock acquisition is
 /// deliberately no-wait. Callers can distinguish a temporary `Deferred`
 /// result from an operation/cleanup failure without changing durable state.
+///
+/// Test-only entry point: production paths enter through
+/// `with_narrative_maintenance_graph_control`.
+#[cfg(test)]
 pub(crate) fn with_narrative_maintenance_connection<T, F>(
     db: &Database,
     timeout: Duration,
@@ -528,6 +520,10 @@ where
 /// scope changes SQLite settings or installs a progress hook. Nested Native
 /// readers therefore inherit the cancellation hook and busy timeout owned by
 /// the maintenance attempt.
+///
+/// Test-only entry point: production paths enter through
+/// `with_narrative_maintenance_graph_control`.
+#[cfg(test)]
 pub(crate) fn with_narrative_maintenance_connection_scope<T, F>(
     conn: &Connection,
     timeout: Duration,
@@ -829,12 +825,6 @@ fn map_interrupted_error(error: anyhow::Error, latch: &TerminationLatch) -> anyh
 }
 
 impl Database {
-    pub(crate) fn try_lock_narrative_maintenance(
-        &self,
-    ) -> Result<Option<MutexGuard<'_, Connection>>> {
-        try_lock_narrative_maintenance(self)
-    }
-
     pub(crate) fn ensure_connection_reusable(&self) -> Result<()> {
         self.connection_health.ensure_reusable()
     }
@@ -1177,7 +1167,7 @@ mod tests {
         assert_eq!(result.value, Some(7));
         assert!(result.operation_error.is_none());
         assert!(result.cleanup_error.is_none());
-        assert_eq!(result.receipt.connection_reusable, true);
+        assert!(result.receipt.connection_reusable);
         let timeout: i64 = db
             .with_conn(|conn| Ok(conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?))
             .expect("read timeout");

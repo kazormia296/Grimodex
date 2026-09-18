@@ -782,9 +782,8 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
                     &transform_result,
                 )
             })
-            .map(|value| {
+            .inspect(|_| {
                 drop(reservation);
-                value
             })
         },
     );
@@ -873,6 +872,10 @@ fn find_valid_completed_backfill_run_id_with_control(
 /// Keeping this owner-only step in a named helper makes the phase boundary
 /// explicit: the generic task APIs must not be able to cancel the Run between
 /// the transform commit and this durable status/evidence transaction.
+///
+/// Test-only entry point: production paths finalize through
+/// `finalize_legacy_backfill_run_with_control`.
+#[cfg(test)]
 fn finalize_legacy_backfill_run(
     db: &Database,
     project_id: &str,
@@ -1256,24 +1259,6 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx_for_run_with_control(
 /// prefix a second time -- `project:scene:project:scene:s1` -- and every
 /// backfilled Edge then evaluated as `source-missing` because no resolver
 /// could match it back to its Source.
-fn record_legacy_dependency_edges_in_tx(
-    conn: &Connection,
-    project_id: &str,
-    application_id: &str,
-    backfill_run_id: &str,
-    now: &str,
-) -> anyhow::Result<()> {
-    let mut control = NeverStopGraphWorkControl;
-    record_legacy_dependency_edges_in_tx_with_control(
-        conn,
-        project_id,
-        application_id,
-        backfill_run_id,
-        now,
-        &mut control,
-    )
-}
-
 // NARRATIVE_DEPENDENCY_PRODUCER: legacy-application-projection-dependency
 fn record_legacy_dependency_edges_in_tx_with_control(
     conn: &Connection,

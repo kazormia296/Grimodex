@@ -491,7 +491,7 @@ fn infer_source_kind(source_object_identity: &str) -> Option<&'static str> {
 /// actually reproduced, not until someone merely re-runs this evaluator
 /// again. The current signal is a fresh read of the Source right now
 /// (`source_revision::resolve_current_source_state`, the same resolver
-/// `edge_source_is_missing` above already uses).
+/// `edge_source_is_missing_with_control` below already uses).
 ///
 /// `stored_digest`/`current_digest` mirror `resolve_current_source_state`'s
 /// own convention: a revision token that happens to look like a digest
@@ -1528,15 +1528,6 @@ pub struct RebuildShadowVerificationSummary {
 /// Freshness row, changes a V1 dependency-set digest, or treats a D1 defect
 /// as a V1 failure. Selectors that need a Feed position/anchor proof remain
 /// Unknown here because Rebuild has no mutation-local mapping input.
-fn verify_v2_shadow_for_rebuild_in_tx(
-    conn: &Connection,
-    project_id: &str,
-    run_id: &str,
-) -> anyhow::Result<RebuildShadowVerificationSummary> {
-    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
-    verify_v2_shadow_for_rebuild_in_tx_with_control(conn, project_id, run_id, &mut control)
-}
-
 pub(crate) fn verify_v2_shadow_for_rebuild_in_tx_with_control(
     conn: &Connection,
     project_id: &str,
@@ -1692,6 +1683,9 @@ pub(crate) fn verify_v2_shadow_for_rebuild_in_tx_with_control(
     Ok(verification)
 }
 
+/// Test-only entry point: production callers own cancellation through the
+/// `_with_control` variant.
+#[cfg(test)]
 fn rebuild_source_change_class_from_state(
     state: anyhow::Result<CurrentSourceState>,
 ) -> anyhow::Result<SourceChangeClass> {
@@ -1702,22 +1696,6 @@ fn rebuild_source_change_class_from_state(
         Err(error) if is_validation_terminated(&error) => Err(error),
         Err(_) => Ok(SourceChangeClass::ComponentUnavailable),
     }
-}
-
-fn rebuild_source_change_class_from_source(
-    conn: &Connection,
-    project_id: &str,
-    run_id: &str,
-    source_object_identity: &str,
-) -> anyhow::Result<SourceChangeClass> {
-    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
-    rebuild_source_change_class_from_source_with_control(
-        conn,
-        project_id,
-        run_id,
-        source_object_identity,
-        &mut control,
-    )
 }
 
 pub(crate) fn rebuild_source_change_class_from_source_with_control(
@@ -1807,6 +1785,10 @@ fn rebuild_source_change_class_for_role(
 
 /// Phase 2 of [`rebuild_narrative_derived_state_for_project`]: evaluate and
 /// publish every Consumer's Edges, one transaction per Consumer.
+///
+/// Test-only entry point: production callers own cancellation through the
+/// `_with_control` variant.
+#[cfg(test)]
 fn rebuild_derived_state_edges_in_project(
     db: &Database,
     project_id: &str,
@@ -1990,6 +1972,7 @@ pub(crate) fn rebuild_derived_state_edges_in_project_with_control(
 /// counted as broken. A typed validation termination is different: it is
 /// propagated to the maintenance owner and is never reported as a missing
 /// Source.
+#[cfg(test)]
 fn edge_source_missing_from_state(
     state: anyhow::Result<CurrentSourceState>,
 ) -> anyhow::Result<bool> {
@@ -1998,24 +1981,6 @@ fn edge_source_missing_from_state(
         Err(error) if is_validation_terminated(&error) => Err(error),
         Err(_) => Ok(true),
     }
-}
-
-fn edge_source_is_missing(
-    conn: &Connection,
-    project_id: &str,
-    run_id: &str,
-    edge: &DependencyEdge,
-) -> anyhow::Result<bool> {
-    let Some(source_kind) = infer_source_kind(&edge.source_object_identity) else {
-        return Ok(true);
-    };
-    edge_source_missing_from_state(resolve_current_source_state(
-        conn,
-        project_id,
-        run_id,
-        source_kind,
-        &edge.source_object_identity,
-    ))
 }
 
 fn edge_source_is_missing_with_control(
@@ -2138,7 +2103,7 @@ pub struct DependencyGraphVerifyReport {
     /// matching no recognized prefix (`infer_source_kind`) -- the latter
     /// overlaps `edge_ids_with_missing_source` by construction (an
     /// unrecognized prefix is *always* treated as a missing Source, see
-    /// `edge_source_is_missing`'s doc comment), so this field exists to
+    /// `edge_source_is_missing_with_control`'s doc comment), so this field exists to
     /// name the *shape* problem distinctly from the *resolution* problem,
     /// not to report a disjoint edge set.
     pub edge_ids_with_malformed_keys: Vec<String>,
@@ -3366,7 +3331,7 @@ pub(crate) fn is_canonical_graph_state_digest(value: &str) -> bool {
 /// migration, or D1 activation is inferred or added by this diagnostic.
 ///
 /// - `verifiesDurableGraph`: an inlined version of
-///   [`edge_source_is_missing`] (closest existing match to
+///   [`edge_source_is_missing_with_control`] (closest existing match to
 ///   "producer-and-generation-consistency" -- this crate does not yet
 ///   track a separate Producer "generation" concept beyond "does the
 ///   Source still resolve"), `active-edge-duplicates`,
@@ -4715,28 +4680,7 @@ fn durable_resolved_source_value(
 /// lookup records explicit absence, and the resolver token/error is retained
 /// as a compact guard for source kinds whose revision is an aggregate (for
 /// example the Codex catalog).
-fn durable_edge_resolution_input(
-    conn: &Connection,
-    project_id: &str,
-    edge_id: &str,
-    consumer_kind: &str,
-    consumer_key: &str,
-    source_identity: &str,
-    owning_run_id: Option<&str>,
-) -> anyhow::Result<Value> {
-    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
-    durable_edge_resolution_input_with_control(
-        conn,
-        project_id,
-        edge_id,
-        consumer_kind,
-        consumer_key,
-        source_identity,
-        owning_run_id,
-        &mut control,
-    )
-}
-
+#[allow(clippy::too_many_arguments)]
 fn durable_edge_resolution_input_with_control(
     conn: &Connection,
     project_id: &str,
@@ -5004,21 +4948,9 @@ pub(crate) fn verify_dependency_graph_snapshot_with_control(
 /// Change Feed rows/cursors, Applications, Contributions, or Legacy mirror
 /// rows.  Findings from those durable checks therefore require Verify/manual
 /// handling and must never cause a Verify -> Rebuild -> Verify churn loop.
-pub(crate) fn report_requires_derived_rebuild(
-    conn: &Connection,
-    project_id: &str,
-    report: &DependencyGraphVerifyReport,
-) -> anyhow::Result<bool> {
-    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
-    report_requires_derived_rebuild_with_control(conn, project_id, report, &mut control)
-}
-
-/// Controlled variant of [`report_requires_derived_rebuild`]. The
-/// repairability decision is part of a controlled Verify snapshot, so every
-/// per-report lookup must observe the same cancellation/preemption owner
-/// before preparing another statement. Keeping the ordinary wrapper above
-/// preserves the existing domain-diagnostic behavior for non-maintenance
-/// callers.
+/// Cancellation-owned entry point for the derived-rebuild decision, part of a
+/// controlled Verify snapshot: every per-report lookup must observe the same
+/// cancellation/preemption owner before preparing another statement.
 pub(crate) fn report_requires_derived_rebuild_with_control(
     conn: &Connection,
     project_id: &str,
@@ -5954,14 +5886,13 @@ mod tests {
             .to_string();
 
         let held = db.lock().expect("hold the maintenance mutex");
-        assert_eq!(
-            try_cancel_preempted_maintenance_run(
+        assert!(
+            !try_cancel_preempted_maintenance_run(
                 &db,
                 &run_id,
                 "foreground preemption retry",
             )
             .expect("busy cleanup must be fail-fast"),
-            false,
             "a busy mutex must leave the pending owner for retry"
         );
         drop(held);
@@ -7717,7 +7648,7 @@ mod tests {
         assert!(report.edge_ids_with_missing_source.contains(&missing_id));
         assert!(!report.edge_ids_with_missing_source.contains(&healthy_id));
         // An unrecognized source-identity shape is always treated as a
-        // missing source too (edge_source_is_missing's own doc comment).
+        // missing source too (edge_source_is_missing_with_control's own doc comment).
         assert!(report.edge_ids_with_missing_source.contains(&malformed_id));
         assert_eq!(
             report.edge_ids_with_malformed_keys,
@@ -7744,9 +7675,13 @@ mod tests {
     fn controlled_rebuildability_cancellation_happens_before_the_first_lookup() -> anyhow::Result<()> {
         let db = current_schema_db();
         db.with_conn(|conn| {
-            let mut report = DependencyGraphVerifyReport::default();
-            report.edge_state_ids_outside_current_epoch =
-                vec!["stale-edge-1".to_owned(), "stale-edge-2".to_owned()];
+            let report = DependencyGraphVerifyReport {
+                edge_state_ids_outside_current_epoch: vec![
+                    "stale-edge-1".to_owned(),
+                    "stale-edge-2".to_owned(),
+                ],
+                ..DependencyGraphVerifyReport::default()
+            };
 
             let select_count = Arc::new(AtomicUsize::new(0));
             let select_count_for_hook = Arc::clone(&select_count);
@@ -7787,9 +7722,13 @@ mod tests {
     fn controlled_rebuildability_foreground_preemption_happens_before_the_next_lookup() -> anyhow::Result<()> {
         let db = current_schema_db();
         db.with_conn(|conn| {
-            let mut report = DependencyGraphVerifyReport::default();
-            report.edge_state_ids_outside_current_epoch =
-                vec!["stale-edge-1".to_owned(), "stale-edge-2".to_owned()];
+            let report = DependencyGraphVerifyReport {
+                edge_state_ids_outside_current_epoch: vec![
+                    "stale-edge-1".to_owned(),
+                    "stale-edge-2".to_owned(),
+                ],
+                ..DependencyGraphVerifyReport::default()
+            };
 
             let select_count = Arc::new(AtomicUsize::new(0));
             let select_count_for_hook = Arc::clone(&select_count);

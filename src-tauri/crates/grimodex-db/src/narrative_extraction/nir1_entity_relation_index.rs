@@ -55,6 +55,8 @@ const CONSUMER_KIND: &str = "semantic-index";
 // individually valid Revisions.
 const REVISION_RECORD_ADMISSION: usize = narrative_nir1::MAX_GRAPH_RECORDS;
 const REVISION_INPUT_BYTE_LIMIT: usize = narrative_nir1::MAX_GRAPH_INPUT_BYTES;
+/// Test-only SQL cancellation cadence shared by the cancellation tests below.
+#[cfg(test)]
 const GRAPH_SQL_CHECK_INTERVAL: i32 = 1_000;
 const GRAPH_SOURCE_PAGE_SIZE: i64 = 64;
 
@@ -68,6 +70,7 @@ pub(crate) enum GraphWorkStage {
     CompleteRegistration,
     Coverage,
     Restore,
+    #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     ColdReopen,
     Sort,
     Digest,
@@ -168,6 +171,7 @@ pub struct GraphIndexBuildSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(any(test, feature = "nir1-material-diagnostics"))]
 pub(crate) struct GraphSnapshotCapacity {
     pub(crate) qualified_revisions: usize,
     pub(crate) roster_records: usize,
@@ -207,12 +211,8 @@ impl GraphIndexBuildSnapshot {
     }
 }
 
+#[cfg(any(test, feature = "nir1-material-diagnostics"))]
 impl GraphIndexBuildSnapshot {
-    pub(crate) fn capacity_shape(&self) -> Result<GraphSnapshotCapacity> {
-        let mut control = NeverStopGraphWorkControl;
-        self.capacity_shape_with_control(&mut control)
-    }
-
     pub(crate) fn capacity_shape_with_control(
         &self,
         control: &mut dyn GraphWorkControl,
@@ -265,6 +265,7 @@ impl GraphIndexBuildSnapshot {
     }
 }
 
+#[cfg(any(test, feature = "nir1-material-diagnostics"))]
 struct CountingJsonWriter<'a> {
     len: usize,
     item_count: usize,
@@ -272,6 +273,7 @@ struct CountingJsonWriter<'a> {
     error: Option<anyhow::Error>,
 }
 
+#[cfg(any(test, feature = "nir1-material-diagnostics"))]
 impl<'a> CountingJsonWriter<'a> {
     fn new(control: &'a mut dyn GraphWorkControl) -> Self {
         Self {
@@ -311,6 +313,7 @@ impl<'a> CountingJsonWriter<'a> {
     }
 }
 
+#[cfg(any(test, feature = "nir1-material-diagnostics"))]
 impl Write for CountingJsonWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if let Err(error) = self.control.check(GraphWorkStage::Serialization) {
@@ -330,6 +333,7 @@ impl Write for CountingJsonWriter<'_> {
     }
 }
 
+#[cfg(any(test, feature = "nir1-material-diagnostics"))]
 fn serialized_json_array_len_with_control<T: Serialize>(
     values: &[T],
     control: &mut dyn GraphWorkControl,
@@ -610,6 +614,8 @@ fn read_eligibility_source_for_native_build(
     read_eligibility_source_bounded(conn, project, Some(&admission), Some(control))
 }
 
+/// Test-only helper exercising SQL cancellation cadences.
+#[cfg(test)]
 fn with_graph_sql_cancellation<T, F>(
     conn: &Connection,
     cancellation_epoch: Option<(&Arc<AtomicU64>, u64)>,
@@ -804,7 +810,7 @@ fn read_eligibility_source_bounded(
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
-    let source = if let Some(control) = control.as_deref_mut() {
+    let source = if let Some(control) = control {
         graph_source_from_roster_with_control(project, roster, control)?
     } else {
         graph_source_from_roster(project, roster)?
@@ -1222,6 +1228,9 @@ fn append_revision_roster(
     Ok(())
 }
 
+/// Capacity-diagnostics-only binding read: production readers enter through
+/// `read_with_control` so cancellation and foreground preemption stay owned.
+#[cfg(any(test, feature = "nir1-material-diagnostics"))]
 pub(crate) fn read(conn: &Connection, project: &str) -> Result<BindingRead> {
     read_internal(conn, project, true, true, None)
 }
@@ -1582,15 +1591,6 @@ pub(crate) fn is_complete_registered_with_control(
     Ok(!binding.dirty)
 }
 
-fn edges_match_source(
-    edges: &[DependencyEdge],
-    project: &str,
-    source: &GraphEligibilitySource,
-) -> Result<bool> {
-    let mut control = NeverStopGraphWorkControl;
-    edges_match_source_with_control(edges, project, source, &mut control)
-}
-
 fn edges_match_source_with_control(
     edges: &[DependencyEdge],
     project: &str,
@@ -1716,6 +1716,9 @@ fn prepare_graph_index_build_in_tx(
     })
 }
 
+/// Test-only entry point: production snapshots are compared through
+/// `snapshot_current_with_control` so cancellation stays owned.
+#[cfg(test)]
 fn input_edges(project: &str, source: &GraphEligibilitySource) -> Result<Vec<DependencyEdge>> {
     let mut control = NeverStopGraphWorkControl;
     input_edges_with_control(project, source, &mut control)
@@ -1763,15 +1766,6 @@ fn input_edges_with_control(
     }
     control.check(GraphWorkStage::ResultAssembly)?;
     Ok(edges)
-}
-
-pub(crate) fn snapshot_current(
-    conn: &Connection,
-    runtime: &NirChronicleIndexRuntime,
-    snapshot: &GraphIndexBuildSnapshot,
-) -> Result<bool> {
-    let mut control = NeverStopGraphWorkControl;
-    snapshot_current_with_control(conn, runtime, snapshot, &mut control)
 }
 
 fn snapshot_current_with_control(
@@ -1833,6 +1827,7 @@ pub fn publish_nir1_entity_relation_index_in_tx(
     })
 }
 
+#[cfg(any(test, feature = "nir1-material-diagnostics"))]
 pub(crate) fn publish_nir1_entity_relation_index_in_tx_with_control(
     conn: &Connection,
     runtime: &NirChronicleIndexRuntime,
@@ -1845,6 +1840,10 @@ pub(crate) fn publish_nir1_entity_relation_index_in_tx_with_control(
 /// Recheck a complete registration after a workspace reopen using the new
 /// runtime's caller-owned transaction. This keeps cold-reopen validation under
 /// the same cancellation and foreground-preemption owner as build/publish.
+///
+/// Capacity-diagnostics-only: no production reader reopens a registration
+/// outside a measured diagnostic mode.
+#[cfg(feature = "nir1-material-diagnostics")]
 pub(crate) fn cold_reopen_graph_index_with_control(
     conn: &Connection,
     project: &str,

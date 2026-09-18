@@ -17,7 +17,7 @@ use super::c2z_preparation::inspect_legacy_generic_freshness_parity;
 use super::consumer_identity::APPLICATION_CONSUMER_KIND;
 use super::dependency_edges::{canonical_source_object_identity, PROPOSAL_REVISION_CONSUMER_KIND};
 use super::nir1_entity_relation_index::{
-    GraphWorkControl, GraphWorkStage, NeverStopGraphWorkControl,
+    GraphWorkControl, GraphWorkStage,
 };
 use super::source_revision::resolve_source_revision_with_control;
 use super::source_revision::is_validation_terminated;
@@ -134,14 +134,6 @@ impl<'de> Deserialize<'de> for VerifyCoverageCheck {
 /// and the Revision's declared dependency Edges.  Arbitrary proposal payload
 /// JSON is deliberately not inspected: an inferred reference would have no
 /// durable identity or writer contract to bind it to.
-pub(crate) fn verify_application_revision_artifact_references(
-    conn: &Connection,
-    project_id: &str,
-) -> anyhow::Result<VerifyCoverageCheck> {
-    let mut control = NeverStopGraphWorkControl;
-    verify_application_revision_artifact_references_with_control(conn, project_id, &mut control)
-}
-
 pub(crate) fn verify_application_revision_artifact_references_with_control(
     conn: &Connection,
     project_id: &str,
@@ -431,11 +423,15 @@ pub(crate) fn verify_application_revision_artifact_references_with_control(
 /// whole-project Graph registration is removed from reserved counts; a dirty
 /// or otherwise stale binding remains visible as incomplete evidence. Live
 /// usability remains a separate producer check.
+///
+/// Test-only entry point: production Verify owns cancellation through the
+/// `_with_control` variant.
+#[cfg(test)]
 pub(crate) fn verify_semantic_index_checks(
     conn: &Connection,
     project_id: &str,
 ) -> anyhow::Result<(VerifyCoverageCheck, VerifyCoverageCheck)> {
-    let mut control = NeverStopGraphWorkControl;
+    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
     verify_semantic_index_checks_with_control(conn, project_id, &mut control)
 }
 
@@ -565,18 +561,6 @@ pub(crate) fn verify_semantic_index_checks_with_control(
 /// Verify that every durable Application Contribution still points to the
 /// exact Application, Apply Commit, Proposal, Revision and optional Operation
 /// provenance recorded by the production apply writer.
-pub(crate) fn verify_contribution_to_application_commit_correspondence(
-    conn: &Connection,
-    project_id: &str,
-) -> anyhow::Result<VerifyCoverageCheck> {
-    let mut control = NeverStopGraphWorkControl;
-    verify_contribution_to_application_commit_correspondence_with_control(
-        conn,
-        project_id,
-        &mut control,
-    )
-}
-
 pub(crate) fn verify_contribution_to_application_commit_correspondence_with_control(
     conn: &Connection,
     project_id: &str,
@@ -750,20 +734,6 @@ pub(crate) fn verify_contribution_to_application_commit_correspondence_with_cont
 /// Reuse the canonical Legacy/Generic parity reader and add the current
 /// Semantic Epoch binding that belongs to production Verify rather than the
 /// pre-cutover readiness report.
-pub(crate) fn verify_legacy_mirror_migration_parity(
-    conn: &Connection,
-    project_id: &str,
-    current_epoch_id: Option<&str>,
-) -> anyhow::Result<VerifyCoverageCheck> {
-    let mut control = NeverStopGraphWorkControl;
-    verify_legacy_mirror_migration_parity_with_control(
-        conn,
-        project_id,
-        current_epoch_id,
-        &mut control,
-    )
-}
-
 pub(crate) fn verify_legacy_mirror_migration_parity_with_control(
     conn: &Connection,
     project_id: &str,
@@ -859,20 +829,6 @@ pub(crate) fn verify_legacy_mirror_migration_parity_with_control(
 /// correspondence of the canonical Change Feed.  A cursor may legitimately
 /// lag the feed head; the check proves only that it never acknowledges or
 /// reserves beyond the head and that every Feed row has one coherent source.
-pub(crate) fn verify_cursor_and_feed_head_consistency(
-    conn: &Connection,
-    project_id: &str,
-    current_epoch_id: Option<&str>,
-) -> anyhow::Result<VerifyCoverageCheck> {
-    let mut control = NeverStopGraphWorkControl;
-    verify_cursor_and_feed_head_consistency_with_control(
-        conn,
-        project_id,
-        current_epoch_id,
-        &mut control,
-    )
-}
-
 pub(crate) fn verify_cursor_and_feed_head_consistency_with_control(
     conn: &Connection,
     project_id: &str,
