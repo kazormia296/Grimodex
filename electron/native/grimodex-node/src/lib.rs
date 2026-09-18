@@ -6115,7 +6115,11 @@ impl Backend {
                     Some(&mut before_swap),
                 )
             }));
-            drop(before_swap);
+            // End the closure's `&mut` borrows of the admission guard and
+            // traces before the post-open match reuses them. (`drop` on a
+            // non-`Drop` closure is rejected by clippy; a move ends the
+            // borrow region the same way.)
+            let _ = before_swap;
             let result = match opened_result {
                 Ok(Ok(opened)) => finish_workspace_open_success(
                     &state,
@@ -12457,12 +12461,27 @@ mod narrative_maintenance_admission_unwind_tests {
             .expect("restore candidate");
         drop(authority);
 
-        // Hold the shared restore/open lock so the first restore remains in
-        // the interval after its admission close but before authority
-        // mutation. This makes the second restore's pre-lock decision and the
-        // maintenance begin race deterministic.
+        // Hold the shared restore/open lock on a dedicated thread so the
+        // first restore remains in the interval after its admission close
+        // but before authority mutation. This makes the second restore's
+        // pre-lock decision and the maintenance begin race deterministic.
+        // The guard lives on the holder thread (never across an await),
+        // so the test also satisfies clippy::await_holding_lock.
         let backend = Arc::new(backend);
-        let open_guard = backend.state.ws.open_lock.lock().expect("open lock");
+        let (open_held_tx, open_held_rx) = std::sync::mpsc::channel();
+        let (open_release_tx, open_release_rx) = std::sync::mpsc::channel::<()>();
+        let holder_backend = Arc::clone(&backend);
+        let open_holder = std::thread::spawn(move || {
+            let _open_guard = holder_backend
+                .state
+                .ws
+                .open_lock
+                .lock()
+                .expect("open lock");
+            open_held_tx.send(()).expect("open lock held signal");
+            open_release_rx.recv().expect("open lock release signal");
+        });
+        open_held_rx.recv().expect("open lock held");
         let first_backend = Arc::clone(&backend);
         let first = napi::tokio::spawn(async move {
             first_backend.restore_backup(backup_name.to_string()).await
@@ -12520,7 +12539,7 @@ mod narrative_maintenance_admission_unwind_tests {
             "second restore must reject the normal closed owner: {second_prelock:?}"
         );
 
-        drop(open_guard);
+        open_release_tx.send(()).expect("open lock release");
         first
             .await
             .expect("first restore task")
@@ -12534,6 +12553,7 @@ mod narrative_maintenance_admission_unwind_tests {
             .narrative_maintenance_recovery_gate
             .maintenance_admission_is_closed());
 
+        open_holder.join().expect("open lock holder");
         drop(backend);
         let _ = std::fs::remove_dir_all(root);
     }

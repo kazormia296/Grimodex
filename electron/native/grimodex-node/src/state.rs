@@ -1571,6 +1571,7 @@ impl NarrativeMaintenanceAttemptRegistry {
     /// Request cancellation. `Some` means a terminal receipt is already
     /// available; `None` means the owner is still settling and the caller
     /// must await the Notify.
+    #[allow(dead_code)]
     pub fn request_cancel(
         &self,
         attempt_id: &str,
@@ -1671,6 +1672,7 @@ impl NarrativeMaintenanceAttemptRegistry {
         Ok((immediate, admission))
     }
 
+    #[allow(dead_code)]
     pub async fn wait_for_terminal(
         &self,
         attempt_id: &str,
