@@ -1014,14 +1014,25 @@ mod tests {
         let owner = try_lock_narrative_maintenance(&db)
             .expect("try lock")
             .expect("maintenance owner");
+        let (foreground_waiting_tx, foreground_waiting_rx) = mpsc::channel();
         let foreground_db = Arc::clone(&db);
-        let foreground = thread::spawn(move || foreground_db.with_conn(|_| Ok(())));
-        for _ in 0..1_000 {
-            if db.foreground_connection_waiting() {
-                break;
-            }
-            thread::yield_now();
-        }
+        let foreground = thread::spawn(move || {
+            // Publish the foreground arrival before entering the real
+            // blocking acquisition path. The owner is still held, so this
+            // waiter remains observable until maintenance releases it.
+            // A channel handshake (not a bounded yield spin) synchronizes
+            // the arrival so the test stays deterministic under Full-CI
+            // parallel load.
+            let _waiter =
+                ForegroundConnectionWaiter::new(&foreground_db.foreground_connection_waiters);
+            foreground_waiting_tx
+                .send(())
+                .expect("foreground waiter signal");
+            foreground_db.with_conn(|_| Ok(()))
+        });
+        foreground_waiting_rx
+            .recv()
+            .expect("foreground waiter arrived");
         assert!(db.foreground_connection_waiting());
         let mut control = NarrativeMaintenanceGraphControl::new(
             &db,
