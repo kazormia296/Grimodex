@@ -1025,6 +1025,34 @@ fn narrative_maintenance_binding_for_authority(
         .binding_for_authority(&narrative_authority_id(authority))
 }
 
+/// Resolve the authority owned by the workspace-swap caller.  The shared
+/// opener raises `switching` before invoking its pre-swap callback, so the
+/// normal `active_database` guard intentionally rejects this lookup.  The
+/// callback already owns `open_lock`; reading the pinned Arc directly under
+/// `ws.inner` is the narrow owner-only escape hatch needed to inspect the
+/// exact authority and pending-run binding before `QuiescedSamePath` removes
+/// it.  Callers outside that callback retain the normal fail-closed lookup.
+fn workspace_swap_owner_authority(
+    state: &AppState,
+) -> std::result::Result<PinnedWorkspaceDb, AppError> {
+    if state
+        .ws
+        .switching
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        let inner = state
+            .ws
+            .inner
+            .lock()
+            .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+        return inner
+            .as_ref()
+            .map(|workspace| Arc::clone(&workspace.authority))
+            .ok_or(AppError::NoWorkspace);
+    }
+    active_database(&state.ws)
+}
+
 /// Reopen maintenance admission after a workspace open/restore path exits.
 /// The binding is resolved from the authority that actually remains active,
 /// so an error before publication restores the old binding while a successful
@@ -1101,7 +1129,7 @@ fn close_narrative_maintenance_for_workspace_swap(
         .narrative_maintenance_recovery_gate
         .maintenance_admission_is_closed();
     if already_closed {
-        let replacement_recovery_pending = active_database(&state.ws)
+        let replacement_recovery_pending = workspace_swap_owner_authority(state)
             .ok()
             .map(|authority| {
                 let authority_id = narrative_authority_id(&authority);
@@ -1156,7 +1184,7 @@ fn close_narrative_maintenance_for_workspace_swap(
             .map_err(AppError::Anyhow)?;
         return Ok(false);
     }
-    let active_binding = active_database(&state.ws).ok().map(|authority| {
+    let active_binding = workspace_swap_owner_authority(state).ok().map(|authority| {
         state
             .narrative_maintenance_recovery_gate
             .binding_for_authority(&narrative_authority_id(&authority))
@@ -1193,7 +1221,7 @@ fn close_narrative_maintenance_for_workspace_swap(
                 .map_err(AppError::Anyhow)?;
         }
     }
-    if let Ok(authority) = active_database(&state.ws) {
+    if let Ok(authority) = workspace_swap_owner_authority(state) {
         let binding = state
             .narrative_maintenance_recovery_gate
             .binding_for_authority(&narrative_authority_id(&authority));
@@ -12988,6 +13016,47 @@ mod narrative_maintenance_admission_unwind_tests {
             .expect("read binding after restore")
             .expect("active binding after restore");
         assert_eq!(after, before, "failed restore must retain the old binding");
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn production_open_retries_handed_off_run_while_switching_owner_holds_lock() {
+        let (backend, root) = backend_with_active_workspace("open-pending-run-retry");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        drop(authority);
+
+        // Model the state left after a replacement authority failed to drain
+        // an exact Run: the gate remains closed and the process-local owner
+        // retains the old generation.  The next real open enters its
+        // pre-swap callback with switching=true, so it must use the
+        // open_lock owner path rather than active_database().
+        backend
+            .state
+            .narrative_maintenance_preempted_runs
+            .defer("pending-open-retry-run", &binding)
+            .expect("retain handed-off Run");
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .close_for_workspace_swap()
+            .expect("leave admission closed for retry");
+
+        backend
+            .open_workspace(root.join("workspace").to_string_lossy().into_owned())
+            .await
+            .expect("second open must reach replacement Run recovery");
+        assert!(!backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .maintenance_admission_is_closed());
+        assert!(backend
+            .state
+            .narrative_maintenance_preempted_runs
+            .pending_for_authority(&binding.authority_id)
+            .is_empty());
 
         drop(backend);
         let _ = std::fs::remove_dir_all(root);

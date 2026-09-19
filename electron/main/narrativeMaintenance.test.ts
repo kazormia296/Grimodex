@@ -2282,6 +2282,74 @@ describe("narrative maintenance scheduler", () => {
     );
   });
 
+  it("reschedules the automatic queue after a pending manual begin rejects", async () => {
+    const binding = { authorityId: "authority-begin-retry", generation: 6 };
+    const manualBegin = deferred<string>();
+    const begin = vi
+      .fn()
+      .mockImplementationOnce(() => manualBegin.promise)
+      .mockImplementation((attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+      );
+    const cancel = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "succeeded",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: binding.generation,
+        works: [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      beginNarrativeMaintenanceAttempt: begin,
+      cancelNarrativeMaintenanceAttempt: cancel,
+      runNarrativeMaintenanceCycle,
+    });
+
+    const manualRegistration = scheduler.beginNarrativeMaintenanceAttempt?.(
+      "manual-begin-retry",
+      binding,
+    );
+    scheduler.request(
+      work("project-begin-retry", "backfill", "auto-work", "timer"),
+    );
+    scheduler.start();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+
+    manualBegin.reject(new Error("injected begin rejection"));
+    await expect(manualRegistration).rejects.toThrow("injected begin rejection");
+
+    // The timer fired while the manual registration was pending.  No new
+    // enqueue or external wake is allowed to be required for the retained
+    // automatic work to resume.
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0].work).toEqual([
+      expect.objectContaining({
+        projectId: "project-begin-retry",
+        workKey: "auto-work",
+      }),
+    ]);
+    expect(begin).toHaveBeenCalledTimes(2);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("rejects a manual attempt while scheduler admission is quiescing", async () => {
     const binding = { authorityId: "authority-quiescing-admission", generation: 5 };
     const begin = vi.fn((attemptId: string) =>

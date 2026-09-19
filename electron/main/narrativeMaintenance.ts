@@ -1190,6 +1190,24 @@ export function createNarrativeMaintenanceScheduler(
         !blockedProjects.has(entry.projectId),
     );
 
+  const scheduleRunnableBacklogIfIdle = (): void => {
+    if (
+      disposed ||
+      quiescing ||
+      !started ||
+      inFlight ||
+      activeAttemptId !== null ||
+      pendingAttemptBegins.size > 0 ||
+      terminalReceiptFailure !== null ||
+      timer !== null
+    ) {
+      return;
+    }
+    if (hasRunnablePendingWork() || hasRunnableWake()) {
+      schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
+    }
+  };
+
   const captureWorkspaceBinding = ():
     | NarrativeMaintenanceWorkspaceBinding
     | null
@@ -2415,6 +2433,11 @@ export function createNarrativeMaintenanceScheduler(
         await registerAttempt(attemptId, normalizedBinding);
       } catch (error) {
         cleanupUnregisteredAttempt(attemptId);
+        // A timer may have fired while this Native begin was pending.  That
+        // timer deliberately returned without claiming the automatic queue;
+        // once the manual admission slot is released, restore its wake here
+        // even when registration failed before Native ownership existed.
+        scheduleRunnableBacklogIfIdle();
         throw error;
       }
       return undefined;
