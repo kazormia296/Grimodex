@@ -22,13 +22,22 @@ jobs:
           ref: b56ab8034b9bbab3475b23e9957b0a1f42a86a5f
           path: work
           persist-credentials: false
-      - name: Inspect dedicated repair environment
+      - name: Export exact source for the repair
         working-directory: work
         run: |
-          git rev-parse HEAD
-          rustc --version
-          cargo --version
-          node --version
-          python3 --version
-          find .agents .claude -iname '*debug-issue*' -o -iname '*refactor-cross-boundaries*'
-          wc -l electron/native/grimodex-node/src/lib.rs electron/native/grimodex-node/src/state.rs src-tauri/crates/grimodex-db/src/lib.rs src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
+          mkdir -p ../evidence
+          git archive --format=tar.gz HEAD AGENTS.md src-tauri-CLAUDE.md .agents src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/crates/grimodex-db src-tauri/crates/grimodex-core electron package.json pnpm-lock.yaml vitest.electron.config.ts > ../evidence/pr600-source.tar.gz
+          git rev-parse HEAD > ../evidence/source-head.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr600-exact-source
+          path: evidence/
+          retention-days: 3
+          if-no-files-found: error
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: work/src-tauri
+          key: pr600-repair-db
+      - name: Baseline focused DB tests
+        working-directory: work
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_maintenance_connection -- --test-threads=1
