@@ -36,7 +36,7 @@ jobs:
       - name: Apply owned repair lanes
         id: apply
         working-directory: work
-        run: python3 ../runner/.github/pr600-repair/run_lanes.py > /tmp/pr600-apply.log
+        run: python3 ../runner/.github/pr600-repair/prepare.py > /tmp/pr600-apply.log
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
           version: 10.33.0
