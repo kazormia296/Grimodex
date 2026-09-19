@@ -1,8 +1,7 @@
 /**
- * Main-process owner for the will-quit maintenance barrier.  The handler
- * prevents the current quit synchronously, waits for the Native terminal
- * receipt, and either retries the same barrier on a later will-quit event or
- * advances to an explicit fatal exit after the bounded retry count.
+ * Main-process owner for the will-quit maintenance barrier. Maintenance must
+ * terminate before independent process teardown starts. Failed maintenance
+ * cleanup is never promoted to success, but cannot skip child-process cleanup.
  */
 
 export interface NarrativeMaintenanceQuitEvent {
@@ -11,45 +10,80 @@ export interface NarrativeMaintenanceQuitEvent {
 
 export interface NarrativeMaintenanceQuitFinalizerOptions {
   dispose(): void | Promise<void>;
-  complete(): void;
+  complete(): void | Promise<void>;
   quit(): void;
   exit(code: number): void;
   error?(error: unknown): void;
   maxAttempts?: number;
 }
 
+/** Attempt every independent teardown, including after another one rejects. */
+export async function runIndependentShutdownCleanups(
+  cleanups: ReadonlyArray<() => void | Promise<void>>,
+): Promise<void> {
+  const results = await Promise.allSettled(
+    cleanups.map((cleanup) => Promise.resolve().then(cleanup)),
+  );
+  const failures: unknown[] = [];
+  for (const result of results) {
+    if (result.status === "rejected") failures.push(result.reason);
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "independent process teardown failed");
+  }
+}
+
 export function createNarrativeMaintenanceQuitFinalizer(
   options: NarrativeMaintenanceQuitFinalizerOptions,
 ): (event: NarrativeMaintenanceQuitEvent) => Promise<void> {
-  const maxAttempts = Math.max(1, options.maxAttempts ?? 3);
+  const maxAttempts = options.maxAttempts ?? 3;
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+    throw new Error("maintenance shutdown maxAttempts must be a positive integer");
+  }
   let finalizationStarted = false;
   let cleanupComplete = false;
-  let failureCount = 0;
   let fatalExitRequested = false;
+  const reportError = (error: unknown): void => {
+    try {
+      options.error?.(error);
+    } catch {
+      // A diagnostic callback cannot interrupt process teardown.
+    }
+  };
 
   return async (event) => {
     if (cleanupComplete || fatalExitRequested) return;
     event.preventDefault();
     if (finalizationStarted) return;
     finalizationStarted = true;
-    while (!cleanupComplete && !fatalExitRequested) {
+
+    let maintenanceComplete = false;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         await options.dispose();
-        options.complete();
-        cleanupComplete = true;
-        options.quit();
+        maintenanceComplete = true;
+        break;
       } catch (error) {
-        failureCount += 1;
-        options.error?.(error);
-        if (failureCount >= maxAttempts) {
-          fatalExitRequested = true;
-          options.exit(1);
-          return;
-        }
-        // Retry the same owned barrier within this invocation. Reentrant
-        // will-quit events still observe finalizationStarted and cannot start
-        // a second disposal concurrently.
+        reportError(error);
       }
     }
+
+    // This is attempted exactly once, even when all maintenance retries fail.
+    // Its caller owns independent child-process teardown and waits for each
+    // manager's existing completion contract before requesting process exit.
+    let independentCleanupComplete = false;
+    try {
+      await options.complete();
+      independentCleanupComplete = true;
+    } catch (error) {
+      reportError(error);
+    }
+    if (!maintenanceComplete || !independentCleanupComplete) {
+      fatalExitRequested = true;
+      options.exit(1);
+      return;
+    }
+    cleanupComplete = true;
+    options.quit();
   };
 }

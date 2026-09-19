@@ -33,7 +33,10 @@ import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
 import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
-import { createNarrativeMaintenanceQuitFinalizer } from "./narrativeMaintenanceShutdown.js";
+import {
+  createNarrativeMaintenanceQuitFinalizer,
+  runIndependentShutdownCleanups,
+} from "./narrativeMaintenanceShutdown.js";
 import type { NarrativeMaintenanceTriggerCoordinator } from "./narrativeMaintenanceTriggers.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
@@ -545,17 +548,18 @@ if (!gotSingleInstanceLock) {
           error,
         );
       },
-      complete: () => {
-        vivliostyle.disposeAll();
-        updater.dispose();
-        licenseValidation.dispose();
-        narrativeFreshness.dispose();
-        narrativeMaintenanceTriggers?.dispose();
-        narrativeMaintenanceCiHeldFreshnessWriter?.dispose();
-        cliAi.disposeAll();
-        void codexApp.dispose();
-        void externalMount.disposeAll();
-      },
+      complete: () =>
+        runIndependentShutdownCleanups([
+          () => vivliostyle.disposeAll(),
+          () => updater.dispose(),
+          () => licenseValidation.dispose(),
+          () => narrativeFreshness.dispose(),
+          () => narrativeMaintenanceTriggers?.dispose(),
+          () => narrativeMaintenanceCiHeldFreshnessWriter?.dispose(),
+          () => cliAi.disposeAll(),
+          () => codexApp.dispose(),
+          () => externalMount.disposeAll(),
+        ]),
       quit: () => app.quit(),
       exit: (code) => {
         console.error(

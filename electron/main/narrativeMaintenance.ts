@@ -46,10 +46,9 @@ export interface NarrativeMaintenanceWorkspaceBinding {
 }
 
 /**
- * Main-owned lease for a workspace switch quiescence transition.  A lease
- * can resume retained backlog only while it is still the newest switch owner;
- * an older overlapping switch therefore cannot reopen work behind a newer
- * transition.
+ * Main-owned lease for a workspace switch quiescence transition. Admission
+ * remains closed until every overlapping switch releases its own lease,
+ * regardless of completion order. Releasing the same lease is idempotent.
  */
 export interface NarrativeMaintenanceQuiesceLease {
   resume(): void;
@@ -1052,7 +1051,7 @@ export function createNarrativeMaintenanceScheduler(
   let inFlightPromise: Promise<void> | null = null;
   const pendingAttemptBegins = new Map<string, Promise<void>>();
   let quiescing = false;
-  let quiesceOwnerGeneration = 0;
+  const activeWorkspaceSwitchOwners = new Set<symbol>();
   let quiesceTransition: Promise<void> | null = null;
   let activeAttemptId: string | null = null;
   // The presence of Native lifecycle methods is only a capability.  An
@@ -2156,19 +2155,30 @@ export function createNarrativeMaintenanceScheduler(
     NarrativeMaintenanceQuiesceLease | undefined
   > => {
     if (disposed) return undefined;
-    const ownerGeneration = ++quiesceOwnerGeneration;
-    if (quiesceTransition === null) {
-      quiesceTransition = performWorkspaceQuiesce().finally(() => {
-        quiesceTransition = null;
-      });
+    // Retain before awaiting the shared stop barrier. Completion order is
+    // independent of admission order, so a latest-generation check alone
+    // cannot prove that all outstanding workspace switches have finished.
+    const owner = Symbol("workspace-switch");
+    activeWorkspaceSwitchOwners.add(owner);
+    try {
+      if (quiesceTransition === null) {
+        quiesceTransition = performWorkspaceQuiesce().finally(() => {
+          quiesceTransition = null;
+        });
+      }
+      await quiesceTransition;
+    } catch (error) {
+      activeWorkspaceSwitchOwners.delete(owner);
+      // Do not reopen admission after an unproven terminal/cleanup result.
+      throw error;
     }
-    await quiesceTransition;
     return {
       resume: () => {
+        if (!activeWorkspaceSwitchOwners.delete(owner)) return;
         if (
           disposed ||
           terminalReceiptFailure !== null ||
-          ownerGeneration !== quiesceOwnerGeneration ||
+          activeWorkspaceSwitchOwners.size !== 0 ||
           !quiescing
         ) {
           return;
