@@ -108,6 +108,7 @@ const C2ZC_LIVE_RUN_PROJECTION_KEYS = Object.freeze([
   ...C2ZC_CANONICAL_RUN_PROJECTION_KEYS,
   "consumerId",
   "specJson",
+  "terminalReasonCode",
 ]);
 const C2ZC_WAIT_MS = 60_000;
 const C2ZC_FIXTURE_GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/u;
@@ -2762,6 +2763,7 @@ export const C2ZC_AUTHORITY_SNAPSHOT_QUERIES = Object.freeze({
             semantic_epoch_id AS semanticEpochId,
             spec_json AS specJson,
             outcome_summary_json AS outcomeSummaryJson,
+            terminal_reason_code AS terminalReasonCode,
             created_at AS createdAt, started_at AS startedAt,
             completed_at AS completedAt, version
        FROM narrative_extraction_runs
@@ -2994,18 +2996,19 @@ export async function readC2ZcRunLedger(
   existingRuns,
 ) {
   if (Array.isArray(existingRuns)) return existingRuns;
-  return (
-    await queryAuthorityRows(
-      harness,
-      page,
-      C2ZC_AUTHORITY_SNAPSHOT_QUERIES.runs,
-      { projectId },
-    )
-  ).map((run) =>
-    Object.fromEntries(
-      C2ZC_LIVE_RUN_PROJECTION_KEYS.map((key) => [key, run[key]]),
-    ),
-  );
+  return (await queryAuthorityRows(
+    harness,
+    page,
+    C2ZC_AUTHORITY_SNAPSHOT_QUERIES.runs,
+    { projectId },
+  )).map((run) => {
+    const projection = Object.fromEntries(
+      C2ZC_LIVE_RUN_PROJECTION_KEYS
+        .filter((key) => key !== "terminalReasonCode" || key in run)
+        .map((key) => [key, run[key]]),
+    );
+    return projection;
+  });
 }
 
 /** Read live durable values without inventing a second maintenance engine. */

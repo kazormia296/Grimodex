@@ -168,6 +168,7 @@ test("live authority snapshots preserve every cursor reservation and run field",
     semanticEpochId: "e1",
     specJson: JSON.stringify({ kind: "freshness-evaluation" }),
     outcomeSummaryJson: JSON.stringify({ throughSequenceInclusive: 2 }),
+    terminalReasonCode: null,
     createdAt: "2026-08-29T00:00:01.000Z",
     startedAt: "2026-08-29T00:00:01.000Z",
     completedAt: "2026-08-29T00:00:02.000Z",
@@ -179,6 +180,7 @@ test("live authority snapshots preserve every cursor reservation and run field",
       if (request.sql.includes("FROM narrative_extraction_runs")) {
         assert.match(request.sql, /consumer_id AS consumerId/);
         assert.match(request.sql, /spec_json AS specJson/);
+        assert.match(request.sql, /terminal_reason_code AS terminalReasonCode/);
         return { rows: [run] };
       }
       if (request.sql.includes("FROM narrative_change_events")) {
@@ -223,6 +225,7 @@ test("live run projection preserves spec-only idle checkpoint provenance", async
       kind: "incremental-freshness-idle-checkpoint@1",
     }),
     outcomeSummaryJson: JSON.stringify({ throughSequenceInclusive: 2 }),
+    terminalReasonCode: null,
     createdAt: "2026-08-29T00:00:01.000Z",
     startedAt: "2026-08-29T00:00:01.000Z",
     completedAt: "2026-08-29T00:00:02.000Z",
