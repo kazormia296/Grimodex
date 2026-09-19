@@ -1161,12 +1161,14 @@ fn preflight_live_source_lengths(
            FROM narrative_revision_source_basis basis
            LEFT JOIN codex_entries entry
              ON basis.source_kind = 'codex-entry'
-            AND basis.source_key = 'codex:' || entry.id
+            AND substr(basis.source_key, 1, 6) = 'codex:'
+            AND entry.id = substr(basis.source_key, 7)
             AND entry.project_id = ?1
             AND entry.context_mode NOT IN ('hidden', 'suppress')
            LEFT JOIN codex_relations relation
              ON basis.source_kind = 'codex-relation'
-            AND basis.source_key = 'codex-relation:' || relation.id
+            AND substr(basis.source_key, 1, 15) = 'codex-relation:'
+            AND relation.id = substr(basis.source_key, 16)
             AND relation.project_id = ?1
           WHERE basis.revision_id = ?3",
         params![project, format!("project:scope-authority:{project}"), revision_id],

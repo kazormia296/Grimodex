@@ -1270,7 +1270,6 @@ function summarize(reports) {
       report.process?.totalPeakRssBytes ??
       report.process?.hwmRssBytes ??
       report.process?.ruMaxrssBytes ??
-      report.process?.rssBytes ??
       null,
   );
   const medianMetric = (selector) => median(numericValues(reports, selector));
