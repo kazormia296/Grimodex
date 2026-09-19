@@ -1153,6 +1153,34 @@ impl NarrativeMaintenanceAttemptRegistry {
         Ok(())
     }
 
+    /// Validate that a main-owned manual operation is using the exact
+    /// workspace binding that admitted its process-local attempt. This keeps
+    /// the external owner handoff from reusing an attempt after a workspace
+    /// generation change without creating a second authority.
+    pub fn ensure_open_binding(
+        &self,
+        attempt_id: &str,
+        binding: &MaintenanceWorkspaceBinding,
+    ) -> anyhow::Result<()> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .get(attempt_id)
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_ATTEMPT_UNKNOWN: {attempt_id}"))?;
+        anyhow::ensure!(
+            entry.authority_id == binding.authority_id
+                && entry.generation == binding.generation,
+            "NEX_MAINTENANCE_ATTEMPT_BINDING_MISMATCH: manual attempt is bound to another workspace"
+        );
+        anyhow::ensure!(
+            entry.terminal.is_none(),
+            "NEX_MAINTENANCE_ATTEMPT_TERMINAL: manual attempt has already settled"
+        );
+        Ok(())
+    }
+
     /// Return terminal attempts whose cleanup failed for one exact old
     /// workspace binding. These receipts are retained for observation, but
     /// their recovery-gate markers may be retired as part of discarding that

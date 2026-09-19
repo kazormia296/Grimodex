@@ -1463,7 +1463,7 @@ function requireVerifyNarrativeDependencyGraphPayload(
 ): CommandArgs {
   const command = "verify_narrative_dependency_graph";
   const payload = requireRecord(args, "payload", command);
-  const allowedKeys = new Set(["projectId"]);
+  const allowedKeys = new Set(["projectId", "attemptId"]);
   for (const key of Object.keys(payload)) {
     if (!allowedKeys.has(key)) {
       throw new Error(
@@ -1472,6 +1472,9 @@ function requireVerifyNarrativeDependencyGraphPayload(
     }
   }
   requireNonEmptyString(payload, "projectId", command);
+  if (payload.attemptId !== undefined) {
+    requireNonEmptyString(payload, "attemptId", command);
+  }
   return payload;
 }
 
@@ -1480,7 +1483,7 @@ function requireRebuildNarrativeDerivedStatePayload(
 ): CommandArgs {
   const command = "rebuild_narrative_derived_state";
   const payload = requireRecord(args, "payload", command);
-  const allowedKeys = new Set(["projectId"]);
+  const allowedKeys = new Set(["projectId", "attemptId"]);
   for (const key of Object.keys(payload)) {
     if (!allowedKeys.has(key)) {
       throw new Error(
@@ -1489,6 +1492,9 @@ function requireRebuildNarrativeDerivedStatePayload(
     }
   }
   requireNonEmptyString(payload, "projectId", command);
+  if (payload.attemptId !== undefined) {
+    requireNonEmptyString(payload, "attemptId", command);
+  }
   return payload;
 }
 

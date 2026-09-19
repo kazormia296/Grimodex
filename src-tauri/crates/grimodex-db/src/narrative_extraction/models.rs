@@ -690,12 +690,20 @@ pub struct NarrativeMaintenanceInboxListPayload {
 #[serde(rename_all = "camelCase")]
 pub struct VerifyNarrativeDependencyGraphPayload {
     pub project_id: String,
+    /// Main-issued process-local owner for manual Verify. Renderer callers
+    /// never choose this identity; the Electron main scheduler adds it after
+    /// the request has passed its authority checks.
+    #[serde(default)]
+    pub attempt_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RebuildNarrativeDerivedStatePayload {
     pub project_id: String,
+    /// Main-issued process-local owner for manual Rebuild, see Verify above.
+    #[serde(default)]
+    pub attempt_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

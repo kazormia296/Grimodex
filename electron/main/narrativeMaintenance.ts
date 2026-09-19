@@ -51,7 +51,14 @@ export interface NarrativeMaintenanceWorkspaceBinding {
  * regardless of completion order. Releasing the same lease is idempotent.
  */
 export interface NarrativeMaintenanceQuiesceLease {
-  resume(): void;
+  /**
+   * Resume admission after the workspace command has completed. A failed
+   * Native cleanup receipt is terminal evidence, but it only blocks normal
+   * maintenance until an explicit workspace swap has successfully discarded
+   * the old connection. Callers that did not complete the swap must pass
+   * `false` (or omit the argument for the historical successful path).
+   */
+  resume(workspaceSwitchSucceeded?: boolean): void;
 }
 
 interface PendingNarrativeMaintenanceWork extends NarrativeMaintenanceWork {
@@ -1293,16 +1300,16 @@ export function createNarrativeMaintenanceScheduler(
     activeAttemptController.releaseOwner(attemptId);
   };
 
-  const assertReusableTerminalReceipt = (
+  const terminalReceiptReuseError = (
     receipt: Awaited<
       ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>
     >,
-  ): void => {
-    if (receipt.cleanup.status !== "clean" || !receipt.connectionReusable) {
-      throw new Error(
-        "NEX_MAINTENANCE_CONNECTION_UNUSABLE: maintenance cleanup did not make the Native connection reusable",
-      );
-    }
+  ): Error | null => {
+    return receipt.cleanup.status !== "clean" || !receipt.connectionReusable
+      ? new Error(
+          "NEX_MAINTENANCE_CONNECTION_UNUSABLE: maintenance cleanup did not make the Native connection reusable",
+        )
+      : null;
   };
 
   const cancelAttemptById = async (
@@ -1338,20 +1345,18 @@ export function createNarrativeMaintenanceScheduler(
       if (nativeRawReceipt !== undefined) {
         const parsedReceipt =
           parseNarrativeMaintenanceTerminalReceipt(nativeRawReceipt);
-        try {
-          assertReusableTerminalReceipt(parsedReceipt);
-        } catch (error) {
-          terminalReceiptFailure =
-            error instanceof Error ? error : new Error(String(error));
-          throw error;
-        }
         nativeReceipt = activeAttemptController.adoptTerminalReceipt(
           attemptId,
           parsedReceipt,
         );
         nativeTerminalReceiptAttemptIds.add(attemptId);
         nativeAttemptIds.delete(attemptId);
-        terminalReceiptFailure = null;
+        // A terminal receipt is still authoritative even when cleanup could
+        // not prove connection reuse. Keep the receipt in the controller so
+        // workspace switching can discard the old Native authority, while
+        // retaining a fail-closed marker that prevents ordinary maintenance
+        // from resuming on the quarantined connection.
+        terminalReceiptFailure = terminalReceiptReuseError(parsedReceipt);
       }
       const localReceipt = await localCancellation;
       if (
@@ -1643,7 +1648,6 @@ export function createNarrativeMaintenanceScheduler(
           );
           nativeTerminalReceipt = parsedReceipt;
           nativeReceiptAdopted = true;
-          terminalReceiptFailure = null;
           if (parsedReceipt.state === "interrupted") {
             interruptedCycle =
               interruptedCycle || parsedReceipt.stopReason !== null;
@@ -2152,9 +2156,6 @@ export function createNarrativeMaintenanceScheduler(
     await cancelActiveAttempt("workspace-generation-changed");
     const running = inFlightPromise;
     if (running) await running;
-    if (terminalReceiptFailure) {
-      throw terminalReceiptFailure;
-    }
   };
 
   const quiesceForWorkspaceSwitch = async (): Promise<
@@ -2179,11 +2180,18 @@ export function createNarrativeMaintenanceScheduler(
       throw error;
     }
     return {
-      resume: () => {
+      resume: (workspaceSwitchSucceeded = true) => {
         if (!activeWorkspaceSwitchOwners.delete(owner)) return;
+        if (workspaceSwitchSucceeded && terminalReceiptFailure !== null) {
+          // Native's successful workspace swap has quarantined/discarded the
+          // old connection. The failed receipt remains observable in the
+          // process-local controller, but it no longer blocks admission for
+          // the new workspace generation.
+          terminalReceiptFailure = null;
+        }
         if (
           disposed ||
-          terminalReceiptFailure !== null ||
+          (!workspaceSwitchSucceeded && terminalReceiptFailure !== null) ||
           activeWorkspaceSwitchOwners.size !== 0 ||
           !quiescing
         ) {
@@ -2343,6 +2351,12 @@ export function createNarrativeMaintenanceScheduler(
     async dispose(): Promise<void> {
       if (disposed) return;
       await quiesceForWorkspaceSwitch();
+      // Shutdown has no replacement workspace that can discard a failed
+      // Native connection. Keep the process fail-closed and surface the
+      // unusable terminal receipt to the quit finalizer.
+      if (terminalReceiptFailure !== null) {
+        throw terminalReceiptFailure;
+      }
       disposed = true;
       noteMutation();
       clearTimer();

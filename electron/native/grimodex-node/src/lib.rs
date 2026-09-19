@@ -1500,6 +1500,7 @@ fn run_manual_narrative_maintenance<T, F>(
     state: Arc<AppState>,
     project_id: String,
     run_kind: AutomaticRunKind,
+    external_attempt_id: Option<String>,
     operation: F,
 ) -> anyhow::Result<T>
 where
@@ -1544,18 +1545,32 @@ where
     let binding = state
         .narrative_maintenance_recovery_gate
         .binding_for_authority(&authority_id);
-    let attempt_id = format!("manual-maintenance-{}", Uuid::new_v4());
-    state
-        .narrative_maintenance_recovery_gate
-        .register_attempt(&attempt_id, &binding)?;
-    if let Err(error) = state
-        .narrative_maintenance_attempts
-        .begin(&attempt_id, &binding)
-    {
+    let (attempt_id, owns_registration) = match external_attempt_id {
+        Some(attempt_id) if !attempt_id.trim().is_empty() => (attempt_id, false),
+        Some(_) => anyhow::bail!("NEX_MAINTENANCE_ATTEMPT_ID_INVALID: attemptId is required"),
+        None => (format!("manual-maintenance-{}", Uuid::new_v4()), true),
+    };
+    if owns_registration {
         state
             .narrative_maintenance_recovery_gate
-            .release_attempt(&attempt_id);
-        return Err(error);
+            .register_attempt(&attempt_id, &binding)?;
+        if let Err(error) = state
+            .narrative_maintenance_attempts
+            .begin(&attempt_id, &binding)
+        {
+            state
+                .narrative_maintenance_recovery_gate
+                .release_attempt(&attempt_id);
+            return Err(error);
+        }
+    } else {
+        // The Electron main scheduler has already admitted this exact
+        // attempt into Native. Manual execution only claims its work here;
+        // it must not register a second recovery owner or replace the
+        // binding after a workspace switch has started.
+        state
+            .narrative_maintenance_attempts
+            .ensure_open_binding(&attempt_id, &binding)?;
     }
     let mut attempt_guard = NarrativeMaintenanceAttemptGuard::new(
         Arc::clone(&state),
@@ -9909,6 +9924,7 @@ impl Backend {
                 Arc::clone(&state),
                 project_id.clone(),
                 AutomaticRunKind::Verify,
+                dto.attempt_id.clone(),
                 |db, control, work_key| {
                     narrative_extraction::run_dependency_verify_for_project_with_coordinates_and_control(
                         db,
@@ -9943,6 +9959,7 @@ impl Backend {
                 Arc::clone(&state),
                 dto.project_id.clone(),
                 AutomaticRunKind::RebuildDerived,
+                dto.attempt_id.clone(),
                 |db, control, work_key| {
                     narrative_extraction::rebuild_narrative_derived_state_for_project_with_control(
                         db,

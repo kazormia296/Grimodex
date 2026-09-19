@@ -2065,6 +2065,109 @@ describe("registerIpcRouter workspace-open main trace", () => {
     }
   });
 
+  it("cancels a manual Verify through the scheduler before Native workspace swap", async () => {
+    vi.useFakeTimers();
+    const binding = { authorityId: "authority-manual", generation: 4 };
+    const order: string[] = [];
+    let releaseVerify!: () => void;
+    const verifyFinished = new Promise<void>((resolve) => {
+      releaseVerify = resolve;
+    });
+    const terminalReceipt = (attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: "workspace-generation-changed",
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [],
+        cleanup: { status: "failed", error: "rollback failed" },
+        connectionReusable: false,
+      });
+    let activeAttemptId: string | null = null;
+    const verifyNarrativeDependencyGraph = vi.fn(async (payload: unknown) => {
+      order.push("verify");
+      expect(payload).toMatchObject({
+        projectId: "project-manual",
+        attemptId: expect.stringMatching(/^manual-ipc-/),
+      });
+      await verifyFinished;
+      return JSON.stringify({ runId: "run-manual", reportDigest: "digest" });
+    });
+    const cancelNarrativeMaintenanceAttempt = vi.fn(
+      async (attemptId: string) => {
+        order.push("cancel");
+        activeAttemptId = attemptId;
+        releaseVerify();
+        return terminalReceipt(attemptId);
+      },
+    );
+    const openWorkspace = vi.fn(async () => {
+      order.push("open");
+      return JSON.stringify({ status: "ready" });
+    });
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      beginNarrativeMaintenanceAttempt: vi.fn(async (attemptId: string) => {
+        activeAttemptId = attemptId;
+        return JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: binding.authorityId,
+          generation: binding.generation,
+        });
+      }),
+      cancelNarrativeMaintenanceAttempt,
+      verifyNarrativeDependencyGraph,
+      openWorkspace,
+    };
+    const scheduler = createNarrativeMaintenanceScheduler(backend);
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scheduler,
+    );
+
+    try {
+      const manual = invokeHandler()(
+        { sender: {} },
+        "verify_narrative_dependency_graph",
+        { payload: { projectId: "project-manual", attemptId: "renderer-forged" } },
+      );
+      for (let index = 0; index < 5; index += 1) {
+        await Promise.resolve();
+      }
+      expect(backend.beginNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+      expect(verifyNarrativeDependencyGraph).toHaveBeenCalledOnce();
+
+      const workspaceSwitch = invokeHandler()(
+        { sender: {} },
+        "open_workspace",
+        { path: "/workspace-manual-next" },
+      );
+      await expect(workspaceSwitch).resolves.toMatchObject({ ok: true });
+      await expect(manual).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining("CONNECTION_UNUSABLE"),
+      });
+      expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledWith(
+        activeAttemptId,
+        "workspace-generation-changed",
+      );
+      expect(order).toEqual(["verify", "cancel", "open"]);
+    } finally {
+      await scheduler.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     {
       command: "open_workspace",

@@ -1418,8 +1418,8 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
                 &error,
                 control,
             ) {
-                return Err(error.context(format!(
-                    "NEX_REBUILD_DERIVED_FINALIZE_FAILED: {finalization}"
+                return Err(finalization.context(format!(
+                    "NEX_REBUILD_DERIVED_FINALIZE_FAILED: original failure: {error}"
                 )));
             }
             Err(error)
@@ -3846,6 +3846,21 @@ where
             }
             Err(error)
         }
+        Err(error) if is_controlled_maintenance_termination(&error) => {
+            // Failure recording is itself a controlled graph phase. If the
+            // stop wins while assembling the failure outcome, transfer this
+            // exact Run to its terminal/pending owner before returning. The
+            // caller still receives the original typed control error rather
+            // than a domain failure that merely mentions cancellation.
+            if let Err(transfer) =
+                transfer_controlled_maintenance_run_to_owner(db, run_id, &error, control)
+            {
+                return Err(error.context(format!(
+                    "NEX_MAINTENANCE_FAILURE_RECORDER_RUN_TERMINALIZE_FAILED: {transfer}"
+                )));
+            }
+            Err(error)
+        }
         Err(error) => Err(error),
     }
 }
@@ -4243,8 +4258,8 @@ fn run_dependency_verify_for_project_with_coordinates_controlled(
             if let Err(finalization) =
                 record_verify_failure_controlled(db, project_id, &run_id, &error, control)
             {
-                return Err(error.context(format!(
-                    "NEX_VERIFY_FINALIZE_FAILED: {finalization}"
+                return Err(finalization.context(format!(
+                    "NEX_VERIFY_FINALIZE_FAILED: original failure: {error}"
                 )));
             }
             Err(error)
@@ -5944,6 +5959,148 @@ mod tests {
             assert!(signal.load(Ordering::Acquire));
         }
         assert!(!signal.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn verify_failure_recorder_cancellation_transfers_the_exact_run() -> anyhow::Result<()> {
+        let db = test_db();
+        let run_id = db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-current', 'project-1', 0, 'initial',
+                         '2026-08-23T00:00:00.000Z')",
+                [],
+            )?;
+            let handle = create_maintenance_run_in_tx(
+                conn,
+                "project-1",
+                "dependency-verify",
+                "epoch-current",
+                "dependency-verify:epoch-current",
+                &json!({"verifyContractVersion": VERIFY_CONTRACT_VERSION}),
+                &format!(
+                    "sha256:{}",
+                    digest_plan(&json!({
+                        "verifyContractVersion": VERIFY_CONTRACT_VERSION
+                    }))
+                ),
+                SystemRunWorkKeyReuse::None,
+            )?;
+            Ok(handle.run_id)
+        })?;
+        let stop = || {
+            Err(crate::narrative_extraction::source_revision::validation_terminated(
+                crate::narrative_extraction::source_revision::ValidationTerminationReason::Cancelled,
+                "cancelled while recording Verify failure",
+            ))
+        };
+        let no_defer = |_run_id: &str| Ok::<_, anyhow::Error>(());
+        let no_grant = |_work_key: &str| Ok::<_, anyhow::Error>(());
+        let no_work = |_item: &crate::narrative_extraction::DesiredWork| {
+            Ok::<_, anyhow::Error>(())
+        };
+        let control = MaintenanceCycleControl {
+            should_stop: &stop,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &no_defer,
+            grant_finalize: &no_grant,
+            register_work: &no_work,
+            work_started: &no_work,
+            work_completed: &no_work,
+            work_noop_completed: &no_work,
+            work_deferred: &no_work,
+        };
+
+        let error = record_verify_failure_controlled(
+            &db,
+            "project-1",
+            &run_id,
+            &anyhow::anyhow!("ordinary Verify failure"),
+            &control,
+        )
+        .expect_err("failure recorder cancellation must remain typed");
+        assert!(is_validation_terminated(&error));
+        let status: String = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_ne!(status, "running");
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_failure_recorder_cancellation_transfers_the_exact_run() -> anyhow::Result<()> {
+        let db = test_db();
+        let run_id = db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-current', 'project-1', 0, 'initial',
+                         '2026-08-23T00:00:00.000Z')",
+                [],
+            )?;
+            let handle = create_maintenance_run_in_tx(
+                conn,
+                "project-1",
+                "semantic-index-rebuild",
+                "epoch-current",
+                REBUILD_DERIVED_WORK_KEY,
+                &json!({}),
+                &format!("sha256:{}", digest_plan(&json!({}))),
+                SystemRunWorkKeyReuse::None,
+            )?;
+            Ok(handle.run_id)
+        })?;
+        let stop = || {
+            Err(crate::narrative_extraction::source_revision::validation_terminated(
+                crate::narrative_extraction::source_revision::ValidationTerminationReason::Cancelled,
+                "cancelled while recording Rebuild failure",
+            ))
+        };
+        let no_defer = |_run_id: &str| Ok::<_, anyhow::Error>(());
+        let no_grant = |_work_key: &str| Ok::<_, anyhow::Error>(());
+        let no_work = |_item: &crate::narrative_extraction::DesiredWork| {
+            Ok::<_, anyhow::Error>(())
+        };
+        let control = MaintenanceCycleControl {
+            should_stop: &stop,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &no_defer,
+            grant_finalize: &no_grant,
+            register_work: &no_work,
+            work_started: &no_work,
+            work_completed: &no_work,
+            work_noop_completed: &no_work,
+            work_deferred: &no_work,
+        };
+
+        let error = record_rebuild_failure_controlled(
+            &db,
+            "project-1",
+            &run_id,
+            "epoch-current",
+            &anyhow::anyhow!("ordinary Rebuild failure"),
+            &control,
+        )
+        .expect_err("failure recorder cancellation must remain typed");
+        assert!(is_validation_terminated(&error));
+        let status: String = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_ne!(status, "running");
+        Ok(())
     }
 
     struct StopAfter {

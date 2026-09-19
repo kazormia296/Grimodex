@@ -66,8 +66,14 @@ describe("narrative maintenance scheduler", () => {
     vi.useFakeTimers();
   });
 
-  afterEach(() => {
-    for (const scheduler of schedulers.splice(0)) scheduler.dispose();
+  afterEach(async () => {
+    for (const scheduler of schedulers.splice(0)) {
+      try {
+        await scheduler.dispose();
+      } catch {
+        // A failed cleanup receipt intentionally keeps the scheduler fail-closed.
+      }
+    }
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -2152,6 +2158,56 @@ describe("narrative maintenance scheduler", () => {
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
     expect(scheduler.getQuiescenceState?.().inFlight).toBe(false);
     await expect(scheduler.dispose()).rejects.toThrow(/CONNECTION_UNUSABLE|rollback failed/i);
-    expect(cancel.mock.calls.length).toBeGreaterThanOrEqual(3);
+    // The failed receipt is terminal evidence. Workspace-switch quiescence
+    // may reuse the same receipt, but ordinary maintenance must not retry the
+    // quarantined attempt in a hot loop.
+    expect(cancel.mock.calls.length).toBe(1);
+  });
+
+  it("allows a successful workspace swap to discard a failed cleanup receipt", async () => {
+    const binding = { authorityId: "authority-swap-after-failure", generation: 3 };
+    const begin = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        status: "open",
+        attemptId,
+        authorityId: binding.authorityId,
+        generation: binding.generation,
+      }),
+    );
+    const cancel = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: "workspace-generation-changed",
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [],
+        cleanup: { status: "failed", error: "rollback failed" },
+        connectionReusable: false,
+      }),
+    );
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      beginNarrativeMaintenanceAttempt: begin,
+      cancelNarrativeMaintenanceAttempt: cancel,
+    });
+
+    await scheduler.beginNarrativeMaintenanceAttempt?.("manual-failed", binding);
+    await expect(
+      scheduler.cancelNarrativeMaintenanceAttempt?.(
+        "manual-failed",
+        "workspace-generation-changed",
+      ),
+    ).resolves.toMatchObject({
+      state: "interrupted",
+      connectionReusable: false,
+    });
+
+    const lease = await scheduler.quiesceForWorkspaceSwitch?.();
+    expect(lease).toBeDefined();
+    lease?.resume(true);
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
   });
 });

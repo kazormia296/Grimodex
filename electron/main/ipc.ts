@@ -45,6 +45,7 @@ import {
 } from "./windows.js";
 import {
   claimNarrativeMaintenanceForegroundRelease,
+  normalizeWorkspaceBinding,
   scheduleNarrativeMaintenanceForegroundRelease,
 } from "./narrativeMaintenance.js";
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
@@ -76,6 +77,11 @@ const WORKSPACE_SWITCH_COMMANDS = new Set([
   "open_workspace",
   "restore_backup",
   "restore_recovery_candidate",
+]);
+
+const MANUAL_NARRATIVE_MAINTENANCE_COMMANDS = new Set([
+  "verify_narrative_dependency_graph",
+  "rebuild_narrative_derived_state",
 ]);
 
 // Scan publication is an import-only canonical writer. Keep it out of the
@@ -2052,7 +2058,9 @@ export function registerIpcRouter(
   >,
   narrativeMaintenance?: Pick<
     NarrativeMaintenanceScheduler,
-    "quiesceForWorkspaceSwitch"
+    | "quiesceForWorkspaceSwitch"
+    | "beginNarrativeMaintenanceAttempt"
+    | "cancelNarrativeMaintenanceAttempt"
   >,
 ): void {
   const relatedScenesReconciler = createRelatedScenesReconciler({
@@ -2105,6 +2113,19 @@ export function registerIpcRouter(
           canonicalArgs,
           event.sender,
         );
+        // `attemptId` is a main-issued lifecycle identity. Strip any value
+        // supplied by a renderer before the profile gate and only add the
+        // exact scheduler-owned id below after admission succeeds.
+        const rendererSafeArgs =
+          MANUAL_NARRATIVE_MAINTENANCE_COMMANDS.has(cmd) &&
+          isRecord(boundArgs) &&
+          isRecord(boundArgs.payload)
+            ? (() => {
+                const { attemptId: _rendererAttemptId, ...payload } =
+                  boundArgs.payload;
+                return { ...boundArgs, payload };
+              })()
+            : boundArgs;
         const callerIdentity = profileEgress?.issueCallerIdentity(
           event.sender.id,
         );
@@ -2113,13 +2134,13 @@ export function registerIpcRouter(
         // typed commands. A number of existing Native requests deliberately
         // reject unknown fields, so an enumerable authority sidecar would
         // make otherwise valid UI calls fail their exact-key validation.
-        const dispatchArgs = callerIdentity
-          ? Object.defineProperty({ ...boundArgs }, "callerIdentity", {
+        let dispatchArgs = callerIdentity
+          ? Object.defineProperty({ ...rendererSafeArgs }, "callerIdentity", {
               value: callerIdentity,
               enumerable: false,
               configurable: true,
             })
-          : boundArgs;
+          : rendererSafeArgs;
         try {
           profileEgress?.assertInvoke(cmd, dispatchArgs);
         } catch (error) {
@@ -2141,6 +2162,7 @@ export function registerIpcRouter(
               ),
           });
         let envelope: Envelope;
+        let manualMaintenanceAttemptId: string | null = null;
         try {
           if (WORKSPACE_SWITCH_COMMANDS.has(cmd)) {
             const quiesceResult =
@@ -2152,12 +2174,83 @@ export function registerIpcRouter(
                 ? quiesceResult
                 : undefined;
           }
+          if (
+            MANUAL_NARRATIVE_MAINTENANCE_COMMANDS.has(cmd) &&
+            typeof narrativeMaintenance?.beginNarrativeMaintenanceAttempt ===
+              "function" &&
+            typeof narrativeMaintenance?.cancelNarrativeMaintenanceAttempt ===
+              "function"
+          ) {
+            const binding = normalizeWorkspaceBinding(
+              backend?.getNarrativeMaintenanceWorkspaceBinding?.(),
+            );
+            if (binding !== null) {
+              const attemptId = `manual-ipc-${randomUUID()}`;
+              await narrativeMaintenance.beginNarrativeMaintenanceAttempt(
+                attemptId,
+                binding,
+              );
+              manualMaintenanceAttemptId = attemptId;
+              if (isRecord(dispatchArgs) && isRecord(dispatchArgs.payload)) {
+                // The attempt identity is issued by main after the renderer
+                // request has passed its authority gate. Native binds the
+                // manual operation to this exact process-local attempt.
+                dispatchArgs = {
+                  ...dispatchArgs,
+                  payload: {
+                    ...dispatchArgs.payload,
+                    attemptId,
+                  },
+                };
+              } else {
+                throw new Error(
+                  "NEX_MAINTENANCE_ATTEMPT_PAYLOAD_MISSING: manual maintenance payload is unavailable",
+                );
+              }
+            }
+          }
           envelope =
             licenseValidation && MANUAL_LICENSE_COMMANDS.has(cmd)
               ? await licenseValidation.runManualOperation(dispatch)
               : await dispatch();
         } catch (error) {
           envelope = { ok: false, error: toErrorString(error) };
+        }
+        if (
+          manualMaintenanceAttemptId !== null &&
+          typeof narrativeMaintenance?.cancelNarrativeMaintenanceAttempt ===
+            "function"
+        ) {
+          try {
+            const receipt =
+              await narrativeMaintenance.cancelNarrativeMaintenanceAttempt(
+                manualMaintenanceAttemptId,
+                "closed",
+              );
+            const receiptRecord = isRecord(receipt) ? receipt : null;
+            const cleanup =
+              receiptRecord && isRecord(receiptRecord.cleanup)
+                ? receiptRecord.cleanup
+                : null;
+            const reusable =
+              receiptRecord?.connectionReusable === true &&
+              cleanup?.status === "clean";
+            if (!reusable && envelope.ok) {
+              envelope = {
+                ok: false,
+                error:
+                  "NEX_MAINTENANCE_CONNECTION_UNUSABLE: manual maintenance terminal receipt did not prove Native connection reuse",
+              };
+            }
+          } catch (error) {
+            const cleanupError = toErrorString(error);
+            envelope = envelope.ok
+              ? { ok: false, error: cleanupError }
+              : {
+                  ok: false,
+                  error: `${envelope.error}; ${cleanupError}`,
+                };
+          }
         }
         if (envelope.ok) {
           const resultKind = nativeDbResultKind(cmd, envelope.value);
@@ -2272,7 +2365,7 @@ export function registerIpcRouter(
             // and remains closed after cleanup failure.  A successful Native
             // swap needs the same resume as a failed operation; otherwise the
             // scheduler remains quiesced after the new binding is live.
-            await workspaceSwitchLease.resume();
+            await workspaceSwitchLease.resume(envelope.ok);
           } catch (resumeError) {
             console.warn(
               "[narrative-maintenance] failed to resume retained backlog after workspace switch:",
