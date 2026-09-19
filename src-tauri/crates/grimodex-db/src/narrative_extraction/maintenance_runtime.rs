@@ -41,6 +41,7 @@ use super::maintenance_skip_evidence::{
     evaluate_completed_run_skip, persist_completed_run_skip_evidence_in_tx,
     CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
 };
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 use super::restore_rebuild::{
     is_canonical_graph_state_digest, validate_canonical_verify_outcome_digest,
     validate_graph_state_digest, validate_graph_state_digest_with_control,
@@ -48,13 +49,12 @@ use super::restore_rebuild::{
     validate_verify_check_coverage, DependencyGraphVerifyReport, RebuildDerivedStateSummary,
     REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
-use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 use super::source_revision::is_validation_terminated;
 use super::task_leases::with_immediate_transaction;
-use crate::Database;
 use crate::narrative_maintenance_connection::{
     with_narrative_maintenance_graph_control, NarrativeMaintenanceGraphControlConfig,
 };
+use crate::Database;
 
 /// Exact renderer-owned marker used to hide an in-progress Scan publication.
 /// C2-ZC inventory selectors reuse this predicate so maintenance and cutover
@@ -4538,99 +4538,124 @@ fn terminalize_interrupted_runs_impl(
         anyhow::ensure!(unique_ids.insert(run_id), "duplicate run ID '{run_id}'");
     }
 
-    db.with_conn(|conn| {
-        with_immediate_transaction(conn, |conn| {
-            let mut active = Vec::with_capacity(run_ids.len());
-            for run_id in run_ids {
-                let row: Option<(String, String, String, Option<String>)> = conn
-                    .query_row(
-                        "SELECT project_id, run_kind, work_key, semantic_epoch_id
-                           FROM narrative_extraction_runs WHERE id = ?1",
+    let stop = Arc::new(AtomicBool::new(false));
+    let scoped = with_narrative_maintenance_graph_control(
+        db,
+        Duration::ZERO,
+        1_000,
+        stop,
+        NarrativeMaintenanceGraphControlConfig::default(),
+        |conn, graph| {
+            graph.check(GraphWorkStage::Restore)?;
+            with_immediate_transaction(conn, |conn| {
+                // Recovery is itself a maintenance owner. Use the same
+                // no-wait connection scope as active work so SQLite's
+                // default busy timeout cannot make startup wait behind a
+                // foreground writer while terminalizing stale Runs.
+                graph.check(GraphWorkStage::Restore)?;
+                let mut active = Vec::with_capacity(run_ids.len());
+                for run_id in run_ids {
+                    let row: Option<(String, String, String, Option<String>)> = conn
+                        .query_row(
+                            "SELECT project_id, run_kind, work_key, semantic_epoch_id
+                               FROM narrative_extraction_runs WHERE id = ?1",
+                            params![run_id],
+                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                        )
+                        .optional()?;
+                    let Some((run_project_id, run_kind, run_work_key, row_epoch_id)) = row else {
+                        anyhow::bail!("run does not belong to maintenance work: '{run_id}'");
+                    };
+                    anyhow::ensure!(
+                        run_project_id == project_id
+                            && run_kind == work.run_kind.as_str()
+                            && run_work_key == work.work_key,
+                        "run does not belong to maintenance work: '{run_id}'"
+                    );
+                    if let Some(row_epochs) = expected_row_epochs {
+                        let expected_row_epoch = row_epochs.get(run_id).ok_or_else(|| {
+                            anyhow::anyhow!("run epoch provenance is missing: '{run_id}'")
+                        })?;
+                        anyhow::ensure!(
+                            &row_epoch_id == expected_row_epoch,
+                            "run semantic epoch does not match recovery provenance: '{run_id}'"
+                        );
+                        if let Some(expected_epoch_id) = expected_semantic_epoch_id {
+                            anyhow::ensure!(
+                                row_epoch_id.as_deref() != Some(expected_epoch_id),
+                                "run semantic epoch is not stale: '{run_id}'"
+                            );
+                        }
+                    } else if let Some(expected_epoch_id) = expected_semantic_epoch_id {
+                        anyhow::ensure!(
+                            row_epoch_id.as_deref() == Some(expected_epoch_id),
+                            "run semantic epoch does not match maintenance work: '{run_id}'"
+                        );
+                    }
+                    let status: String = conn.query_row(
+                        "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
                         params![run_id],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                    )
-                    .optional()?;
-                let Some((run_project_id, run_kind, run_work_key, row_epoch_id)) = row else {
-                    anyhow::bail!("run does not belong to maintenance work: '{run_id}'");
-                };
-                anyhow::ensure!(
-                    run_project_id == project_id
-                        && run_kind == work.run_kind.as_str()
-                        && run_work_key == work.work_key,
-                    "run does not belong to maintenance work: '{run_id}'"
-                );
-                if let Some(row_epochs) = expected_row_epochs {
-                    let expected_row_epoch = row_epochs.get(run_id).ok_or_else(|| {
-                        anyhow::anyhow!("run epoch provenance is missing: '{run_id}'")
-                    })?;
+                        |row| row.get(0),
+                    )?;
+                    let status = NarrativeRunStatus::try_from(status.as_str())?;
                     anyhow::ensure!(
-                        &row_epoch_id == expected_row_epoch,
-                        "run semantic epoch does not match recovery provenance: '{run_id}'"
+                        matches!(
+                            status,
+                            NarrativeRunStatus::Pending | NarrativeRunStatus::Running
+                        ),
+                        "run '{run_id}' is not active and cannot be recovered"
                     );
-                    if let Some(expected_epoch_id) = expected_semantic_epoch_id {
-                        anyhow::ensure!(
-                            row_epoch_id.as_deref() != Some(expected_epoch_id),
-                            "run semantic epoch is not stale: '{run_id}'"
-                        );
-                    }
-                } else if let Some(expected_epoch_id) = expected_semantic_epoch_id {
-                    anyhow::ensure!(
-                        row_epoch_id.as_deref() == Some(expected_epoch_id),
-                        "run semantic epoch does not match maintenance work: '{run_id}'"
-                    );
+                    active.push((run_id.clone(), status));
                 }
-                let status: String = conn.query_row(
-                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
-                    params![run_id],
-                    |row| row.get(0),
-                )?;
-                let status = NarrativeRunStatus::try_from(status.as_str())?;
-                anyhow::ensure!(
-                    matches!(
-                        status,
-                        NarrativeRunStatus::Pending | NarrativeRunStatus::Running
-                    ),
-                    "run '{run_id}' is not active and cannot be recovered"
-                );
-                active.push((run_id.clone(), status));
-            }
 
-            let mut result = InterruptedRunTerminalization {
-                failed_run_ids: Vec::new(),
-                cancelled_pending_run_ids: Vec::new(),
-            };
-            for (run_id, status) in active {
-                match status {
-                    NarrativeRunStatus::Running => {
-                        result.failed_run_ids.push(run_id.clone());
-                        let handle = load_or_synthesize_recovery_lifecycle_in_tx(conn, &run_id)?;
-                        fail_maintenance_run_in_tx(
-                            conn,
-                            &handle,
-                            MaintenanceFailureKind::Interrupted,
-                            "NEX_MAINTENANCE_INTERRUPTED: process interruption",
-                        )?;
+                let mut result = InterruptedRunTerminalization {
+                    failed_run_ids: Vec::new(),
+                    cancelled_pending_run_ids: Vec::new(),
+                };
+                for (run_id, status) in active {
+                    match status {
+                        NarrativeRunStatus::Running => {
+                            result.failed_run_ids.push(run_id.clone());
+                            let handle = load_or_synthesize_recovery_lifecycle_in_tx(conn, &run_id)?;
+                            fail_maintenance_run_in_tx(
+                                conn,
+                                &handle,
+                                MaintenanceFailureKind::Interrupted,
+                                "NEX_MAINTENANCE_INTERRUPTED: process interruption",
+                            )?;
+                        }
+                        NarrativeRunStatus::Pending => {
+                            ensure_recovery_lifecycle_is_empty_in_tx(conn, &run_id)?;
+                            result.cancelled_pending_run_ids.push(run_id.clone());
+                            transition_run_status_in_tx(
+                                conn,
+                                &run_id,
+                                NarrativeRunStatus::Cancelled,
+                            )?;
+                            anyhow::ensure!(
+                                conn.execute(
+                                    "UPDATE narrative_extraction_runs
+                                        SET terminal_reason_code = 'NEX_MAINTENANCE_INTERRUPTED'
+                                      WHERE id = ?1 AND status = 'cancelled'",
+                                    params![run_id],
+                                )? == 1,
+                                "run terminalization lost its row: '{run_id}'"
+                            );
+                        }
+                        _ => unreachable!("active status was validated above"),
                     }
-                    NarrativeRunStatus::Pending => {
-                        ensure_recovery_lifecycle_is_empty_in_tx(conn, &run_id)?;
-                        result.cancelled_pending_run_ids.push(run_id.clone());
-                        transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Cancelled)?;
-                        anyhow::ensure!(
-                            conn.execute(
-                                "UPDATE narrative_extraction_runs
-                                    SET terminal_reason_code = 'NEX_MAINTENANCE_INTERRUPTED'
-                                  WHERE id = ?1 AND status = 'cancelled'",
-                                params![run_id],
-                            )? == 1,
-                            "run terminalization lost its row: '{run_id}'"
-                        );
-                    }
-                    _ => unreachable!("active status was validated above"),
                 }
-            }
-            Ok(result)
-        })
-    })
+                graph.check(GraphWorkStage::ResultAssembly)?;
+                Ok(result)
+            })
+        },
+    )?;
+    let Some(scoped) = scoped else {
+        anyhow::bail!(
+            "NEX_MAINTENANCE_CONNECTION_PREEMPTED: recovery could not acquire the maintenance connection without waiting"
+        );
+    };
+    scoped.into_result()
 }
 
 fn load_or_synthesize_recovery_lifecycle_in_tx(

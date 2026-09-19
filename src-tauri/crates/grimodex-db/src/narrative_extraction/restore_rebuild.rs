@@ -1394,11 +1394,21 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
 
     match execution {
         Ok(outcome) => Ok(outcome),
-        Err(error)
-            if is_validation_terminated(&error)
-                || is_transient_connection_preemption(&error)
-                || is_maintenance_connection_deferred_or_cleanup(&error)
-                || is_maintenance_attempt_stop(&error) => Err(error),
+        Err(error) if is_controlled_maintenance_termination(&error) => {
+            // The Run is created before the first graph phase. A stop after
+            // that commit must therefore close this exact Run (or hand it to
+            // the same process-local retry owner when the connection is
+            // busy) before returning the typed stop. Otherwise Rebuild leaves
+            // a durable `running` row that startup recovery must guess at.
+            if let Err(transfer) =
+                transfer_controlled_maintenance_run_to_owner(db, &run_id, &error, control)
+            {
+                return Err(error.context(format!(
+                    "NEX_REBUILD_DERIVED_INTERRUPTED_RUN_TERMINALIZE_FAILED: {transfer}"
+                )));
+            }
+            Err(error)
+        }
         Err(error) => {
             if let Err(finalization) = record_rebuild_failure_controlled(
                 db,
@@ -4215,11 +4225,20 @@ fn run_dependency_verify_for_project_with_coordinates_controlled(
 
     match execution {
         Ok(outcome) => Ok(outcome),
-        Err(error)
-            if is_validation_terminated(&error)
-                || is_transient_connection_preemption(&error)
-                || is_maintenance_connection_deferred_or_cleanup(&error)
-                || is_maintenance_attempt_stop(&error) => Err(error),
+        Err(error) if is_controlled_maintenance_termination(&error) => {
+            // Verify owns an exact durable Run from its creation commit. Keep
+            // the typed stop as the public result, but close that Run (or
+            // hand it to the same process-local retry owner when the
+            // connection is busy) before returning it.
+            if let Err(transfer) =
+                transfer_controlled_maintenance_run_to_owner(db, &run_id, &error, control)
+            {
+                return Err(error.context(format!(
+                    "NEX_VERIFY_INTERRUPTED_RUN_TERMINALIZE_FAILED: {transfer}"
+                )));
+            }
+            Err(error)
+        }
         Err(error) => {
             if let Err(finalization) =
                 record_verify_failure_controlled(db, project_id, &run_id, &error, control)

@@ -659,6 +659,100 @@ impl NarrativeMaintenanceRecoveryGate {
         state.active_attempts.remove(attempt_id);
     }
 
+    /// Close admission while retiring only attempts whose terminal receipt
+    /// already proved the old connection unusable. The caller supplies those
+    /// exact IDs from [`NarrativeMaintenanceAttemptRegistry`]; a live or
+    /// clean attempt still blocks the swap. Retiring the gate marker does not
+    /// delete the terminal receipt, so a waiter can continue to observe the
+    /// cleanup failure after the old authority has been discarded.
+    pub fn close_for_workspace_swap_with_quarantined_attempts(
+        &self,
+        binding: &MaintenanceWorkspaceBinding,
+        quarantined_attempt_ids: &[String],
+    ) -> anyhow::Result<()> {
+        let quarantined = quarantined_attempt_ids
+            .iter()
+            .cloned()
+            .map(|attempt_id| (attempt_id, binding.clone()))
+            .collect::<Vec<_>>();
+        self.close_for_workspace_swap_with_quarantined_attempt_bindings(&quarantined)
+    }
+
+    /// Variant used when the old authority has already been detached and no
+    /// current binding can be resolved. Every retired marker still carries
+    /// its exact receipt binding; a live or clean marker remains a hard stop.
+    pub fn close_for_workspace_swap_with_quarantined_attempt_bindings(
+        &self,
+        quarantined_attempts: &[(String, MaintenanceWorkspaceBinding)],
+    ) -> anyhow::Result<()> {
+        for (_, binding) in quarantined_attempts {
+            binding.validate()?;
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        anyhow::ensure!(
+            !state.maintenance_admission_closed,
+            "NEX_MAINTENANCE_ADMISSION_CLOSED: workspace swap admission is already closed"
+        );
+        Self::retire_quarantined_attempts_locked(&mut state, quarantined_attempts)?;
+        state.maintenance_admission_closed = true;
+        Ok(())
+    }
+
+    /// Retire failed terminal markers while admission is already closed by a
+    /// prior swap owner. This is deliberately separate from opening/closing
+    /// admission so a recovery-only reopen can finish after the old authority
+    /// disappeared without allowing a new attempt to enter.
+    pub fn retire_quarantined_attempt_bindings(
+        &self,
+        quarantined_attempts: &[(String, MaintenanceWorkspaceBinding)],
+    ) -> anyhow::Result<()> {
+        for (_, binding) in quarantined_attempts {
+            binding.validate()?;
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::retire_quarantined_attempts_locked(&mut state, quarantined_attempts)
+    }
+
+    fn retire_quarantined_attempts_locked(
+        state: &mut NarrativeMaintenanceRecoveryState,
+        quarantined_attempts: &[(String, MaintenanceWorkspaceBinding)],
+    ) -> anyhow::Result<()> {
+        for (attempt_id, binding) in quarantined_attempts {
+            if let Some(active_binding) = state.active_attempts.get(attempt_id) {
+                anyhow::ensure!(
+                    active_binding == binding,
+                    "NEX_MAINTENANCE_ATTEMPT_BINDING_MISMATCH: quarantined attempt belongs to another workspace"
+                );
+            }
+        }
+        let is_quarantined = |attempt_id: &str, binding: &MaintenanceWorkspaceBinding| {
+            quarantined_attempts
+                .iter()
+                .any(|(candidate, candidate_binding)| {
+                    candidate == attempt_id && candidate_binding == binding
+                })
+        };
+        if state
+            .active_attempts
+            .iter()
+            .any(|(attempt_id, binding)| !is_quarantined(attempt_id, binding))
+        {
+            anyhow::bail!(
+                "NEX_MAINTENANCE_ATTEMPT_ACTIVE: workspace swap requires a terminal maintenance receipt"
+            );
+        }
+        for (attempt_id, _) in quarantined_attempts {
+            state.active_attempts.remove(attempt_id);
+        }
+        Ok(())
+    }
+
     /// Fail closed before shared workspace open/restore is allowed to swap
     /// its authority. Main quiescence is the normal owner; this native check
     /// closes the final direct-native old-generation race.
@@ -1057,6 +1151,50 @@ impl NarrativeMaintenanceAttemptRegistry {
             },
         );
         Ok(())
+    }
+
+    /// Return terminal attempts whose cleanup failed for one exact old
+    /// workspace binding. These receipts are retained for observation, but
+    /// their recovery-gate markers may be retired as part of discarding that
+    /// old authority; the connection itself remains quarantined.
+    pub fn failed_cleanup_attempt_ids_for_binding(
+        &self,
+        binding: &MaintenanceWorkspaceBinding,
+    ) -> Vec<String> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state
+            .iter()
+            .filter_map(|(attempt_id, entry)| {
+                let receipt = entry.terminal.as_ref()?;
+                let matches_binding = receipt.workspace_binding == *binding;
+                let cleanup_failed =
+                    receipt.cleanup.status != "clean" || !receipt.connection_reusable;
+                (matches_binding && cleanup_failed).then_some(attempt_id.clone())
+            })
+            .collect()
+    }
+
+    /// Return failed terminal receipts with their exact old-workspace
+    /// bindings. This is used only when the old authority is already absent;
+    /// the receipt remains observable while its gate marker is retired for
+    /// the replacement workspace.
+    pub fn failed_cleanup_attempts(&self) -> Vec<(String, MaintenanceWorkspaceBinding)> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state
+            .iter()
+            .filter_map(|(attempt_id, entry)| {
+                let receipt = entry.terminal.as_ref()?;
+                let cleanup_failed =
+                    receipt.cleanup.status != "clean" || !receipt.connection_reusable;
+                cleanup_failed.then(|| (attempt_id.clone(), receipt.workspace_binding.clone()))
+            })
+            .collect()
     }
 
     pub fn start(
@@ -3056,6 +3194,89 @@ mod tests {
         assert_eq!(receipt.cleanup.status, "failed");
         assert!(!receipt.connection_reusable);
         assert_eq!(receipt.workspace_binding, binding);
+    }
+
+    #[test]
+    fn failed_cleanup_receipt_can_be_retired_only_with_the_old_authority_swap() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let gate = NarrativeMaintenanceRecoveryGate::default();
+        let binding = gate.binding_for_authority("authority-quarantined");
+        gate.register_attempt("attempt-quarantined", &binding)
+            .expect("register failed-cleanup attempt");
+        registry
+            .begin("attempt-quarantined", &binding)
+            .expect("begin failed-cleanup attempt");
+        registry
+            .start("attempt-quarantined", ["work".to_string()])
+            .expect("start failed-cleanup attempt");
+        registry
+            .set_cleanup_outcome(
+                "attempt-quarantined",
+                NarrativeMaintenanceCleanupOutcome {
+                    status: "failed".to_string(),
+                    error: Some("rollback failed".to_string()),
+                },
+                false,
+            )
+            .expect("record failed cleanup");
+        registry
+            .settle("attempt-quarantined", false, None)
+            .expect("settle failed-cleanup attempt");
+
+        let quarantined = registry.failed_cleanup_attempt_ids_for_binding(&binding);
+        assert_eq!(quarantined, vec!["attempt-quarantined"]);
+        gate.close_for_workspace_swap_with_quarantined_attempts(&binding, &quarantined)
+            .expect("old authority swap retires quarantined marker");
+        gate.mark_workspace_swapped();
+        gate.reopen_admission(None)
+            .expect("new authority can reopen admission");
+        assert!(registry
+            .failed_cleanup_attempt_ids_for_binding(&binding)
+            .contains(&"attempt-quarantined".to_string()));
+    }
+
+    #[test]
+    fn failed_cleanup_receipt_can_be_retired_after_old_authority_is_detached() {
+        let registry = NarrativeMaintenanceAttemptRegistry::default();
+        let gate = NarrativeMaintenanceRecoveryGate::default();
+        let binding = gate.binding_for_authority("authority-detached");
+        gate.register_attempt("attempt-detached", &binding)
+            .expect("register failed-cleanup attempt");
+        registry
+            .begin("attempt-detached", &binding)
+            .expect("begin failed-cleanup attempt");
+        registry
+            .start("attempt-detached", ["work".to_string()])
+            .expect("start failed-cleanup attempt");
+        registry
+            .set_cleanup_outcome(
+                "attempt-detached",
+                NarrativeMaintenanceCleanupOutcome {
+                    status: "failed".to_string(),
+                    error: Some("busy timeout restore failed".to_string()),
+                },
+                false,
+            )
+            .expect("record failed cleanup");
+        registry
+            .settle("attempt-detached", false, None)
+            .expect("settle failed-cleanup attempt");
+
+        // Simulate the old authority being detached before the next open
+        // reaches its maintenance pre-swap hook. The process-local receipt
+        // still carries the only safe binding for retiring its gate marker.
+        gate.mark_workspace_swapped();
+        let quarantined = registry.failed_cleanup_attempts();
+        assert_eq!(quarantined.len(), 1);
+        gate.close_for_workspace_swap_with_quarantined_attempt_bindings(&quarantined)
+            .expect("detached old authority may retire only failed cleanup");
+        gate.mark_workspace_swapped();
+        gate.reopen_admission(None)
+            .expect("replacement authority can reopen admission");
+        assert!(registry
+            .failed_cleanup_attempts()
+            .iter()
+            .any(|(attempt_id, _)| attempt_id == "attempt-detached"));
     }
 
     #[test]

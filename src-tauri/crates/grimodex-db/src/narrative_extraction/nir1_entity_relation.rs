@@ -6535,6 +6535,17 @@ mod tests {
         // has to advance past them and discover the qualified revision.
         db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
+            let valid_proposal_id = created["proposalId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("valid Graph proposal id missing"))?;
+            let valid_revision_id = created["revisionId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("valid Graph revision id missing"))?;
+            let valid_proposal_set_id: String = tx.query_row(
+                "SELECT proposal_set_id FROM narrative_proposals WHERE id=?1",
+                [valid_proposal_id],
+                |row| row.get(0),
+            )?;
             for index in 0..513 {
                 let set_id = format!("graph-keyset-decoy-set-{index:03}");
                 let proposal_id = format!("graph-keyset-decoy-proposal-{index:03}");
@@ -6582,6 +6593,22 @@ mod tests {
                     SET payload_json=?1
                   WHERE id='000-graph-keyset-decoy-revision-001'",
                 [r#"{"bundle":{"entities":["bad"],"relations":[]}}"#],
+            )?;
+            // A second proposal may point at the same exact Revision. The
+            // proposal primary-key cursor must advance past it while the
+            // request-local roster keeps the Revision single-counted.
+            tx.execute(
+                "INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                     current_revision_id, created_at, updated_at)
+                 VALUES ('graph-keyset-duplicate-valid', ?1, 'graph-keyset-duplicate-valid', ?2,
+                         'approved', '{}', ?3,
+                         '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')",
+                params![
+                    valid_proposal_set_id,
+                    NIR1_ENTITY_RELATION_PROPOSAL_KIND,
+                    valid_revision_id,
+                ],
             )?;
             tx.commit()?;
             Ok::<_, anyhow::Error>(())
@@ -9331,7 +9358,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_index_skips_oversized_revision_before_parse_and_reuses_connection() -> anyhow::Result<()>
+    fn graph_index_rejects_oversized_revision_before_parse_and_reuses_connection() -> anyhow::Result<()>
     {
         let (db, runtime, created) = published_graph_fixture()?;
         let revision_id = created["revisionId"]
@@ -9359,13 +9386,30 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })?;
 
-        let _snapshot = db.with_read_transaction(|conn| {
+        let prepare_error = match db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
-        })?;
-        let source = db.with_read_transaction(|conn| {
+        }) {
+            Ok(_) => anyhow::bail!("an oversized persisted component must abort Graph preparation"),
+            Err(error) => error,
+        };
+        assert!(
+            prepare_error
+                .to_string()
+                .contains("NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT"),
+            "persisted-size overflow must remain distinct from ordinary ineligibility: {prepare_error}"
+        );
+        let source_error = match db.with_read_transaction(|conn| {
             nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
-        })?;
-        assert!(source.roster.is_empty());
+        }) {
+            Ok(_) => anyhow::bail!("an oversized persisted component must abort source reading"),
+            Err(error) => error,
+        };
+        assert!(
+            source_error
+                .to_string()
+                .contains("NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT"),
+            "source reading must not publish a partial roster: {source_error}"
+        );
         let generation: i64 = db.with_conn(|conn| {
             conn.query_row(
                 "SELECT generation FROM narrative_semantic_index_metadata

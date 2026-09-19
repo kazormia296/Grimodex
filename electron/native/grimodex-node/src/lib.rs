@@ -74,6 +74,7 @@ use grimodex_db::narrative_extraction::{
     LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
     ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, MaintenanceCycleControl,
     MaintenanceCycleRequest, MaintenanceCycleStatus, MaintenanceWorkspaceBinding,
+    AutomaticRunKind, WorkKey,
     NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
     NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiFault, NarrativeMaintenanceCiTrigger,
     NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
@@ -1120,14 +1121,55 @@ fn close_narrative_maintenance_for_workspace_swap(
         }
         state
             .narrative_maintenance_recovery_gate
+            .retire_quarantined_attempt_bindings(
+                &state
+                    .narrative_maintenance_attempts
+                    .failed_cleanup_attempts(),
+            )
+            .map_err(AppError::Anyhow)?;
+        state
+            .narrative_maintenance_recovery_gate
             .assert_no_active_attempts()
             .map_err(AppError::Anyhow)?;
         return Ok(false);
     }
-    state
-        .narrative_maintenance_recovery_gate
-        .close_for_workspace_swap()
-        .map_err(AppError::Anyhow)?;
+    let active_binding = active_database(&state.ws).ok().map(|authority| {
+        state
+            .narrative_maintenance_recovery_gate
+            .binding_for_authority(&narrative_authority_id(&authority))
+    });
+    if let Some(binding) = active_binding.as_ref() {
+        // A terminal receipt with failed cleanup quarantines the old
+        // connection. Retire only its process-local gate marker as part of
+        // this exact old-authority swap; the receipt remains in the attempt
+        // registry and the quarantined connection is never reused.
+        let quarantined = state
+            .narrative_maintenance_attempts
+            .failed_cleanup_attempt_ids_for_binding(binding);
+        state
+            .narrative_maintenance_recovery_gate
+            .close_for_workspace_swap_with_quarantined_attempts(binding, &quarantined)
+            .map_err(AppError::Anyhow)?;
+    } else {
+        // A failed cleanup may have detached its old authority before the
+        // next open reaches this hook. Retire only receipts that already
+        // proved their connections unusable, using each receipt's exact old
+        // binding; a live/clean marker still makes the swap fail closed.
+        let quarantined = state
+            .narrative_maintenance_attempts
+            .failed_cleanup_attempts();
+        if quarantined.is_empty() {
+            state
+                .narrative_maintenance_recovery_gate
+                .close_for_workspace_swap()
+                .map_err(AppError::Anyhow)?;
+        } else {
+            state
+                .narrative_maintenance_recovery_gate
+                .close_for_workspace_swap_with_quarantined_attempt_bindings(&quarantined)
+                .map_err(AppError::Anyhow)?;
+        }
+    }
     if let Ok(authority) = active_database(&state.ws) {
         let binding = state
             .narrative_maintenance_recovery_gate
@@ -1442,6 +1484,205 @@ where
         .await
         .map_err(join_err_to_napi)?
         .map_err(app_err_to_napi)
+}
+
+/// Execute a manual Verify/Rebuild through the same process-local maintenance
+/// owner as the scheduler. The public command still returns the adapter's
+/// typed outcome, but it no longer calls a legacy `control=None` path: the
+/// attempt registry, no-wait connection scopes, cancellation callbacks, and
+/// exact finalization grant all remain in force.
+enum ManualNarrativeMaintenanceCompletion<T> {
+    DurableSuccess(T),
+    Noop(T),
+}
+
+fn run_manual_narrative_maintenance<T, F>(
+    state: Arc<AppState>,
+    project_id: String,
+    run_kind: AutomaticRunKind,
+    operation: F,
+) -> anyhow::Result<T>
+where
+    F: for<'a> FnOnce(
+        &Database,
+        &'a MaintenanceCycleControl<'a>,
+        &'a str,
+    ) -> anyhow::Result<ManualNarrativeMaintenanceCompletion<T>>,
+{
+    anyhow::ensure!(
+        matches!(
+            run_kind,
+            AutomaticRunKind::Verify | AutomaticRunKind::RebuildDerived
+        ),
+        "manual narrative maintenance only supports Verify and RebuildDerived"
+    );
+    let authority = active_database(&state.ws)?;
+    let semantic_epoch_id = authority
+        .db()
+        .with_conn(|conn| narrative_extraction::get_current_epoch(conn, &project_id))?
+        .map(|epoch| epoch.id)
+        .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_NO_EPOCH: project has no Semantic Epoch"))?;
+    let raw_work_key = match run_kind {
+        AutomaticRunKind::Verify => format!(
+            "{}{}",
+            narrative_extraction::VERIFY_WORK_KEY_PREFIX,
+            semantic_epoch_id
+        ),
+        AutomaticRunKind::RebuildDerived => {
+            narrative_extraction::REBUILD_DERIVED_WORK_KEY.to_string()
+        }
+        AutomaticRunKind::Backfill => unreachable!("manual Backfill is rejected above"),
+    };
+    let identity = WorkKey::new_for_epoch(
+        project_id.clone(),
+        run_kind,
+        raw_work_key,
+        semantic_epoch_id.clone(),
+    )?;
+    let canonical_work_key = identity.canonical_key();
+    let authority_id = narrative_authority_id(&authority);
+    let binding = state
+        .narrative_maintenance_recovery_gate
+        .binding_for_authority(&authority_id);
+    let attempt_id = format!("manual-maintenance-{}", Uuid::new_v4());
+    state
+        .narrative_maintenance_recovery_gate
+        .register_attempt(&attempt_id, &binding)?;
+    if let Err(error) = state
+        .narrative_maintenance_attempts
+        .begin(&attempt_id, &binding)
+    {
+        state
+            .narrative_maintenance_recovery_gate
+            .release_attempt(&attempt_id);
+        return Err(error);
+    }
+    let mut attempt_guard = NarrativeMaintenanceAttemptGuard::new(
+        Arc::clone(&state),
+        attempt_id.clone(),
+    );
+    attempt_guard.bind_authority(Arc::clone(&authority));
+    if let Err(error) = state
+        .narrative_maintenance_attempts
+        .start(&attempt_id, [canonical_work_key.clone()])
+    {
+        let _ = attempt_guard.finalize_interrupted();
+        return Err(error);
+    }
+    state
+        .narrative_maintenance_attempts
+        .mark_work_started(&attempt_id, &canonical_work_key)?;
+
+    let state_for_control = Arc::clone(&state);
+    let stop_signal = state
+        .narrative_maintenance_attempts
+        .stop_signal(&attempt_id)?;
+    let finalization_granted_signal = state
+        .narrative_maintenance_attempts
+        .finalization_granted_signal(&attempt_id)?;
+    let stop_signal_for_check = Arc::clone(&stop_signal);
+    let should_stop = || -> anyhow::Result<()> {
+        if stop_signal_for_check.load(std::sync::atomic::Ordering::Acquire)
+            || state_for_control
+                .narrative_maintenance_attempts
+                .stop_requested(&attempt_id)?
+        {
+            anyhow::bail!(
+                "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation requested at a Rust work boundary"
+            );
+        }
+        Ok(())
+    };
+    let defer_preempted_run = |run_id: &str| -> anyhow::Result<()> {
+        state_for_control
+            .narrative_maintenance_preempted_runs
+            .defer(run_id, &binding)
+    };
+    let grant_finalize = |work_key: &str| -> anyhow::Result<()> {
+        anyhow::ensure!(
+            work_key == canonical_work_key,
+            "NEX_MAINTENANCE_WORK_KEY_MISMATCH: manual finalization grant is not bound to the exact work"
+        );
+        anyhow::ensure!(
+            state_for_control
+                .narrative_maintenance_attempts
+                .grant_work_finalize(&attempt_id, work_key)?,
+            "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won before work finalization"
+        );
+        Ok(())
+    };
+    let no_work = |_item: &grimodex_db::narrative_extraction::DesiredWork| {
+        Ok::<_, anyhow::Error>(())
+    };
+    let control = MaintenanceCycleControl {
+        should_stop: &should_stop,
+        stop_signal: Some(stop_signal),
+        finalization_granted_signal: Some(finalization_granted_signal),
+        defer_preempted_run: &defer_preempted_run,
+        grant_finalize: &grant_finalize,
+        register_work: &no_work,
+        work_started: &no_work,
+        work_completed: &no_work,
+        work_noop_completed: &no_work,
+        work_deferred: &no_work,
+    };
+
+    let operation_result = operation(authority.db(), &control, &canonical_work_key);
+    match operation_result {
+        Ok(completion) => {
+            let finish = (|| -> anyhow::Result<T> {
+                attempt_guard.mark_cleanup_clean(&state)?;
+                let value = match completion {
+                    ManualNarrativeMaintenanceCompletion::DurableSuccess(value) => {
+                        state
+                            .narrative_maintenance_attempts
+                            .mark_work_succeeded(&attempt_id, &canonical_work_key)?;
+                        value
+                    }
+                    ManualNarrativeMaintenanceCompletion::Noop(value) => {
+                        state
+                            .narrative_maintenance_attempts
+                            .mark_work_completed(&attempt_id, &canonical_work_key)?;
+                        value
+                    }
+                };
+                state
+                    .narrative_maintenance_attempts
+                    .close_work_registration(&attempt_id)?;
+                anyhow::ensure!(
+                    state
+                        .narrative_maintenance_attempts
+                        .arm_finalize_success(&attempt_id)?,
+                    "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won before final attempt publication"
+                );
+                anyhow::ensure!(
+                    attempt_guard.finalize_success()?,
+                    "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancellation won before finalization"
+                );
+                Ok(value)
+            })();
+            if finish.is_err() && !attempt_guard.finalized {
+                let _ = attempt_guard.finalize_interrupted();
+            }
+            finish
+        }
+        Err(error) => {
+            let cleanup = attempt_guard.mark_cleanup_clean(&state);
+            let terminal = attempt_guard.finalize_interrupted();
+            match (cleanup, terminal) {
+                (Ok(()), Ok(())) => Err(error),
+                (Err(cleanup), Ok(())) => Err(error.context(format!(
+                    "NEX_MAINTENANCE_CONNECTION_CLEANUP_FAILED: {cleanup}"
+                ))),
+                (Ok(()), Err(terminal)) => Err(error.context(format!(
+                    "NEX_MAINTENANCE_ATTEMPT_TERMINALIZE_FAILED: {terminal}"
+                ))),
+                (Err(cleanup), Err(terminal)) => Err(error.context(format!(
+                    "NEX_MAINTENANCE_CONNECTION_CLEANUP_FAILED: {cleanup}; terminalize: {terminal}"
+                ))),
+            }
+        }
+    }
 }
 
 const ENTITY_SEED_MAX_SOURCES: u32 = 900;
@@ -9663,10 +9904,21 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let dto: VerifyNarrativeDependencyGraphPayload = from_wire("payload", payload)?;
-            let authority = active_database(&state.ws)?;
-            let outcome = narrative_extraction::run_dependency_verify_for_project(
-                authority.db(),
-                &dto.project_id,
+            let project_id = dto.project_id.clone();
+            let outcome = run_manual_narrative_maintenance(
+                Arc::clone(&state),
+                project_id.clone(),
+                AutomaticRunKind::Verify,
+                |db, control, work_key| {
+                    narrative_extraction::run_dependency_verify_for_project_with_coordinates_and_control(
+                        db,
+                        &project_id,
+                        None,
+                        Some(control),
+                        work_key,
+                    )
+                    .map(ManualNarrativeMaintenanceCompletion::DurableSuccess)
+                },
             )?;
             Ok(serde_json::to_string(&outcome).map_err(anyhow::Error::from)?)
         })
@@ -9687,10 +9939,28 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let dto: RebuildNarrativeDerivedStatePayload = from_wire("payload", payload)?;
-            let authority = active_database(&state.ws)?;
-            let outcome = narrative_extraction::rebuild_narrative_derived_state_for_project(
-                authority.db(),
-                &dto.project_id,
+            let outcome = run_manual_narrative_maintenance(
+                Arc::clone(&state),
+                dto.project_id.clone(),
+                AutomaticRunKind::RebuildDerived,
+                |db, control, work_key| {
+                    narrative_extraction::rebuild_narrative_derived_state_for_project_with_control(
+                        db,
+                        &dto.project_id,
+                        Some(control),
+                        work_key,
+                    )
+                    .map(|outcome| {
+                        if matches!(
+                            &outcome,
+                            RebuildDerivedStateOutcome::AlreadyRunning { .. }
+                        ) {
+                            ManualNarrativeMaintenanceCompletion::Noop(outcome)
+                        } else {
+                            ManualNarrativeMaintenanceCompletion::DurableSuccess(outcome)
+                        }
+                    })
+                },
             )?;
             let wire = match outcome {
                 RebuildDerivedStateOutcome::AlreadyRunning { run_id } => serde_json::json!({

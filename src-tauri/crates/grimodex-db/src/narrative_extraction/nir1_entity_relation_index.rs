@@ -699,14 +699,17 @@ fn read_eligibility_source_bounded(
     }
     let mut roster = Vec::new();
     let mut cursor = String::new();
+    let mut seen_revision_ids = HashSet::new();
     loop {
         check_graph_work(&mut control, GraphWorkStage::Page)?;
         if let Some(admission) = admission {
             admission.ensure_current(conn)?;
         }
         let mut statement = conn.prepare(
-            "SELECT DISTINCT
+            "SELECT
+                    length(CAST(proposal.id AS BLOB)),
                     length(CAST(proposal.current_revision_id AS BLOB)),
+                    proposal.id,
                     proposal.current_revision_id
                FROM narrative_proposal_sets proposal_set
                JOIN narrative_extraction_runs extraction_run
@@ -718,8 +721,8 @@ fn read_eligibility_source_bounded(
                 AND proposal_set.set_kind = ?2
                 AND extraction_run.surface_path_id = ?3
                 AND proposal.current_revision_id IS NOT NULL
-                AND proposal.current_revision_id > ?4
-              ORDER BY proposal.current_revision_id ASC
+                AND proposal.id > ?4
+              ORDER BY proposal.id ASC
               LIMIT ?5",
         )?;
         let mut rows = statement.query(params![
@@ -731,31 +734,42 @@ fn read_eligibility_source_bounded(
         ])?;
         let mut page = Vec::with_capacity(GRAPH_SOURCE_PAGE_SIZE as usize);
         while let Some(row) = rows.next()? {
-            // Check the caller-owned stop boundary and the scalar byte length
-            // before asking rusqlite to allocate the current revision ID.
-            // Dangling pointers are still scanned by keyset order, but an
-            // oversized value cannot become a Rust String merely to discover
-            // that it has no backing Revision row.
+            // Check the caller-owned stop boundary and both scalar byte
+            // lengths before asking rusqlite to allocate either key. The
+            // proposal primary key is the existing indexed keyset cursor;
+            // revision IDs are request-local values and may be repeated by
+            // multiple proposals.
             check_graph_work(&mut control, GraphWorkStage::Row)?;
             if let Some(admission) = admission {
                 admission.ensure_current(conn)?;
             }
-            let revision_id_bytes = usize::try_from(row.get::<_, i64>(0)?)
+            let proposal_id_bytes = usize::try_from(row.get::<_, i64>(0)?)
+                .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
+            ensure!(
+                proposal_id_bytes <= REVISION_INPUT_BYTE_LIMIT,
+                "NIR1_GRAPH_ROSTER_INPUT_LIMIT"
+            );
+            let revision_id_bytes = usize::try_from(row.get::<_, i64>(1)?)
                 .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
             ensure!(
                 revision_id_bytes <= REVISION_INPUT_BYTE_LIMIT,
                 "NIR1_GRAPH_ROSTER_INPUT_LIMIT"
             );
-            page.push(row.get::<_, String>(1)?);
+            page.push((row.get::<_, String>(2)?, row.get::<_, String>(3)?));
         }
         if page.is_empty() {
             break;
         }
-        for revision_id in page {
-            // Advance by every scanned id, including an ineligible one. This
-            // is the keyset boundary that prevents an all-ineligible page
-            // from being mistaken for end-of-input.
-            cursor = revision_id.clone();
+        for (proposal_id, revision_id) in page {
+            // Advance by every scanned proposal, including an ineligible one.
+            // This keyset boundary is the existing primary key, so an
+            // all-ineligible page cannot be mistaken for end-of-input. A
+            // revision can be pointed to by multiple proposals; validate it
+            // once per request-local source build.
+            cursor = proposal_id;
+            if !seen_revision_ids.insert(revision_id.clone()) {
+                continue;
+            }
             if let Some(admission) = admission {
                 admission.ensure_current(conn)?;
             }
@@ -867,10 +881,11 @@ fn read_revision_input_stats(
     // addition to that bundle, so payload and envelope may legitimately sum
     // above 2 MiB even when the bundle remains within its contract.  Guard
     // each stored component independently before the A2 reader allocates both
-    // strings; never turn serialization overhead into a false ineligible
-    // Revision by applying the semantic limit to their sum.
+    // strings. This is an operational resource failure, not an ordinary
+    // ineligible Revision: abort the source build so a partial roster can
+    // never be published as complete.
     if !persisted_revision_components_within_limit(payload_bytes, envelope_bytes) {
-        return Ok(None);
+        anyhow::bail!("NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT");
     }
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
