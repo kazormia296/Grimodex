@@ -29,6 +29,7 @@ const TERMINATION_TIMEOUT: u8 = 2;
 const TERMINATION_CLOSED: u8 = 3;
 const TERMINATION_WORKSPACE_GENERATION: u8 = 4;
 const TERMINATION_FOREGROUND: u8 = 5;
+const TERMINATION_CONTEXT_UNAVAILABLE: u8 = 6;
 
 #[derive(Clone, Debug)]
 struct TerminationLatch(Arc<AtomicU8>);
@@ -42,6 +43,7 @@ impl Default for TerminationLatch {
 impl TerminationLatch {
     fn set(&self, reason: ValidationTerminationReason) {
         let code = match reason {
+            ValidationTerminationReason::ContextUnavailable => TERMINATION_CONTEXT_UNAVAILABLE,
             ValidationTerminationReason::Cancelled => TERMINATION_CANCELLED,
             ValidationTerminationReason::TimedOut => TERMINATION_TIMEOUT,
             ValidationTerminationReason::Closed => TERMINATION_CLOSED,
@@ -63,6 +65,7 @@ impl TerminationLatch {
 
     fn get(&self) -> Option<ValidationTerminationReason> {
         Some(match self.0.load(Ordering::Acquire) {
+            TERMINATION_CONTEXT_UNAVAILABLE => ValidationTerminationReason::ContextUnavailable,
             TERMINATION_CANCELLED => ValidationTerminationReason::Cancelled,
             TERMINATION_TIMEOUT => ValidationTerminationReason::TimedOut,
             TERMINATION_CLOSED => ValidationTerminationReason::Closed,

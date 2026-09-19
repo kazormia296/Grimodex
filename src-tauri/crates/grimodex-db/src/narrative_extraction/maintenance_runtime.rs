@@ -1158,6 +1158,11 @@ pub struct MaintenanceCycleRequest {
     pub work: Vec<MaintenanceWorkRequest>,
     #[serde(default)]
     pub wake_project_ids: Vec<String>,
+    /// Main's session-scoped delivery sequence. Native/shared owners may use
+    /// it to correlate receipts with the bounded delivery ledger; it is never
+    /// a durable Run identity and is reset with the Native session.
+    #[serde(default)]
+    pub delivery_sequence: Option<u64>,
     /// Snapshot binding captured by the Electron main scheduler at enqueue
     /// time. Shared-crate callers may omit it because they already supply the
     /// pinned `Database`; the N-API adapter requires it before dispatch.
@@ -1429,6 +1434,12 @@ pub(crate) fn maintenance_stop_signal(
 pub fn preflight_maintenance_cycle_request(
     request: &MaintenanceCycleRequest,
 ) -> anyhow::Result<Vec<DesiredWork>> {
+    if let Some(sequence) = request.delivery_sequence {
+        anyhow::ensure!(
+            sequence > 0,
+            "NEX_MAINTENANCE_DELIVERY_SEQUENCE_INVALID: sequence must be positive"
+        );
+    }
     let work = request.normalized_work()?;
     anyhow::ensure!(
         work.is_empty() || request.wake_project_ids.is_empty(),
@@ -4862,6 +4873,7 @@ mod tests {
                 })
                 .collect(),
             wake_project_ids: Vec::new(),
+            delivery_sequence: None,
             workspace_binding: None,
         }
     }
@@ -5805,6 +5817,7 @@ mod tests {
                 reasons: vec![BEFORE_CUTOVER_FOLLOW_UP_REASON.to_string()],
             }],
             wake_project_ids: Vec::new(),
+            delivery_sequence: None,
             workspace_binding: None,
         };
         let error = request
@@ -6506,6 +6519,7 @@ mod tests {
                     reasons: changed.reasons.clone(),
                 }],
                 wake_project_ids: Vec::new(),
+                delivery_sequence: None,
                 workspace_binding: None,
             },
             |_| RecoveryMode::StartupRecovery,
@@ -7319,6 +7333,7 @@ mod tests {
                     reasons: vec!["selector-error-regression".to_string()],
                 }],
                 wake_project_ids: Vec::new(),
+                delivery_sequence: None,
                 workspace_binding: None,
             };
 

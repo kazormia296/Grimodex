@@ -75,6 +75,9 @@ pub use nir1_entity_relation::{
 pub use nir1_graph::{read_nir1_graph, Nir1GraphRequest, Nir1GraphResponse};
 pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
+pub(crate) use repository::{
+    release_project_destructive_permit, try_reserve_project_destructive_permit,
+};
 pub(crate) use scene_scope::backfill_scene_scope_storage_in_tx;
 pub(crate) use scene_scope::ensure_scene_scope_binding_in_tx;
 pub(crate) use scene_scope::ensure_scope_registry_in_tx;
@@ -262,13 +265,16 @@ pub(crate) use c2zc_canonical_cutover::{
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
 pub use incremental_freshness::{
     run_incremental_freshness_cycle, run_incremental_freshness_cycle_with_hold,
+    run_incremental_freshness_cycle_with_lifecycle_control,
     run_incremental_freshness_cycle_with_liveness_capability,
     run_incremental_freshness_cycle_with_liveness_capability_and_hold,
+    run_incremental_freshness_cycle_with_liveness_capability_and_hold_and_lifecycle_control,
     IncrementalFreshnessBatchSummary, IncrementalFreshnessCycleOutcome,
     IncrementalFreshnessHeldSummary, IncrementalFreshnessShadowConsumerSummary,
     IncrementalFreshnessShadowSummary, SuccessfulIncrementalFreshnessCycle,
     NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
 };
+pub use incremental_freshness::FreshnessLifecycleControl;
 pub use maintenance_route_registry::{
     route_descriptor_by_id, route_descriptor_for_run_kind, route_descriptors,
     route_id_for_run_kind, MaintenanceRouteDescriptor,

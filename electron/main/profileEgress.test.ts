@@ -534,6 +534,22 @@ describe("D2a profile egress gate", () => {
     expect(gate.issueCallerIdentity(11).workspaceId).toBe("/workspace-2");
   });
 
+  it("keeps the trusted workspace id across the terminal Ready lifecycle view", async () => {
+    const gate = await createProfileEgressGate(backend());
+    gate.issueCallerIdentity(11);
+    gate.observeBackendEvent?.("workspace:opened", {
+      workspace: { workspaceId: "workspace-2" },
+    });
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 4,
+      status: "ready",
+      bindingToken: "bnd-ready",
+      activation: "ready",
+    });
+    expect(gate.issueCallerIdentity(11).workspaceId).toBe("workspace-2");
+  });
+
   it.each([
     ["send_chat_message", {}],
     ["send_inline_ai_stream", {}],

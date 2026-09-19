@@ -13,6 +13,7 @@ use super::super::evaluator::{BuildAction, EvidenceFreshness};
 use super::super::material_membership::RevisionMaterialMembership;
 use super::super::publish_runtime::worst_edge_state_for_consumer;
 use super::super::restore_rebuild::evaluate_edge_from_db;
+use super::super::source_revision::is_validation_terminated;
 use super::super::semantic_epoch::get_current_epoch;
 use super::{
     is_storage_error, pending, unavailable, RevisionFreshnessRead,
@@ -39,6 +40,7 @@ pub(in crate::narrative_extraction) fn read(
         Ok(true) => {}
         Ok(false) => return Ok(unavailable(Reason::CanonicalAuthorityUnavailable)),
         Err(error) if is_storage_error(&error) => return Err(error),
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(_) => return Ok(unavailable(Reason::CanonicalAuthorityUnavailable)),
     }
     let Some(epoch) = get_current_epoch(conn, project)? else {
@@ -134,6 +136,7 @@ pub(in crate::narrative_extraction) fn read(
         Ok(Some(aggregate)) => aggregate,
         Ok(None) => return Ok(unavailable(Reason::EdgeStateUnavailable)),
         Err(error) if is_storage_error(&error) => return Err(error),
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(_) => return Ok(unavailable(Reason::EdgeStateInvalid)),
     };
     if aggregate.freshness != EvidenceFreshness::Fresh
@@ -147,6 +150,9 @@ pub(in crate::narrative_extraction) fn read(
             validate_current_evaluation_run_reference(conn, project, &epoch.id, revision, publisher)
         {
             if is_storage_error(&error) {
+                return Err(error);
+            }
+            if is_validation_terminated(&error) {
                 return Err(error);
             }
             return Ok(unavailable(Reason::PublisherInvalid));
@@ -168,6 +174,7 @@ pub(in crate::narrative_extraction) fn read(
         let observed = match evaluate_edge_from_db(conn, project, owner, edge) {
             Ok(observation) => observation,
             Err(error) if is_storage_error(&error) => return Err(error),
+            Err(error) if is_validation_terminated(&error) => return Err(error),
             Err(_) => return Ok(unavailable(Reason::CurrentSourceUnavailable)),
         };
         if observed.freshness != EvidenceFreshness::Fresh

@@ -15,6 +15,8 @@ export interface NarrativeMaintenanceQuitFinalizerOptions {
   exit(code: number): void;
   error?(error: unknown): void;
   maxAttempts?: number;
+  /** Monotonic Native observation budget; independent cleanup is not bound by it. */
+  nativeObservationBudgetMs?: number;
 }
 
 /** Attempt every independent teardown, including after another one rejects. */
@@ -38,7 +40,18 @@ export function createNarrativeMaintenanceQuitFinalizer(
 ): (event: NarrativeMaintenanceQuitEvent) => Promise<void> {
   const maxAttempts = options.maxAttempts ?? 3;
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
-    throw new Error("maintenance shutdown maxAttempts must be a positive integer");
+    throw new Error(
+      "maintenance shutdown maxAttempts must be a positive integer",
+    );
+  }
+  const nativeObservationBudgetMs = options.nativeObservationBudgetMs ?? 30_000;
+  if (
+    !Number.isSafeInteger(nativeObservationBudgetMs) ||
+    nativeObservationBudgetMs < 1
+  ) {
+    throw new Error(
+      "native shutdown observation budget must be a positive integer",
+    );
   }
   let finalizationStarted = false;
   let cleanupComplete = false;
@@ -57,27 +70,63 @@ export function createNarrativeMaintenanceQuitFinalizer(
     if (finalizationStarted) return;
     finalizationStarted = true;
 
-    let maintenanceComplete = false;
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      try {
-        await options.dispose();
-        maintenanceComplete = true;
-        break;
-      } catch (error) {
-        reportError(error);
+    const nativeObservationStartedAt = performance.now();
+    const observeNativeTermination = async (): Promise<boolean> => {
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const remaining =
+          nativeObservationBudgetMs -
+          (performance.now() - nativeObservationStartedAt);
+        if (remaining <= 0) {
+          reportError(new Error("NEX_NATIVE_SHUTDOWN_OBSERVATION_TIMEOUT"));
+          return false;
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          // Invoke dispose before the first await so re-entrant will-quit
+          // callers observe the shared in-flight Native operation immediately.
+          const disposeResult = Promise.resolve(options.dispose());
+          await Promise.race([
+            disposeResult,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () =>
+                  reject(new Error("NEX_NATIVE_SHUTDOWN_OBSERVATION_TIMEOUT")),
+                remaining,
+              );
+            }),
+          ]);
+          if (timer !== undefined) clearTimeout(timer);
+          return true;
+        } catch (error) {
+          if (timer !== undefined) clearTimeout(timer);
+          reportError(error);
+          if (
+            error instanceof Error &&
+            error.message === "NEX_NATIVE_SHUTDOWN_OBSERVATION_TIMEOUT"
+          ) {
+            return false;
+          }
+        }
       }
-    }
+      return false;
+    };
 
-    // This is attempted exactly once, even when all maintenance retries fail.
-    // Its caller owns independent child-process teardown and waits for each
-    // manager's existing completion contract before requesting process exit.
-    let independentCleanupComplete = false;
-    try {
-      await options.complete();
-      independentCleanupComplete = true;
-    } catch (error) {
-      reportError(error);
-    }
+    // Independent process cleanup starts immediately. It must not wait behind
+    // a Native worker that is still draining or has consumed the observation
+    // budget. Both outcomes are required before graceful quit is allowed.
+    const nativeResult = observeNativeTermination();
+    const independentResult = Promise.resolve()
+      .then(() => options.complete())
+      .then(
+        () => true,
+        (error) => {
+          reportError(error);
+          return false;
+        },
+      );
+    const [maintenanceComplete, independentCleanupComplete] = await Promise.all(
+      [nativeResult, independentResult],
+    );
     if (!maintenanceComplete || !independentCleanupComplete) {
       fatalExitRequested = true;
       options.exit(1);

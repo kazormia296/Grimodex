@@ -1166,6 +1166,28 @@ export function endWorkspaceSwitch(options?: {
 }
 
 /**
+ * Invalidate the current binding after a Native lifecycle transition that did
+ * not originate from the foreground open flow (for example maintenance
+ * recovery). This deliberately does not acquire or release a workspace
+ * switch lease and never resumes the old binding; the next explicit open and
+ * normal recorder initialization must establish a new session.
+ */
+export function invalidateWorkspaceBindingForLifecycle(): void {
+  abortTimelapseGenesisBarriers("Workspace lifecycle binding invalidated");
+  invalidateCoverageAuthorities();
+  state.switchEpoch += 1;
+  state.switchInProgress = false;
+  state.bindingInvalidated = true;
+  state.droppedWhileInvalidated = 0;
+  if (state.flushTimer) {
+    clearTimeout(state.flushTimer);
+    state.flushTimer = null;
+  }
+  state.flushRetries = 0;
+  state.queue = [];
+}
+
+/**
  * Bind the recorder to a project and resume the chain from the DB tail.
  *
  * Idempotent for the same projectId within the same switch generation.

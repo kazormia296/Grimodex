@@ -402,6 +402,7 @@ mod tests {
         let request = MaintenanceCycleRequest {
             work: vec![work],
             wake_project_ids: Vec::new(),
+            delivery_sequence: None,
             workspace_binding: None,
         };
         let cycle = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)

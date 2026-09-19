@@ -7,6 +7,7 @@ import {
   type NarrativeMaintenanceTerminalReceipt,
   type NarrativeMaintenanceStopReason,
 } from "./narrativeMaintenanceAttempt.js";
+import { NarrativeMaintenanceDeliveryLedger } from "./narrativeMaintenanceDelivery.js";
 
 /**
  * Electron main 専用の Narrative Maintenance scheduler (C2-5A).
@@ -81,6 +82,8 @@ export interface NarrativeMaintenanceCycleRequest {
   work: readonly NarrativeMaintenanceWork[];
   wakeProjectIds: readonly string[];
   workspaceBinding?: NarrativeMaintenanceWorkspaceBinding;
+  /** Session-scoped delivery sequence paired with the main ledger. */
+  deliverySequence?: number;
   /** Process-local lifecycle identity; Native does not persist this field. */
   attemptId?: string;
 }
@@ -598,6 +601,25 @@ function scopedWakeKey(
   return `${workspaceBindingKey(binding)}\u0000${projectId}`;
 }
 
+/**
+ * Stable process-local identity for one main→Native delivery. Reasons are
+ * intentionally excluded: coalescing a new reason onto a still-pending
+ * delivery must replay the same admission rather than consume another
+ * sequence. The binding and canonical work identities remain part of the
+ * fingerprint so an old authority cannot ACK a replacement batch.
+ */
+function narrativeMaintenanceDeliveryFingerprint(
+  work: readonly PendingNarrativeMaintenanceWork[],
+  wakeProjectIds: readonly string[],
+  binding: NarrativeMaintenanceWorkspaceBinding | null | undefined,
+): string {
+  return JSON.stringify({
+    binding: workspaceBindingKey(binding),
+    work: work.map((item) => canonicalNarrativeMaintenanceWorkKey(item)).sort(),
+    wakeProjectIds: [...wakeProjectIds].sort(),
+  });
+}
+
 const NARRATIVE_MAINTENANCE_INTERRUPTED_REQUEUE_REASON =
   "native-maintenance-interrupted";
 
@@ -1080,6 +1102,12 @@ export function createNarrativeMaintenanceScheduler(
   let lastHasMore = false;
   const pending = new Map<string, PendingNarrativeMaintenanceWork>();
   const retryCounts = new Map<string, number>();
+  // Main owns the bounded delivery ledger. Recovery descriptors are kept in
+  // the ledger independently, so an ACK can retire a terminal receipt while
+  // an unfinished Run remains recoverable without requiring another ordinary
+  // delivery cell.
+  const deliveryLedger = new NarrativeMaintenanceDeliveryLedger();
+  const deliverySequences = new Map<string, number>();
   const sharedCoordinator = backend ? processCoordinator : null;
   // hasMore is a durable native backlog signal, so retain the project that
   // owns the signal.  An unscoped boolean would allow another scheduler to
@@ -1236,6 +1264,23 @@ export function createNarrativeMaintenanceScheduler(
         receiptError,
       );
       return false;
+    }
+  };
+
+  const retireDelivery = (fingerprint: string, sequence: number): void => {
+    try {
+      deliveryLedger.markTerminal(sequence);
+      if (!deliveryLedger.ack(sequence)) {
+        throw new Error(
+          "delivery ACK arrived before terminal result application",
+        );
+      }
+      deliverySequences.delete(fingerprint);
+    } catch (error) {
+      // Keep the sequence mapped when retirement cannot be proven. A later
+      // retry must replay this exact delivery instead of allocating a new
+      // sequence and potentially duplicating a Native side effect.
+      warn("[narrative-maintenance] delivery retirement not proven:", error);
     }
   };
 
@@ -1569,6 +1614,32 @@ export function createNarrativeMaintenanceScheduler(
       waitForProjectRelease(projectIds);
       return;
     }
+    const deliveryFingerprint = narrativeMaintenanceDeliveryFingerprint(
+      backendBatch,
+      sendingWakeProjects,
+      cycleBinding,
+    );
+    const existingDeliverySequence = deliverySequences.get(deliveryFingerprint);
+    const deliverySequence = existingDeliverySequence ?? deliveryLedger.H + 1;
+    const deliveryAdmission = deliveryLedger.submit(
+      deliverySequence,
+      deliveryFingerprint,
+    );
+    if (
+      deliveryAdmission.admission !== "admitted" &&
+      deliveryAdmission.admission !== "duplicate"
+    ) {
+      // A full ordinary ledger is a typed non-admission. Keep the exact
+      // queue claim and let the bounded retry wake run after an ACK; do not
+      // start Native work or allocate another sequence while full.
+      sharedCoordinator?.release(claimedProjects);
+      warn(
+        `[narrative-maintenance] delivery admission ${deliveryAdmission.admission}; retaining batch`,
+      );
+      schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+      return;
+    }
+    deliverySequences.set(deliveryFingerprint, deliverySequence);
     clearCoordinatorWait();
     for (const entry of sendingWakeEntries) {
       durableWakeProjects.delete(entry.wakeKey);
@@ -1594,9 +1665,19 @@ export function createNarrativeMaintenanceScheduler(
       typeof backend?.cancelNarrativeMaintenanceAttempt === "function";
     const cycleAttemptId = lifecycleEnabled ? randomUUID() : null;
     let nativeReceiptAdopted = false;
-    let nativeTerminalReceipt:
-      | Awaited<ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>>
-      | null = null;
+    // Distinguish a pre-admission rejection from an unknown outcome after the
+    // Native call began.  Only the former may retire the transport record
+    // without a Native terminal receipt.
+    let nativeCallStarted = false;
+    let nativeTerminalReceipt: Awaited<
+      ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>
+    > | null = null;
+    let deliveryRetired = false;
+    const retireCurrentDelivery = (): void => {
+      if (deliveryRetired) return;
+      deliveryRetired = true;
+      retireDelivery(deliveryFingerprint, deliverySequence);
+    };
     try {
       if (cycleAttemptId && cycleBinding) {
         await beginAttempt(cycleAttemptId, cycleBinding, backendBatch);
@@ -1606,9 +1687,11 @@ export function createNarrativeMaintenanceScheduler(
         }
       }
       // N-API class methods must be invoked through backend to preserve self.
+      nativeCallStarted = true;
       const result = await method.call(backend, {
         work: wireBatch,
         wakeProjectIds: sendingWakeProjects,
+        deliverySequence,
         ...(cycleBinding !== undefined && cycleBinding !== null
           ? { workspaceBinding: cycleBinding }
           : {}),
@@ -1813,6 +1896,17 @@ export function createNarrativeMaintenanceScheduler(
           shouldSchedule = true;
         }
       }
+      if (
+        cycleResult.status === "accepted" ||
+        cycleResult.status === "coalesced" ||
+        cycleResult.status === "ci-process-interruption-pending" ||
+        cycleResult.status === "ci-terminal-fault-handled"
+      ) {
+        // The result has been structurally validated and applied to the
+        // scheduler/attempt owner. Only now may the transport record retire;
+        // unfinished Run responsibility, if any, remains Native-owned.
+        retireCurrentDelivery();
+      }
     } catch (error) {
       if (!disposed) {
         const attemptSnapshotBeforeCleanup = cycleAttemptId
@@ -1886,6 +1980,7 @@ export function createNarrativeMaintenanceScheduler(
           // Native already committed this cycle before the late cancellation
           // reached it. Do not requeue a claimed work item or wake that the
           // receipt has already completed.
+          retireCurrentDelivery();
           for (const entry of sendingWakeEntries) {
             durableWakeRetryCounts.delete(
               scopedWakeKey(entry.projectId, entry.workspaceBinding),
@@ -1913,6 +2008,12 @@ export function createNarrativeMaintenanceScheduler(
           );
           // Do not schedule this project again until a new explicit request
           // clears its park.  This is a typed non-ACK, not a retry failure.
+          if (
+            nativeTerminalReceipt === null &&
+            !nativeAttemptIds.has(cycleAttemptId ?? "")
+          ) {
+            retireCurrentDelivery();
+          }
           shouldSchedule = false;
         } else if (interruptedCycle) {
           const selectivelyRequeued = interruptedMaintenanceWorkToRequeue(
@@ -1969,6 +2070,12 @@ export function createNarrativeMaintenanceScheduler(
           }
           // A stale authority must not hot-loop while open/restore is in
           // progress. A replacement-workspace enqueue clears the park.
+          if (
+            nativeTerminalReceipt === null &&
+            !nativeAttemptIds.has(cycleAttemptId ?? "")
+          ) {
+            retireCurrentDelivery();
+          }
           shouldSchedule = false;
         } else if (workspaceUnavailable) {
           // This is an expected, recoverable state while a workspace is
@@ -1986,6 +2093,16 @@ export function createNarrativeMaintenanceScheduler(
           warn(
             "[narrative-maintenance] active workspace unavailable; retaining maintenance trigger",
           );
+          if (
+            nativeTerminalReceipt === null &&
+            !nativeAttemptIds.has(cycleAttemptId ?? "")
+          ) {
+            // The workspace-unavailable result proves that this delivery did
+            // not start work. Requeued work gets a fresh sequence after the
+            // lifecycle state changes; retaining this pending record would
+            // otherwise consume capacity across repeated closed periods.
+            retireCurrentDelivery();
+          }
           nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
           shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
         } else {
@@ -2074,6 +2191,18 @@ export function createNarrativeMaintenanceScheduler(
                 }
               }
             }
+          }
+          if (
+            requeuedCount === 0 ||
+            (!nativeCallStarted &&
+              nativeTerminalReceipt === null &&
+              !nativeAttemptIds.has(cycleAttemptId ?? ""))
+          ) {
+            // Every claimed item has either been durably recorded as a
+            // delivery failure or there was no item left to retry. The
+            // transport record can retire; any Native recovery descriptor is
+            // independent and remains owned by its root.
+            retireCurrentDelivery();
           }
           if (haltForProcessInterruption) {
             // The authorized CI seam has already durably acknowledged the

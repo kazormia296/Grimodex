@@ -8,7 +8,10 @@ use rusqlite::Connection;
 use serde_json::Value;
 
 use super::reconciliation_envelope::SourceBasisRow;
-use super::source_revision::resolve_source_revision;
+use super::nir1_entity_relation_index::{GraphWorkControl, NeverStopGraphWorkControl};
+use super::source_revision::{
+    resolve_source_revision_with_control, ValidationContext,
+};
 use super::stage_provenance::{load_v2_context_artifact, VerifiedV2ContextArtifact};
 
 pub(crate) fn ensure_supported_intent(envelope: &Value) -> anyhow::Result<()> {
@@ -47,6 +50,7 @@ fn array<'a>(envelope: &'a Value, pointer: &str) -> anyhow::Result<&'a Vec<Value
 /// Call only after the existing schema, canonical envelope and nested digest
 /// validation. Every dynamic declaration must resolve, including non-model
 /// context; static contracts are checked separately against the durable receipt.
+#[allow(dead_code)]
 pub(crate) fn load_v2_apply_sources(
     conn: &Connection,
     project_id: &str,
@@ -54,14 +58,46 @@ pub(crate) fn load_v2_apply_sources(
     revision_id: &str,
     envelope: &Value,
 ) -> anyhow::Result<Vec<SourceBasisRow>> {
+    let mut control = NeverStopGraphWorkControl;
+    load_v2_apply_sources_with_control(
+        conn,
+        project_id,
+        run_id,
+        revision_id,
+        envelope,
+        &mut control,
+    )
+}
+
+/// V2 source loading under the owner of the enclosing Prepare/Apply
+/// transaction.  The ordinary helper above remains for bounded legacy/test
+/// callers, but production whole-eligibility paths use this variant so a
+/// lifecycle stop is preserved as a typed termination rather than a stale
+/// Source result.
+pub(crate) fn load_v2_apply_sources_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    revision_id: &str,
+    envelope: &Value,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Vec<SourceBasisRow>> {
     ensure_supported_intent(envelope)?;
+    control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
     let artifact = load_v2_context_artifact(conn, project_id, run_id, revision_id, envelope)?;
     let mut sources = BTreeMap::new();
     for entry in array(envelope, "/effectiveMaterialBasis/sourceBasis")? {
         let source_key = string(entry, "sourceKey")?;
         let source_kind = string(entry, "sourceKind")?;
         let revision_token = string(entry, "revisionToken")?;
-        let current = resolve_source_revision(conn, project_id, run_id, source_kind, source_key)?;
+        let current = resolve_source_revision_with_control(
+            conn,
+            project_id,
+            run_id,
+            source_kind,
+            source_key,
+            control,
+        )?;
         ensure!(
             current.revision_token == revision_token,
             "NEX_READ_SET_STALE: V2 material source changed"
@@ -111,6 +147,26 @@ pub(crate) fn load_v2_apply_sources(
             Ok(row)
         })
         .collect()
+}
+
+/// Context-coupled V2 loader for Prepare/Apply.  The same transaction that
+/// performs the writer's DML owns both the connection and lifecycle scope.
+pub(crate) fn load_v2_apply_sources_with_validation_context(
+    context: &mut ValidationContext<'_, '_>,
+    project_id: &str,
+    run_id: &str,
+    revision_id: &str,
+    envelope: &Value,
+) -> anyhow::Result<Vec<SourceBasisRow>> {
+    let conn = context.connection();
+    load_v2_apply_sources_with_control(
+        conn,
+        project_id,
+        run_id,
+        revision_id,
+        envelope,
+        context.control(),
+    )
 }
 
 fn validate_coverage(

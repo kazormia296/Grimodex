@@ -7,10 +7,14 @@
 //! never serializes a workspace path, authority id, recovery candidate id, or
 //! durable Run identity.
 
-use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
 use grimodex_db::state::WorkspaceState;
+use grimodex_db::{
+    AdmissionKind, AdmissionOutcome, AdmissionTicket, ContentEffect,
+    LifecycleResult, LifecycleState, LiveBinding, MaintenancePermit, PermitAdmission,
+    StateRevision, WorkspaceLifecycleCore,
+};
 use grimodex_db::AppResult;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -51,57 +55,78 @@ pub(crate) struct WorkspaceLifecycleView {
     pub activation: WorkspaceLifecycleActivation,
 }
 
-#[derive(Debug)]
-struct WorkspaceLifecycleViewState {
-    revision: u64,
-    status: WorkspaceLifecycleStatus,
-    binding_token: Option<String>,
-    activation: WorkspaceLifecycleActivation,
+/// Renderer-safe projection over the shared lifecycle core.
+///
+/// The core is the only owner of lifecycle state, admission and revisions.
+/// This adapter stores only the opaque UI token and the currently admitted
+/// transition ticket needed to complete that core operation; it does not keep
+/// a second active-membership or switching state machine.
+pub(crate) struct WorkspaceLifecycleViewAdapter {
+    core: WorkspaceLifecycleCore,
+    projection: Mutex<ProjectionState>,
 }
 
-/// Compatibility adapter until the shared lifecycle core owns this state.
-///
-/// All mutation is local to this adapter and all observations of the old
-/// `WorkspaceState` are fail-closed.  The adapter never treats an old
-/// authority as reusable merely because a request was rejected; a caller must
-/// observe `Ready` with a current revision and binding token.
-#[derive(Debug)]
-pub(crate) struct WorkspaceLifecycleViewAdapter {
-    state: Mutex<WorkspaceLifecycleViewState>,
+#[derive(Debug, Default)]
+struct ProjectionState {
+    token_revision: Option<StateRevision>,
+    binding_token: Option<String>,
+    transition_ticket: Option<AdmissionTicket>,
 }
 
 impl Default for WorkspaceLifecycleViewAdapter {
     fn default() -> Self {
-        Self::new()
+        Self::new(WorkspaceLifecycleCore::new())
     }
 }
 
 impl WorkspaceLifecycleViewAdapter {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(core: WorkspaceLifecycleCore) -> Self {
         Self {
-            state: Mutex::new(WorkspaceLifecycleViewState {
-                revision: 0,
-                status: WorkspaceLifecycleStatus::Closed,
-                binding_token: None,
-                activation: WorkspaceLifecycleActivation::None,
-            }),
+            core,
+            projection: Mutex::new(ProjectionState::default()),
         }
     }
 
     /// Mark the beginning of an admitted Open/Restore/Shutdown transition.
-    /// A repeated call while already transitioning is idempotent and does not
-    /// manufacture a new revision.
+    /// A second operation is rejected by the core; it never receives an
+    /// `Unchanged` result that could revive the previous renderer binding.
     pub(crate) fn begin_transition(&self) -> AppResult<(WorkspaceLifecycleView, bool)> {
-        self.update(|state| {
-            if state.status == WorkspaceLifecycleStatus::Transition {
-                return false;
+        self.begin_transition_kind(AdmissionKind::Open)
+    }
+
+    pub(crate) fn begin_transition_kind(
+        &self,
+        kind: AdmissionKind,
+    ) -> AppResult<(WorkspaceLifecycleView, bool)> {
+        let outcome = self.core.begin_transition(kind)?;
+        let ticket = match outcome {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => {
+                return Err(anyhow::anyhow!(
+                    // Keep the stable native admission marker used by the
+                    // existing maintenance/open callers while retaining the
+                    // lifecycle core as the single decision maker.  The
+                    // result is still a rejection: no worker or authority
+                    // side effect has started.
+                    "NEX_MAINTENANCE_ADMISSION_CLOSED: workspace transition is already owned (lifecycle NotAdmitted)"
+                )
+                .into())
             }
-            state.revision = next_revision(state.revision);
-            state.status = WorkspaceLifecycleStatus::Transition;
-            state.binding_token = Some(new_binding_token());
-            state.activation = WorkspaceLifecycleActivation::None;
-            true
-        })
+        };
+        let mut projection = self.lock_projection()?;
+        projection.transition_ticket = Some(ticket);
+        let view = self.projected_view_with_projection(&mut projection)?;
+        Ok((view, true))
+    }
+
+    /// Reserve a maintenance execution in the same shared core as Open and
+    /// Restore. The permit owns the exact responsibility cell and releases it
+    /// on every return path (including panic unwinding) through its Drop
+    /// finalizer; no second Native admission registry is created here.
+    pub(crate) fn begin_maintenance(
+        &self,
+    ) -> AppResult<PermitAdmission<MaintenancePermit>> {
+        Ok(self.core.admit_maintenance_permit()?)
     }
 
     /// Publish a ready authority after the shared opener has completed and
@@ -110,7 +135,7 @@ impl WorkspaceLifecycleViewAdapter {
         &self,
         workspace: &WorkspaceState,
     ) -> AppResult<WorkspaceLifecycleView> {
-        self.publish_from_workspace(workspace, WorkspaceLifecycleStatus::Ready)
+        self.publish_from_workspace(workspace, Some(WorkspaceLifecycleStatus::Ready))
     }
 
     /// Publish a restore-only state.  The active authority must still be
@@ -120,7 +145,10 @@ impl WorkspaceLifecycleViewAdapter {
         &self,
         workspace: &WorkspaceState,
     ) -> AppResult<WorkspaceLifecycleView> {
-        self.publish_from_workspace(workspace, WorkspaceLifecycleStatus::RecoveryRequired)
+        self.publish_from_workspace(
+            workspace,
+            Some(WorkspaceLifecycleStatus::RecoveryRequired),
+        )
     }
 
     /// Publish a closed state after the native shutdown owner has proved that
@@ -128,20 +156,12 @@ impl WorkspaceLifecycleViewAdapter {
     /// is intentionally not an N-API command; the eventual shutdown owner must
     /// call it only after its terminal proof.
     pub(crate) fn publish_closed(&self) -> AppResult<WorkspaceLifecycleView> {
-        self.update(|state| {
-            if state.status == WorkspaceLifecycleStatus::Closed
-                && state.binding_token.is_none()
-                && state.activation == WorkspaceLifecycleActivation::None
-            {
-                return false;
-            }
-            state.revision = next_revision(state.revision);
-            state.status = WorkspaceLifecycleStatus::Closed;
-            state.binding_token = None;
-            state.activation = WorkspaceLifecycleActivation::None;
-            true
-        })
-        .map(|(view, _changed)| view)
+        self.core.close()?;
+        let mut projection = self.lock_projection()?;
+        projection.transition_ticket = None;
+        projection.binding_token = None;
+        projection.token_revision = None;
+        self.projected_view_with_projection(&mut projection)
     }
 
     /// Read the old WorkspaceState only at a short boundary.  This keeps the
@@ -151,24 +171,43 @@ impl WorkspaceLifecycleViewAdapter {
         &self,
         workspace: &WorkspaceState,
     ) -> AppResult<WorkspaceLifecycleView> {
-        if workspace.switching.load(Ordering::SeqCst) {
-            return self.begin_transition().map(|(view, _changed)| view);
-        }
-
-        if workspace.safe_mode.is_active() {
-            return self.publish_recovery_required(workspace);
-        }
-
         let has_authority = workspace
             .inner
             .lock()
             .map_err(|error| anyhow::anyhow!("workspace lifecycle state lock poisoned: {error}"))?
             .is_some();
-        if has_authority {
-            self.publish_ready(workspace)
-        } else {
-            self.publish_closed()
+        if workspace.safe_mode.is_active() && !has_authority {
+            let snapshot = self.core.snapshot()?;
+            let transition_ticket = {
+                let projection = self.lock_projection()?;
+                projection.transition_ticket.clone()
+            };
+            if let Some(ticket) = transition_ticket {
+                // Safe Mode is the terminal outcome of the admitted Open or
+                // Restore transition.  Complete that transition through the
+                // same Join/recovery path as every other worker outcome;
+                // marking RecoveryRequired directly would leave the
+                // transition owner live and make the result look like an
+                // active-operation failure.
+                self.core.mark_transition_joined(&ticket)?;
+                self.core
+                    .require_recovery(&ticket, ticket.original_binding.clone(), None)?;
+                self.lock_projection()?.transition_ticket = None;
+            } else if !matches!(snapshot.state, LifecycleState::RecoveryRequired { .. }) {
+                self.core.mark_safe_mode_recovery_required()?;
+            }
+            return self.projected_view();
         }
+        if has_authority {
+            return self.publish_from_workspace(workspace, None);
+        }
+        let snapshot = self.core.snapshot()?;
+        if matches!(snapshot.state, LifecycleState::Transition { .. }) {
+            return self.projected_view();
+        }
+        let mut projection = self.lock_projection()?;
+        projection.transition_ticket = None;
+        self.projected_view_with_projection(&mut projection)
     }
 
     pub(crate) fn serialize(view: &WorkspaceLifecycleView) -> AppResult<String> {
@@ -178,7 +217,7 @@ impl WorkspaceLifecycleViewAdapter {
     fn publish_from_workspace(
         &self,
         workspace: &WorkspaceState,
-        status: WorkspaceLifecycleStatus,
+        requested_status: Option<WorkspaceLifecycleStatus>,
     ) -> AppResult<WorkspaceLifecycleView> {
         let has_authority = workspace
             .inner
@@ -186,68 +225,143 @@ impl WorkspaceLifecycleViewAdapter {
             .map_err(|error| anyhow::anyhow!("workspace lifecycle state lock poisoned: {error}"))?
             .is_some();
 
-        let effective_status = match (status, has_authority, workspace.safe_mode.is_active()) {
-            (WorkspaceLifecycleStatus::Ready, true, false) => WorkspaceLifecycleStatus::Ready,
-            (WorkspaceLifecycleStatus::RecoveryRequired, false, true) => {
-                WorkspaceLifecycleStatus::RecoveryRequired
-            }
-            (_, true, false) => WorkspaceLifecycleStatus::Ready,
-            (_, false, true) => WorkspaceLifecycleStatus::RecoveryRequired,
-            _ => WorkspaceLifecycleStatus::Closed,
-        };
+        let snapshot = self.core.snapshot()?;
+        let ticket = self
+            .lock_projection()?
+            .transition_ticket
+            .clone();
 
-        self.update(|state| {
-            let activation = match effective_status {
-                WorkspaceLifecycleStatus::Ready => WorkspaceLifecycleActivation::Ready,
-                WorkspaceLifecycleStatus::RecoveryRequired => {
-                    WorkspaceLifecycleActivation::RequiresOpen
-                }
-                WorkspaceLifecycleStatus::Transition | WorkspaceLifecycleStatus::Closed => {
-                    WorkspaceLifecycleActivation::None
-                }
-            };
-            if state.status == effective_status && state.activation == activation {
-                return false;
+        if let Some(ticket) = ticket {
+            // The opener/restore supervisor has returned from its blocking
+            // worker at this boundary. Mark that Join observation before the
+            // core can publish Ready, Unchanged, or a recovery descriptor.
+            self.core.mark_transition_joined(&ticket)?;
+            if workspace.safe_mode.is_active()
+                || (!has_authority
+                    && requested_status == Some(WorkspaceLifecycleStatus::RecoveryRequired))
+            {
+                self.core
+                    .require_recovery(&ticket, ticket.original_binding.clone(), None)?;
+            } else if has_authority {
+                let binding = live_binding(workspace, snapshot.revision.saturating_add(1))?;
+                let result = if ticket.original_binding.as_ref() == Some(&binding) {
+                    self.core.complete_unchanged(&ticket, binding)?
+                } else {
+                    self.core.activate(&ticket, binding, ContentEffect::Retained)?
+                };
+                debug_assert!(matches!(
+                    result,
+                    LifecycleResult::Unchanged { .. } | LifecycleResult::Activated { .. }
+                ));
+            } else {
+                self.core
+                    .require_recovery(&ticket, ticket.original_binding.clone(), None)?;
             }
-            state.revision = next_revision(state.revision);
-            state.status = effective_status;
-            state.binding_token = match effective_status {
-                WorkspaceLifecycleStatus::Closed => None,
-                WorkspaceLifecycleStatus::Ready
-                | WorkspaceLifecycleStatus::Transition
-                | WorkspaceLifecycleStatus::RecoveryRequired => Some(new_binding_token()),
-            };
-            state.activation = activation;
-            true
-        })
-        .map(|(view, _changed)| view)
+            self.lock_projection()?.transition_ticket = None;
+        } else if !has_authority
+            && (workspace.safe_mode.is_active()
+                || requested_status == Some(WorkspaceLifecycleStatus::RecoveryRequired))
+        {
+            self.core.mark_safe_mode_recovery_required()?;
+        } else if has_authority && !matches!(snapshot.state, LifecycleState::Ready(_)) {
+            self.core.set_ready(live_binding(workspace, snapshot.revision.saturating_add(1))?)?;
+        }
+
+        self.projected_view()
     }
 
-    fn update(
-        &self,
-        update: impl FnOnce(&mut WorkspaceLifecycleViewState) -> bool,
-    ) -> AppResult<(WorkspaceLifecycleView, bool)> {
-        let mut state = self
-            .state
+    fn lock_projection(&self) -> AppResult<std::sync::MutexGuard<'_, ProjectionState>> {
+        Ok(self
+            .projection
             .lock()
-            .map_err(|error| anyhow::anyhow!("workspace lifecycle view lock poisoned: {error}"))?;
-        let changed = update(&mut state);
-        let view = self.view_from_state(&state)?;
-        Ok((view, changed))
+            .map_err(|error| anyhow::anyhow!("workspace lifecycle projection lock poisoned: {error}"))?)
     }
 
-    fn view_from_state(
+    fn projected_view(&self) -> AppResult<WorkspaceLifecycleView> {
+        let mut projection = self.lock_projection()?;
+        self.projected_view_with_projection(&mut projection)
+    }
+
+    fn projected_view_with_projection(
         &self,
-        state: &WorkspaceLifecycleViewState,
+        projection: &mut ProjectionState,
     ) -> AppResult<WorkspaceLifecycleView> {
+        let snapshot = self.core.snapshot()?;
+        let (status, activation) = match &snapshot.state {
+            LifecycleState::Ready(_) => (
+                WorkspaceLifecycleStatus::Ready,
+                WorkspaceLifecycleActivation::Ready,
+            ),
+            LifecycleState::Transition { .. } => (
+                WorkspaceLifecycleStatus::Transition,
+                WorkspaceLifecycleActivation::None,
+            ),
+            LifecycleState::RecoveryRequired { .. } => (
+                WorkspaceLifecycleStatus::RecoveryRequired,
+                WorkspaceLifecycleActivation::RequiresOpen,
+            ),
+            LifecycleState::NoWorkspace => (
+                WorkspaceLifecycleStatus::Closed,
+                WorkspaceLifecycleActivation::None,
+            ),
+            LifecycleState::Closed => (
+                WorkspaceLifecycleStatus::Closed,
+                WorkspaceLifecycleActivation::None,
+            ),
+        };
+        if status == WorkspaceLifecycleStatus::Closed {
+            projection.binding_token = None;
+            projection.token_revision = Some(snapshot.revision);
+        } else if projection.token_revision != Some(snapshot.revision) {
+            projection.token_revision = Some(snapshot.revision);
+            projection.binding_token = Some(new_binding_token());
+        }
         Ok(WorkspaceLifecycleView {
             schema_version: WORKSPACE_LIFECYCLE_SCHEMA_VERSION,
-            revision: state.revision,
-            status: state.status,
-            binding_token: state.binding_token.clone(),
-            activation: state.activation,
+            revision: snapshot.revision,
+            status,
+            binding_token: projection.binding_token.clone(),
+            activation,
         })
     }
+}
+
+fn live_binding(workspace: &WorkspaceState, recovery_generation: u64) -> AppResult<LiveBinding> {
+    let authority = workspace
+        .inner
+        .lock()
+        .map_err(|error| anyhow::anyhow!("workspace lifecycle state lock poisoned: {error}"))?
+        .as_ref()
+        .map(|active| std::sync::Arc::clone(&active.authority))
+        .ok_or_else(|| anyhow::anyhow!("workspace authority is unavailable"))?;
+    let locator = authority.path().to_string_lossy().into_owned();
+    let metadata_path = authority.path().join(".grimodex/workspace.json");
+    let metadata = std::fs::read_to_string(&metadata_path).map_err(anyhow::Error::from)?;
+    let workspace_id = serde_json::from_str::<serde_json::Value>(&metadata)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_WORKSPACE_IDENTITY_INVALID: verified workspace metadata has no id ({})",
+                metadata_path.display()
+            )
+        })?;
+    // The durable workspace identity is intentionally not exposed on the main
+    // wire.  The canonical locator and metadata id are read from the already
+    // verified authority; authority_instance still distinguishes a same-path
+    // reopen.
+    Ok(LiveBinding::new(
+        locator.clone(),
+        workspace_id,
+        authority.identity(),
+        recovery_generation.max(1),
+    ))
 }
 
 fn next_revision(current: u64) -> u64 {
@@ -264,22 +378,22 @@ fn new_binding_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use std::sync::Mutex;
 
     fn empty_workspace() -> WorkspaceState {
         WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: grimodex_db::recovery::SafeModeState::default(),
-            switching: AtomicBool::new(false),
+            switching: grimodex_db::WorkspaceLifecycleCompatibilityView::default(),
             open_lock: Mutex::new(()),
         }
     }
 
     #[test]
     fn initial_snapshot_is_closed_and_contains_no_sensitive_identity() {
-        let adapter = WorkspaceLifecycleViewAdapter::new();
         let workspace = empty_workspace();
+        let adapter = WorkspaceLifecycleViewAdapter::new(workspace.lifecycle_core());
         let view = adapter
             .snapshot_for_workspace(&workspace)
             .expect("snapshot");
@@ -303,16 +417,22 @@ mod tests {
 
     #[test]
     fn transition_and_ready_rotate_opaque_token_and_revision() {
-        let adapter = WorkspaceLifecycleViewAdapter::new();
+        let mut workspace = empty_workspace();
+        let adapter = WorkspaceLifecycleViewAdapter::new(workspace.lifecycle_core());
         let (transition, changed) = adapter.begin_transition().expect("transition");
         assert!(changed);
         assert_eq!(transition.status, WorkspaceLifecycleStatus::Transition);
         assert_eq!(transition.activation, WorkspaceLifecycleActivation::None);
         let transition_token = transition.binding_token.clone().expect("token");
 
-        let workspace = empty_workspace();
         let path =
             std::env::temp_dir().join(format!("grimodex-lifecycle-ready-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(path.join(".grimodex")).expect("metadata directory");
+        std::fs::write(
+            path.join(".grimodex/workspace.json"),
+            serde_json::json!({"id": "lifecycle-ready-workspace"}).to_string(),
+        )
+        .expect("workspace metadata");
         let authority = grimodex_db::state::WorkspaceAuthority::from_database_for_test(
             grimodex_db::Database::new(std::path::Path::new(":memory:")).expect("database"),
             path,
@@ -331,8 +451,8 @@ mod tests {
 
     #[test]
     fn switching_and_safe_mode_project_fail_closed_states() {
-        let adapter = WorkspaceLifecycleViewAdapter::new();
         let workspace = empty_workspace();
+        let adapter = WorkspaceLifecycleViewAdapter::new(workspace.lifecycle_core());
         workspace.switching.store(true, Ordering::SeqCst);
         let transition = adapter
             .snapshot_for_workspace(&workspace)
@@ -365,8 +485,11 @@ mod tests {
 
     #[test]
     fn closed_projection_clears_old_token_and_is_monotonic() {
-        let adapter = WorkspaceLifecycleViewAdapter::new();
-        let (transition, _) = adapter.begin_transition().expect("transition");
+        let workspace = empty_workspace();
+        let adapter = WorkspaceLifecycleViewAdapter::new(workspace.lifecycle_core());
+        let transition = adapter
+            .snapshot_for_workspace(&workspace)
+            .expect("initial snapshot");
         let closed = adapter.publish_closed().expect("closed");
         assert!(closed.revision > transition.revision);
         assert_eq!(closed.status, WorkspaceLifecycleStatus::Closed);

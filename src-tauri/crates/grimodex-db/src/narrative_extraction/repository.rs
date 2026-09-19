@@ -14,6 +14,7 @@ use grimodex_core::{
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
 use super::c2zc_canonical_cutover::current_c2zc_run_epoch_in_tx;
@@ -30,9 +31,11 @@ use super::nir1_entity_relation::{
     NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_PROPOSAL_KIND,
     NIR1_ENTITY_RELATION_REVISION_ORIGIN, NIR1_ENTITY_RELATION_SET_KIND,
 };
+use super::nir1_entity_relation_index::NeverStopGraphWorkControl;
 use super::publish_runtime::publish_complete_runless_freshness_in_tx;
 use super::restore_rebuild::evaluate_edge_from_db;
 use super::semantic_epoch::get_current_epoch;
+use super::source_revision::validation_context;
 
 /// Generation of the current Proposal Revision dependency declaration writer.
 /// This is paired with the bundled producer registry; bump both when the
@@ -53,8 +56,9 @@ use super::models::{
     ReviseAndDecidePayload, SaveProposalSetPayload,
 };
 use super::reconciliation_envelope::{
-    ensure_v2_proposal_payload_digest, envelope_schema_version, validate_envelope_source_tokens,
-    validate_reconciliation_envelope, SourceBasisRow, ORIGIN_ENVELOPED, ORIGIN_LEGACY_UNBOUND,
+    ensure_v2_proposal_payload_digest, envelope_schema_version,
+    validate_envelope_source_tokens_with_validation_context, validate_reconciliation_envelope,
+    SourceBasisRow, ORIGIN_ENVELOPED, ORIGIN_LEGACY_UNBOUND,
 };
 use super::task_leases::{
     claim_next_task, claimed_task_to_value, load_task_row, persist_task_artifacts,
@@ -70,6 +74,38 @@ const RUN_CANCELLED_ATTEMPT_FAILURE_CODE: &str = "NEX_RUN_CANCELLED";
 const RUN_CANCELLED_ATTEMPT_POLICY_VERSION: &str = "v1";
 const CHRONICLE_RUN_SPEC_KIND: &str = "chronicle.extract.run-spec@2";
 const CHRONICLE_EXISTING_EVENTS_CATALOG_KIND: &str = "chronicle.existing-events-catalog@1";
+
+static PROJECT_DESTRUCTIVE_PERMITS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+/// Process-local guard for destructive project writers.  It coordinates the
+/// lifecycle owner and the project delete path in this process only; it is
+/// deliberately not advertised as cross-process SQLite authority.
+pub(crate) fn try_reserve_project_destructive_permit(project_id: &str) -> anyhow::Result<()> {
+    let permits = PROJECT_DESTRUCTIVE_PERMITS.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut permits = permits
+        .lock()
+        .map_err(|error| anyhow::anyhow!("project destructive permit poisoned: {error}"))?;
+    anyhow::ensure!(
+        permits.insert(project_id.to_owned()),
+        "NEX_PROJECT_DESTRUCTIVE_BUSY: project '{project_id}' already has a destructive permit"
+    );
+    Ok(())
+}
+
+pub(crate) fn release_project_destructive_permit(project_id: &str) {
+    if let Some(permits) = PROJECT_DESTRUCTIVE_PERMITS.get() {
+        if let Ok(mut permits) = permits.lock() {
+            permits.remove(project_id);
+        }
+    }
+}
+
+pub(crate) fn project_destructive_permit_active(project_id: &str) -> bool {
+    PROJECT_DESTRUCTIVE_PERMITS
+        .get()
+        .and_then(|permits| permits.lock().ok())
+        .is_some_and(|permits| permits.contains(project_id))
+}
 /// Canonical Review-resumability predicate shared by bounded discovery and
 /// the exact, limit-free authority query. Keep the Run alias fixed as `r` so
 /// both call sites consume the same SQL rather than parallel vocabularies.
@@ -943,6 +979,40 @@ pub(crate) fn create_system_run_in_tx(
     reuse: SystemRunWorkKeyReuse,
     request: Option<&RunRequestIdentity<'_>>,
 ) -> anyhow::Result<Value> {
+    create_system_run_in_tx_with_reserved_id(
+        conn,
+        project_id,
+        run_kind,
+        semantic_epoch_id,
+        work_key,
+        spec_json,
+        spec_digest,
+        reuse,
+        request,
+        None,
+    )
+}
+
+/// Variant used by the common lifecycle owner when it has already reserved
+/// an exact Run identity before the creation transaction starts.  Reuse is
+/// still decided first; the reservation is only consumed for a fresh tuple.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_system_run_in_tx_with_reserved_id(
+    conn: &Connection,
+    project_id: &str,
+    run_kind: &str,
+    semantic_epoch_id: &str,
+    work_key: &str,
+    spec_json: &Value,
+    spec_digest: &str,
+    reuse: SystemRunWorkKeyReuse,
+    request: Option<&RunRequestIdentity<'_>>,
+    reserved_run_id: Option<&str>,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !project_destructive_permit_active(project_id),
+        "NEX_PROJECT_DESTRUCTIVE_BUSY: project '{project_id}' is under a destructive permit"
+    );
     // Request replay is resolved before work-key equivalence, because they
     // answer different questions: "did this exact request already run?"
     // versus "is some other Run already doing this work?". A retry of an
@@ -979,7 +1049,10 @@ pub(crate) fn create_system_run_in_tx(
     let spec_json_text = serde_json::to_string(&persisted_spec_json)?;
     let scope_json_text = serde_json::to_string(&default_object_json())?;
     let coverage_json_text = serde_json::to_string(&default_object_json())?;
-    let run_id = Uuid::new_v4().to_string();
+    let run_id = reserved_run_id
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     // Run authority is a lifecycle instant, not UUID insertion order. Keep
     // automatic/system rows strictly monotonic at the persisted millisecond
     // precision so a Verify -> Rebuild -> confirmation Verify chain created
@@ -4623,7 +4696,14 @@ fn insert_proposal_seed(
             ensure_v2_proposal_evidence_binding(envelope, &seed.payload_json)?;
         }
         ensure_v2_proposal_payload_digest(envelope, &seed.payload_json)?;
-        validate_envelope_source_tokens(conn, project_id, run_id, envelope)?;
+        let mut validation_owner = NeverStopGraphWorkControl;
+        let mut validation = validation_context(conn, &mut validation_owner);
+        validate_envelope_source_tokens_with_validation_context(
+            &mut validation,
+            project_id,
+            run_id,
+            envelope,
+        )?;
     }
     let origin_kind = if validated_envelope.is_some() {
         ORIGIN_ENVELOPED
@@ -5117,7 +5197,14 @@ fn append_revision_on_conn(
             "NEX_NARRATIVE_V2_ACTIVATION_DISABLED: production revision append cannot activate Envelope V2"
         );
         ensure_v2_proposal_payload_digest(envelope, &payload.payload_json)?;
-        validate_envelope_source_tokens(conn, &payload.project_id, &payload.run_id, envelope)?;
+        let mut validation_owner = NeverStopGraphWorkControl;
+        let mut validation = validation_context(conn, &mut validation_owner);
+        validate_envelope_source_tokens_with_validation_context(
+            &mut validation,
+            &payload.project_id,
+            &payload.run_id,
+            envelope,
+        )?;
     }
     let origin_kind = if validated_envelope.is_some() {
         ORIGIN_ENVELOPED

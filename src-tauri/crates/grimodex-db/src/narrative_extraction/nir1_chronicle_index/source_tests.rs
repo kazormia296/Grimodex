@@ -3,7 +3,11 @@ use std::{io::Read, path::PathBuf};
 use flate2::read::GzDecoder;
 use serde_json::Value;
 
-use super::source::read_eligibility_source;
+use super::source::{read_eligibility_source, read_eligibility_source_with_control};
+use crate::narrative_extraction::nir1_entity_relation_index::{
+    GraphWorkControl, GraphWorkStage,
+};
+use crate::narrative_extraction::{validation_terminated, ValidationTerminationReason};
 use crate::Database;
 
 struct Fixture {
@@ -190,6 +194,30 @@ fn nir1_eligibility_source_requires_one_caller_owned_snapshot() {
         Ok(())
     })
     .expect("caller-owned snapshot check");
+}
+
+#[test]
+fn nir1_chronicle_source_preserves_typed_lifecycle_stop() {
+    struct Stop;
+    impl GraphWorkControl for Stop {
+        fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
+            Err(validation_terminated(
+                ValidationTerminationReason::Cancelled,
+                "test stop before roster scan",
+            ))
+        }
+    }
+
+    let f = Fixture::new();
+    let project_id = f.project().to_owned();
+    f.db.with_read_transaction(|tx| {
+        let mut stop = Stop;
+        let error = read_eligibility_source_with_control(tx, &project_id, &mut stop)
+            .expect_err("stopped lifecycle must not produce Source");
+        assert!(crate::narrative_extraction::is_validation_terminated(&error));
+        Ok(())
+    })
+    .expect("typed stop check");
 }
 
 #[test]

@@ -21,6 +21,10 @@ import {
 import type { NapiBackendLike } from "../shared/ipcContract.js";
 import type { ProfileEgressGate } from "./profileEgress.js";
 import {
+  parseWorkspaceLifecycleView,
+  type WorkspaceLifecycleView,
+} from "./workspaceLifecycleView.js";
+import {
   isRelatedScenesInvalidatedEvent,
   isRelatedScenesIndexReadyEvent,
   RELATED_SCENES_INVALIDATED_EVENT,
@@ -32,6 +36,7 @@ export const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT =
   "narrative-maintenance:epoch-rotated";
 
 let profileEgressGate: ProfileEgressGate | null = null;
+let latestWorkspaceLifecycleView: WorkspaceLifecycleView | null = null;
 
 /** Install the startup gate before any trusted manager can publish an event. */
 export function setBackendEventEgressGate(
@@ -60,7 +65,64 @@ export function broadcastBackendEvent(channel: string, payload: unknown): void {
     console.warn(`[backend:event] rejected D2a egress channel: ${channel}`);
     return;
   }
+  if (channel === "workspace:lifecycle-state") {
+    const lifecycle = acceptWorkspaceLifecycleView(payload);
+    if (!lifecycle) return;
+    payload = lifecycle;
+    profileEgressGate?.observeBackendEvent?.(channel, lifecycle);
+  }
   broadcastEvent(channel, payload);
+}
+
+function acceptWorkspaceLifecycleView(
+  payload: unknown,
+): WorkspaceLifecycleView | null {
+  let view: WorkspaceLifecycleView;
+  try {
+    view = parseWorkspaceLifecycleView(payload);
+  } catch (error) {
+    console.warn(
+      `[backend:event] invalid workspace lifecycle view: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  }
+  if (latestWorkspaceLifecycleView) {
+    if (view.revision < latestWorkspaceLifecycleView.revision) return null;
+    if (
+      view.revision === latestWorkspaceLifecycleView.revision &&
+      JSON.stringify(view) !== JSON.stringify(latestWorkspaceLifecycleView)
+    ) {
+      console.warn(
+        "[backend:event] conflicting workspace lifecycle views at one revision",
+      );
+      return null;
+    }
+  }
+  latestWorkspaceLifecycleView = view;
+  return view;
+}
+
+/** Publish a validated lifecycle snapshot obtained through the main-only getter. */
+export function publishWorkspaceLifecycleSnapshot(payload: unknown): boolean {
+  const view = acceptWorkspaceLifecycleView(payload);
+  if (!view) return false;
+  broadcastBackendEvent("workspace:lifecycle-state", view);
+  return true;
+}
+
+/** Refresh the lifecycle projection after renderer subscription / page load. */
+export async function refreshWorkspaceLifecycleView(
+  backend: NapiBackendLike | null,
+): Promise<boolean> {
+  const getter = backend?.getWorkspaceLifecycleView;
+  if (typeof getter !== "function") return false;
+  try {
+    const raw = await getter.call(backend);
+    return publishWorkspaceLifecycleSnapshot(raw);
+  } catch (error) {
+    console.warn("[backend:event] lifecycle snapshot refresh failed", error);
+    return false;
+  }
 }
 
 /**
@@ -171,6 +233,11 @@ function handleBackendEvent(
       // ベストエフォート契約 — 生文字列のまま流し、原因調査は warn に頼る）。
       console.warn(`[backend:event] non-JSON payload on ${channel}`);
     }
+  }
+  if (channel === "workspace:lifecycle-state") {
+    const lifecycle = acceptWorkspaceLifecycleView(payload);
+    if (!lifecycle) return;
+    payload = lifecycle;
   }
   if (
     channel === RELATED_SCENES_INVALIDATED_EVENT &&

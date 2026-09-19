@@ -56,8 +56,9 @@ use super::publish_runtime::{
 use super::repository::{create_system_run_in_tx, record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::restore_rebuild::{
     build_edge_comparison_input_from_source_state, resolve_edge_source_state,
-    ResolvedEdgeSourceState,
+    resolve_edge_source_state_with_control, ResolvedEdgeSourceState,
 };
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 use super::semantic_epoch::get_current_epoch;
 use super::task_leases::{claim_next_task, verify_task_lease, with_immediate_transaction};
 use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
@@ -79,6 +80,34 @@ pub const NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME: &str = "NARRATIVE_DEPENDENCY_V
 // objects around the same workspace authority. The follower then observes
 // the durable acknowledgement and returns Idle.
 static CYCLE_SERIALIZER: Mutex<()> = Mutex::new(());
+
+/// Lifecycle-owned cancellation for a bounded Freshness cycle.  The public
+/// API deliberately exposes only a no-argument checkpoint: the Graph/NIR
+/// stages remain an implementation detail of the shared DB crate, while the
+/// Native owner supplies the current binding/stop policy.
+pub trait FreshnessLifecycleControl {
+    fn check(&mut self) -> anyhow::Result<()>;
+}
+
+struct LifecycleGraphControl<'a> {
+    owner: &'a mut dyn FreshnessLifecycleControl,
+}
+
+impl GraphWorkControl for LifecycleGraphControl<'_> {
+    fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
+        self.owner.check()
+    }
+}
+
+fn check_cycle_control(
+    control: &mut Option<&mut dyn GraphWorkControl>,
+    stage: GraphWorkStage,
+) -> anyhow::Result<()> {
+    if let Some(control) = control.as_deref_mut() {
+        control.check(stage)?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -291,7 +320,35 @@ pub fn run_incremental_freshness_cycle_with_hold(
         anyhow::anyhow!("NEX_INCREMENTAL_FRESHNESS_SERIALIZER_POISONED: {error}")
     })?;
 
-    db.with_background_connection_priority(|| run_serialized_cycle(db, freshness_hold_project_id))
+    db.with_background_connection_priority(|| {
+        run_serialized_cycle_with_control(db, freshness_hold_project_id, None)
+    })
+}
+
+/// Run a bounded cycle under a lifecycle owner supplied by Native/shared
+/// maintenance. The owner is checked at the same graph/source boundaries as
+/// other controlled readers; it does not create a second admission lane.
+pub fn run_incremental_freshness_cycle_with_lifecycle_control<C>(
+    db: &Database,
+    freshness_hold_project_id: Option<&str>,
+    lifecycle_control: &mut C,
+) -> anyhow::Result<IncrementalFreshnessCycleOutcome>
+where
+    C: FreshnessLifecycleControl,
+{
+    let _cycle_guard = CYCLE_SERIALIZER.lock().map_err(|error| {
+        anyhow::anyhow!("NEX_INCREMENTAL_FRESHNESS_SERIALIZER_POISONED: {error}")
+    })?;
+    let mut graph_control = LifecycleGraphControl {
+        owner: lifecycle_control,
+    };
+    db.with_background_connection_priority(|| {
+        run_serialized_cycle_with_control(
+            db,
+            freshness_hold_project_id,
+            Some(&mut graph_control),
+        )
+    })
 }
 
 /// Run a bounded Freshness cycle and return the one-use liveness capability
@@ -324,6 +381,37 @@ pub fn run_incremental_freshness_cycle_with_liveness_capability_and_hold(
     // mint the scheduler receipt.  Capturing its connection epoch here keeps
     // a completed cycle from another Database wrapper from being reused as
     // liveness proof for this workspace.
+    let connection_epoch =
+        db.with_conn(|conn| Ok(read_sqlite_source_revision(conn)?.connection_epoch))?;
+    Ok((
+        outcome,
+        SuccessfulIncrementalFreshnessCycle {
+            connection_epoch,
+            completed_at,
+            _private: (),
+        },
+    ))
+}
+
+/// Lifecycle-owned form of the liveness wrapper. The capability is minted
+/// only after the same controlled cycle has returned successfully.
+pub fn run_incremental_freshness_cycle_with_liveness_capability_and_hold_and_lifecycle_control<C>(
+    db: &Database,
+    freshness_hold_project_id: Option<&str>,
+    lifecycle_control: &mut C,
+) -> anyhow::Result<(
+    IncrementalFreshnessCycleOutcome,
+    SuccessfulIncrementalFreshnessCycle,
+)>
+where
+    C: FreshnessLifecycleControl,
+{
+    let outcome = run_incremental_freshness_cycle_with_lifecycle_control(
+        db,
+        freshness_hold_project_id,
+        lifecycle_control,
+    )?;
+    let completed_at = Instant::now();
     let connection_epoch =
         db.with_conn(|conn| Ok(read_sqlite_source_revision(conn)?.connection_epoch))?;
     Ok((
@@ -375,10 +463,12 @@ pub(crate) fn initialize_application_freshness_in_tx(
     )
 }
 
-fn run_serialized_cycle(
+fn run_serialized_cycle_with_control(
     db: &Database,
     freshness_hold_project_id: Option<&str>,
+    mut control: Option<&mut dyn GraphWorkControl>,
 ) -> anyhow::Result<IncrementalFreshnessCycleOutcome> {
+    check_cycle_control(&mut control, GraphWorkStage::Page)?;
     let reservation = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             reserve_or_resume_batch_in_tx(conn, freshness_hold_project_id)
@@ -401,7 +491,7 @@ fn run_serialized_cycle(
     let plan = match if batch.idle_checkpoint {
         Ok(EvaluationPlan::empty())
     } else {
-        evaluate_batch(db, &batch)
+        evaluate_batch_with_control(db, &batch, &mut control)
     } {
         Ok(plan) => plan,
         Err(error) => {
@@ -411,7 +501,9 @@ fn run_serialized_cycle(
     };
 
     let publish_result = db.with_conn(|conn| {
-        with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
+        with_immediate_transaction(conn, |conn| {
+            publish_batch_in_tx_with_control(conn, &batch, &plan, &mut control)
+        })
     });
     let v2_shadow_drift = match publish_result {
         Ok(drift) => drift,
@@ -423,6 +515,7 @@ fn run_serialized_cycle(
             return Err(error);
         }
     };
+    check_cycle_control(&mut control, GraphWorkStage::ResultAssembly)?;
     // Shadow-input drift discards the now-stale D2 summary but keeps its
     // diagnostic observable: the V1 publication above committed either way.
     let v2_shadow = match v2_shadow_drift {
@@ -2015,6 +2108,16 @@ fn ensure_batch_task_in_tx(
 }
 
 fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<EvaluationPlan> {
+    let mut control = None;
+    evaluate_batch_with_control(db, batch, &mut control)
+}
+
+fn evaluate_batch_with_control(
+    db: &Database,
+    batch: &ClaimedBatch,
+    control: &mut Option<&mut dyn GraphWorkControl>,
+) -> anyhow::Result<EvaluationPlan> {
+    check_cycle_control(control, GraphWorkStage::Edge)?;
     if let Some(error) = batch.preparation_error.as_deref() {
         anyhow::bail!("{error}");
     }
@@ -2111,6 +2214,7 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
         .collect::<BTreeMap<_, _>>();
     let mut affected_edge_count = 0;
     for (index, edge) in edges.values().enumerate() {
+        check_cycle_control(control, GraphWorkStage::Edge)?;
         if index % LEASE_HEARTBEAT_EDGE_INTERVAL == 0 {
             renew_batch_lease(db, batch)?;
         }
@@ -2193,7 +2297,17 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
             state.clone()
         } else {
             let state = db.with_conn(|conn| {
-                resolve_edge_source_state(conn, &batch.project_id, resolving_run_id, edge)
+                if let Some(control) = control.as_deref_mut() {
+                    resolve_edge_source_state_with_control(
+                        conn,
+                        &batch.project_id,
+                        resolving_run_id,
+                        edge,
+                        control,
+                    )
+                } else {
+                    resolve_edge_source_state(conn, &batch.project_id, resolving_run_id, edge)
+                }
             })?;
             source_state_guards.push(SourceStateGuard {
                 edge: edge.clone(),
@@ -2239,6 +2353,8 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
             role_registry.as_ref(),
             registry_error.as_deref(),
         )?;
+
+    check_cycle_control(control, GraphWorkStage::ResultAssembly)?;
 
     Ok(EvaluationPlan {
         affected_edge_count,
@@ -2900,6 +3016,17 @@ fn publish_batch_in_tx(
     batch: &ClaimedBatch,
     plan: &EvaluationPlan,
 ) -> anyhow::Result<Option<String>> {
+    let mut control = None;
+    publish_batch_in_tx_with_control(conn, batch, plan, &mut control)
+}
+
+fn publish_batch_in_tx_with_control(
+    conn: &Connection,
+    batch: &ClaimedBatch,
+    plan: &EvaluationPlan,
+    control: &mut Option<&mut dyn GraphWorkControl>,
+) -> anyhow::Result<Option<String>> {
+    check_cycle_control(control, GraphWorkStage::Publish)?;
     verify_task_lease(conn, &batch.task_id, &batch.run_id, &batch.lease_owner)?;
     verify_publish_reservation_in_tx(
         conn,
@@ -2922,12 +3049,22 @@ fn publish_batch_in_tx(
         );
     }
     for guard in &plan.source_state_guards {
-        let current = resolve_edge_source_state(
-            conn,
-            &batch.project_id,
-            &guard.resolving_run_id,
-            &guard.edge,
-        )?;
+        let current = if let Some(control) = control.as_deref_mut() {
+            resolve_edge_source_state_with_control(
+                conn,
+                &batch.project_id,
+                &guard.resolving_run_id,
+                &guard.edge,
+                control,
+            )?
+        } else {
+            resolve_edge_source_state(
+                conn,
+                &batch.project_id,
+                &guard.resolving_run_id,
+                &guard.edge,
+            )?
+        };
         anyhow::ensure!(
             current == guard.state,
             "NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED: '{}' changed after evaluation",
@@ -2947,12 +3084,14 @@ fn publish_batch_in_tx(
         );
     }
     for guard in &plan.producer_epoch_guards {
+        check_cycle_control(control, GraphWorkStage::Publish)?;
         let current = edge_producer_epoch_matches(conn, &guard.edge, &batch.semantic_epoch_id)?;
         anyhow::ensure!(
             current == guard.matched,
             "NEX_SEMANTIC_EPOCH_CHANGED: Edge producer Epoch changed before publication"
         );
     }
+    check_cycle_control(control, GraphWorkStage::Publish)?;
     // D2 is shadow-only: drift in the selected V2 head/key/state snapshot is
     // recorded, the stale shadow summary is discarded by the caller, and the
     // authoritative V1 publication commits regardless. D2 cannot fail,
@@ -6668,5 +6807,61 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })
         .expect("inspect V1 acknowledgement after unrelated V2 head drift");
+    }
+
+    struct StopBeforeFreshness;
+
+    impl FreshnessLifecycleControl for StopBeforeFreshness {
+        fn check(&mut self) -> anyhow::Result<()> {
+            anyhow::bail!("NEX_VALIDATION_TERMINATED:test-stop")
+        }
+    }
+
+    struct CountingFreshnessControl {
+        checks: usize,
+    }
+
+    impl FreshnessLifecycleControl for CountingFreshnessControl {
+        fn check(&mut self) -> anyhow::Result<()> {
+            self.checks += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn lifecycle_control_stops_before_reservation_and_valid_control_progresses() {
+        let db = fixture_db();
+        let before_runs = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_extraction_runs",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("count fixture runs");
+        let mut stopped = StopBeforeFreshness;
+        let error = run_incremental_freshness_cycle_with_lifecycle_control(
+            &db,
+            None,
+            &mut stopped,
+        )
+        .expect_err("stopped Freshness must not reserve a run");
+        assert!(error.to_string().contains("NEX_VALIDATION_TERMINATED"));
+        let after_runs = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_extraction_runs",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("count runs after stopped cycle");
+        assert_eq!(after_runs, before_runs);
+
+        let mut allowed = CountingFreshnessControl { checks: 0 };
+        run_incremental_freshness_cycle_with_lifecycle_control(&db, None, &mut allowed)
+            .expect("valid lifecycle context should allow a bounded cycle");
+        assert!(allowed.checks >= 2, "cycle did not use lifecycle checkpoints");
     }
 }

@@ -80,7 +80,11 @@ use super::semantic_bindings::{
     apply_semantic_binding_upsert_in_tx, parse_semantic_binding_upsert_payload,
     OP_KIND_SEMANTIC_BINDING_UPSERT,
 };
-use super::source_revision::resolve_source_revision;
+use super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+use super::source_revision::{
+    is_validation_terminated, resolve_source_revision_with_validation_context,
+    validation_context, ValidationContext,
+};
 use super::task_leases::with_immediate_transaction;
 use super::temporal_constraints::{
     apply_constraint_create_in_tx, parse_constraint_create_payload, OP_KIND_CONSTRAINT_CREATE,
@@ -226,12 +230,20 @@ pub fn narrative_extraction_prepare_commit(
             )?;
             let authority_digest =
                 digest_authority_rows(conn, &payload.proposal_set_id, &applications)?;
-            let source_contract = build_source_contract(
-                conn,
-                &payload.project_id,
-                &payload.run_id,
-                &applications,
-            )?;
+            let source_contract = {
+                // The foreground command owns this borrowed validation
+                // capability for the duration of the same write transaction.
+                // It is intentionally not a maintenance re-admission.
+                let mut owner = NeverStopGraphWorkControl;
+                let mut validation = validation_context(conn, &mut owner);
+                build_source_contract(
+                    conn,
+                    &payload.project_id,
+                    &payload.run_id,
+                    &applications,
+                    &mut validation,
+                )?
+            };
             validate_retraction_targets(
                 conn,
                 &payload.project_id,
@@ -424,7 +436,9 @@ fn build_source_contract(
     project_id: &str,
     run_id: &str,
     applications: &[(String, String)],
+    validation: &mut ValidationContext<'_, '_>,
 ) -> anyhow::Result<SealedSourceContract> {
+    validation.ensure_connection(conn)?;
     let mut revision_rows = Vec::with_capacity(applications.len());
     let mut source_rows = Vec::new();
     let mut read_rows = Vec::new();
@@ -473,8 +487,8 @@ fn build_source_contract(
         }));
 
         for source in &persisted_source_basis {
-            let current = resolve_source_revision(
-                conn,
+            let current = resolve_source_revision_with_validation_context(
+                validation,
                 project_id,
                 run_id,
                 &source.source_kind,
@@ -498,8 +512,8 @@ fn build_source_contract(
         }
 
         if envelope_schema_version(&envelope) == Some(2) {
-            for row in super::v2_apply_sources::load_v2_apply_sources(
-                conn,
+            for row in super::v2_apply_sources::load_v2_apply_sources_with_validation_context(
+                validation,
                 project_id,
                 run_id,
                 revision_id,
@@ -534,8 +548,13 @@ fn build_source_contract(
                 .and_then(Value::as_str)
                 .map(Ok)
                 .unwrap_or_else(|| source_kind_for_read_set(kind))?;
-            let current =
-                resolve_source_revision(conn, project_id, run_id, source_kind, input_ref)?;
+            let current = resolve_source_revision_with_validation_context(
+                validation,
+                project_id,
+                run_id,
+                source_kind,
+                input_ref,
+            )?;
             if let Some(expected) = object.get("revisionToken").and_then(Value::as_str) {
                 anyhow::ensure!(
                     current.revision_token == expected,
@@ -950,12 +969,20 @@ pub fn narrative_extraction_apply_commit(
                 existing.prepared_policy_version == Some(current_policy_version),
                 "NEX_PREPARED_POLICY_CHANGED: prepared policy version no longer matches"
             );
-            let current_source_contract = build_source_contract(
-                conn,
-                &sealed_plan.project_id,
-                &sealed_plan.run_id,
-                &applications,
-            )?;
+            let mut validation_owner = NeverStopGraphWorkControl;
+            let current_source_contract = {
+                // Apply revalidates the sealed contract on the same
+                // transaction and borrowed owner as its DML.  A separate
+                // connection or nested maintenance admission is forbidden.
+                let mut validation = validation_context(conn, &mut validation_owner);
+                build_source_contract(
+                    conn,
+                    &sealed_plan.project_id,
+                    &sealed_plan.run_id,
+                    &applications,
+                    &mut validation,
+                )?
+            };
             anyhow::ensure!(
                 current_source_contract.revision_envelope_digest
                     == sealed_source_contract.revision_envelope_digest,
@@ -1544,8 +1571,10 @@ pub fn narrative_extraction_apply_commit(
                 )?;
                 let envelope: Value = serde_json::from_str(&envelope_json)?;
                 let read_set = if envelope_schema_version(&envelope) == Some(2) {
-                    super::v2_apply_sources::load_v2_apply_sources(
-                        conn,
+                    let mut validation = validation_context(conn, &mut validation_owner);
+                    validation.ensure_connection(conn)?;
+                    super::v2_apply_sources::load_v2_apply_sources_with_validation_context(
+                        &mut validation,
                         &payload.project_id,
                         &payload.run_id,
                         &application.revision_id,
@@ -1846,6 +1875,13 @@ pub fn narrative_extraction_apply_commit(
     match apply_result {
         Ok(receipt) => Ok(receipt),
         Err(err) => {
+            // A lifecycle stop is neither Source absence nor an Apply
+            // failure.  Preserve the typed signal and leave the durable
+            // Prepared row retryable; string-based audit classifiers below
+            // must never turn it into failed/invalidated.
+            if is_validation_terminated(&err) {
+                return Err(err);
+            }
             let message = err.to_string();
             let invalidation = message.contains("NEX_SOURCE_")
                 || message.contains("NEX_READ_SET_DRIFT")

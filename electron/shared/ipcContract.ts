@@ -301,6 +301,9 @@ export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
   // napi の TSFn end-to-end 実証チャネル（§7.1、FE 購読者なし）
   "backend:ready",
   "workspace:opened",
+  // Shared lifecycle snapshot projection.  Native emits the raw observer
+  // event; main validates and forwards only the strict opaque DTO.
+  "workspace:lifecycle-state",
   // Codex App Server main-only normalized event envelope.
   "codex-app:event",
 ] as const;
@@ -475,6 +478,8 @@ export interface NapiBackendLike {
   ): Promise<string>;
   vacuumDatabase(): Promise<void>;
   openWorkspace(path: string): Promise<string>;
+  /** Main-only lifecycle snapshot; never exposed as a renderer command. */
+  getWorkspaceLifecycleView?(): Promise<string>;
   validateWorkspacePath(path: string): boolean;
   /** Main-only one-shot bridge; intentionally absent from NAPI_COMMANDS. */
   readLegacyApiKeysForMigration?(): Promise<string>;

@@ -470,6 +470,7 @@ function typedResultRoute(command: string): D2aRoute | undefined {
 const ALLOWED_BACKEND_EVENTS = new Set([
   "backend:ready",
   "workspace:opened",
+  "workspace:lifecycle-state",
   "license:state_changed",
   "semantic:model_download_progress",
   "semantic:reindex_progress",
@@ -561,6 +562,10 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     () => Promise<void>
   >();
   private workspaceId: string | null = null;
+  private lifecycleRevision = -1;
+  private lifecycleBindingToken: string | null = null;
+  private lifecycleStatus: string | null = null;
+  private lifecycleActivation: string | null = null;
   private readonly identities = new Map<number, MainIssuedCallerIdentity>();
   private readonly registrationErrors = new Map<number, string>();
 
@@ -850,6 +855,52 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   }
 
   observeBackendEvent(channel: string, payload: unknown): void {
+    if (channel === "workspace:lifecycle-state") {
+      if (payload === null || typeof payload !== "object") return;
+      const record = payload as Record<string, unknown>;
+      if (
+        !Number.isSafeInteger(record.revision) ||
+        typeof record.status !== "string" ||
+        typeof record.activation !== "string" ||
+        (record.bindingToken !== null &&
+          typeof record.bindingToken !== "string")
+      ) {
+        return;
+      }
+      const revision = record.revision as number;
+      if (revision < this.lifecycleRevision) return;
+      const token =
+        typeof record.bindingToken === "string" ? record.bindingToken : null;
+      const changed =
+        revision > this.lifecycleRevision ||
+        token !== this.lifecycleBindingToken ||
+        record.status !== this.lifecycleStatus ||
+        record.activation !== this.lifecycleActivation;
+      this.lifecycleRevision = revision;
+      this.lifecycleBindingToken = token;
+      this.lifecycleStatus = record.status;
+      this.lifecycleActivation = record.activation;
+      if (!changed) return;
+      const senderIds = [...this.identities.keys()];
+      try {
+        this.invalidateCallers?.();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        for (const senderId of senderIds) {
+          this.registrationErrors.set(senderId, detail);
+        }
+      }
+      // `workspace:opened` is emitted by Native before the terminal Ready
+      // lifecycle snapshot. Preserve that trusted workspace id across the
+      // Ready projection so a valid caller is not stranded after every open;
+      // all caller identities are still invalidated and must re-register.
+      if (!(record.status === "ready" && record.activation === "ready")) {
+        this.workspaceId = null;
+      }
+      this.identities.clear();
+      this.registrationErrors.clear();
+      return;
+    }
     if (
       channel !== "workspace:opened" ||
       payload === null ||

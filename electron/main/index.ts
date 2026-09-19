@@ -22,6 +22,7 @@ import {
   broadcastBackendEvent,
   broadcastMainEvent,
   registerEventBus,
+  refreshWorkspaceLifecycleView,
   setBackendEventEgressGate,
   sendBackendEventToWindow,
   sendMainEventToWindow,
@@ -633,6 +634,10 @@ if (!gotSingleInstanceLock) {
       performance.mark("grimodex:renderer-finished-load");
       mainRendererReady = true;
       flushPendingWebEditorHandoff();
+      // The event may have preceded renderer subscription.  Re-read the
+      // main-only snapshot and publish it through the same revision validator;
+      // a stale response cannot revive an old binding.
+      void refreshWorkspaceLifecycleView(backend);
     });
     if (app.isPackaged && process.platform === "linux") {
       scheduleMcpSidecarWarmup(mainWindow, resolveMcpSidecar, (error) => {

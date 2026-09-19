@@ -3,9 +3,12 @@ use rusqlite::Connection;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use super::super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
+
 /// A logical Source roster, not an approval, disclosure or Freshness verdict.
 /// Unapproved/currently ineligible revisions stay in its digest so a new
 /// decision or replacement can invalidate an empty derived index as well.
+#[derive(Debug)]
 pub(crate) struct EligibilitySource {
     pub digest: String,
     pub revisions: Vec<String>,
@@ -19,6 +22,25 @@ pub(crate) fn read_eligibility_source(
     conn: &Connection,
     project: &str,
 ) -> Result<EligibilitySource> {
+    let mut control = super::super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    read_eligibility_source_with_control(conn, project, &mut control)
+}
+
+/// Read the Chronicle eligibility roster under the caller's finite lifecycle
+/// owner.  Chronicle is a whole-project roster, so a plain `SELECT` is not a
+/// sufficient cancellation boundary: the owner must be able to stop row
+/// iteration and canonical serialization before the digest is published.
+///
+/// The controlled and ordinary readers deliberately share the exact SQL,
+/// ordering and wire contract.  The control object is borrowed and cannot be
+/// retained by the Source value, which prevents a stale lifecycle owner from
+/// becoming a Source authority.
+pub(crate) fn read_eligibility_source_with_control(
+    conn: &Connection,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<EligibilitySource> {
+    control.check(GraphWorkStage::Source)?;
     ensure!(
         !conn.is_autocommit(),
         "NIR1 Source requires a read transaction"
@@ -46,18 +68,23 @@ pub(crate) fn read_eligibility_source(
            ORDER BY latest.created_at DESC,latest.id DESC LIMIT 1)
          WHERE s.project_id=?1 ORDER BY p.id",
     )?;
-    let rows = statement
-        .query_map([project], |row| {
+    let mut cursor = statement.query([project])?;
+    let mut rows = Vec::new();
+    while let Some(row) = cursor.next()? {
+        control.check(GraphWorkStage::Row)?;
+        rows.push(
             (0..11)
                 .map(|index| row.get::<_, Option<String>>(index))
-                .collect::<rusqlite::Result<Vec<_>>>()
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+    }
+    control.check(GraphWorkStage::Serialization)?;
     let bytes = serde_json::to_vec(&json!({
         "contract":"nir1-chronicle-eligibility/1",
         "projectId":project,
         "currentRoster":rows,
     }))?;
+    control.check(GraphWorkStage::Digest)?;
     Ok(EligibilitySource {
         digest: format!("sha256:{}", hex::encode(Sha256::digest(bytes))),
         revisions: rows.iter().filter_map(|row| row[1].clone()).collect(),

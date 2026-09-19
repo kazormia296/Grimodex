@@ -17,7 +17,9 @@ use super::maintenance_runtime::{
     select_unique_latest_lifecycle_evidence, spec_with_active_system_work_marker,
     LifecycleEvidence, NarrativeSystemWorkMarker,
 };
-use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
+use super::repository::{
+    create_system_run_in_tx_with_reserved_id, SystemRunWorkKeyReuse,
+};
 use super::restore_rebuild::VERIFY_CONTRACT_VERSION;
 
 const FAILURE_POLICY_VERSION: &str = "v1";
@@ -129,6 +131,122 @@ pub(crate) struct MaintenanceRunHandle {
     pub(crate) task_id: String,
     pub(crate) attempt_id: String,
     pub(crate) reused: bool,
+    /// Process-local evidence about how the exact tuple was obtained.  It is
+    /// intentionally separate from the durable Run status: an absent tuple
+    /// can only resolve `CreationUnknown` after the caller supplies the
+    /// connection/lineage receipt described by the lifecycle contract.
+    pub(crate) creation_state: RunCreationState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum RunCreationState {
+    Reserved,
+    CreationNotCommitted,
+    CreationUnknown,
+    Created,
+    Reused,
+}
+
+/// Exact IDs are allocated before any creation side effect.  This slot is
+/// process-local and must not be treated as durable evidence after restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RunCreationReservation {
+    pub(crate) run_id: String,
+    pub(crate) task_id: String,
+    pub(crate) attempt_id: String,
+}
+
+impl RunCreationReservation {
+    pub(crate) fn new() -> Self {
+        Self {
+            run_id: Uuid::new_v4().to_string(),
+            task_id: Uuid::new_v4().to_string(),
+            attempt_id: Uuid::new_v4().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum CreationResolution {
+    NotCommitted,
+    Created,
+}
+
+/// Evidence supplied by the supervisor before it attempts to resolve a lost
+/// COMMIT result.  These are deliberately explicit rather than inferred from
+/// a stop flag or an empty query result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct CreationVerification {
+    pub(crate) worker_joined: bool,
+    pub(crate) connection_retired: bool,
+    pub(crate) same_database_identity: bool,
+    pub(crate) lineage_continuous: bool,
+    pub(crate) no_destructive_boundary: bool,
+}
+
+/// Resolve a `CreationUnknown` reservation against one verified database
+/// snapshot.  A zero-row lookup alone is never enough: the worker and its
+/// connection must be dead, the locator/lineage must be continuous, and the
+/// entire Run/Task/Attempt tuple must be absent.  Partial tuples and identity
+/// mismatches remain recovery responsibility.
+#[allow(dead_code)]
+pub(crate) fn resolve_creation_unknown_in_tx(
+    conn: &Connection,
+    reservation: &RunCreationReservation,
+    project_id: &str,
+    verification: CreationVerification,
+) -> anyhow::Result<CreationResolution> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "NEX_RUN_CREATION_UNKNOWN: resolution requires one verification transaction"
+    );
+    anyhow::ensure!(
+        verification.worker_joined
+            && verification.connection_retired
+            && verification.same_database_identity
+            && verification.lineage_continuous
+            && verification.no_destructive_boundary,
+        "NEX_RUN_CREATION_UNKNOWN: durable absence evidence is incomplete"
+    );
+
+    let run: Option<(String, String)> = conn
+        .query_row(
+            "SELECT project_id, status FROM narrative_extraction_runs WHERE id=?1",
+            params![&reservation.run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let task_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE id=?1 AND run_id=?2",
+        params![&reservation.task_id, &reservation.run_id],
+        |row| row.get(0),
+    )?;
+    let attempt_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_extraction_attempts a
+          JOIN narrative_extraction_tasks t ON t.id=a.task_id
+         WHERE a.id=?1 AND a.task_id=?2 AND t.run_id=?3",
+        params![&reservation.attempt_id, &reservation.task_id, &reservation.run_id],
+        |row| row.get(0),
+    )?;
+    match (run, task_count, attempt_count) {
+        (None, 0, 0) => {
+            // The caller may now release the process-local ownership slot
+            // without writing a synthetic cancelled Run.
+            Ok(CreationResolution::NotCommitted)
+        }
+        (Some((actual_project, _)), 1, 1) if actual_project == project_id => {
+            Ok(CreationResolution::Created)
+        }
+        (Some(_), _, _) | (_, 1, _) | (_, _, 1) => Err(ownership_error(
+            "Run creation tuple is partial, cross-project, or references a different child",
+        )),
+        _ => Err(ownership_error(
+            "Run creation tuple does not match the reserved identity",
+        )),
+    }
 }
 
 fn maintenance_task_kind(run_kind: &str) -> anyhow::Result<&'static str> {
@@ -315,6 +433,10 @@ pub(crate) fn create_maintenance_run_in_tx(
         "NEX_MAINTENANCE_LIFECYCLE_INPUT_INVALID: ownership fields must not be empty"
     );
     let task_kind = maintenance_task_kind(run_kind)?;
+    // Reserve the complete identity tuple before touching the Run writer.
+    // Reuse is still checked first by the writer; unused reservation IDs are
+    // never evidence that a reused tuple was not selected.
+    let reservation = RunCreationReservation::new();
     let full_spec = spec_with_active_system_work_marker(spec_json)?;
     let requested_full_spec_json = serde_json::to_string(&full_spec)?;
     let requested_marker_present = full_spec.get("systemWork").is_some();
@@ -336,7 +458,7 @@ pub(crate) fn create_maintenance_run_in_tx(
         spec_digest == expected_digest,
         "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: requested maintenance spec digest does not match the canonical phase spec digest"
     );
-    let run = create_system_run_in_tx(
+    let run = create_system_run_in_tx_with_reserved_id(
         conn,
         project_id,
         run_kind,
@@ -346,6 +468,7 @@ pub(crate) fn create_maintenance_run_in_tx(
         spec_digest,
         reuse,
         None,
+        Some(&reservation.run_id),
     )?;
     let run_id = run
         .get("runId")
@@ -376,6 +499,7 @@ pub(crate) fn create_maintenance_run_in_tx(
             )));
         }
         handle.reused = true;
+        handle.creation_state = RunCreationState::Reused;
         return Ok(handle);
     }
 
@@ -397,8 +521,8 @@ pub(crate) fn create_maintenance_run_in_tx(
         persisted_base == requested_spec_base,
         "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: persisted Run spec does not match the requested sealed phase spec"
     );
-    let task_id = Uuid::new_v4().to_string();
-    let attempt_id = Uuid::new_v4().to_string();
+    let task_id = reservation.task_id.clone();
+    let attempt_id = reservation.attempt_id.clone();
     conn.execute(
         "INSERT INTO narrative_extraction_tasks
             (id, run_id, task_kind, status, input_json, priority, attempt_count,
@@ -430,6 +554,7 @@ pub(crate) fn create_maintenance_run_in_tx(
         task_id,
         attempt_id,
         reused: false,
+        creation_state: RunCreationState::Created,
     };
     validate_handle_in_tx(conn, &handle)?;
     Ok(handle)
@@ -552,6 +677,7 @@ pub(crate) fn synthesize_recovery_lifecycle_in_tx(
         task_id,
         attempt_id,
         reused: false,
+        creation_state: RunCreationState::CreationUnknown,
     };
     validate_handle_in_tx(conn, &handle)?;
     Ok(handle)
@@ -676,6 +802,7 @@ pub(crate) fn load_maintenance_run_in_tx(
         task_id,
         attempt_id,
         reused: true,
+        creation_state: RunCreationState::Reused,
     };
     validate_handle_in_tx(conn, &handle)?;
     Ok(handle)
@@ -816,6 +943,7 @@ pub(crate) fn load_completed_maintenance_run_in_tx(
         task_id,
         attempt_id,
         reused: true,
+        creation_state: RunCreationState::Reused,
     };
     validate_lifecycle_timestamps_in_tx(conn, &handle, true)?;
     Ok(handle)
@@ -1471,6 +1599,47 @@ mod tests {
             &spec_digest,
             SystemRunWorkKeyReuse::RunningOnly,
         )
+    }
+
+    #[test]
+    fn creation_unknown_requires_complete_absence_evidence() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let reservation = RunCreationReservation::new();
+            let verification = CreationVerification {
+                worker_joined: true,
+                connection_retired: true,
+                same_database_identity: true,
+                lineage_continuous: true,
+                no_destructive_boundary: true,
+            };
+            let tx = conn.unchecked_transaction()?;
+            assert_eq!(
+                resolve_creation_unknown_in_tx(
+                    &tx,
+                    &reservation,
+                    "project-1",
+                    verification,
+                )?,
+                CreationResolution::NotCommitted
+            );
+            tx.rollback()?;
+            let tx = conn.unchecked_transaction()?;
+            let incomplete = CreationVerification {
+                no_destructive_boundary: false,
+                ..verification
+            };
+            assert!(resolve_creation_unknown_in_tx(
+                &tx,
+                &reservation,
+                "project-1",
+                incomplete,
+            )
+            .is_err());
+            tx.rollback()?;
+            Ok(())
+        })
+        .expect("creation evidence contract");
     }
 
     fn move_children_to_future(

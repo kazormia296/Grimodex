@@ -84,6 +84,7 @@ use grimodex_db::narrative_extraction::{
     RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
     RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
     VerifyNarrativeDependencyGraphPayload,
+    FreshnessLifecycleControl,
 };
 use grimodex_db::open::{
     open_workspace_sync_traced_with_pre_swap, NativeWorkspaceOpenResult,
@@ -115,7 +116,10 @@ use grimodex_db::timelapse::{TimelapseBodySnapshotTarget, TimelapseGenesisBaseli
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload, TrashBinRestorePayload};
 use grimodex_db::web_editor_handoff;
 use grimodex_db::workspace::{self, GlobalSettings};
-use grimodex_db::{with_db_state, AppError, BatchStatement, Database, RepairIntegrityPayload};
+use grimodex_db::{
+    with_db_state, AdmissionKind, AppError, BatchStatement, Database, LifecycleState,
+    PermitAdmission, RepairIntegrityPayload,
+};
 
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
@@ -1068,7 +1072,13 @@ fn workspace_swap_owner_authority(
 fn reopen_narrative_maintenance_admission(
     state: &Arc<AppState>,
 ) -> std::result::Result<(), AppError> {
-    let binding = match active_database(&state.ws) {
+    // Open/Restore now hold the shared lifecycle transition until the
+    // terminal projection is published, so the compatibility switching view
+    // is still raised while this unwind/reopen path runs.  Resolve the exact
+    // owner authority through the narrow swap-owner helper instead of calling
+    // the normal fail-closed DB pin and accidentally stranding the admission
+    // gate after a pre-swap error.
+    let binding = match workspace_swap_owner_authority(state, true) {
         Ok(authority) => Some(
             state
                 .narrative_maintenance_recovery_gate
@@ -1230,16 +1240,13 @@ fn close_narrative_maintenance_for_workspace_swap(
             .map_err(AppError::Anyhow)?;
         return Ok(false);
     }
-    if !allow_restore_only_recovery
-        && state
-            .ws
-            .switching
-            .load(std::sync::atomic::Ordering::Acquire)
-    {
-        return Err(AppError::Anyhow(anyhow::anyhow!(
-            "NEX_WORKSPACE_OPEN_BUSY: another workspace operation owns the open lock"
-        )));
-    }
+    // The shared lifecycle core admits the Restore/Open transition before
+    // this function is entered and projects that admission through the
+    // compatibility `switching` view.  Do not use that projection as a
+    // second owner check here: doing so would reject the very Restore that
+    // just acquired the logical transition permit before it can close the
+    // maintenance gate.  A competing operation is rejected by the core; the
+    // physical `open_lock` below remains the serialization boundary.
     let active_binding = workspace_swap_owner_authority(state, allow_restore_only_recovery)
         .ok()
         .map(|authority| {
@@ -1708,8 +1715,11 @@ fn emit_workspace_lifecycle_view(state: &AppState, view: &WorkspaceLifecycleView
     }
 }
 
-fn begin_workspace_lifecycle_transition(state: &AppState) -> std::result::Result<(), AppError> {
-    let (view, changed) = state.workspace_lifecycle.begin_transition()?;
+fn begin_workspace_lifecycle_transition(
+    state: &AppState,
+    kind: AdmissionKind,
+) -> std::result::Result<(), AppError> {
+    let (view, changed) = state.workspace_lifecycle.begin_transition_kind(kind)?;
     if changed {
         emit_workspace_lifecycle_view(state, &view);
     }
@@ -3600,6 +3610,49 @@ struct RevalidatedNarrativeWorkspace<'a> {
     authority: PinnedWorkspaceDb,
 }
 
+/// Borrowed lifecycle owner for the bounded Freshness cycle.  The owner is
+/// deliberately Native-side: shared Freshness only receives checkpoints and
+/// cannot infer workspace authority from a renderer-shaped argument.
+struct NativeFreshnessLifecycleControl<'a> {
+    state: &'a AppState,
+}
+
+impl FreshnessLifecycleControl for NativeFreshnessLifecycleControl<'_> {
+    fn check(&mut self) -> anyhow::Result<()> {
+        let lifecycle = self.state.ws.lifecycle_core().snapshot().map_err(|error| {
+            anyhow::anyhow!("NEX_VALIDATION_TERMINATED:lifecycle-snapshot-unavailable:{error}")
+        })?;
+        let lifecycle_allows_work = match lifecycle.state {
+            LifecycleState::Ready(_) => true,
+            // Existing file-backed Native tests can install an authority
+            // directly. Treat that narrow bootstrap shape as usable, while
+            // still rejecting every explicit transition/recovery/closed
+            // state from the shared core.
+            LifecycleState::NoWorkspace => self
+                .state
+                .ws
+                .inner
+                .lock()
+                .map(|active| active.is_some())
+                .unwrap_or(false),
+            LifecycleState::Transition { .. }
+            | LifecycleState::RecoveryRequired { .. }
+            | LifecycleState::Closed => false,
+        };
+        if !lifecycle_allows_work
+            || self.state.ws.switching.load(std::sync::atomic::Ordering::Acquire)
+        {
+            anyhow::bail!(
+                "NEX_VALIDATION_TERMINATED:workspace-transition-in-progress"
+            );
+        }
+        if self.state.ws.safe_mode.is_active() {
+            anyhow::bail!("NEX_VALIDATION_TERMINATED:workspace-recovery-required");
+        }
+        Ok(())
+    }
+}
+
 fn revalidate_narrative_workspace_after_cycle<'a>(
     state: &'a AppState,
     completed_authority: PinnedWorkspaceDb,
@@ -3680,12 +3733,14 @@ fn run_narrative_freshness_cycle_inner(
     // successfully. A failed graph evaluation, cursor reservation,
     // or publication therefore cannot attest a live scheduler or
     // activate the canonical authority.
-    let (cycle_outcome, successful_cycle) =
-        narrative_extraction::run_incremental_freshness_cycle_with_liveness_capability_and_hold(
+    let mut lifecycle_control = NativeFreshnessLifecycleControl { state };
+    let (cycle_outcome, successful_cycle) = narrative_extraction::
+        run_incremental_freshness_cycle_with_liveness_capability_and_hold_and_lifecycle_control(
             authority.db(),
             ci_config
                 .as_ref()
                 .and_then(|config| config.freshness_hold_project_id.as_deref()),
+            &mut lifecycle_control,
         )?;
     // A workspace swap may complete while the bounded cycle is
     // evaluating its pinned old authority. Re-resolve the active
@@ -4683,6 +4738,39 @@ impl Backend {
                 })
                 .to_string());
             }
+
+            // The normal Open/Restore path publishes this binding before a
+            // maintenance request can arrive. Test-only and compatibility
+            // owners may install an already-verified authority directly, so
+            // observe that authority once before taking the shared execution
+            // permit. This does not infer identity from a renderer argument:
+            // `snapshot_for_workspace` reads the verified Native authority and
+            // its durable metadata.
+            state
+                .workspace_lifecycle
+                .snapshot_for_workspace(&state.ws)?;
+            // Common lifecycle admission now precedes the maintenance DB
+            // work and owns the exact responsibility cell. A transition closes
+            // this request at the same core boundary, and the permit's Drop
+            // finalizer releases it on every terminal path.
+            let _maintenance_permit = match state.workspace_lifecycle.begin_maintenance()? {
+                PermitAdmission::Admitted(permit) => permit,
+                PermitAdmission::NotAdmitted { reason, snapshot } => {
+                    if matches!(snapshot.state, LifecycleState::NoWorkspace) {
+                        return Ok(serde_json::json!({
+                            "status": "workspace-unavailable",
+                            "reason": "lifecycle-no-workspace",
+                        })
+                        .to_string());
+                    }
+                    return Ok(serde_json::json!({
+                        "status": "not-admitted",
+                        "reason": format!("lifecycle-{reason:?}"),
+                        "stateRevision": snapshot.revision,
+                    })
+                    .to_string());
+                }
+            };
 
             // Every short ledger read performed by recovery, foreground
             // lookup, and post-cycle acknowledgement inherits the same
@@ -6568,7 +6656,8 @@ impl Backend {
     /// (`ready`/`migrated`/`recovery-required`/`safe-mode`)。
     #[napi]
     pub async fn open_workspace(&self, path: String) -> Result<String> {
-        begin_workspace_lifecycle_transition(&self.state).map_err(app_err_to_napi)?;
+        begin_workspace_lifecycle_transition(&self.state, AdmissionKind::Open)
+            .map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
         let trace_enabled = native_workspace_open_trace_enabled();
         let trace_started_at = Instant::now();
@@ -6859,7 +6948,8 @@ impl Backend {
     /// rotateして復元前DBへのlate writeを不可視にする。
     #[napi]
     pub async fn restore_backup(&self, file_name: String) -> Result<()> {
-        begin_workspace_lifecycle_transition(&self.state).map_err(app_err_to_napi)?;
+        begin_workspace_lifecycle_transition(&self.state, AdmissionKind::Restore)
+            .map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
         let result = run_blocking(move || {
             if state
@@ -7000,7 +7090,8 @@ impl Backend {
     /// Safe Mode候補を復元する。復元後はrendererがopen_workspaceを再実行する。
     #[napi]
     pub async fn restore_recovery_candidate(&self, candidate_id: String) -> Result<()> {
-        begin_workspace_lifecycle_transition(&self.state).map_err(app_err_to_napi)?;
+        begin_workspace_lifecycle_transition(&self.state, AdmissionKind::Restore)
+            .map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
         let result =
             run_blocking(move || restore_safe_mode_candidate(&state.ws, &candidate_id)).await;

@@ -56,6 +56,7 @@ import {
   type NativeWorkspaceOpenResult,
 } from "./recovery/applyNativeOpenOutcome";
 import type { WorkspaceState } from "./workspaceState";
+import { subscribeWorkspaceLifecycleProjection } from "./workspaceLifecycleProjection";
 
 export type {
   GlobalSettings,
@@ -80,13 +81,22 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   workspaceSwitchInProgress: false,
   workspaceOpenRequestInProgress: false,
   workspaceHydrated: false,
+  workspaceLifecycleRevision: 0,
+  workspaceLifecycleStatus: "closed",
+  workspaceLifecycleActivation: "none",
+  workspaceLifecycleBindingToken: null,
   activeWorkspaceName: null,
   error: null,
   pendingTrustPath: null,
   showSampleTour: false,
   recoveryShell: null,
 
-  initialize: () => initializeWorkspaceStore(get, set),
+  initialize: () => {
+    void subscribeWorkspaceLifecycleProjection(get, set).catch((error) => {
+      debugLog.warn("workspaceStore", "lifecycle projection subscription unavailable", error);
+    });
+    return initializeWorkspaceStore(get, set);
+  },
 
   openWorkspace: async (path: string, source = "direct") => {
     // 連打・多重呼び出しの in-flight ガード (Rust 側は open_lock で直列化
@@ -158,7 +168,6 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
           transition: quiescenceLease?.transition,
         }),
       );
-      clearRetainedEditorRecoveryDraftsForScopeChange();
       // Existing Project lifecycles and every old-scope persistence surface
       // have now settled. Keep the old identity published until this point so
       // an interrupted create/update can complete or roll back against the
@@ -289,6 +298,10 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         workspaceSwitchInProgress: false,
         workspaceHydrated: true,
       });
+      // Only discard the old scope's detached drafts after the replacement
+      // authority has hydrated and been published. Recovery-required and
+      // post-swap hydration failures keep them available to the RecoveryShell.
+      clearRetainedEditorRecoveryDraftsForScopeChange();
       quiescenceLease.transition?.advance("new-scope-hydrated");
       authorityPublishSpan.finish();
       return "opened";

@@ -2452,15 +2452,19 @@ impl AppState {
             },
             Arc::new(events.clone()),
         ));
+        let switching = grimodex_db::WorkspaceLifecycleCompatibilityView::default();
+        let lifecycle_core = switching.core();
         Ok(Self {
             ws: WorkspaceState {
                 inner: Mutex::new(None),
                 safe_mode: grimodex_db::recovery::SafeModeState::default(),
-                switching: std::sync::atomic::AtomicBool::new(false),
+                switching,
                 open_lock: Mutex::new(()),
             },
             workspace_lifecycle:
-                crate::workspace_lifecycle_view::WorkspaceLifecycleViewAdapter::new(),
+                crate::workspace_lifecycle_view::WorkspaceLifecycleViewAdapter::new(
+                    lifecycle_core,
+                ),
             gs: GlobalSettingsPath {
                 path: dir.join("global-settings.json"),
                 write_lock: Mutex::new(()),

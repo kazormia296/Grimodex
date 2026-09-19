@@ -98,4 +98,28 @@ describe("narrative maintenance quit finalizer", () => {
     release();
     await Promise.all([first, second]);
   });
+
+  it("runs independent cleanup while Native observation is stuck", async () => {
+    const dispose = vi.fn(() => new Promise<void>(() => undefined));
+    const complete = vi.fn().mockResolvedValue(undefined);
+    const quit = vi.fn();
+    const exit = vi.fn();
+    const error = vi.fn();
+    const finalizer = createNarrativeMaintenanceQuitFinalizer({
+      dispose,
+      complete,
+      quit,
+      exit,
+      error,
+      nativeObservationBudgetMs: 5,
+    });
+
+    await finalizer(event());
+
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(quit).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(error).toHaveBeenCalled();
+  });
 });

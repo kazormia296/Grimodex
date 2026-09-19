@@ -29,6 +29,9 @@ use crate::narrative_extraction::{
     mint_c2zc_project_birth_epoch_in_tx, mint_c2zc_scan_publish_project_birth_epoch_in_tx,
     with_immediate_transaction,
 };
+use crate::narrative_extraction::{
+    release_project_destructive_permit, try_reserve_project_destructive_permit,
+};
 
 fn json_pointer_segment(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
@@ -1960,8 +1963,23 @@ pub fn project_patch(db: &Database, payload: ProjectPatchPayload) -> anyhow::Res
 /// therefore retained.
 pub fn project_delete(db: &Database, payload: ProjectDeletePayload) -> anyhow::Result<()> {
     require_non_empty(&payload.project_id, "projectId")?;
-    db.with_conn(|conn| {
+    // This permit is process-local coordination with the shared lifecycle
+    // owner.  The durable running-Run check below remains mandatory because
+    // another process may still hold a writer or recovery responsibility.
+    try_reserve_project_destructive_permit(&payload.project_id)?;
+    let result = db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
+        let active_runs: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs
+              WHERE project_id = ?1 AND status IN ('pending', 'running')",
+            rusqlite::params![payload.project_id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            active_runs == 0,
+            "project '{}' has active lifecycle ownership; deletion is not admitted",
+            payload.project_id
+        );
         let immutable_applications: i64 = tx.query_row(
             "SELECT COUNT(*)
                FROM narrative_proposal_applications a
@@ -2111,7 +2129,9 @@ pub fn project_delete(db: &Database, payload: ProjectDeletePayload) -> anyhow::R
         anyhow::ensure!(deleted == 1, "project '{}' not found", payload.project_id);
         tx.commit()?;
         Ok(())
-    })
+    });
+    release_project_destructive_permit(&payload.project_id);
+    result
 }
 
 pub fn create_scan_staging_project(
