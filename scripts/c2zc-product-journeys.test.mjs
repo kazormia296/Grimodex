@@ -999,6 +999,47 @@ test("C2-ZC lifecycle verifier isolates an exact four-run delta after baseline",
   }
 });
 
+test("C2-ZC lifecycle verifier ignores only controlled connection preemption retries", () => {
+  const fixture = strictLifecycleRuns();
+  const preemption = {
+    ...structuredClone(fixture.runs[0]),
+    id: "verify-preempted",
+    status: "cancelled",
+    terminalReasonCode: "NEX_MAINTENANCE_CONNECTION_PREEMPTED",
+    completedAt: fixture.runs[0].completedAt,
+  };
+  const observed = [
+    fixture.runs[0],
+    preemption,
+    ...fixture.runs.slice(1),
+  ];
+  assert.doesNotThrow(() =>
+    assertC2ZcRestoreLifecycleOrder(observed, {
+      currentEpochId: "e1",
+      restoreEpochId: "e1",
+      expectedRestoreLifecycle: fixture.expectedRestoreLifecycle,
+      marker: fixture.marker,
+      rustOutcome: fixture.rustOutcome,
+      fixtureSemantic: fixtureSemantic(),
+    }),
+  );
+
+  const unknownCancellation = structuredClone(observed);
+  unknownCancellation[1].terminalReasonCode = "NEX_MAINTENANCE_INTERRUPTED";
+  assert.throws(
+    () =>
+      assertC2ZcRestoreLifecycleOrder(unknownCancellation, {
+        currentEpochId: "e1",
+        restoreEpochId: "e1",
+        expectedRestoreLifecycle: fixture.expectedRestoreLifecycle,
+        marker: fixture.marker,
+        rustOutcome: fixture.rustOutcome,
+        fixtureSemantic: fixtureSemantic(),
+      }),
+    /four|4|lifecycle|completed|order/i,
+  );
+});
+
 test("C2-ZC manifest baseline is immutable and exact", () => {
   const semantic = fixtureSemantic();
   const baseline = resolveC2ZcRestoreCanonicalLifecycleBaseline(semantic);

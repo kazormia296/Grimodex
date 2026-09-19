@@ -13,6 +13,7 @@ import process from "node:process";
 import {
   configureJourneyWorkspaceForProductJourney,
   launchRestoreVerifyRebuildVerifyRestorePhaseForProductJourney,
+  NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE,
   restoreBackupThroughSettingsUi,
 } from "./narrative-maintenance-product-journeys.mjs";
 import {
@@ -1010,7 +1011,15 @@ function canonicalLifecycleRunsOf(value, label) {
   return rows(
     Array.isArray(value) ? value : value?.runs,
     `${label} runs`,
-  ).filter((run) => C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run?.runKind));
+  ).filter(
+    (run) =>
+      C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run?.runKind) &&
+      !(
+        run?.status === "cancelled" &&
+        run?.terminalReasonCode ===
+          NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE
+      ),
+  );
 }
 
 function canonicalRunBaselineProjectionOf(run) {
@@ -3180,9 +3189,7 @@ export function assertC2ZcRestoreLifecycleOrder(
   assertC2ZcNoDependencyRepair({ runs: runsValue }, label);
   const lifecycleRuns =
     baselineRuns === undefined
-      ? runsValue.filter((run) =>
-          C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run.runKind),
-        )
+      ? canonicalLifecycleRunsOf(runsValue, label)
       : assertC2ZcCanonicalLifecycleDelta(
           runsValue,
           baselineRuns,
