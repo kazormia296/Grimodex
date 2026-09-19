@@ -2002,7 +2002,13 @@ export function createNarrativeMaintenanceScheduler(
               }
             }
           }
-          if (requeuedCount > 0 && isCanonicalTransientFailure(error)) {
+          if (haltForProcessInterruption) {
+            // The authorized CI seam has already durably acknowledged the
+            // running lifecycle and scheduled process exit. Its interrupted
+            // terminal receipt is expected; emitting it as a background
+            // error makes the product journey classify a controlled exit as
+            // a main-process failure.
+          } else if (requeuedCount > 0 && isCanonicalTransientFailure(error)) {
             warn(
               `[narrative-maintenance] ${NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE} retry scheduled (${requeuedCount} queued, attempt ${firstRetryCount ?? 1}/${NARRATIVE_MAINTENANCE_MAX_RETRIES})`,
             );

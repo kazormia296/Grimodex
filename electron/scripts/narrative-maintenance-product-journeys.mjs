@@ -48,6 +48,8 @@ export const NARRATIVE_MAINTENANCE_OWNER_TOKEN =
 const NARRATIVE_MAINTENANCE_UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 export const NARRATIVE_MAINTENANCE_TRANSIENT_CODE = "NEX_MAINTENANCE_TRANSIENT";
+export const NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE =
+  "NEX_MAINTENANCE_CONNECTION_PREEMPTED";
 export const NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE =
   "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION";
 export const NARRATIVE_MAINTENANCE_INTERRUPTED_CODE =
@@ -61,6 +63,14 @@ const RESTORE_AUTOMATIC_PHASE_RUN_KINDS = new Set([
   "semantic-index-rebuild",
   "dependency-repair",
 ]);
+
+function isRetryableMaintenancePreemption(row) {
+  return (
+    row?.status === "cancelled" &&
+    row?.terminalReasonCode ===
+      NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE
+  );
+}
 export const NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER = "workspace-opened";
 export const NARRATIVE_MAINTENANCE_FOREGROUND_SYSTEM_WORK_MARKER =
   Object.freeze([
@@ -1519,7 +1529,12 @@ async function waitForRunSequence(
   return waitForLedger(
     context,
     (rows) => {
-      const fresh = rowsAfter(rows, baselineRows);
+      // A foreground handoff can leave a cancelled retry marker before the
+      // replacement Run completes. It is lifecycle evidence, not the phase
+      // selected by this sequence assertion.
+      const fresh = rowsAfter(rows, baselineRows).filter(
+        (row) => !isRetryableMaintenancePreemption(row),
+      );
       try {
         return requireSequence(fresh, expectedKinds, label, {
           requireCompleted,
@@ -1540,9 +1555,24 @@ async function waitForRestorePhaseRows(context, baselineRows) {
       const phaseRows = rowsAfter(rows, baselineRows).filter((row) =>
         RESTORE_AUTOMATIC_PHASE_RUN_KINDS.has(row.runKind),
       );
+      // A foreground handoff may cancel a phase after its Run was created.
+      // The scheduler then retries the same work under a fresh Run. Those
+      // exact retryable cancellations are lifecycle evidence, but they are
+      // not additional phases in the final Verify -> Rebuild -> Verify
+      // chain. Unknown terminal rows remain blocking evidence.
+      const retryablePreemptions = phaseRows.filter(
+        isRetryableMaintenancePreemption,
+      );
+      const unexpectedTerminalRows = phaseRows.filter(
+        (row) =>
+          row.status !== "completed" && !retryablePreemptions.includes(row),
+      );
+      if (unexpectedTerminalRows.length > 0) return null;
+      const completedPhaseRows = phaseRows.filter(
+        (row) => row.status === "completed",
+      );
       if (
-        phaseRows.length < 3 ||
-        phaseRows.some((row) => row.status !== "completed")
+        completedPhaseRows.length < 3
       ) {
         return null;
       }
@@ -1562,7 +1592,8 @@ async function waitForRestorePhaseRows(context, baselineRows) {
     "restore/epoch settled automatic phase rows",
   );
   return rowsAfter(stableRows, baselineRows).filter((row) =>
-    RESTORE_AUTOMATIC_PHASE_RUN_KINDS.has(row.runKind),
+    RESTORE_AUTOMATIC_PHASE_RUN_KINDS.has(row.runKind) &&
+    row.status === "completed",
   );
 }
 
