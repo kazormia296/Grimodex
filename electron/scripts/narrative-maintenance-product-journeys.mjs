@@ -23,6 +23,10 @@ const execFile = promisify(execFileCallback);
  */
 
 export const NARRATIVE_MAINTENANCE_WAIT_MS = 5_000;
+// Canonical activation can require a maintenance/discovery retry chain after
+// the first completed Verify. Keep this longer wait scoped to that cutover
+// marker instead of changing the timeout used by ordinary journey polling.
+export const NARRATIVE_MAINTENANCE_CUTOVER_WAIT_MS = 30_000;
 export const NARRATIVE_MAINTENANCE_FAULT_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_FAULT";
 export const NARRATIVE_MAINTENANCE_TRIGGER_ENV =
@@ -3579,7 +3583,7 @@ export async function finishDigestChangeBaseline(
         return marker;
       },
       `${coordinate} baseline canonical cutover`,
-      NARRATIVE_MAINTENANCE_WAIT_MS,
+      NARRATIVE_MAINTENANCE_CUTOVER_WAIT_MS,
       100,
     );
     context.record("baseline-canonical-cutover-observed", {

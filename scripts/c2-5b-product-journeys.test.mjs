@@ -15,6 +15,7 @@ import {
 } from "../electron/scripts/product-journeys.mjs";
 import {
   NARRATIVE_MAINTENANCE_FAULTS,
+  NARRATIVE_MAINTENANCE_CUTOVER_WAIT_MS,
   NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES,
   NARRATIVE_MAINTENANCE_FOREGROUND_SYSTEM_WORK_MARKER,
   NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER,
@@ -980,7 +981,7 @@ test("digest-change baseline waits for durable cutover before settling, closing,
   const harness = {
     waitUntil: async (predicate, label, timeoutMs, intervalMs) => {
       assert.equal(label, "ruleRegistryDigest baseline canonical cutover");
-      assert.equal(timeoutMs, 5_000);
+      assert.equal(timeoutMs, NARRATIVE_MAINTENANCE_CUTOVER_WAIT_MS);
       assert.equal(intervalMs, 100);
       await assert.rejects(predicate(), /canonical cutover is not durable/);
       reportFirstPoll();
