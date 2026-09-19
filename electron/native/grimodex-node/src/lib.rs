@@ -43,7 +43,11 @@ use napi_derive::napi;
 use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
 use grimodex_db::agent_writes;
 use grimodex_db::ai_audit::{sanitize_diagnostic_credentials, AppendAiAuditEvent};
-use grimodex_db::backup_restore::{list_backups, restore_backup_core};
+use grimodex_db::backup_restore::{
+    list_backups, restore_backup_core_with_open_lock,
+};
+#[cfg(test)]
+use grimodex_db::backup_restore::restore_backup_core;
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendarPayload};
 use grimodex_db::domain_writes::{
@@ -1034,8 +1038,10 @@ fn narrative_maintenance_binding_for_authority(
 /// it.  Callers outside that callback retain the normal fail-closed lookup.
 fn workspace_swap_owner_authority(
     state: &AppState,
+    allow_switching_owner: bool,
 ) -> std::result::Result<PinnedWorkspaceDb, AppError> {
-    if state
+    if allow_switching_owner
+        && state
         .ws
         .switching
         .load(std::sync::atomic::Ordering::Acquire)
@@ -1129,17 +1135,31 @@ fn close_narrative_maintenance_for_workspace_swap(
         .narrative_maintenance_recovery_gate
         .maintenance_admission_is_closed();
     if already_closed {
-        let replacement_recovery_pending = workspace_swap_owner_authority(state)
-            .ok()
-            .map(|authority| {
-                let authority_id = narrative_authority_id(&authority);
-                !state
-                    .narrative_maintenance_preempted_runs
-                    .pending_for_authority(&authority_id)
-                    .is_empty()
-            })
-            .unwrap_or(false);
-        let restore_only_without_authority = if allow_restore_only_recovery {
+        let workspace_swap_owns_gate = state
+            .narrative_maintenance_recovery_gate
+            .admission_owned_by_workspace_swap();
+        let replacement_recovery_pending = if allow_restore_only_recovery
+            && workspace_swap_owns_gate
+        {
+            workspace_swap_owner_authority(state, true)
+                .ok()
+                .map(|authority| {
+                    let authority_id = narrative_authority_id(&authority);
+                    !state
+                        .narrative_maintenance_preempted_runs
+                        .pending_for_authority(&authority_id)
+                        .is_empty()
+                })
+                .unwrap_or(false)
+        } else {
+            // Restore closes admission before waiting for the open lock, but
+            // it must never inherit a closed gate left by an earlier open.
+            // The open owner alone may use the replacement-recovery retry.
+            false
+        };
+        let restore_only_without_authority = if allow_restore_only_recovery
+            && workspace_swap_owns_gate
+        {
             // Keep the lock order used by `active_workspace_snapshot`: inner
             // first, then SafeMode. A poisoned workspace lock is not evidence
             // of a safe restore-only state, so fail closed.
@@ -1184,11 +1204,23 @@ fn close_narrative_maintenance_for_workspace_swap(
             .map_err(AppError::Anyhow)?;
         return Ok(false);
     }
-    let active_binding = workspace_swap_owner_authority(state).ok().map(|authority| {
-        state
-            .narrative_maintenance_recovery_gate
-            .binding_for_authority(&narrative_authority_id(&authority))
-    });
+    if !allow_restore_only_recovery
+        && state
+            .ws
+            .switching
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "NEX_WORKSPACE_OPEN_BUSY: another workspace operation owns the open lock"
+        )));
+    }
+    let active_binding = workspace_swap_owner_authority(state, allow_restore_only_recovery)
+        .ok()
+        .map(|authority| {
+            state
+                .narrative_maintenance_recovery_gate
+                .binding_for_authority(&narrative_authority_id(&authority))
+        });
     if let Some(binding) = active_binding.as_ref() {
         // A terminal receipt with failed cleanup quarantines the old
         // connection. Retire only its process-local gate marker as part of
@@ -1197,10 +1229,17 @@ fn close_narrative_maintenance_for_workspace_swap(
         let quarantined = state
             .narrative_maintenance_attempts
             .failed_cleanup_attempt_ids_for_binding(binding);
-        state
-            .narrative_maintenance_recovery_gate
-            .close_for_workspace_swap_with_quarantined_attempts(binding, &quarantined)
-            .map_err(AppError::Anyhow)?;
+        if allow_restore_only_recovery {
+            state
+                .narrative_maintenance_recovery_gate
+                .close_for_workspace_swap_with_quarantined_attempts(binding, &quarantined)
+                .map_err(AppError::Anyhow)?;
+        } else {
+            state
+                .narrative_maintenance_recovery_gate
+                .close_for_restore_with_quarantined_attempts(binding, &quarantined)
+                .map_err(AppError::Anyhow)?;
+        }
     } else {
         // A failed cleanup may have detached its old authority before the
         // next open reaches this hook. Retire only receipts that already
@@ -1210,18 +1249,32 @@ fn close_narrative_maintenance_for_workspace_swap(
             .narrative_maintenance_attempts
             .failed_cleanup_attempts();
         if quarantined.is_empty() {
-            state
-                .narrative_maintenance_recovery_gate
-                .close_for_workspace_swap()
-                .map_err(AppError::Anyhow)?;
+            if allow_restore_only_recovery {
+                state
+                    .narrative_maintenance_recovery_gate
+                    .close_for_workspace_swap()
+                    .map_err(AppError::Anyhow)?;
+            } else {
+                state
+                    .narrative_maintenance_recovery_gate
+                    .close_for_restore()
+                    .map_err(AppError::Anyhow)?;
+            }
         } else {
-            state
-                .narrative_maintenance_recovery_gate
-                .close_for_workspace_swap_with_quarantined_attempt_bindings(&quarantined)
-                .map_err(AppError::Anyhow)?;
+            if allow_restore_only_recovery {
+                state
+                    .narrative_maintenance_recovery_gate
+                    .close_for_workspace_swap_with_quarantined_attempt_bindings(&quarantined)
+                    .map_err(AppError::Anyhow)?;
+            } else {
+                state
+                    .narrative_maintenance_recovery_gate
+                    .close_for_restore_with_quarantined_attempt_bindings(&quarantined)
+                    .map_err(AppError::Anyhow)?;
+            }
         }
     }
-    if let Ok(authority) = workspace_swap_owner_authority(state) {
+    if let Ok(authority) = workspace_swap_owner_authority(state, allow_restore_only_recovery) {
         let binding = state
             .narrative_maintenance_recovery_gate
             .binding_for_authority(&narrative_authority_id(&authority));
@@ -6712,24 +6765,41 @@ impl Backend {
     pub async fn restore_backup(&self, file_name: String) -> Result<()> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            if state
+                .narrative_maintenance_recovery_gate
+                .maintenance_admission_is_closed()
+            {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_ADMISSION_CLOSED: another workspace operation owns the swap"
+                )));
+            }
             let mut admission_guard =
                 NarrativeMaintenanceAdmissionReopenGuard::new(Arc::clone(&state));
             let owns_close = close_narrative_maintenance_for_workspace_swap(&state, false)?;
             if owns_close {
                 admission_guard.arm();
             }
-            #[cfg(test)]
-            if owns_close {
-                state
-                    .narrative_maintenance_recovery_gate
-                    .panic_after_admission_close_for_test();
-            }
+            // Restore owns the admission close while it waits for the shared
+            // open lock. The restore core receives this same guard, so a
+            // concurrent workspace open cannot borrow the closed gate and
+            // later make the restore re-resolve a different workspace.
+            let open_guard = state
+                .ws
+                .open_lock
+                .lock()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
             let state_for_hook = Arc::clone(&state);
             let workspace_binding = active_workspace_path(&state.ws)
                 .ok()
                 .map(|path| path.to_string_lossy().into_owned());
             let restore_result = catch_unwind(AssertUnwindSafe(|| {
-                restore_backup_core(&state.ws, &file_name, move || {
+                #[cfg(test)]
+                if owns_close {
+                    state
+                        .narrative_maintenance_recovery_gate
+                        .panic_after_admission_close_for_test();
+                }
+                restore_backup_core_with_open_lock(&state.ws, open_guard, &file_name, move || {
                     rotate_ime_workspace(&state_for_hook);
                     state_for_hook
                         .profile_egress
@@ -13057,6 +13127,41 @@ mod narrative_maintenance_admission_unwind_tests {
             .narrative_maintenance_preempted_runs
             .pending_for_authority(&binding.authority_id)
             .is_empty());
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn production_restore_cannot_borrow_a_closed_open_recovery_gate() {
+        let (backend, root) = backend_with_active_workspace("restore-closed-open-gate");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        drop(authority);
+
+        backend
+            .state
+            .narrative_maintenance_preempted_runs
+            .defer("restore-must-not-borrow-run", &binding)
+            .expect("retain pending Run");
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .close_for_workspace_swap()
+            .expect("model an open-owned closed gate");
+
+        let error = backend
+            .restore_backup("missing-while-open-recovery-pending.db".to_string())
+            .await
+            .expect_err("restore must not inherit another open's gate");
+        assert!(error
+            .to_string()
+            .contains("NEX_MAINTENANCE_ADMISSION_CLOSED"));
+        assert!(backend
+            .state
+            .narrative_maintenance_preempted_runs
+            .pending_for_authority(&binding.authority_id)
+            .contains(&("restore-must-not-borrow-run".to_string(), binding)));
 
         drop(backend);
         let _ = std::fs::remove_dir_all(root);

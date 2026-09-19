@@ -128,8 +128,20 @@ struct NarrativeMaintenanceRecoveryState {
     /// admission check and authority publication.  Attempt registration must
     /// use this same mutex so a begin cannot slip into that gap.
     maintenance_admission_closed: bool,
+    /// The process-local owner of a closed admission gate.  `switching` on
+    /// WorkspaceState only says that some workspace operation is in flight;
+    /// it does not prove that the caller observing the gate owns the open
+    /// lock.  Keeping the owner here prevents restore from borrowing an
+    /// open-owned recovery close (and vice versa).
+    maintenance_admission_owner: Option<NarrativeMaintenanceAdmissionOwner>,
     #[cfg(test)]
     panic_after_admission_close: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NarrativeMaintenanceAdmissionOwner {
+    WorkspaceSwap,
+    Restore,
 }
 
 pub struct NarrativeMaintenanceRecoveryGate {
@@ -602,6 +614,7 @@ impl Default for NarrativeMaintenanceRecoveryGate {
                 recovered_work_keys: HashSet::new(),
                 active_attempts: HashMap::new(),
                 maintenance_admission_closed: false,
+                maintenance_admission_owner: None,
                 #[cfg(test)]
                 panic_after_admission_close: false,
             }),
@@ -709,6 +722,43 @@ impl NarrativeMaintenanceRecoveryGate {
         &self,
         quarantined_attempts: &[(String, MaintenanceWorkspaceBinding)],
     ) -> anyhow::Result<()> {
+        self.close_for_owner_with_quarantined_attempt_bindings(
+            NarrativeMaintenanceAdmissionOwner::WorkspaceSwap,
+            quarantined_attempts,
+        )
+    }
+
+    /// Restore variant of the quarantined-attempt close.  It has the same
+    /// exact-binding retirement rules as a workspace open, but records that
+    /// the restore owns the closed admission gate.
+    pub fn close_for_restore_with_quarantined_attempts(
+        &self,
+        binding: &MaintenanceWorkspaceBinding,
+        quarantined_attempt_ids: &[String],
+    ) -> anyhow::Result<()> {
+        let quarantined = quarantined_attempt_ids
+            .iter()
+            .cloned()
+            .map(|attempt_id| (attempt_id, binding.clone()))
+            .collect::<Vec<_>>();
+        self.close_for_restore_with_quarantined_attempt_bindings(&quarantined)
+    }
+
+    pub fn close_for_restore_with_quarantined_attempt_bindings(
+        &self,
+        quarantined_attempts: &[(String, MaintenanceWorkspaceBinding)],
+    ) -> anyhow::Result<()> {
+        self.close_for_owner_with_quarantined_attempt_bindings(
+            NarrativeMaintenanceAdmissionOwner::Restore,
+            quarantined_attempts,
+        )
+    }
+
+    fn close_for_owner_with_quarantined_attempt_bindings(
+        &self,
+        owner: NarrativeMaintenanceAdmissionOwner,
+        quarantined_attempts: &[(String, MaintenanceWorkspaceBinding)],
+    ) -> anyhow::Result<()> {
         for (_, binding) in quarantined_attempts {
             binding.validate()?;
         }
@@ -722,6 +772,7 @@ impl NarrativeMaintenanceRecoveryGate {
         );
         Self::retire_quarantined_attempts_locked(&mut state, quarantined_attempts)?;
         state.maintenance_admission_closed = true;
+        state.maintenance_admission_owner = Some(owner);
         Ok(())
     }
 
@@ -798,6 +849,15 @@ impl NarrativeMaintenanceRecoveryGate {
     /// attempt rolls the close back while still holding this mutex so a
     /// failed swap does not strand admission closed.
     pub fn close_for_workspace_swap(&self) -> anyhow::Result<()> {
+        self.close_for_owner(NarrativeMaintenanceAdmissionOwner::WorkspaceSwap)
+    }
+
+    /// Close admission for a restore that will wait for the shared open lock.
+    pub fn close_for_restore(&self) -> anyhow::Result<()> {
+        self.close_for_owner(NarrativeMaintenanceAdmissionOwner::Restore)
+    }
+
+    fn close_for_owner(&self, owner: NarrativeMaintenanceAdmissionOwner) -> anyhow::Result<()> {
         let mut state = self
             .state
             .lock()
@@ -807,8 +867,10 @@ impl NarrativeMaintenanceRecoveryGate {
             "NEX_MAINTENANCE_ADMISSION_CLOSED: workspace swap admission is already closed"
         );
         state.maintenance_admission_closed = true;
+        state.maintenance_admission_owner = Some(owner);
         if !state.active_attempts.is_empty() {
             state.maintenance_admission_closed = false;
+            state.maintenance_admission_owner = None;
             anyhow::bail!(
                 "NEX_MAINTENANCE_ATTEMPT_ACTIVE: workspace swap requires a terminal maintenance receipt"
             );
@@ -840,6 +902,7 @@ impl NarrativeMaintenanceRecoveryGate {
             );
         }
         state.maintenance_admission_closed = false;
+        state.maintenance_admission_owner = None;
         Ok(())
     }
 
@@ -849,6 +912,17 @@ impl NarrativeMaintenanceRecoveryGate {
             .lock()
             .map(|state| state.maintenance_admission_closed)
             .unwrap_or(true)
+    }
+
+    pub fn admission_owned_by_workspace_swap(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| {
+                state.maintenance_admission_closed
+                    && state.maintenance_admission_owner
+                        == Some(NarrativeMaintenanceAdmissionOwner::WorkspaceSwap)
+            })
+            .unwrap_or(false)
     }
 
     /// Atomically bind a live authority identity to its recovery generation.
@@ -3455,6 +3529,7 @@ mod tests {
                 recovered_work_keys: HashSet::new(),
                 active_attempts: HashMap::new(),
                 maintenance_admission_closed: false,
+                maintenance_admission_owner: None,
                 #[cfg(test)]
                 panic_after_admission_close: false,
             }),
@@ -3473,6 +3548,7 @@ mod tests {
                 recovered_work_keys: HashSet::new(),
                 active_attempts: HashMap::new(),
                 maintenance_admission_closed: false,
+                maintenance_admission_owner: None,
                 #[cfg(test)]
                 panic_after_admission_close: false,
             }),
