@@ -788,6 +788,7 @@ pub mod state;
 pub mod web_editor_handoff;
 pub mod workspace;
 pub mod workspace_lease;
+pub mod workspace_lifecycle;
 
 // 旧 `commands/mod.rs` から移動した state / 契約型はクレートルートでも公開する
 // (src-tauri の互換シム `pub(crate) use grimodex_db::{…}` と napi 側の両方が
@@ -817,6 +818,16 @@ pub use protected_writers::PROTECTED_WRITER_SQL_ERROR;
 pub use recovery::{
     MigrationReceipt, OpenWorkspacePayload, RecoveryCandidate, RecoveryCandidateKind,
     WorkspaceOpenOutcome,
+};
+pub use workspace_lifecycle::{
+    AdmissionKind, AdmissionOutcome, AdmissionRejection, AdmissionTicket, ActivationState,
+    ContentEffect, ControlGeneration, ControlRequest, ControlSlotOutcome, DeliveryAdmissionOutcome,
+    DeliverySequence, DurableRunHandle, ExecutionId, FenceOutcome, LifecycleError,
+    LifecycleResult, LifecycleSnapshot, LifecycleState, LiveBinding, OperationId,
+    RecoveryDescriptor, RecoveryDescriptorId, ResponsibilityError, ResponsibilityKind,
+    ResponsibilityReservation, RunCreationState, RunOwnership, StateRevision, TransitionStage,
+    WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore, WorkExecutionId,
+    DELIVERY_CAPACITY, EMERGENCY_RESPONSIBILITY_CAPACITY, GENERAL_RESPONSIBILITY_CAPACITY,
 };
 pub use state::{
     with_db_state, ActiveWorkspace, GlobalSettingsPath, PinnedWorkspaceDb, WorkspaceAuthority,

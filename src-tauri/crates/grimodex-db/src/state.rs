@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use crate::error::{AppError, AppResult};
 use crate::recovery::SafeModeState;
 use crate::workspace_lease::WorkspaceLease;
+use crate::workspace_lifecycle::{WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore};
 use crate::Database;
 
 /// Inseparable workspace DB authority: a live [`Database`] handle always keeps
@@ -126,12 +127,23 @@ pub struct WorkspaceState {
     /// DB アクセスを `with_db` で明示エラーにする (swap を跨いだ write が
     /// 切替後の別 workspace の DB へ黙って落ちるより遥かに良い失敗モード)。
     /// set/reset は open_workspace 内の RAII ガードが行う。
-    pub switching: std::sync::atomic::AtomicBool,
+    pub switching: WorkspaceLifecycleCompatibilityView,
     /// `open_workspace` 自体を直列化する番兵。並行 open による同一 DB への
     /// 併走 migrate (add_column_if_missing の check-then-act) と二重
     /// VACUUM INTO を防ぐ。ガードは絶対に await を跨がないこと
     /// (std::sync::MutexGuard は !Send)。
     pub open_lock: Mutex<()>,
+}
+
+impl WorkspaceState {
+    /// Return the shared lifecycle core behind the legacy switching view.
+    ///
+    /// Existing callers still use `switching.load/store` until C4 removes the
+    /// compatibility path, but they now observe the same state storage as
+    /// lifecycle owners.
+    pub fn lifecycle_core(&self) -> WorkspaceLifecycleCore {
+        self.switching.core()
+    }
 }
 
 /// Authority captured under one `WorkspaceState::inner` lock.
@@ -232,7 +244,7 @@ mod tests {
         WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         }
     }
@@ -297,7 +309,7 @@ mod tests {
         let state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let err = with_db_state(&state, |_db| Ok(())).expect_err("未オープンはエラー");
@@ -309,7 +321,7 @@ mod tests {
         let state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let err = active_database(&state)

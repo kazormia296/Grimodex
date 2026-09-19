@@ -23,7 +23,9 @@ use std::time::Instant;
 
 use crate::backup_restore::{read_incomplete_restore_session, restore_backup_core};
 use crate::migration_supervisor::workspace_identity;
-use crate::{ActiveWorkspace, WorkspaceAuthority, WorkspaceState};
+use crate::{
+    ActiveWorkspace, WorkspaceAuthority, WorkspaceLifecycleCompatibilityView, WorkspaceState,
+};
 use grimodex_core::narrative_nir1::EntityRelationBundle;
 
 use super::restore_rebuild::{
@@ -1831,7 +1833,7 @@ fn run_real_restore_mode(
         let state = WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let install_started = Instant::now();

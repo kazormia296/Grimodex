@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use crate::recovery::{OpenWorkspacePayload, WorkspaceOpenOutcome};
 use crate::state::{ActiveWorkspace, GlobalSettingsPath, WorkspaceAuthority, WorkspaceState};
 use crate::workspace;
-use crate::{AppError, Database};
+use crate::{AppError, Database, WorkspaceLifecycleCompatibilityView};
 
 /// Fixed, non-sensitive stage names for the development-only native
 /// workspace-open trace. Keeping this as an enum prevents paths, identifiers,
@@ -682,7 +682,7 @@ fn is_system_directory(path: &Path) -> bool {
 /// で確実に false へ戻す。open_workspace が途中で `?` で抜けてもフラグが
 /// 立ちっぱなしにならない (立ちっぱなし = 全 DB コマンドが恒久拒否 = 文鎮化)。
 /// `backup_restore::restore_backup_core` も同じガードを使う。
-pub struct SwitchingGuard<'a>(pub &'a std::sync::atomic::AtomicBool);
+pub struct SwitchingGuard<'a>(pub &'a WorkspaceLifecycleCompatibilityView);
 
 /// Same-path reopen quiesce: wait for sole authority owner, drop the old
 /// authority (releasing its shared lease), hold the maintenance exclusive claim
@@ -1231,7 +1231,7 @@ mod tests {
         let ws_state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let gs_path = GlobalSettingsPath {
@@ -1513,7 +1513,7 @@ mod tests {
         let ws_state = Arc::new(WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace::new(previous_authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         });
         let gs_path = Arc::new(GlobalSettingsPath {
@@ -1605,7 +1605,7 @@ mod tests {
         let ws_state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let gs_path = GlobalSettingsPath {
@@ -1677,7 +1677,7 @@ mod tests {
         let ws_state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let mut trace = NativeWorkspaceOpenTrace::new(false);
@@ -1721,7 +1721,7 @@ mod tests {
         let ws_state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let mut initial_hook = || {};
@@ -1843,7 +1843,7 @@ mod tests {
         let ws_state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let mut initial_hook = || {};
