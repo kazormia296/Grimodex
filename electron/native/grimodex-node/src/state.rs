@@ -2341,6 +2341,10 @@ impl StreamAbortRegistry {
 /// caches を順次ここへ拡張する。
 pub struct AppState {
     pub ws: WorkspaceState,
+    /// Main-only projection of the native workspace lifecycle. This adapter
+    /// observes the compatibility `WorkspaceState` until the shared core owns
+    /// the lifecycle directly; it never exposes raw workspace identity.
+    pub workspace_lifecycle: crate::workspace_lifecycle_view::WorkspaceLifecycleViewAdapter,
     pub gs: GlobalSettingsPath,
     /// IME 連携スナップショットの共有ルート (`<userData>/ime`)。
     /// Electron main から注入された app data 配下だけを使用する。
@@ -2455,6 +2459,8 @@ impl AppState {
                 switching: std::sync::atomic::AtomicBool::new(false),
                 open_lock: Mutex::new(()),
             },
+            workspace_lifecycle:
+                crate::workspace_lifecycle_view::WorkspaceLifecycleViewAdapter::new(),
             gs: GlobalSettingsPath {
                 path: dir.join("global-settings.json"),
                 write_lock: Mutex::new(()),

@@ -288,6 +288,12 @@ export declare class Backend {
    */
   openWorkspace(path: string): Promise<string>
   /**
+   * Main-only strict lifecycle snapshot. The payload contains only an opaque
+   * binding token, a monotonic revision, an allowlisted status, and an
+   * activation marker; it never contains workspace paths or native IDs.
+   */
+  getWorkspaceLifecycleView(): Promise<string>
+  /**
    * 既存 workspace 判定 (commands/workspace.rs の同名コマンドと同一実装)。
    * 軽量 stat のみなので設計どおり同期のまま (§4.2「純関数の validate 除く」)。
    */

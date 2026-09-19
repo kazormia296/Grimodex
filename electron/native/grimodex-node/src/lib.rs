@@ -28,6 +28,7 @@ mod related_scenes_registry;
 mod state;
 #[cfg(test)]
 mod test_link_stubs;
+mod workspace_lifecycle_view;
 
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -119,6 +120,9 @@ use grimodex_db::{with_db_state, AppError, BatchStatement, Database, RepairInteg
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
 use state::{AppState, EventQueue, EventTsfn, NarrativeMaintenanceCleanupOutcome};
+use workspace_lifecycle_view::{
+    WorkspaceLifecycleView, WorkspaceLifecycleViewAdapter, WORKSPACE_LIFECYCLE_EVENT,
+};
 use uuid::Uuid;
 
 const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
@@ -1691,6 +1695,47 @@ where
         .await
         .map_err(join_err_to_napi)?
         .map_err(app_err_to_napi)
+}
+
+fn emit_workspace_lifecycle_view(state: &AppState, view: &WorkspaceLifecycleView) {
+    match serde_json::to_value(view) {
+        Ok(payload) => state.events.emit(WORKSPACE_LIFECYCLE_EVENT, payload),
+        Err(error) => tracing::error!(
+            target: "workspace.lifecycle",
+            %error,
+            "failed to serialize workspace lifecycle view"
+        ),
+    }
+}
+
+fn begin_workspace_lifecycle_transition(state: &AppState) -> std::result::Result<(), AppError> {
+    let (view, changed) = state.workspace_lifecycle.begin_transition()?;
+    if changed {
+        emit_workspace_lifecycle_view(state, &view);
+    }
+    Ok(())
+}
+
+fn publish_workspace_lifecycle_from_workspace(
+    state: &AppState,
+) -> std::result::Result<WorkspaceLifecycleView, AppError> {
+    let view = state
+        .workspace_lifecycle
+        .snapshot_for_workspace(&state.ws)?;
+    emit_workspace_lifecycle_view(state, &view);
+    Ok(view)
+}
+
+/// Called by the eventual native shutdown owner after terminal cleanup has
+/// been proven. It is deliberately crate-local so a renderer or arbitrary
+/// main caller cannot manufacture a Closed state by invoking a setter.
+#[allow(dead_code)]
+pub(crate) fn publish_workspace_lifecycle_closed(
+    state: &AppState,
+) -> std::result::Result<WorkspaceLifecycleView, AppError> {
+    let view = state.workspace_lifecycle.publish_closed()?;
+    emit_workspace_lifecycle_view(state, &view);
+    Ok(view)
 }
 
 /// Execute a manual Verify/Rebuild through the same process-local maintenance
@@ -6523,6 +6568,7 @@ impl Backend {
     /// (`ready`/`migrated`/`recovery-required`/`safe-mode`)。
     #[napi]
     pub async fn open_workspace(&self, path: String) -> Result<String> {
+        begin_workspace_lifecycle_transition(&self.state).map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
         let trace_enabled = native_workspace_open_trace_enabled();
         let trace_started_at = Instant::now();
@@ -6618,7 +6664,7 @@ impl Backend {
         })
         .await;
 
-        match task {
+        let result = match task {
             Ok((mut trace, result)) => {
                 let terminal = if result.is_ok() {
                     NativeWorkspaceOpenResult::Ready
@@ -6634,7 +6680,35 @@ impl Backend {
                 trace.emit_terminal(NativeWorkspaceOpenResult::Failed);
                 Err(join_err_to_napi(error))
             }
+        };
+
+        // The compatibility adapter derives the terminal projection from the
+        // actual published authority / Safe Mode state. An operation failure
+        // is preserved even if the observer itself cannot emit after a
+        // poisoned lock.
+        let lifecycle = publish_workspace_lifecycle_from_workspace(&self.state);
+        if result.is_err() {
+            let _ = lifecycle;
+            result
+        } else {
+            lifecycle.map_err(app_err_to_napi)?;
+            result
         }
+    }
+
+    /// Main-only, strict lifecycle snapshot. This deliberately does not call
+    /// `active_database`: recovery-only and transition states must remain
+    /// observable while no authority is published.
+    #[napi]
+    pub async fn get_workspace_lifecycle_view(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let view = state
+                .workspace_lifecycle
+                .snapshot_for_workspace(&state.ws)?;
+            WorkspaceLifecycleViewAdapter::serialize(&view)
+        })
+        .await
     }
 
     /// 既存 workspace 判定 (commands/workspace.rs の同名コマンドと同一実装)。
@@ -6785,8 +6859,9 @@ impl Backend {
     /// rotateして復元前DBへのlate writeを不可視にする。
     #[napi]
     pub async fn restore_backup(&self, file_name: String) -> Result<()> {
+        begin_workspace_lifecycle_transition(&self.state).map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
-        run_blocking(move || {
+        let result = run_blocking(move || {
             if state
                 .narrative_maintenance_recovery_gate
                 .maintenance_admission_is_closed()
@@ -6889,7 +6964,15 @@ impl Backend {
             );
             Ok(())
         })
-        .await
+        .await;
+        let lifecycle = publish_workspace_lifecycle_from_workspace(&self.state);
+        if result.is_err() {
+            let _ = lifecycle;
+            result
+        } else {
+            lifecycle.map_err(app_err_to_napi)?;
+            result
+        }
     }
 
     /// Safe Mode中の復元候補をopaque idだけで列挙する。
@@ -6917,8 +7000,18 @@ impl Backend {
     /// Safe Mode候補を復元する。復元後はrendererがopen_workspaceを再実行する。
     #[napi]
     pub async fn restore_recovery_candidate(&self, candidate_id: String) -> Result<()> {
+        begin_workspace_lifecycle_transition(&self.state).map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
-        run_blocking(move || restore_safe_mode_candidate(&state.ws, &candidate_id)).await
+        let result =
+            run_blocking(move || restore_safe_mode_candidate(&state.ws, &candidate_id)).await;
+        let lifecycle = publish_workspace_lifecycle_from_workspace(&self.state);
+        if result.is_err() {
+            let _ = lifecycle;
+            result
+        } else {
+            lifecycle.map_err(app_err_to_napi)?;
+            result
+        }
     }
 
     /// 現在の破損live DBをworkspace内の隔離名へ移動し、そのfile nameを返す。
