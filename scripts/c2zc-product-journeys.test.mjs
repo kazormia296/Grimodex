@@ -67,6 +67,7 @@ import {
   launchRestoreVerifyRebuildVerifyRestorePhaseForProductJourney,
   NARRATIVE_FRESHNESS_DISABLE_ENV,
   NARRATIVE_MAINTENANCE_FAULT_ENV,
+  NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
@@ -210,6 +211,51 @@ test("live authority snapshots preserve every cursor reservation and run field",
       }),
     /cursor|acknowledged|active|epoch/i,
   );
+});
+
+test("live authority snapshots settle only controlled maintenance preemptions", async () => {
+  const runs = [
+    {
+      id: "freshness-run",
+      projectId: "project-e1",
+      runKind: "freshness-evaluation",
+      status: "completed",
+    },
+    {
+      id: "preempted-run",
+      projectId: "project-e1",
+      runKind: "dependency-verify",
+      status: "cancelled",
+      terminalReasonCode: NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE,
+    },
+  ];
+  const harness = {
+    invokeOk: async (_page, command, request) => {
+      if (command === "narrative_maintenance_inbox_list") return [];
+      if (request.sql.includes("FROM narrative_extraction_runs")) {
+        return { rows: runs };
+      }
+      return { rows: [] };
+    },
+  };
+
+  const settled = await readC2ZcAuthoritySnapshot(
+    harness,
+    { id: "page" },
+    "project-e1",
+  );
+  assert.equal(settled.projectSettled, true);
+
+  runs[1] = {
+    ...runs[1],
+    terminalReasonCode: "NEX_UNKNOWN_STOP",
+  };
+  const unsettled = await readC2ZcAuthoritySnapshot(
+    harness,
+    { id: "page" },
+    "project-e1",
+  );
+  assert.equal(unsettled.projectSettled, false);
 });
 
 test("live run projection preserves spec-only idle checkpoint provenance", async () => {

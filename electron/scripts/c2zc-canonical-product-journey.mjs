@@ -1023,6 +1023,15 @@ function canonicalLifecycleRunsOf(value, label) {
   );
 }
 
+function isSettledC2ZcRun(run) {
+  return (
+    run?.status === "completed" ||
+    (run?.status === "cancelled" &&
+      run?.terminalReasonCode ===
+        NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE)
+  );
+}
+
 function canonicalRunBaselineProjectionOf(run) {
   return Object.fromEntries(
     C2ZC_CANONICAL_RUN_PROJECTION_KEYS.map((key) => [key, run[key]]),
@@ -3138,7 +3147,7 @@ export async function readC2ZcAuthoritySnapshot(harness, page, projectId) {
     findingRows,
     inboxEntries,
     projectSettled:
-      runs.length > 0 && runs.every((run) => run.status === "completed"),
+      runs.length > 0 && runs.every(isSettledC2ZcRun),
   };
 }
 
