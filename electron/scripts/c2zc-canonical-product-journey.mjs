@@ -1012,20 +1012,15 @@ function canonicalLifecycleRunsOf(value, label) {
   return rows(
     Array.isArray(value) ? value : value?.runs,
     `${label} runs`,
-  ).filter((run) => {
-    const idleFreshnessCheckpoint =
-      run?.runKind === "freshness-evaluation" &&
-      isC2ZcIdleFreshnessProducer(run);
-    return (
+  ).filter(
+    (run) =>
       C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run?.runKind) &&
-      !idleFreshnessCheckpoint &&
       !(
         run?.status === "cancelled" &&
         run?.terminalReasonCode ===
           NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE
-      )
-    );
-  });
+      ),
+  );
 }
 
 function isSettledC2ZcRun(run) {
@@ -3315,33 +3310,57 @@ export function assertC2ZcRestoreLifecycleOrder(
       `${label} must contain exactly Verify/Rebuild/Verify/Freshness`,
     );
   }
-  const [firstVerify, rebuild, finalVerify, freshness] = lifecycleRuns;
   const expectedKinds = [
     "dependency-verify",
     "semantic-index-rebuild",
     "dependency-verify",
     "freshness-evaluation",
   ];
+  // A zero-width checkpoint can be committed while the Verify/Rebuild queue
+  // is still draining. It is scheduler evidence, not a Generic publisher, so
+  // accept it only in the bounded pre-Rebuild slot and keep the final Verify
+  // as the lifecycle's confirmation boundary.
+  const idleBeforeRebuild =
+    lifecycleRuns[1]?.runKind === "freshness-evaluation" &&
+    isC2ZcIdleFreshnessProducer(lifecycleRuns[1]) &&
+    lifecycleRuns[2]?.runKind === "semantic-index-rebuild" &&
+    lifecycleRuns[3]?.runKind === "dependency-verify";
+  const canonicalOrder = lifecycleRuns.every(
+    (run, index) => run.runKind === expectedKinds[index],
+  );
   if (
-    lifecycleRuns.some((run, index) => run.runKind !== expectedKinds[index]) ||
-    firstVerify.id === finalVerify.id ||
+    (!canonicalOrder && !idleBeforeRebuild) ||
+    lifecycleRuns[0]?.runKind !== "dependency-verify" ||
+    lifecycleRuns[0].id === lifecycleRuns[idleBeforeRebuild ? 3 : 2].id ||
     lifecycleRuns.some((run) => run.status !== "completed")
   ) {
     throw new Error(`${label} has an invalid canonical run order`);
   }
+  const firstVerify = lifecycleRuns[0];
+  const rebuild = lifecycleRuns[idleBeforeRebuild ? 2 : 1];
+  const finalVerify = lifecycleRuns[idleBeforeRebuild ? 3 : 2];
+  const freshness = lifecycleRuns[idleBeforeRebuild ? 1 : 3];
+  const observedKinds = idleBeforeRebuild
+    ? [
+        "dependency-verify",
+        "freshness-evaluation",
+        "semantic-index-rebuild",
+        "dependency-verify",
+      ]
+    : expectedKinds;
   const timestamps = [];
   for (const [index, run] of lifecycleRuns.entries()) {
     const createdAt = assertCanonicalTimestamp(
       run.createdAt,
-      `${label} ${expectedKinds[index]} createdAt`,
+      `${label} ${observedKinds[index]} createdAt`,
     );
     const startedAt = assertCanonicalTimestamp(
       run.startedAt,
-      `${label} ${expectedKinds[index]} startedAt`,
+      `${label} ${observedKinds[index]} startedAt`,
     );
     const completedAt = assertCanonicalTimestamp(
       run.completedAt,
-      `${label} ${expectedKinds[index]} completedAt`,
+      `${label} ${observedKinds[index]} completedAt`,
     );
     if (
       Date.parse(createdAt) > Date.parse(startedAt) ||

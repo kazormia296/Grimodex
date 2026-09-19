@@ -1089,11 +1089,14 @@ test("C2-ZC lifecycle verifier ignores only controlled connection preemption ret
   );
 });
 
-test("C2-ZC lifecycle verifier ignores idle freshness checkpoints", () => {
+test("C2-ZC lifecycle verifier accepts an idle checkpoint before rebuild", () => {
   const fixture = strictLifecycleRuns();
   const idleCheckpoint = {
     ...structuredClone(fixture.runs[3]),
     id: "fresh-idle-checkpoint",
+    createdAt: fixture.times[2],
+    startedAt: fixture.times[2],
+    completedAt: fixture.times[3],
     outcomeSummaryJson: JSON.stringify({
       kind: "current-epoch-idle-checkpoint",
     }),
@@ -1101,7 +1104,8 @@ test("C2-ZC lifecycle verifier ignores idle freshness checkpoints", () => {
   const observed = [
     fixture.runs[0],
     idleCheckpoint,
-    ...fixture.runs.slice(1),
+    fixture.runs[1],
+    fixture.runs[2],
   ];
 
   assert.doesNotThrow(() =>
