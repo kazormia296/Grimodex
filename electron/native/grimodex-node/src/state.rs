@@ -175,6 +175,30 @@ impl NarrativeMaintenancePreemptedRunRegistry {
             .collect()
     }
 
+    /// Return pending owners for one workspace identity, regardless of the
+    /// generation that created them.  A same-path workspace replacement gets
+    /// a new generation and authority instance, but it still owns the exact
+    /// durable Run that the quarantined connection could not terminalize.
+    /// Keeping the old binding in the entry lets the replacement owner prove
+    /// which generation handed the Run over without making that old
+    /// connection reusable.
+    pub fn pending_for_authority(
+        &self,
+        authority_id: &str,
+    ) -> Vec<(String, MaintenanceWorkspaceBinding)> {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending
+            .iter()
+            .filter_map(|(run_id, binding)| {
+                (binding.authority_id == authority_id).then_some((run_id.clone(), binding.clone()))
+            })
+            .collect()
+    }
+
+    #[allow(dead_code)]
     pub fn assert_empty(&self) -> anyhow::Result<()> {
         let pending = self
             .pending
@@ -2632,6 +2656,38 @@ mod tests {
         assert!(registry.assert_empty().is_err());
         registry.remove("run-new");
         registry.assert_empty().expect("all pending owners drained");
+    }
+
+    #[test]
+    fn pending_preempted_run_can_be_handed_to_a_new_generation() {
+        let registry = NarrativeMaintenancePreemptedRunRegistry::default();
+        let old_binding = MaintenanceWorkspaceBinding {
+            authority_id: "workspace-same".to_string(),
+            generation: 17,
+        };
+        let replacement_binding = MaintenanceWorkspaceBinding {
+            authority_id: "workspace-same".to_string(),
+            generation: 18,
+        };
+        registry
+            .defer("run-after-quarantine", &old_binding)
+            .expect("defer quarantined run");
+
+        let pending = registry.pending_for_authority(&replacement_binding.authority_id);
+        assert_eq!(
+            pending,
+            vec![("run-after-quarantine".to_string(), old_binding)]
+        );
+        assert!(
+            registry
+                .pending_for_binding(&replacement_binding)
+                .is_empty(),
+            "the replacement must not pretend the old generation was drained"
+        );
+        registry.remove("run-after-quarantine");
+        assert!(registry
+            .pending_for_authority(&replacement_binding.authority_id)
+            .is_empty());
     }
 
     #[test]

@@ -1083,8 +1083,9 @@ fn recover_workspace_open_lock_after_panic(
 
 /// Close maintenance admission before checking process-local preempted Run
 /// owners. With admission closed no active cycle can add a new owner between
-/// the gate check and the workspace swap; a pending owner therefore blocks the
-/// swap until the exact old-authority Run is drained.
+/// the gate check and the workspace swap. A pending owner on a reusable
+/// connection blocks the swap; a quarantined owner is retained and handed to
+/// the replacement authority before admission is reopened.
 fn close_narrative_maintenance_for_workspace_swap(
     state: &Arc<AppState>,
     allow_restore_only_recovery: bool,
@@ -1100,6 +1101,16 @@ fn close_narrative_maintenance_for_workspace_swap(
         .narrative_maintenance_recovery_gate
         .maintenance_admission_is_closed();
     if already_closed {
+        let replacement_recovery_pending = active_database(&state.ws)
+            .ok()
+            .map(|authority| {
+                let authority_id = narrative_authority_id(&authority);
+                !state
+                    .narrative_maintenance_preempted_runs
+                    .pending_for_authority(&authority_id)
+                    .is_empty()
+            })
+            .unwrap_or(false);
         let restore_only_without_authority = if allow_restore_only_recovery {
             // Keep the lock order used by `active_workspace_snapshot`: inner
             // first, then SafeMode. A poisoned workspace lock is not evidence
@@ -1114,10 +1125,22 @@ fn close_narrative_maintenance_for_workspace_swap(
         } else {
             false
         };
-        if !restore_only_without_authority {
+        if !restore_only_without_authority && !replacement_recovery_pending {
             return Err(AppError::Anyhow(anyhow::anyhow!(
                 "NEX_MAINTENANCE_ADMISSION_CLOSED: workspace swap admission is owned by another operation"
             )));
+        }
+        if replacement_recovery_pending {
+            // A previous replacement authority could not terminalize an
+            // exact handed-off Run.  The gate intentionally stayed closed;
+            // allow the next serialized workspace open to replace that
+            // authority and retry the same owner, while still rejecting any
+            // active attempt marker.
+            state
+                .narrative_maintenance_recovery_gate
+                .assert_no_active_attempts()
+                .map_err(AppError::Anyhow)?;
+            return Ok(true);
         }
         state
             .narrative_maintenance_recovery_gate
@@ -1178,43 +1201,112 @@ fn close_narrative_maintenance_for_workspace_swap(
         // pending Run. Repeat the exact-binding drain until a pass makes no
         // progress, then perform the final process-local recheck immediately
         // before the authority swap.
-        loop {
-            let pending = state
-                .narrative_maintenance_preempted_runs
-                .pending_for_binding(&binding);
-            if pending.is_empty() {
-                break;
-            }
-            let mut removed_any = false;
-            for run_id in pending {
-                if matches!(
-                    grimodex_db::narrative_extraction::try_cancel_preempted_maintenance_run(
-                        authority.db(),
-                        &run_id,
-                        "NEX_MAINTENANCE_CONNECTION_PREEMPTED: draining before workspace swap",
-                    ),
-                    Ok(true)
-                ) {
-                    state.narrative_maintenance_preempted_runs.remove(&run_id);
-                    removed_any = true;
+        // A cleanup failure quarantines this exact connection.  Do not call
+        // the terminalizer through it again: preserve the Run entry and hand
+        // its recovery responsibility to the replacement authority below.
+        if authority.db().connection_reusable() {
+            loop {
+                let pending = state
+                    .narrative_maintenance_preempted_runs
+                    .pending_for_binding(&binding);
+                if pending.is_empty() {
+                    break;
+                }
+                let mut removed_any = false;
+                for run_id in pending {
+                    if matches!(
+                        grimodex_db::narrative_extraction::try_cancel_preempted_maintenance_run(
+                            authority.db(),
+                            &run_id,
+                            "NEX_MAINTENANCE_CONNECTION_PREEMPTED: draining before workspace swap",
+                        ),
+                        Ok(true)
+                    ) {
+                        state.narrative_maintenance_preempted_runs.remove(&run_id);
+                        removed_any = true;
+                    }
+                }
+                if !removed_any {
+                    break;
                 }
             }
-            if !removed_any {
-                break;
+            if !state
+                .narrative_maintenance_preempted_runs
+                .pending_for_binding(&binding)
+                .is_empty()
+            {
+                let error = anyhow::anyhow!(
+                    "NEX_MAINTENANCE_PREEMPTED_RUN_ACTIVE: reusable authority could not drain pending Run"
+                );
+                let reopen = state
+                    .narrative_maintenance_recovery_gate
+                    .reopen_admission(None)
+                    .map_err(AppError::Anyhow);
+                return match reopen {
+                    Ok(()) => Err(AppError::Anyhow(error)),
+                    Err(reopen_error) => Err(reopen_error),
+                };
+            }
+        } else if !state
+            .narrative_maintenance_preempted_runs
+            .pending_for_binding(&binding)
+            .is_empty()
+        {
+            tracing::warn!(
+                target: "narrative.maintenance",
+                authority_id = %binding.authority_id,
+                generation = binding.generation,
+                "deferring pending maintenance Run to the replacement authority after connection quarantine"
+            );
+        }
+    }
+    Ok(true)
+}
+
+/// Finish the handoff of exact preempted Runs after a replacement authority
+/// has been published.  The old generation remains recorded in the
+/// process-local owner entry, while the new pinned connection performs the
+/// only terminal write.  Entries for another workspace stay owned by that
+/// workspace and are not silently discarded during a switch.
+fn drain_preempted_maintenance_runs_after_workspace_swap(
+    state: &AppState,
+) -> std::result::Result<(), AppError> {
+    let authority = active_database(&state.ws)?;
+    let authority_id = narrative_authority_id(&authority);
+    let pending = state
+        .narrative_maintenance_preempted_runs
+        .pending_for_authority(&authority_id);
+    for (run_id, previous_binding) in pending {
+        match grimodex_db::narrative_extraction::try_cancel_preempted_maintenance_run(
+            authority.db(),
+            &run_id,
+            "NEX_MAINTENANCE_CONNECTION_PREEMPTED: recovered by replacement authority",
+        ) {
+            Ok(true) => state.narrative_maintenance_preempted_runs.remove(&run_id),
+            Ok(false) => {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_PREEMPTED_RUN_ACTIVE: replacement authority could not acquire the exact pending Run (previous generation {})",
+                    previous_binding.generation
+                )))
+            }
+            Err(error) => {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_PREEMPTED_RUN_RECOVERY_FAILED: run {run_id} handed off from generation {}: {error}",
+                    previous_binding.generation
+                )))
             }
         }
     }
-    if let Err(error) = state.narrative_maintenance_preempted_runs.assert_empty() {
-        let reopen = state
-            .narrative_maintenance_recovery_gate
-            .reopen_admission(None)
-            .map_err(AppError::Anyhow);
-        return match reopen {
-            Ok(()) => Err(AppError::Anyhow(error)),
-            Err(reopen_error) => Err(reopen_error),
-        };
+    if !state
+        .narrative_maintenance_preempted_runs
+        .pending_for_authority(&authority_id)
+        .is_empty()
+    {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "NEX_MAINTENANCE_PREEMPTED_RUN_ACTIVE: replacement authority still has pending Runs"
+        )));
     }
-    Ok(true)
+    Ok(())
 }
 
 /// RAII fallback for the narrow interval in which workspace open/restore has
@@ -1301,6 +1393,18 @@ fn finish_workspace_open_success(
         // reopen it as an unwind fallback.
         admission_guard.disarm();
     } else {
+        // A failed cleanup may have left an exact Run in the process-local
+        // preempted-owner registry after the old connection was quarantined.
+        // Recover it before reopening admission so a fresh attempt cannot
+        // race the handoff or make the old Run invisible to startup recovery.
+        if let Err(error) = drain_preempted_maintenance_runs_after_workspace_swap(state) {
+            // Keep admission fail-closed when the replacement could not
+            // terminalize the exact Run.  The owner entry remains for a
+            // later recovery attempt; reopening here would allow new work to
+            // bypass that unresolved handoff.
+            admission_guard.disarm();
+            return Err(error);
+        }
         admission_guard.reopen()?;
     }
 
@@ -6630,8 +6734,19 @@ impl Backend {
             // must own the admission close. If the caller arrived while a
             // restore-only gate was already closed, preserve that fail-closed
             // state instead of reopening another operation's gate.
-            admission_guard.reopen_if_armed()?;
             restore_result?;
+            // The restore callback has published the replacement authority.
+            // Resolve exact preempted Runs through that new connection before
+            // reopening maintenance admission.
+            if let Err(error) =
+                drain_preempted_maintenance_runs_after_workspace_swap(&state)
+            {
+                // Do not let the guard's unwind fallback reopen admission
+                // after a replacement-authority recovery failure.
+                admission_guard.disarm();
+                return Err(error);
+            }
+            admission_guard.reopen_if_armed()?;
             let path = active_workspace_path(&state.ws)?;
             state.events.emit(
                 "workspace:opened",

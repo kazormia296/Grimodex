@@ -1145,7 +1145,13 @@ export function createNarrativeMaintenanceScheduler(
     clearCoordinatorWait();
     cancelCoordinatorWait = sharedCoordinator.waitForRelease(projectIds, () => {
       cancelCoordinatorWait = null;
-      if (!disposed && !inFlight && timer === null) {
+      if (
+        !disposed &&
+        !inFlight &&
+        activeAttemptId === null &&
+        pendingAttemptBegins.size === 0 &&
+        timer === null
+      ) {
         schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
       }
     });
@@ -1276,17 +1282,44 @@ export function createNarrativeMaintenanceScheduler(
   };
 
   const settleAttempt = (
+    attemptId: string,
     state: "interrupted" | "succeeded",
     publishedGeneration: number | null = null,
   ): void => {
-    const attemptId = activeAttemptId;
-    if (!attemptId) return;
     const snapshot = activeAttemptController.snapshot(attemptId);
     if (!snapshot) return;
+    if (snapshot.state === "interrupted" || snapshot.state === "succeeded") {
+      return;
+    }
     activeAttemptController.settle(attemptId, {
       state,
       publishedGeneration,
     });
+  };
+
+  const cleanupUnregisteredAttempt = (attemptId: string): void => {
+    // A conflict can be detected before registerAttempt creates its pending
+    // Native registration.  The controller entry must still be closed so a
+    // failed automatic admission cannot strand an open attempt or affect the
+    // next manual operation.
+    if (nativeAttemptIds.has(attemptId)) return;
+    const snapshot = activeAttemptController.snapshot(attemptId);
+    if (
+      snapshot &&
+      snapshot.state !== "interrupted" &&
+      snapshot.state !== "succeeded"
+    ) {
+      try {
+        activeAttemptController.markNativeRegistrationResolved(attemptId);
+      } catch {
+        // registerAttempt may already have resolved the local registration.
+      }
+      settleAttempt(attemptId, "interrupted");
+    }
+    if (activeAttemptId === attemptId) {
+      activeAttemptId = null;
+    }
+    releaseAttemptOwner(attemptId);
   };
 
   const retainAttemptOwner = (attemptId: string): void => {
@@ -1416,7 +1449,19 @@ export function createNarrativeMaintenanceScheduler(
   };
 
   const runCycle = async (): Promise<void> => {
-    if (disposed || quiescing || inFlight) return;
+    // Manual Verify/Rebuild attempts reserve the same admission slot as an
+    // automatic cycle.  A timer that fires while that slot is occupied must
+    // leave the queue untouched; the manual terminal path schedules the next
+    // wake after releasing the reservation.
+    if (
+      disposed ||
+      quiescing ||
+      inFlight ||
+      activeAttemptId !== null ||
+      pendingAttemptBegins.size > 0
+    ) {
+      return;
+    }
     const method = backend?.runNarrativeMaintenanceCycle;
     if (typeof method !== "function") return;
 
@@ -1684,12 +1729,16 @@ export function createNarrativeMaintenanceScheduler(
             const attemptSnapshot =
               activeAttemptController.snapshot(cycleAttemptId);
             if (attemptSnapshot?.state === "stop-requested") {
-              settleAttempt("interrupted");
+              settleAttempt(cycleAttemptId, "interrupted");
             }
             throw new Error("NEX_MAINTENANCE_ATTEMPT_CANCELLED");
           }
         } else {
-          settleAttempt("succeeded", cycleBinding?.generation ?? null);
+          settleAttempt(
+            cycleAttemptId,
+            "succeeded",
+            cycleBinding?.generation ?? null,
+          );
         }
       }
       if (cycleResult.status === "accepted" && !disposed) {
@@ -1776,7 +1825,8 @@ export function createNarrativeMaintenanceScheduler(
           activeAttemptId === cycleAttemptId;
         if (nativeAttemptActive && !nativeReceiptAdopted) {
           try {
-            nativeTerminalReceipt = (await cancelActiveAttempt("closed")) ?? null;
+            nativeTerminalReceipt =
+              (await cancelAttemptById(cycleAttemptId, "closed")) ?? null;
             nativeReceiptAdopted = true;
             const receiptConfirmsCancellation =
               nativeTerminalReceipt?.state === "interrupted" &&
@@ -1802,6 +1852,7 @@ export function createNarrativeMaintenanceScheduler(
           ? activeAttemptController.snapshot(cycleAttemptId)
           : null;
         if (
+          cycleAttemptId &&
           !nativeAttemptActive &&
           attemptSnapshot &&
           attemptSnapshot.state !== "interrupted" &&
@@ -1811,7 +1862,7 @@ export function createNarrativeMaintenanceScheduler(
             interruptedCycle ||
             cancellationRequestedBeforeFailure ||
             attemptSnapshot.state === "stop-requested";
-          settleAttempt("interrupted");
+          settleAttempt(cycleAttemptId, "interrupted");
         }
         if (nativeTerminalReceipt?.state === "succeeded") {
           // Native already committed this cycle before the late cancellation
@@ -2033,7 +2084,7 @@ export function createNarrativeMaintenanceScheduler(
           attemptSnapshot.state !== "interrupted" &&
           attemptSnapshot.state !== "succeeded"
         ) {
-          settleAttempt("interrupted");
+          settleAttempt(cycleAttemptId, "interrupted");
         }
       }
       if (
@@ -2140,7 +2191,12 @@ export function createNarrativeMaintenanceScheduler(
       const identity = canonicalNarrativeMaintenanceWorkKey(work);
       activeAttemptController.addWork(attemptId, identity);
     }
-    await registerAttempt(attemptId, binding);
+    try {
+      await registerAttempt(attemptId, binding);
+    } catch (error) {
+      cleanupUnregisteredAttempt(attemptId);
+      throw error;
+    }
   };
 
   const performWorkspaceQuiesce = async (): Promise<void> => {
@@ -2201,6 +2257,8 @@ export function createNarrativeMaintenanceScheduler(
         if (
           started &&
           !inFlight &&
+          activeAttemptId === null &&
+          pendingAttemptBegins.size === 0 &&
           timer === null &&
           (hasRunnablePendingWork() || hasRunnableWake())
         ) {
@@ -2249,7 +2307,13 @@ export function createNarrativeMaintenanceScheduler(
     // A pending timer already represents the next wakeup.  When no timer is
     // present, the current cycle is in flight and its finally block will
     // schedule the coalesced queue.
-    if (started && !inFlight && timer === null) {
+    if (
+      started &&
+      !inFlight &&
+      activeAttemptId === null &&
+      pendingAttemptBegins.size === 0 &&
+      timer === null
+    ) {
       schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
     }
   };
@@ -2305,18 +2369,22 @@ export function createNarrativeMaintenanceScheduler(
       } catch {
         workspaceBinding = null;
       }
+      const schedulerBusy =
+        inFlight ||
+        activeAttemptId !== null ||
+        pendingAttemptBegins.size > 0;
       return {
         mutationRevision,
         workspaceBinding,
         queueIdle:
           !disposed &&
-          !inFlight &&
+          !schedulerBusy &&
           timer === null &&
           pending.size === 0 &&
           durableWakeProjects.size === 0 &&
           deferredWorkKeys.size === 0 &&
           deferredWakeProjects.size === 0,
-        inFlight,
+        inFlight: schedulerBusy,
         hasMore: lastHasMore,
         timerScheduled: timer !== null,
       };
@@ -2327,19 +2395,47 @@ export function createNarrativeMaintenanceScheduler(
       if (!normalizedBinding) {
         throw new Error("native maintenance attempt binding is unavailable");
       }
+      if (disposed || quiescing) {
+        throw new Error(
+          "NEX_MAINTENANCE_ATTEMPT_ADMISSION_CLOSED: scheduler is quiescing or disposed",
+        );
+      }
+      if (
+        inFlight ||
+        activeAttemptId !== null ||
+        pendingAttemptBegins.size > 0
+      ) {
+        throw new Error(
+          "NEX_MAINTENANCE_ATTEMPT_ACTIVE: another maintenance cycle owns scheduler admission",
+        );
+      }
       activeAttemptController.begin(attemptId, normalizedBinding);
       retainAttemptOwner(attemptId);
       try {
         await registerAttempt(attemptId, normalizedBinding);
       } catch (error) {
-        releaseAttemptOwner(attemptId);
+        cleanupUnregisteredAttempt(attemptId);
         throw error;
       }
       return undefined;
     },
 
     async cancelNarrativeMaintenanceAttempt(attemptId, reason) {
-      return cancelAttemptById(attemptId, reason);
+      const receipt = await cancelAttemptById(attemptId, reason);
+      if (
+        !disposed &&
+        !quiescing &&
+        !inFlight &&
+        activeAttemptId === null &&
+        pendingAttemptBegins.size === 0 &&
+        terminalReceiptFailure === null &&
+        started &&
+        timer === null &&
+        (hasRunnablePendingWork() || hasRunnableWake())
+      ) {
+        schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
+      }
+      return receipt;
     },
 
     async quiesceForWorkspaceSwitch(): Promise<

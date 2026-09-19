@@ -2210,4 +2210,102 @@ describe("narrative maintenance scheduler", () => {
     lease?.resume(true);
     await expect(scheduler.dispose()).resolves.toBeUndefined();
   });
+
+  it("shares admission between a manual attempt and the automatic queue", async () => {
+    const binding = { authorityId: "authority-shared-admission", generation: 4 };
+    const begin = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        status: "open",
+        attemptId,
+        authorityId: binding.authorityId,
+        generation: binding.generation,
+      }),
+    );
+    const cancel = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: "cancelled",
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      beginNarrativeMaintenanceAttempt: begin,
+      cancelNarrativeMaintenanceAttempt: cancel,
+      runNarrativeMaintenanceCycle,
+    });
+
+    await scheduler.beginNarrativeMaintenanceAttempt?.(
+      "manual-held",
+      binding,
+    );
+    scheduler.request(
+      work("project-shared-admission", "backfill", "auto-work", "timer"),
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+    expect(scheduler.getQuiescenceState?.().queueIdle).toBe(false);
+    expect(scheduler.getQuiescenceState?.().inFlight).toBe(true);
+
+    await scheduler.cancelNarrativeMaintenanceAttempt?.(
+      "manual-held",
+      "cancelled",
+    );
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0].work).toEqual([
+      expect.objectContaining({
+        projectId: "project-shared-admission",
+        workKey: "auto-work",
+      }),
+    ]);
+    expect(cancel).toHaveBeenCalledWith(
+      "manual-held",
+      "cancelled",
+    );
+    expect(cancel).toHaveBeenCalledWith(
+      expect.any(String),
+      "closed",
+    );
+  });
+
+  it("rejects a manual attempt while scheduler admission is quiescing", async () => {
+    const binding = { authorityId: "authority-quiescing-admission", generation: 5 };
+    const begin = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        status: "open",
+        attemptId,
+        authorityId: binding.authorityId,
+        generation: binding.generation,
+      }),
+    );
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      beginNarrativeMaintenanceAttempt: begin,
+    });
+
+    const lease = await scheduler.quiesceForWorkspaceSwitch?.();
+    expect(lease).toBeDefined();
+    await expect(
+      scheduler.beginNarrativeMaintenanceAttempt?.(
+        "manual-during-quiesce",
+        binding,
+      ),
+    ).rejects.toThrow(/NEX_MAINTENANCE_ATTEMPT_ADMISSION_CLOSED/);
+    lease?.resume();
+    expect(begin).not.toHaveBeenCalled();
+  });
 });
