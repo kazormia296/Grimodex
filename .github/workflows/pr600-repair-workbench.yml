@@ -1,0 +1,34 @@
+name: PR600 repair workbench (temporary)
+on:
+  push:
+    branches: [codex/pr600-review-repair-workbench]
+    paths: ['.github/pr600-repair/**', '.github/workflows/pr600-repair-workbench.yml']
+permissions:
+  contents: read
+concurrency:
+  group: pr600-review-repair-workbench
+  cancel-in-progress: false
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          path: runner
+          persist-credentials: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: b56ab8034b9bbab3475b23e9957b0a1f42a86a5f
+          path: work
+          persist-credentials: false
+      - name: Inspect dedicated repair environment
+        working-directory: work
+        run: |
+          git rev-parse HEAD
+          rustc --version
+          cargo --version
+          node --version
+          python3 --version
+          find .agents .claude -iname '*debug-issue*' -o -iname '*refactor-cross-boundaries*'
+          wc -l electron/native/grimodex-node/src/lib.rs electron/native/grimodex-node/src/state.rs src-tauri/crates/grimodex-db/src/lib.rs src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
