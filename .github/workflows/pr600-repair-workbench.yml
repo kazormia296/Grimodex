@@ -35,10 +35,7 @@ jobs:
           cache-on-failure: true
       - name: Apply owned repair lanes
         working-directory: work
-        run: |
-          python3 ../runner/.github/pr600-repair/lane_a.py > /tmp/pr600-apply.log
-          python3 ../runner/.github/pr600-repair/lane_b.py
-          python3 ../runner/.github/pr600-repair/lane_c.py
+        run: python3 ../runner/.github/pr600-repair/run_lanes.py > /tmp/pr600-apply.log
       - name: Focused DB regressions
         working-directory: work
         shell: bash
@@ -72,4 +69,6 @@ jobs:
       - name: Changed file summary
         if: always()
         working-directory: work
-        run: git diff --stat
+        run: |
+          tail -n 4 /tmp/pr600-apply.log
+          git diff --stat
