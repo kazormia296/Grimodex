@@ -402,6 +402,7 @@ export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
   "electron/main/narrativeMaintenance.test.ts",
   "electron/main/narrativeMaintenance.phase1.test.ts",
   "electron/main/narrativeMaintenance.followup.test.ts",
+  "electron/main/narrativeMaintenance.review-fixes.test.ts",
   "electron/main/narrativeMaintenance.reacceptance.test.ts",
   "electron/main/narrativeMaintenance.reacceptance.wire.test.ts",
   "electron/main/narrativeMaintenance.wiring.test.ts",
