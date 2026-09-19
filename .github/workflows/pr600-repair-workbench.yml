@@ -12,6 +12,10 @@ jobs:
   focused:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -22,22 +26,28 @@ jobs:
           ref: b56ab8034b9bbab3475b23e9957b0a1f42a86a5f
           path: work
           persist-credentials: false
-      - name: Export exact source for the repair
-        working-directory: work
-        run: |
-          mkdir -p ../evidence
-          git archive --format=tar.gz HEAD AGENTS.md src-tauri-CLAUDE.md .agents src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/crates/grimodex-db src-tauri/crates/grimodex-core electron package.json pnpm-lock.yaml vitest.electron.config.ts > ../evidence/pr600-source.tar.gz
-          git rev-parse HEAD > ../evidence/source-head.txt
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: pr600-exact-source
-          path: evidence/
-          retention-days: 3
-          if-no-files-found: error
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
           workspaces: work/src-tauri
           key: pr600-repair-db
-      - name: Baseline focused DB tests
+          cache-on-failure: true
+      - name: Apply lane A in isolated checkout
+        working-directory: work
+        run: python3 ../runner/.github/pr600-repair/lane_a.py
+      - name: Focused DB regressions
+        working-directory: work
+        shell: bash
+        run: |
+          mkdir -p ../evidence
+          set +e
+          cargo test --locked --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib pr600_ -- --test-threads=1 > ../evidence/db-regressions.log 2>&1
+          status=$?
+          tail -n 140 ../evidence/db-regressions.log
+          exit "$status"
+      - name: Existing connection lifecycle tests
         working-directory: work
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_maintenance_connection -- --test-threads=1
+      - name: Changed file summary
+        if: always()
+        working-directory: work
+        run: git diff --stat
