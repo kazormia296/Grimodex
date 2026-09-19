@@ -1089,6 +1089,33 @@ test("C2-ZC lifecycle verifier ignores only controlled connection preemption ret
   );
 });
 
+test("C2-ZC lifecycle verifier ignores idle freshness checkpoints", () => {
+  const fixture = strictLifecycleRuns();
+  const idleCheckpoint = {
+    ...structuredClone(fixture.runs[3]),
+    id: "fresh-idle-checkpoint",
+    outcomeSummaryJson: JSON.stringify({
+      kind: "current-epoch-idle-checkpoint",
+    }),
+  };
+  const observed = [
+    fixture.runs[0],
+    idleCheckpoint,
+    ...fixture.runs.slice(1),
+  ];
+
+  assert.doesNotThrow(() =>
+    assertC2ZcRestoreLifecycleOrder(observed, {
+      currentEpochId: "e1",
+      restoreEpochId: "e1",
+      expectedRestoreLifecycle: fixture.expectedRestoreLifecycle,
+      marker: fixture.marker,
+      rustOutcome: fixture.rustOutcome,
+      fixtureSemantic: fixtureSemantic(),
+    }),
+  );
+});
+
 test("C2-ZC manifest baseline is immutable and exact", () => {
   const semantic = fixtureSemantic();
   const baseline = resolveC2ZcRestoreCanonicalLifecycleBaseline(semantic);

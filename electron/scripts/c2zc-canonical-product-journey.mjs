@@ -1012,15 +1012,20 @@ function canonicalLifecycleRunsOf(value, label) {
   return rows(
     Array.isArray(value) ? value : value?.runs,
     `${label} runs`,
-  ).filter(
-    (run) =>
+  ).filter((run) => {
+    const idleFreshnessCheckpoint =
+      run?.runKind === "freshness-evaluation" &&
+      isC2ZcIdleFreshnessProducer(run);
+    return (
       C2ZC_CANONICAL_LIFECYCLE_RUN_KINDS.has(run?.runKind) &&
+      !idleFreshnessCheckpoint &&
       !(
         run?.status === "cancelled" &&
         run?.terminalReasonCode ===
           NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE
-      ),
-  );
+      )
+    );
+  });
 }
 
 function isSettledC2ZcRun(run) {
