@@ -43,11 +43,9 @@ use napi_derive::napi;
 use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
 use grimodex_db::agent_writes;
 use grimodex_db::ai_audit::{sanitize_diagnostic_credentials, AppendAiAuditEvent};
-use grimodex_db::backup_restore::{
-    list_backups, restore_backup_core_with_open_lock,
-};
 #[cfg(test)]
 use grimodex_db::backup_restore::restore_backup_core;
+use grimodex_db::backup_restore::{list_backups, restore_backup_core_with_open_lock};
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendarPayload};
 use grimodex_db::domain_writes::{
@@ -1042,9 +1040,9 @@ fn workspace_swap_owner_authority(
 ) -> std::result::Result<PinnedWorkspaceDb, AppError> {
     if allow_switching_owner
         && state
-        .ws
-        .switching
-        .load(std::sync::atomic::Ordering::Acquire)
+            .ws
+            .switching
+            .load(std::sync::atomic::Ordering::Acquire)
     {
         let inner = state
             .ws
@@ -1138,41 +1136,65 @@ fn close_narrative_maintenance_for_workspace_swap(
         let workspace_swap_owns_gate = state
             .narrative_maintenance_recovery_gate
             .admission_owned_by_workspace_swap();
-        let replacement_recovery_pending = if allow_restore_only_recovery
-            && workspace_swap_owns_gate
-        {
-            workspace_swap_owner_authority(state, true)
-                .ok()
-                .map(|authority| {
-                    let authority_id = narrative_authority_id(&authority);
-                    !state
-                        .narrative_maintenance_preempted_runs
-                        .pending_for_authority(&authority_id)
-                        .is_empty()
-                })
-                .unwrap_or(false)
+        let owner_authority = if allow_restore_only_recovery && workspace_swap_owns_gate {
+            workspace_swap_owner_authority(state, true).ok()
         } else {
             // Restore closes admission before waiting for the open lock, but
             // it must never inherit a closed gate left by an earlier open.
             // The open owner alone may use the replacement-recovery retry.
-            false
+            None
         };
-        let restore_only_without_authority = if allow_restore_only_recovery
+        let replacement_recovery_pending = if allow_restore_only_recovery
             && workspace_swap_owns_gate
         {
-            // Keep the lock order used by `active_workspace_snapshot`: inner
-            // first, then SafeMode. A poisoned workspace lock is not evidence
-            // of a safe restore-only state, so fail closed.
-            let no_live_authority = state
-                .ws
-                .inner
-                .lock()
-                .map(|inner| inner.is_none())
-                .unwrap_or(false);
-            no_live_authority && state.ws.safe_mode.is_active()
+            if state
+                .narrative_maintenance_recovery_gate
+                .restore_recovery_pending()
+            {
+                // A completed restore handed the closed gate to the next
+                // serialized open. If the restore captured an exact binding,
+                // only that authority may consume the handoff; a missing
+                // authority is allowed to proceed to recovery open.
+                match state
+                    .narrative_maintenance_recovery_gate
+                    .restore_recovery_binding()
+                {
+                    Some(expected) => owner_authority
+                        .as_ref()
+                        .map(|authority| narrative_authority_id(authority) == expected.authority_id)
+                        .unwrap_or(false),
+                    None => true,
+                }
+            } else {
+                owner_authority
+                    .as_ref()
+                    .map(|authority| {
+                        let authority_id = narrative_authority_id(authority);
+                        !state
+                            .narrative_maintenance_preempted_runs
+                            .pending_for_authority(&authority_id)
+                            .is_empty()
+                    })
+                    .unwrap_or(false)
+            }
         } else {
             false
         };
+        let restore_only_without_authority =
+            if allow_restore_only_recovery && workspace_swap_owns_gate {
+                // Keep the lock order used by `active_workspace_snapshot`: inner
+                // first, then SafeMode. A poisoned workspace lock is not evidence
+                // of a safe restore-only state, so fail closed.
+                let no_live_authority = state
+                    .ws
+                    .inner
+                    .lock()
+                    .map(|inner| inner.is_none())
+                    .unwrap_or(false);
+                no_live_authority && state.ws.safe_mode.is_active()
+            } else {
+                false
+            };
         if !restore_only_without_authority && !replacement_recovery_pending {
             return Err(AppError::Anyhow(anyhow::anyhow!(
                 "NEX_MAINTENANCE_ADMISSION_CLOSED: workspace swap admission is owned by another operation"
@@ -6799,7 +6821,7 @@ impl Backend {
                         .narrative_maintenance_recovery_gate
                         .panic_after_admission_close_for_test();
                 }
-                restore_backup_core_with_open_lock(&state.ws, open_guard, &file_name, move || {
+                restore_backup_core_with_open_lock(&state.ws, &open_guard, &file_name, move || {
                     rotate_ime_workspace(&state_for_hook);
                     state_for_hook
                         .profile_egress
@@ -6836,13 +6858,28 @@ impl Backend {
             // The restore callback has published the replacement authority.
             // Resolve exact preempted Runs through that new connection before
             // reopening maintenance admission.
-            if let Err(error) =
-                drain_preempted_maintenance_runs_after_workspace_swap(&state)
-            {
-                // Do not let the guard's unwind fallback reopen admission
-                // after a replacement-authority recovery failure.
-                admission_guard.disarm();
-                return Err(error);
+            if let Err(error) = drain_preempted_maintenance_runs_after_workspace_swap(&state) {
+                // The restore has completed and still owns open_lock here.
+                // Hand the closed gate to the next serialized workspace open
+                // with the exact replacement binding before returning the
+                // recovery error; do not leave a terminal Restore owner.
+                let recovery_binding = active_database(&state.ws).ok().map(|authority| {
+                    state
+                        .narrative_maintenance_recovery_gate
+                        .binding_for_authority(&narrative_authority_id(&authority))
+                });
+                let handoff = state
+                    .narrative_maintenance_recovery_gate
+                    .handoff_restore_failure_to_workspace_swap(recovery_binding.as_ref());
+                return match handoff {
+                    Ok(()) => {
+                        admission_guard.disarm();
+                        Err(error)
+                    }
+                    Err(handoff_error) => Err(AppError::Anyhow(anyhow::anyhow!(
+                        "{error}; restore recovery handoff failed: {handoff_error}"
+                    ))),
+                };
             }
             admission_guard.reopen_if_armed()?;
             let path = active_workspace_path(&state.ws)?;
@@ -13086,6 +13123,78 @@ mod narrative_maintenance_admission_unwind_tests {
             .expect("read binding after restore")
             .expect("active binding after restore");
         assert_eq!(after, before, "failed restore must retain the old binding");
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restore_core_borrows_open_lock_until_owner_finishes_postprocessing() {
+        let (backend, root) = backend_with_active_workspace("restore-lock-lifetime");
+        let open_guard = backend.state.ws.open_lock.lock().expect("open lock");
+        let error = restore_backup_core_with_open_lock(
+            &backend.state.ws,
+            &open_guard,
+            "missing-while-lock-is-held.db",
+            || {},
+        )
+        .expect_err("missing backup must fail without consuming the owner's guard");
+        assert!(!error.to_string().is_empty());
+
+        std::thread::scope(|scope| {
+            let ws = &backend.state.ws;
+            let waiter =
+                scope.spawn(|| matches!(ws.open_lock.try_lock(), Err(TryLockError::WouldBlock)));
+            assert!(waiter.join().expect("open-lock waiter thread"));
+        });
+        drop(open_guard);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn production_restore_recovery_handoff_is_consumed_by_next_open() {
+        let (backend, root) = backend_with_active_workspace("restore-recovery-handoff");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        drop(authority);
+
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .close_for_restore()
+            .expect("restore owns admission");
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .mark_workspace_swapped();
+        let replacement_binding = {
+            let authority = active_database(&backend.state.ws).expect("replacement authority");
+            narrative_maintenance_binding_for_authority(&backend.state, &authority)
+        };
+        assert_eq!(replacement_binding.authority_id, binding.authority_id);
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .handoff_restore_failure_to_workspace_swap(Some(&replacement_binding))
+            .expect("handoff completed restore to recovery owner");
+        assert!(backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .restore_recovery_pending());
+
+        backend
+            .open_workspace(root.join("workspace").to_string_lossy().into_owned())
+            .await
+            .expect("next serialized open consumes restore recovery handoff");
+        assert!(!backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .maintenance_admission_is_closed());
+        assert!(!backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .restore_recovery_pending());
 
         drop(backend);
         let _ = std::fs::remove_dir_all(root);

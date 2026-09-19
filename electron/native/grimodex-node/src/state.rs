@@ -134,6 +134,10 @@ struct NarrativeMaintenanceRecoveryState {
     /// lock.  Keeping the owner here prevents restore from borrowing an
     /// open-owned recovery close (and vice versa).
     maintenance_admission_owner: Option<NarrativeMaintenanceAdmissionOwner>,
+    /// Exact binding handed off after a successful restore whose post-swap
+    /// Run recovery failed.  This remains process-local and is consumed by
+    /// the next serialized workspace open.
+    restore_recovery_binding: Option<MaintenanceWorkspaceBinding>,
     #[cfg(test)]
     panic_after_admission_close: bool,
 }
@@ -142,6 +146,7 @@ struct NarrativeMaintenanceRecoveryState {
 pub(crate) enum NarrativeMaintenanceAdmissionOwner {
     WorkspaceSwap,
     Restore,
+    RestoreRecovery,
 }
 
 pub struct NarrativeMaintenanceRecoveryGate {
@@ -615,6 +620,7 @@ impl Default for NarrativeMaintenanceRecoveryGate {
                 active_attempts: HashMap::new(),
                 maintenance_admission_closed: false,
                 maintenance_admission_owner: None,
+                restore_recovery_binding: None,
                 #[cfg(test)]
                 panic_after_admission_close: false,
             }),
@@ -773,6 +779,7 @@ impl NarrativeMaintenanceRecoveryGate {
         Self::retire_quarantined_attempts_locked(&mut state, quarantined_attempts)?;
         state.maintenance_admission_closed = true;
         state.maintenance_admission_owner = Some(owner);
+        state.restore_recovery_binding = None;
         Ok(())
     }
 
@@ -868,6 +875,7 @@ impl NarrativeMaintenanceRecoveryGate {
         );
         state.maintenance_admission_closed = true;
         state.maintenance_admission_owner = Some(owner);
+        state.restore_recovery_binding = None;
         if !state.active_attempts.is_empty() {
             state.maintenance_admission_closed = false;
             state.maintenance_admission_owner = None;
@@ -903,6 +911,7 @@ impl NarrativeMaintenanceRecoveryGate {
         }
         state.maintenance_admission_closed = false;
         state.maintenance_admission_owner = None;
+        state.restore_recovery_binding = None;
         Ok(())
     }
 
@@ -919,10 +928,69 @@ impl NarrativeMaintenanceRecoveryGate {
             .lock()
             .map(|state| {
                 state.maintenance_admission_closed
-                    && state.maintenance_admission_owner
-                        == Some(NarrativeMaintenanceAdmissionOwner::WorkspaceSwap)
+                    && matches!(
+                        state.maintenance_admission_owner,
+                        Some(NarrativeMaintenanceAdmissionOwner::WorkspaceSwap)
+                            | Some(NarrativeMaintenanceAdmissionOwner::RestoreRecovery)
+                    )
             })
             .unwrap_or(false)
+    }
+
+    pub fn restore_recovery_pending(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| {
+                state.maintenance_admission_closed
+                    && state.maintenance_admission_owner
+                        == Some(NarrativeMaintenanceAdmissionOwner::RestoreRecovery)
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn restore_recovery_binding(&self) -> Option<MaintenanceWorkspaceBinding> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.restore_recovery_binding.clone())
+    }
+
+    /// Transfer a completed restore whose post-swap recovery failed to the
+    /// next workspace-open owner.  The restore is no longer executing when
+    /// this is called; the closed gate therefore becomes an explicit retry
+    /// marker instead of an ownerless Restore close.
+    pub fn handoff_restore_failure_to_workspace_swap(
+        &self,
+        binding: Option<&MaintenanceWorkspaceBinding>,
+    ) -> anyhow::Result<()> {
+        if let Some(binding) = binding {
+            binding.validate()?;
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        anyhow::ensure!(
+            state.maintenance_admission_closed
+                && state.maintenance_admission_owner
+                    == Some(NarrativeMaintenanceAdmissionOwner::Restore),
+            "NEX_MAINTENANCE_RESTORE_RECOVERY_NOT_OWNED: restore recovery handoff requires an active Restore close"
+        );
+        anyhow::ensure!(
+            state.active_attempts.is_empty(),
+            "NEX_MAINTENANCE_ATTEMPT_ACTIVE: restore recovery handoff requires no active attempt"
+        );
+        if let Some(binding) = binding {
+            anyhow::ensure!(
+                state.authority_id.as_deref() == Some(binding.authority_id.as_str())
+                    && state.workspace_generation == binding.generation,
+                "NEX_MAINTENANCE_ATTEMPT_BINDING_MISMATCH: restore recovery handoff binding is stale"
+            );
+        }
+        state.maintenance_admission_owner =
+            Some(NarrativeMaintenanceAdmissionOwner::RestoreRecovery);
+        state.restore_recovery_binding = binding.cloned();
+        Ok(())
     }
 
     /// Atomically bind a live authority identity to its recovery generation.
@@ -3530,6 +3598,7 @@ mod tests {
                 active_attempts: HashMap::new(),
                 maintenance_admission_closed: false,
                 maintenance_admission_owner: None,
+                restore_recovery_binding: None,
                 #[cfg(test)]
                 panic_after_admission_close: false,
             }),
@@ -3549,6 +3618,7 @@ mod tests {
                 active_attempts: HashMap::new(),
                 maintenance_admission_closed: false,
                 maintenance_admission_owner: None,
+                restore_recovery_binding: None,
                 #[cfg(test)]
                 panic_after_admission_close: false,
             }),

@@ -208,7 +208,7 @@ pub fn restore_backup_core(
         .lock()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    restore_backup_core_with_open_lock(ws_state, open_guard, file_name, on_reopened)
+    restore_backup_core_with_open_lock(ws_state, &open_guard, file_name, on_reopened)
 }
 
 /// Restore while the caller already owns `WorkspaceState::open_lock`.
@@ -219,7 +219,7 @@ pub fn restore_backup_core(
 /// replacement without recursively locking `restore_backup_core`.
 pub fn restore_backup_core_with_open_lock(
     ws_state: &WorkspaceState,
-    _open_guard: std::sync::MutexGuard<'_, ()>,
+    _open_guard: &std::sync::MutexGuard<'_, ()>,
     file_name: &str,
     on_reopened: impl FnOnce(),
 ) -> AppResult<()> {
