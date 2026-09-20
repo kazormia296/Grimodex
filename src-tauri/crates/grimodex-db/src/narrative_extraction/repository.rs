@@ -75,37 +75,59 @@ const RUN_CANCELLED_ATTEMPT_POLICY_VERSION: &str = "v1";
 const CHRONICLE_RUN_SPEC_KIND: &str = "chronicle.extract.run-spec@2";
 const CHRONICLE_EXISTING_EVENTS_CATALOG_KIND: &str = "chronicle.existing-events-catalog@1";
 
-static PROJECT_DESTRUCTIVE_PERMITS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-static PROJECT_CREATION_RESERVATIONS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+#[derive(Default)]
+struct ProjectLifecycleAdmission {
+    destructive: bool,
+    creation_reservations: usize,
+}
+
+/// One process-local admission table for both sides of the project lifecycle
+/// race.  A single mutex makes "reserve a Run" and "reserve destructive
+/// delete" mutually visible; two independent maps could otherwise both
+/// observe the project as idle and cross the same boundary.
+static PROJECT_LIFECYCLE_ADMISSIONS: OnceLock<
+    Mutex<HashMap<String, ProjectLifecycleAdmission>>,
+> = OnceLock::new();
+
+fn project_lifecycle_admissions(
+) -> &'static Mutex<HashMap<String, ProjectLifecycleAdmission>> {
+    PROJECT_LIFECYCLE_ADMISSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Process-local guard for destructive project writers.  It coordinates the
 /// lifecycle owner and the project delete path in this process only; it is
 /// deliberately not advertised as cross-process SQLite authority.
 pub(crate) fn try_reserve_project_destructive_permit(project_id: &str) -> anyhow::Result<()> {
-    let permits = PROJECT_DESTRUCTIVE_PERMITS.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut permits = permits
+    let admissions = project_lifecycle_admissions();
+    let mut admissions = admissions
         .lock()
-        .map_err(|error| anyhow::anyhow!("project destructive permit poisoned: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("project lifecycle admissions poisoned: {error}"))?;
+    let admission = admissions.entry(project_id.to_owned()).or_default();
     anyhow::ensure!(
-        permits.insert(project_id.to_owned()),
-        "NEX_PROJECT_DESTRUCTIVE_BUSY: project '{project_id}' already has a destructive permit"
+        !admission.destructive && admission.creation_reservations == 0,
+        "NEX_PROJECT_DESTRUCTIVE_BUSY: project '{project_id}' has lifecycle ownership"
     );
+    admission.destructive = true;
     Ok(())
 }
 
 pub(crate) fn release_project_destructive_permit(project_id: &str) {
-    if let Some(permits) = PROJECT_DESTRUCTIVE_PERMITS.get() {
-        if let Ok(mut permits) = permits.lock() {
-            permits.remove(project_id);
+    if let Ok(mut admissions) = project_lifecycle_admissions().lock() {
+        if let Some(admission) = admissions.get_mut(project_id) {
+            admission.destructive = false;
+            if admission.creation_reservations == 0 {
+                admissions.remove(project_id);
+            }
         }
     }
 }
 
 pub(crate) fn project_destructive_permit_active(project_id: &str) -> bool {
-    PROJECT_DESTRUCTIVE_PERMITS
-        .get()
-        .and_then(|permits| permits.lock().ok())
-        .is_some_and(|permits| permits.contains(project_id))
+    project_lifecycle_admissions()
+        .lock()
+        .ok()
+        .and_then(|admissions| admissions.get(project_id).map(|entry| entry.destructive))
+        .unwrap_or(false)
 }
 
 /// Process-local reservation count for maintenance Run creation. Destructive
@@ -118,34 +140,44 @@ pub fn try_reserve_project_creation(project_id: &str) -> anyhow::Result<()> {
         !project_id.trim().is_empty(),
         "NEX_PROJECT_CREATION_RESERVATION_INVALID: project id is empty"
     );
-    let reservations = PROJECT_CREATION_RESERVATIONS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut reservations = reservations
+    let admissions = project_lifecycle_admissions();
+    let mut admissions = admissions
         .lock()
-        .map_err(|error| anyhow::anyhow!("project creation reservations poisoned: {error}"))?;
-    *reservations.entry(project_id.to_owned()).or_insert(0) += 1;
+        .map_err(|error| anyhow::anyhow!("project lifecycle admissions poisoned: {error}"))?;
+    let admission = admissions.entry(project_id.to_owned()).or_default();
+    anyhow::ensure!(
+        !admission.destructive,
+        "NEX_PROJECT_DESTRUCTIVE_BUSY: project '{project_id}' is under a destructive permit"
+    );
+    admission.creation_reservations += 1;
     Ok(())
 }
 
 pub fn release_project_creation(project_id: &str) {
-    if let Some(reservations) = PROJECT_CREATION_RESERVATIONS.get() {
-        if let Ok(mut reservations) = reservations.lock() {
-            let Some(count) = reservations.get_mut(project_id) else {
-                return;
-            };
-            if *count <= 1 {
-                reservations.remove(project_id);
-            } else {
-                *count -= 1;
-            }
+    if let Ok(mut admissions) = project_lifecycle_admissions().lock() {
+        let Some(admission) = admissions.get_mut(project_id) else {
+            return;
+        };
+        if admission.creation_reservations == 0 {
+            return;
+        }
+        admission.creation_reservations -= 1;
+        if admission.creation_reservations == 0 && !admission.destructive {
+            admissions.remove(project_id);
         }
     }
 }
 
 pub(crate) fn project_creation_reservation_active(project_id: &str) -> bool {
-    PROJECT_CREATION_RESERVATIONS
-        .get()
-        .and_then(|reservations| reservations.lock().ok())
-        .is_some_and(|reservations| reservations.get(project_id).is_some_and(|count| *count > 0))
+    project_lifecycle_admissions()
+        .lock()
+        .ok()
+        .and_then(|admissions| {
+            admissions
+                .get(project_id)
+                .map(|entry| entry.creation_reservations > 0)
+        })
+        .unwrap_or(false)
 }
 /// Canonical Review-resumability predicate shared by bounded discovery and
 /// the exact, limit-free authority query. Keep the Run alias fixed as `r` so
@@ -6261,6 +6293,21 @@ mod unit_tests {
         assert!(!project_creation_reservation_active(&project_id));
         // An extra release is a no-op, which keeps error paths idempotent.
         release_project_creation(&project_id);
+    }
+
+    #[test]
+    fn project_creation_and_destructive_admission_share_one_boundary() {
+        let project_id = format!("lifecycle-destructive-{}", Uuid::new_v4());
+        try_reserve_project_creation(&project_id).expect("creation reservation");
+        assert!(try_reserve_project_destructive_permit(&project_id).is_err());
+        release_project_creation(&project_id);
+
+        try_reserve_project_destructive_permit(&project_id)
+            .expect("destructive reservation after creation release");
+        assert!(try_reserve_project_creation(&project_id).is_err());
+        assert!(project_destructive_permit_active(&project_id));
+        release_project_destructive_permit(&project_id);
+        assert!(!project_destructive_permit_active(&project_id));
     }
 
     #[test]

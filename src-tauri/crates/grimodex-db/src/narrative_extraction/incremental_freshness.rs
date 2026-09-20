@@ -97,6 +97,10 @@ impl GraphWorkControl for LifecycleGraphControl<'_> {
     fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
         self.owner.check()
     }
+
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
 }
 
 fn check_cycle_control(

@@ -169,6 +169,11 @@ pub struct NarrativeMaintenanceRecoveryGate {
 pub(crate) struct NarrativeMaintenanceRecoveryReceipt {
     pub recovered_binding: MaintenanceWorkspaceBinding,
     pub active_binding: Option<MaintenanceWorkspaceBinding>,
+    /// Set only when Native proves that the descriptor's exact expected
+    /// locator/workspace/authority is the authority currently published as
+    /// Ready.  Main may rebind retained work only from this proof; an active
+    /// binding for an unrelated workspace is intentionally not sufficient.
+    pub rebound_binding: Option<MaintenanceWorkspaceBinding>,
 }
 
 /// Process-local ownership for a transiently preempted maintenance Run whose

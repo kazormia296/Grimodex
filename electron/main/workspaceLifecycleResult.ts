@@ -351,6 +351,25 @@ function validateOutcomeAxes(
   if (activation === "requires-open" && status === "activated") {
     fail("$.activation", "requires-open is a restored Safe Mode projection");
   }
+  if (
+    (status === "activated" || status === "restored") &&
+    contentEffect === "none"
+  ) {
+    fail(
+      "$.contentEffect",
+      "an activation/restoration result must describe retained or replaced content",
+    );
+  }
+  if (
+    status === "restored" &&
+    activation === "requires-open" &&
+    contentEffect !== "retained"
+  ) {
+    fail(
+      "$.contentEffect",
+      "requires-open restoration must retain the content awaiting explicit Open",
+    );
+  }
   // A failed/cancelled/unknown Open may retain content only after it has been
   // reopened under a new authority, which is the explicit Activated result.
   if (

@@ -183,6 +183,27 @@ describe("workspace lifecycle result contract", () => {
         snapshot: { state: "recovery-required", revision: 1 },
       },
     },
+    {
+      name: "activated result with no workspace effect",
+      value: {
+        status: "activated",
+        activation: "ready",
+        operationOutcome: "succeeded",
+        contentEffect: "none",
+        binding: bindingA,
+        snapshot: readySnapshot(2),
+      },
+    },
+    {
+      name: "requires-open restoration that replaces content",
+      value: {
+        status: "restored",
+        activation: "requires-open",
+        operationOutcome: "failed",
+        contentEffect: "replaced",
+        snapshot: { state: "recovery-required", revision: 3 },
+      },
+    },
   ])("rejects $name", ({ value }) => {
     expect(() => normalizeWorkspaceLifecycleResult(value)).toThrow(
       /invalid workspace lifecycle result/,

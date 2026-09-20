@@ -243,6 +243,16 @@ impl WorkspaceLifecycleViewAdapter {
         Ok(self.core.admit_maintenance_permit()?)
     }
 
+    /// Reserve a foreground writer in the same shared lifecycle core as
+    /// maintenance.  The permit remains live through the borrowed SQLite
+    /// transaction and its cleanup, so a transition cannot race a long
+    /// eligibility read or commit finalizer.
+    pub(crate) fn begin_foreground(
+        &self,
+    ) -> AppResult<PermitAdmission<MaintenancePermit>> {
+        Ok(self.core.admit_foreground_permit()?)
+    }
+
     /// Pair the shared core's physical exclusion marker with the real Native
     /// `open_lock`/file-lease interval held by the blocking supervisor.  The
     /// marker is released when the worker leaves the protected I/O boundary,

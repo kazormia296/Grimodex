@@ -80,7 +80,7 @@ use super::semantic_bindings::{
     apply_semantic_binding_upsert_in_tx, parse_semantic_binding_upsert_payload,
     OP_KIND_SEMANTIC_BINDING_UPSERT,
 };
-use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage, NeverStopGraphWorkControl};
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 use super::source_revision::{
     is_validation_terminated, resolve_source_revision_with_validation_context,
     validation_context, validation_terminated, ValidationTerminationReason,
@@ -269,13 +269,14 @@ pub fn narrative_extraction_prepare_commit_with_control(
                 // The foreground command owns this borrowed validation
                 // capability for the duration of the same write transaction.
                 // It is intentionally not a maintenance re-admission.
-                let mut fallback_owner = NeverStopGraphWorkControl;
-                let owner: &mut dyn GraphWorkControl =
-                    if let Some(control) = lifecycle_control.as_deref_mut() {
-                        control
-                    } else {
-                        &mut fallback_owner
-                    };
+                let owner: &mut dyn GraphWorkControl = lifecycle_control
+                    .as_deref_mut()
+                    .ok_or_else(|| {
+                        validation_terminated(
+                            ValidationTerminationReason::ContextUnavailable,
+                            "whole-project eligibility requires a caller-owned validation context",
+                        )
+                    })?;
                 build_source_contract(
                     conn,
                     &payload.project_id,
@@ -1041,13 +1042,14 @@ pub fn narrative_extraction_apply_commit_with_control(
                 // Apply revalidates the sealed contract on the same
                 // transaction and borrowed owner as its DML.  A separate
                 // connection or nested maintenance admission is forbidden.
-                let mut fallback_owner = NeverStopGraphWorkControl;
-                let owner: &mut dyn GraphWorkControl =
-                    if let Some(control) = lifecycle_control.as_deref_mut() {
-                        control
-                    } else {
-                        &mut fallback_owner
-                    };
+                let owner: &mut dyn GraphWorkControl = lifecycle_control
+                    .as_deref_mut()
+                    .ok_or_else(|| {
+                        validation_terminated(
+                            ValidationTerminationReason::ContextUnavailable,
+                            "whole-project eligibility requires a caller-owned validation context",
+                        )
+                    })?;
                 build_source_contract(
                     conn,
                     &sealed_plan.project_id,
@@ -1647,13 +1649,14 @@ pub fn narrative_extraction_apply_commit_with_control(
                 )?;
                 let envelope: Value = serde_json::from_str(&envelope_json)?;
                 let read_set = if envelope_schema_version(&envelope) == Some(2) {
-                    let mut fallback_owner = NeverStopGraphWorkControl;
-                    let owner: &mut dyn GraphWorkControl =
-                        if let Some(control) = lifecycle_control.as_deref_mut() {
-                            control
-                        } else {
-                            &mut fallback_owner
-                        };
+                    let owner: &mut dyn GraphWorkControl = lifecycle_control
+                        .as_deref_mut()
+                        .ok_or_else(|| {
+                            validation_terminated(
+                                ValidationTerminationReason::ContextUnavailable,
+                                "V2 apply source validation requires a caller-owned validation context",
+                            )
+                        })?;
                     if !owner.allows_full_eligibility() {
                         return Err(validation_terminated(
                             ValidationTerminationReason::ContextUnavailable,

@@ -1999,6 +1999,47 @@ fn open_descriptor_recovery_authority(
     Ok(Arc::new(WorkspaceAuthority::new(database, path, lease)))
 }
 
+/// Return a rebinding proof only when the descriptor target is the authority
+/// that is currently published after recovery.  A descriptor for W1 may be
+/// reconciled while W2 remains Ready; in that case the active authority is
+/// deliberately not a proof for W1 and retained W1 work must stay parked.
+fn descriptor_rebound_binding(
+    state: &AppState,
+    descriptor: &grimodex_db::workspace_lifecycle::RecoveryDescriptor,
+    recovered_authority: &PinnedWorkspaceDb,
+) -> Option<MaintenanceWorkspaceBinding> {
+    let expected = descriptor.expected_binding.as_ref()?;
+    let active = active_database(&state.ws).ok()?;
+    if active.identity() != recovered_authority.identity()
+        || !descriptor_expected_matches_authority(expected, &active)
+    {
+        return None;
+    }
+    Some(narrative_maintenance_binding_for_authority(state, &active))
+}
+
+fn descriptor_expected_matches_authority(
+    binding: &grimodex_db::LiveBinding,
+    authority: &PinnedWorkspaceDb,
+) -> bool {
+    if binding.authority_instance != authority.identity()
+        || binding.locator != authority.path().to_string_lossy()
+    {
+        return false;
+    }
+    let metadata_path = authority.path().join(".grimodex/workspace.json");
+    let workspace_id = std::fs::read_to_string(metadata_path)
+        .ok()
+        .and_then(|metadata| serde_json::from_str::<serde_json::Value>(&metadata).ok())
+        .and_then(|value| {
+            value
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        });
+    workspace_id.as_deref() == Some(binding.workspace_id.as_str())
+}
+
 /// Drop the retired authority from the active workspace slot before a
 /// descriptor-bound resolver opens its replacement. The identity check keeps
 /// a concurrent workspace switch from detaching a newer authority.
@@ -2131,6 +2172,7 @@ struct MaintenanceRecoveryReconciliation {
     descriptor_id: grimodex_db::workspace_lifecycle::RecoveryDescriptorId,
     reason: String,
     maintenance_binding: Option<(Option<String>, MaintenanceWorkspaceBinding)>,
+    rebound_binding: Option<MaintenanceWorkspaceBinding>,
 }
 
 fn reconcile_maintenance_recovery_descriptor(
@@ -2167,6 +2209,7 @@ fn reconcile_maintenance_recovery_descriptor(
                 descriptor_id,
                 reason: "maintenance-recovery-connection-close-pending".to_owned(),
                 maintenance_binding: maintenance_recovery_binding(state, descriptor_id),
+                rebound_binding: None,
             }));
         }
         if let Some(authority) = active_authority.as_ref() {
@@ -2225,7 +2268,19 @@ fn reconcile_maintenance_recovery_descriptor(
             return Ok(None);
         }
     };
-    emit_workspace_lifecycle_view(state, &view);
+    // Descriptor recovery is allowed to finish in the background while an
+    // unrelated workspace remains Ready.  Do not publish a transient
+    // Transition for that root: renderer would invalidate the live W2 scope
+    // and then mistake the final W2 Ready snapshot for a successful rebind.
+    // The shared core still records the transition and guards admission; the
+    // public projection remains scoped to the active workspace.
+    let background_descriptor_recovery = active_authority
+        .as_ref()
+        .zip(descriptor.expected_binding.as_ref())
+        .is_some_and(|(active, expected)| !descriptor_expected_matches_authority(expected, active));
+    if !background_descriptor_recovery {
+        emit_workspace_lifecycle_view(state, &view);
+    }
     // A cleanup-quarantined authority must never be republished as Ready.
     // Install a replacement only after the shared recovery transition owns
     // the logical boundary; W2 remains untouched because its path is
@@ -2378,6 +2433,7 @@ fn reconcile_maintenance_recovery_descriptor(
             descriptor_id,
             reason: "maintenance-recovery-complete".to_owned(),
             maintenance_binding,
+            rebound_binding: None,
         }))
     })();
 
@@ -2426,14 +2482,18 @@ fn reconcile_maintenance_recovery_descriptor(
                         let active_binding = active_database(&state.ws).ok().map(|authority| {
                             narrative_maintenance_binding_for_authority(state, &authority)
                         });
+                        let rebound_binding =
+                            descriptor_rebound_binding(state, &descriptor, &authority);
                         remember_completed_maintenance_recovery(
                             state,
                             descriptor_id,
                             NarrativeMaintenanceRecoveryReceipt {
                                 recovered_binding: binding.clone(),
                                 active_binding,
+                                rebound_binding: rebound_binding.clone(),
                             },
                         );
+                        reconciliation.rebound_binding = rebound_binding;
                         reconciliation.maintenance_binding = Some((attempt_id, binding));
                     }
                 }
@@ -2615,9 +2675,18 @@ where
         .map_err(|error| anyhow::anyhow!("{error}"))?
     {
         PermitAdmission::Admitted(mut permit) => {
-            permit
-                .start()
-                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            if let Err(error) = permit.start() {
+                permit
+                    .cancel_before_start()
+                    .map_err(|cleanup| {
+                        anyhow::anyhow!(
+                            "NEX_MAINTENANCE_PENDING_START_CLEANUP_FAILED: {cleanup}"
+                        )
+                    })?;
+                return Err(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_PENDING_START_REJECTED: {error}"
+                ));
+            }
             permit
         }
         PermitAdmission::NotAdmitted { reason, snapshot } => {
@@ -3478,18 +3547,32 @@ where
 /// through the same SQLite transaction as their DML, and a concurrent
 /// lifecycle transition turns into a typed validation termination instead of
 /// being normalized as Source missing or a failed Prepared commit.
-struct ForegroundValidationControl {
+struct ForegroundValidationControl<'permit> {
     state: Arc<AppState>,
+    lifecycle_permit: &'permit MaintenancePermit,
 }
 
-impl ForegroundValidationControl {
-    fn new(state: Arc<AppState>) -> Self {
-        Self { state }
+impl<'permit> ForegroundValidationControl<'permit> {
+    fn new(state: Arc<AppState>, lifecycle_permit: &'permit MaintenancePermit) -> Self {
+        Self {
+            state,
+            lifecycle_permit,
+        }
     }
 }
 
-impl GraphWorkControl for ForegroundValidationControl {
+impl GraphWorkControl for ForegroundValidationControl<'_> {
     fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
+        if self
+            .lifecycle_permit
+            .stop_requested()
+            .map_err(|error| anyhow::anyhow!("foreground lifecycle permit unavailable: {error}"))?
+        {
+            return Err(validation_terminated(
+                ValidationTerminationReason::WorkspaceGenerationChanged,
+                "foreground validation stopped by the shared lifecycle owner",
+            ));
+        }
         if self
             .state
             .workspace_shutdown_requested
@@ -3521,6 +3604,72 @@ impl GraphWorkControl for ForegroundValidationControl {
         }
         Ok(())
     }
+
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
+}
+
+/// Admit a foreground command before it opens or borrows a DB transaction.
+/// The returned permit is intentionally held by the command closure until the
+/// transaction, result serialization, and connection cleanup have returned.
+fn begin_foreground_lifecycle_permit(
+    state: &AppState,
+) -> std::result::Result<MaintenancePermit, AppError> {
+    match state.workspace_lifecycle.begin_foreground()? {
+        PermitAdmission::Admitted(mut permit) => {
+            if let Err(error) = permit.start() {
+                let cleanup = permit.cancel_before_start().map_err(|cleanup| {
+                    AppError::Anyhow(anyhow::anyhow!(
+                        "NEX_FOREGROUND_PENDING_START_CLEANUP_FAILED: {cleanup}"
+                    ))
+                });
+                return match cleanup {
+                    Ok(_) => Err(AppError::Anyhow(anyhow::anyhow!(
+                        "NEX_FOREGROUND_PENDING_START_REJECTED: {error}"
+                    ))),
+                    Err(cleanup_error) => Err(cleanup_error),
+                };
+            }
+            Ok(permit)
+        }
+        PermitAdmission::NotAdmitted { reason, snapshot } => Err(AppError::Anyhow(
+            anyhow::anyhow!(
+                "NEX_FOREGROUND_NOT_ADMITTED: {reason:?} at lifecycle revision {}",
+                snapshot.revision
+            ),
+        )),
+    }
+}
+
+/// Finalize a foreground lifecycle execution only after its DB closure has
+/// returned.  A finalizer failure remains visible in the shared core instead
+/// of being hidden behind a successful command result.
+fn finish_foreground_lifecycle_permit<T>(
+    mut permit: MaintenancePermit,
+    operation: std::result::Result<T, AppError>,
+) -> std::result::Result<T, AppError> {
+    let finalization = match permit.mark_joined() {
+        Ok(()) => permit
+            .release()
+            .map(|_| ())
+            .map_err(|error| AppError::Anyhow(anyhow::anyhow!(
+                "NEX_FOREGROUND_LIFECYCLE_RELEASE_FAILED: {error}"
+            ))),
+        Err(error) => Err(AppError::Anyhow(anyhow::anyhow!(
+            "NEX_FOREGROUND_LIFECYCLE_JOIN_FAILED: {error}"
+        ))),
+    };
+    match (operation, finalization) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(operation_error), Ok(())) => Err(operation_error),
+        (Ok(_), Err(finalization_error)) => Err(finalization_error),
+        (Err(operation_error), Err(finalization_error)) => Err(AppError::Anyhow(
+            anyhow::anyhow!(
+                "{operation_error}; foreground lifecycle finalizer failed: {finalization_error}"
+            ),
+        )),
+    }
 }
 
 async fn foreground_commit_cmd<T, F>(
@@ -3543,28 +3692,38 @@ where
         let _workspace_operation = state
             .begin_workspace_operation()
             .map_err(AppError::Anyhow)?;
-        let authority_context = if payload.get("authorityRoute").is_some() {
-            let context: grimodex_db::agent_writes::RendererCanonicalWriteContext =
-                from_wire(label, payload.clone())?;
-            agent_writes::validate_renderer_authority_context(&context)?;
-            Some(serde_json::to_value(context).map_err(|error| AppError::Anyhow(error.into()))?)
-        } else {
-            None
-        };
-        let dto: T = from_wire(label, payload)?;
-        let mut validation_control = ForegroundValidationControl::new(Arc::clone(&state));
-        validation_control.check(GraphWorkStage::Source)?;
-        with_db_state(&state.ws, |db| {
-            let result = match authority_context {
-                Some(context) => {
-                    grimodex_db::change_events::with_renderer_authority_context(context, || {
-                        f(db, dto, &mut validation_control)
-                    })?
-                }
-                None => f(db, dto, &mut validation_control)?,
+        let lifecycle_permit = begin_foreground_lifecycle_permit(&state)?;
+        let operation = catch_unwind(AssertUnwindSafe(|| -> std::result::Result<String, AppError> {
+            let authority_context = if payload.get("authorityRoute").is_some() {
+                let context: grimodex_db::agent_writes::RendererCanonicalWriteContext =
+                    from_wire(label, payload.clone())?;
+                agent_writes::validate_renderer_authority_context(&context)?;
+                Some(serde_json::to_value(context).map_err(|error| AppError::Anyhow(error.into()))?)
+            } else {
+                None
             };
-            Ok(serde_json::to_string(&result)?)
-        })
+            let dto: T = from_wire(label, payload)?;
+            let mut validation_control =
+                ForegroundValidationControl::new(Arc::clone(&state), &lifecycle_permit);
+            validation_control.check(GraphWorkStage::Source)?;
+            with_db_state(&state.ws, |db| {
+                let result = match authority_context {
+                    Some(context) => {
+                        grimodex_db::change_events::with_renderer_authority_context(context, || {
+                            f(db, dto, &mut validation_control)
+                        })?
+                    }
+                    None => f(db, dto, &mut validation_control)?,
+                };
+                Ok(serde_json::to_string(&result)?)
+            })
+        }))
+        .unwrap_or_else(|_| {
+            Err(AppError::Anyhow(anyhow::anyhow!(
+                "NEX_FOREGROUND_TRANSACTION_PANIC: foreground transaction panicked"
+            )))
+        });
+        finish_foreground_lifecycle_permit(lifecycle_permit, operation)
     })
     .await
 }
@@ -3636,32 +3795,42 @@ where
         let _workspace_operation = state
             .begin_workspace_operation()
             .map_err(AppError::Anyhow)?;
-        let requested_binding: NarrativeExtractionWorkspaceBinding =
-            from_wire("workspaceBinding", workspace_binding)?;
-        requested_binding.validate().map_err(AppError::Anyhow)?;
-        let dto: T = from_wire(label, payload)?;
-        let workspace = active_workspace_snapshot(&state.ws)?;
-        let current_binding =
-            narrative_extraction_binding_for_authority(&state, &workspace.authority);
-        if current_binding != requested_binding {
-            return Err(AppError::Anyhow(anyhow::anyhow!(
-                "NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED: extraction mutation was bound to authority {} generation {} instance {}, active authority is {} generation {} instance {}",
-                requested_binding.authority_id,
-                requested_binding.generation,
-                requested_binding.authority_instance_id,
-                current_binding.authority_id,
-                current_binding.generation,
-                current_binding.authority_instance_id,
-            )));
-        }
-        let mut validation_control = ForegroundValidationControl::new(Arc::clone(&state));
-        validation_control.check(GraphWorkStage::Source)?;
-        let result = f(
-            workspace.authority.db(),
-            dto,
-            &mut validation_control,
-        )?;
-        serde_json::to_string(&result).map_err(|error| AppError::Anyhow(error.into()))
+        let lifecycle_permit = begin_foreground_lifecycle_permit(&state)?;
+        let operation = catch_unwind(AssertUnwindSafe(|| -> std::result::Result<String, AppError> {
+            let requested_binding: NarrativeExtractionWorkspaceBinding =
+                from_wire("workspaceBinding", workspace_binding)?;
+            requested_binding.validate().map_err(AppError::Anyhow)?;
+            let dto: T = from_wire(label, payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            let current_binding =
+                narrative_extraction_binding_for_authority(&state, &workspace.authority);
+            if current_binding != requested_binding {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED: extraction mutation was bound to authority {} generation {} instance {}, active authority is {} generation {} instance {}",
+                    requested_binding.authority_id,
+                    requested_binding.generation,
+                    requested_binding.authority_instance_id,
+                    current_binding.authority_id,
+                    current_binding.generation,
+                    current_binding.authority_instance_id,
+                )));
+            }
+            let mut validation_control =
+                ForegroundValidationControl::new(Arc::clone(&state), &lifecycle_permit);
+            validation_control.check(GraphWorkStage::Source)?;
+            let result = f(
+                workspace.authority.db(),
+                dto,
+                &mut validation_control,
+            )?;
+            serde_json::to_string(&result).map_err(|error| AppError::Anyhow(error.into()))
+        }))
+        .unwrap_or_else(|_| {
+            Err(AppError::Anyhow(anyhow::anyhow!(
+                "NEX_FOREGROUND_TRANSACTION_PANIC: foreground transaction panicked"
+            )))
+        });
+        finish_foreground_lifecycle_permit(lifecycle_permit, operation)
     })
     .await
 }
@@ -4941,9 +5110,17 @@ fn run_narrative_freshness_cycle_inner(
     let _ = reconcile_maintenance_recovery_descriptor(state)?;
     let mut lifecycle_permit = match state.workspace_lifecycle.begin_maintenance()? {
         PermitAdmission::Admitted(mut permit) => {
-            permit
-                .start()
-                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+            if let Err(error) = permit.start() {
+                let cleanup = permit.cancel_before_start().map_err(|cleanup| {
+                    AppError::Anyhow(anyhow::anyhow!(
+                        "NEX_MAINTENANCE_PENDING_START_CLEANUP_FAILED: {cleanup}"
+                    ))
+                })?;
+                let _ = cleanup;
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_PENDING_START_REJECTED: {error}"
+                )));
+            }
             permit
         }
         PermitAdmission::NotAdmitted { .. } => return Ok(None),
@@ -5529,9 +5706,14 @@ impl Backend {
             .map_err(|error| Error::from_reason(error.to_string()))?
         {
             PermitAdmission::Admitted(mut permit) => {
-                permit
-                    .start()
-                    .map_err(|error| Error::from_reason(error.to_string()))?;
+                if let Err(error) = permit.start() {
+                    permit
+                        .cancel_before_start()
+                        .map_err(|cleanup| Error::from_reason(cleanup.to_string()))?;
+                    return Err(Error::from_reason(format!(
+                        "NEX_MAINTENANCE_PENDING_START_REJECTED: {error}"
+                    )));
+                }
                 permit
             }
             PermitAdmission::NotAdmitted { .. } => return Ok(None),
@@ -5670,6 +5852,7 @@ impl Backend {
                     "descriptorId": descriptor_id,
                     "recoveredBinding": receipt.recovered_binding,
                     "activeBinding": receipt.active_binding,
+                    "reboundBinding": receipt.rebound_binding,
                 })
                 .to_string());
             }
@@ -5687,6 +5870,7 @@ impl Backend {
                             .as_ref()
                             .map(|(_, binding)| binding),
                         "activeBinding": active_binding,
+                        "reboundBinding": reconciliation.rebound_binding,
                     })
                     .to_string())
                 }
@@ -6075,6 +6259,16 @@ impl Backend {
         };
         let permit_return_slot = Arc::new(Mutex::new(Some(lifecycle_permit)));
         let permit_return_slot_for_worker = Arc::clone(&permit_return_slot);
+        let admitted_sequence_slot = Arc::new(Mutex::new(None::<DeliverySequence>));
+        let admitted_sequence_slot_for_worker = Arc::clone(&admitted_sequence_slot);
+        let requested_attempt_id = payload
+            .get("attemptId")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        let requested_binding = payload
+            .get("workspaceBinding")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<MaintenanceWorkspaceBinding>(value).ok());
         let worker_state = Arc::clone(&state);
         let worker_join = napi::tokio::task::spawn_blocking(move || {
             let state = worker_state;
@@ -6146,6 +6340,9 @@ impl Backend {
                 {
                     DeliveryAdmissionOutcome::Accepted { sequence } => {
                         admitted_delivery_sequence = Some(sequence);
+                        if let Ok(mut slot) = admitted_sequence_slot_for_worker.lock() {
+                            *slot = Some(sequence);
+                        }
                     }
                     DeliveryAdmissionOutcome::Replay { result, .. } => {
                         // A duplicate sequence is a read of the existing
@@ -6281,9 +6478,22 @@ impl Backend {
             // supervised pending-start interval without opening a second
             // admission race inside the worker.
             if let Some(permit) = lifecycle_permit.as_mut() {
-                permit
-                    .start()
-                    .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+                if let Err(error) = permit.start() {
+                    permit
+                        .cancel_before_start_in_place()
+                        .map_err(|cleanup| {
+                            AppError::Anyhow(anyhow::anyhow!(
+                                "NEX_MAINTENANCE_PENDING_START_CLEANUP_FAILED: {cleanup}"
+                            ))
+                        })?;
+                    // cancel_before_start_in_place already removed the
+                    // admission and execution membership; do not hand that
+                    // released handle to the Join finalizer a second time.
+                    let _ = lifecycle_permit.take();
+                    return Err(AppError::Anyhow(anyhow::anyhow!(
+                        "NEX_MAINTENANCE_PENDING_START_REJECTED: {error}"
+                    )));
+                }
                 // Admission/start is the ownership boundary. Any DB work
                 // after this point (preempted-run cleanup, fault setup, or
                 // planning) is supervised and must transfer the permit on
@@ -6987,7 +7197,7 @@ impl Backend {
                     "NEX_MAINTENANCE_PANIC: maintenance worker panicked"
                 ))),
             };
-            let mut operation_result = match operation_result {
+            let operation_result = match operation_result {
                 Err(error) if is_narrative_maintenance_preemption(&error) => {
                     Ok(serde_json::json!({
                         "status": "accepted",
@@ -7020,27 +7230,43 @@ impl Backend {
         let supervisor = napi::tokio::task::spawn(async move {
             let worker = match worker_join.await {
                 Ok(Ok(worker)) => worker,
-                Ok(Err(error)) => return Err(app_err_to_napi(error)),
+                Ok(Err(error)) => {
+                    let lifecycle_permit = permit_return_slot
+                        .lock()
+                        .ok()
+                        .and_then(|mut slot| slot.take());
+                    NarrativeMaintenanceWorkerOutcome {
+                        result: Err(error),
+                        lifecycle_permit,
+                        lifecycle_work_started: true,
+                        authority: active_database(&supervisor_state.ws).ok(),
+                        attempt_id: requested_attempt_id.clone(),
+                        workspace_binding: requested_binding.clone(),
+                        admitted_delivery_sequence: admitted_sequence_slot
+                            .lock()
+                            .ok()
+                            .and_then(|slot| *slot),
+                    }
+                }
                 Err(join_error) => {
                     let orphaned_permit = permit_return_slot
                         .lock()
                         .ok()
                         .and_then(|mut slot| slot.take());
-                    if let Some(mut permit) = orphaned_permit {
-                        permit
-                            .mark_joined()
-                            .map_err(|error| Error::from_reason(error.to_string()))?;
-                        let descriptor_id = permit
-                            .transfer_to_recovery()
-                            .map_err(|error| Error::from_reason(error.to_string()))?;
-                        return Ok(serde_json::json!({
-                            "status": "workspace-unavailable",
-                            "reason": "maintenance-worker-join-failed",
-                            "descriptorId": descriptor_id,
-                        })
-                        .to_string());
+                    NarrativeMaintenanceWorkerOutcome {
+                        result: Err(AppError::Anyhow(anyhow::anyhow!(
+                            "NEX_MAINTENANCE_WORKER_JOIN_FAILED: {join_error}"
+                        ))),
+                        lifecycle_permit: orphaned_permit,
+                        lifecycle_work_started: true,
+                        authority: active_database(&supervisor_state.ws).ok(),
+                        attempt_id: requested_attempt_id.clone(),
+                        workspace_binding: requested_binding.clone(),
+                        admitted_delivery_sequence: admitted_sequence_slot
+                            .lock()
+                            .ok()
+                            .and_then(|slot| *slot),
                     }
-                    return Err(join_err_to_napi(join_error));
                 }
             };
             let mut worker = worker;

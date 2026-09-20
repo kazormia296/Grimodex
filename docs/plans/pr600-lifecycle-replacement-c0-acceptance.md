@@ -39,38 +39,41 @@ listed below as unresolved.
   project/semantic-epoch lineage, and a single all-ID absence check. A
   cleanup-quarantined authority cannot be reused as the resolver.
 - Project creation reservations are counted by project, so Fresh-to-Reused
-  selection cannot leak a generated reservation. The destructive-delete versus
-  Run-reservation admission race remains open because the two maps are not one
-  atomic project state machine.
+  selection cannot leak a generated reservation. Destructive delete and Run
+  reservation now share one process-local mutex-backed admission table; the
+  durable active-Run and lineage checks remain mandatory for cross-process
+  safety.
 - Automatic maintenance permits remain under the outer Native supervisor;
-  manual/legacy maintenance and Freshness start-failure paths still need the
-  same supervisor-owned handling for JoinError/panic and `start()` rejection.
+  manual/legacy maintenance and Freshness reject pending-start through an
+  explicit cancellation path. The isolated lifecycle harness also exercises
+  the shared foreground lane and exact H+1 retry after ACK.
 - The frozen Tauri compatibility owner may use a directly installed verified
   authority when the shared core has not yet published a binding; explicit
   Electron Transition/RecoveryRequired/Closed states remain fail-closed.
 
-The following C0 rows remain open and block a green C1/C5 conclusion: the
-renderer-facing foreground lanes still use the process-local operation counter
-instead of a shared-core participant; project deletion and Run creation use
-separate coordination maps; the strict borrowed validation context is not
-present at every reachable callsite; and manual/legacy maintenance paths need
-outer async supervision equivalent to the automatic worker.
+The following C0 rows remain open and block a green C1/C5 conclusion: full
+Layer C journeys and T01-T36 evidence are still unrun, and frozen standalone
+or MCP compatibility adapters require their own positive context coverage.
+The Native product foreground lanes use the shared core participant and
+borrowed transaction context; the compatibility boundary must not be widened
+back into those lanes.
 
 ## Evidence inspected
 
 - `docs/plans/pr600-lifecycle-replacement.md` and the implementation diff at
   the candidate checkpoint recorded above.
 - Layer A shared-core tests: `cargo test --manifest-path
-  src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle` (26 tests,
+  src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle` (27 tests,
   including independent W2 Open with an unresolved W1 descriptor).
 - Native lifecycle/open/restore and supervisor tests: `cargo test
   --manifest-path electron/native/grimodex-node/Cargo.toml --lib` (146 tests).
 - DB maintenance ownership tests: `cargo test --manifest-path
   src-tauri/Cargo.toml -p grimodex-db --lib
   narrative_extraction::maintenance_lifecycle` (20 tests).
-- Electron lifecycle, delivery, scheduler, result, and shutdown focused
-  tests: 85 tests passed in the three maintenance suites; the new ACK-only
-  retry case is included. Electron TypeScript typecheck also passed.
+- Electron lifecycle, delivery, scheduler, and result focused tests: the
+  current boundary run passed 28 tests in three maintenance suites, including
+  exact W1 rebinding and the full-ledger ACK retry case. Electron TypeScript
+  typecheck also passed.
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib
   state::tests::active_workspace_snapshot_pins_authority_including_lease`
   passed for the frozen Tauri compatibility path.

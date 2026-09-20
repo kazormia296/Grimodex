@@ -70,6 +70,18 @@ run([
   "lifecycle_control_stops_before_reservation_and_valid_control_progresses",
 ]);
 
+if (process.env.GDX_LIFECYCLE_SKIP_HARNESS !== "1") {
+  run([
+    "run",
+    "--manifest-path",
+    "electron/native/grimodex-node/Cargo.toml",
+    "--features",
+    "test-lifecycle",
+    "--bin",
+    "lifecycle-harness",
+  ]);
+}
+
 if (process.env.GDX_LIFECYCLE_SKIP_NATIVE !== "1") {
   run([
     "test",

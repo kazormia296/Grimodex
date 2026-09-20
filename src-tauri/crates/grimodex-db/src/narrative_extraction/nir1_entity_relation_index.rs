@@ -91,12 +91,12 @@ pub enum GraphWorkStage {
 pub trait GraphWorkControl {
     fn check(&mut self, stage: GraphWorkStage) -> Result<()>;
 
-    /// A whole-project eligibility read must be backed by an owner that is
-    /// registered for the enclosing foreground or maintenance operation.
-    /// Short bounded readers may still use a no-op control, but that control
-    /// must not silently become an authority for the full roster producer.
+    /// A whole-project eligibility read must be backed by an owner that
+    /// explicitly opts into the enclosing foreground or maintenance
+    /// operation. Short bounded readers may use a no-op control, but a new
+    /// control must never silently become a full-roster authority.
     fn allows_full_eligibility(&self) -> bool {
-        true
+        false
     }
 }
 

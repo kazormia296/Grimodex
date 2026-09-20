@@ -22,11 +22,28 @@ describe("NarrativeMaintenanceDeliveryLedger", () => {
     expect(ledger.descriptorsSnapshot()[0]?.generation).toBe(
       descriptor.generation + 1,
     );
-    expect(ledger.submit(257, "after-recovery").admission).toBe("sealed-absent");
+    expect(ledger.submit(257, "after-recovery").admission).toBe("not-admitted");
     expect(ledger.markTerminal(1).state).toBe("terminal");
     expect(ledger.ack(1)).toBe(true);
-    expect(ledger.submit(257, "after-ack").admission).toBe("sealed-absent");
+    expect(ledger.submit(257, "after-ack").admission).toBe("admitted");
+    ledger.markTerminal(257);
+    expect(ledger.ack(257)).toBe(true);
     expect(ledger.submit(258, "after-ack-next").admission).toBe("admitted");
+  });
+
+  it("does not consume H+1 when local capacity rejects a delivery", () => {
+    const ledger = new NarrativeMaintenanceDeliveryLedger();
+    for (let sequence = 1; sequence <= 256; sequence += 1) {
+      expect(ledger.submit(sequence, `fp-${sequence}`).admission).toBe(
+        "admitted",
+      );
+    }
+    expect(ledger.H).toBe(256);
+    expect(ledger.submit(257, "full").admission).toBe("not-admitted");
+    expect(ledger.H).toBe(256);
+    ledger.markTerminal(1);
+    expect(ledger.ack(1)).toBe(true);
+    expect(ledger.submit(257, "after-capacity").admission).toBe("admitted");
   });
 
   it("retires delivery records independently of unresolved descriptors", () => {

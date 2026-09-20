@@ -6,15 +6,13 @@ Parent base: `codex/nir1-b-capacity-implementation` at
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`
 Child branch: `codex/pr600-lifecycle-replacement`
 
-Latest committed implementation checkpoint: `0f21b2f4` (full SHA is recorded
-in the C5 freeze receipt); the clean candidate SHA is recorded in the external
-C5 freeze receipt after the final documentation commit. The working implementation additionally
-closes the Freshness-only recovery pump, preserves replayable recovery
-receipts until main ACK, prevents W1 descriptor recovery from overtaking an
-active W2 execution, and routes manual Verify/Rebuild/legacy Backfill through
-the shared maintenance permit. These changes still require candidate-specific
-review and focused/Quick evidence; they are not a claim that every C0-C5
-contract or T01-T36 case is complete.
+Latest committed implementation checkpoint: this document is updated with the
+foreground execution lane, exact recovery rebinding, delivery-capacity retry,
+project admission, pending-start retirement, and isolated lifecycle harness
+fixes. The final candidate SHA and exact receipts are recorded only after the
+clean commit and Quick/verify run. Focused evidence remains separate from
+independent C5 acceptance; it is not a claim that every T01-T36 case is
+complete.
 
 This document is the C0 contract and impact ledger for the single stacked PR
 that replaces the workspace maintenance control path. It is normative for the
@@ -53,27 +51,19 @@ and Quick verification. No partial slice is published independently.
 
 ## Implementation status and known gaps
 
-This branch is an implementation candidate for review, with C5 deliberately
-`HOLD` until Sol max has reviewed the final clean HEAD. The following
-reachable gaps remain explicit blockers:
+This branch remains an implementation candidate until the independent C5
+review and exact-head Quick/verify receipts are complete. The following
+evidence gaps remain explicit:
 
-- Manual Verify/Rebuild/legacy Backfill now enter a synchronous shared permit,
-  but their N-API `run_blocking` caller is not yet an async
-  supervisor-owned slot equivalent to the automatic worker; an unexpected
-  outer JoinError can still require recovery evidence beyond this helper.
-- Renderer-facing foreground Prepare/Apply and bound proposal writes still
-  use the process-local `begin_workspace_operation` counter and a sampled
-  `ForegroundValidationControl`, rather than a shared-core participant held
-  through the complete transaction and cleanup.
-- Project destructive admission and Run creation reservations are backed by
-  separate process-local maps; their cross-operation admission check is not
-  atomic across the DB transaction boundary.
-- The strict `ValidationConnectionScope`/`ValidationContext` type boundary,
-  complete result-combination validation, and dedicated `test-lifecycle`
-  feature/binary are not complete.
 - Full Layer C Electron IPC-to-N-API-to-SQLite-to-renderer journeys and
-  all-green T01-T36 evidence were not run. Focused tests and Quick/verify
-  receipts must be reported separately from those missing acceptance layers.
+  all-green T01-T36 evidence still require execution; focused tests do not
+  stand in for those acceptance layers.
+- Frozen standalone/MCP adapters retain their explicit compatibility owner;
+  product Native Apply/Freshness and proposal paths must continue to use the
+  borrowed context entry points and may not add a permanent no-context
+  fallback.
+- A Windows GNU target build remains environment-dependent on the installed
+  cross compiler.
 
 ## State, identity, and result contract
 
@@ -230,7 +220,7 @@ execution completion may remain parallel.
 | Input | Required behavior |
 | --- | --- |
 | `n = H + 1`, admitted | Atomically reserve record, required cells, execution, and advance `H`. |
-| `n = H + 1`, rejected | Seal the sequence without a record or side effect. |
+| `n = H + 1`, temporary capacity rejection | Return `NotAdmitted` without advancing `H`; the exact sequence remains retryable after ACK frees a record. |
 | `resolveOrFence(H + 1)` | Allocate nothing; seal the sequence so a late submit cannot execute. |
 | Existing record | Same fingerprint replays the same result; a different fingerprint is a conflict. |
 | `n <= H`, no record | Return `SealedAbsent`, not a generic busy response. |
@@ -239,8 +229,10 @@ execution completion may remain parallel.
 Only the current unACKed sequence whose admission is genuinely unresolved may
 be inferred as not admitted. An admitted record disappearing before ACK is a
 protocol violation. Old ACKed callbacks are retired and cannot create new
-work. `resolveOrFence`, stop, snapshot, ACK, Shutdown, and recovery of an
-existing descriptor remain executable when ordinary capacity is full.
+work. A local capacity rejection does not seal a sequence; only the explicit
+`resolveOrFence` operation may seal `H+1` without a record. `resolveOrFence`,
+stop, snapshot, ACK, Shutdown, and recovery of an existing descriptor remain
+executable when ordinary capacity is full.
 
 Each descriptor root has one control-result slot and a monotonic generation:
 same request replays the same result, a payload conflict is rejected, an
@@ -326,7 +318,7 @@ without a known owner remains `Unknown` and blocks the next gate.
 | Workspace Open/restore | `src-tauri/crates/grimodex-db/src/workspace.rs`, migration/restore supervisor | Lifecycle core + transition permit + physical exclusive | Old authority drain; same-path baton or replacement exclusive lease | worker Join, cleanup, candidate validation, activation | map every restore and Safe Mode path |
 | Automatic maintenance | `narrative_extraction/maintenance_lifecycle.rs`, `maintenance_runtime.rs` | `MaintenanceExecution`, exact Run owner, finalizer | Existing DB transaction and file lease | Run/Task/Attempt commit or typed failure plus cleanup | reserve owner before SQL |
 | Native discovery | `electron/native/grimodex-node/src/narrative_maintenance.rs` | Native lifecycle adapter; no renderer IDs | Pinned active Database; bounded pages | complete page result or typed rejection | preserve full roster and source coordinates |
-| Foreground Prepare/Apply | `agent_writes.rs`, `commit.rs`, `v2_apply_sources.rs` | Current foreground guard plus sampled validation control; shared-core participant and strict borrowed context remain to be wired | Existing write transaction; Apply busy timeout | commit/rollback and Prepared retention | add positive context supply and close the transition race |
+| Foreground Prepare/Apply | `agent_writes.rs`, `commit.rs`, `v2_apply_sources.rs` | `WorkspaceLifecycleCore::admit_foreground_permit`; Native holds the permit through the borrowed transaction context and finalizer | Existing write transaction; Apply busy timeout | commit/rollback and Prepared retention | preserve the explicit compatibility owner only at frozen standalone boundaries |
 | Proposal/revision writes | repository proposal/revision paths | Existing bound writer | Same outer transaction | exact revision and commit evidence | no nested maintenance admission |
 | FinishTask/Human materialization | Task/Chronicle/Human writers | Existing owner and transaction | Existing terminal transaction | terminal commit or retryable failure | preserve atomicity |
 | Freshness | `incremental_freshness.rs`, revision eligibility | Cycle participant + phase scopes | Reservation/evaluation/publish scopes | publish commit or requeue with exact owner | stop without false Source absence |
@@ -353,18 +345,18 @@ evidence remain explicit at this boundary.
 | `WorkspaceLifecycleViewAdapter::begin_transition_kind` → `open_workspace` / `restore_recovery_candidate` | `WorkspaceLifecycleCore::begin_transition`; `WorkspaceTransitionPermit` and Native supervisor slot are created before `spawn_blocking` | `WorkspaceState.inner` binding is captured before `open_lock`; protected worker owns `WorkspaceExclusive` and the verified file lease | `AppState::request_workspace_shutdown`/participant stop, Join from the blocking owner, `complete_transition_from_workspace`; JoinError/panic maps to descriptor, never Ready |
   | `State::run_narrative_maintenance_cycle` → `maintenance_runtime::run_*` | `WorkspaceLifecycleViewAdapter::begin_maintenance`; `MaintenancePermit` reserves execution before DB work; automatic delivery owns it in the outer Native supervisor, and exact Run callbacks attach the selected tuple | `narrative_maintenance_no_wait` on the pinned authority; existing transaction and file lease; no path-based second connection | attempt stop signal and `GraphWorkControl::check`; requeue/failure recorder; terminal delivery result is marked only after the supervisor observes Join and completes release or descriptor transfer |
 | Native discovery `narrative_maintenance::discover_projects` | Same maintenance owner, no renderer identity accepted | Pinned authority, keyset pages, Source ID lookup; no `active_database()` reacquisition | page completion or typed lifecycle rejection; wake remains durable until ACK |
-| `narrative_extraction_prepare_commit_with_control` / `...apply_commit_with_control` | Native `agent_write_cmd` currently uses the process-local `begin_workspace_operation` guard and `ForegroundValidationControl`; shared-core participant admission remains a C3/C4 blocker | Existing write connection/transaction and Apply busy timeout are preserved; the strict borrowed context boundary is not complete | stop is checked before Source normalization; rollback preserves Prepared; successful commit is recorded separately from cleanup; a transition can still race a long foreground transaction until the shared participant is wired |
+| `narrative_extraction_prepare_commit_with_control` / `...apply_commit_with_control` | Native foreground command admits `AdmissionKind::Foreground` before DB access; `ForegroundValidationControl` borrows that permit and remains live through transaction cleanup | Existing write connection/transaction and Apply busy timeout are preserved; `ValidationConnectionScope` couples the owner to the same connection | stop is checked before Source normalization and at eligibility checkpoints; rollback preserves Prepared; successful commit is recorded separately from cleanup |
 | `repository::save_proposal_set_in_tx`, `append_revision_in_tx`, `revise_and_decide` | Bound foreground writer owns the outer transaction and supplies the same validation scope | exact extraction binding, outer transaction, existing writer authorization | caller retries the exact request/revision; commit evidence and connection cleanup are separate |
 | `repository::finish_task` / `human_materialization::*` | Existing Task/Chronicle or Human writer participant; no nested maintenance admission | Existing terminal transaction with borrowed context | terminal commit or typed retry; child revision, Decision, D1, and Freshness remain atomic |
 | `incremental_freshness::{reserve,evaluate,publish}` | One cycle participant registered for the whole cycle; a fresh borrowed scope is created for each DB acquisition | Reservation/evaluation/publish release the DB mutex between phases; publish revalidates the same Source in its transaction | stop is requeued with exact Task/Attempt ownership; no Source-missing or success heartbeat conversion |
 | `revision_eligibility::{read_revision_canonical_freshness,read_with_validation_context}` | Caller propagates its foreground, Chronicle, or maintenance context | Same caller snapshot/transaction; nested reader cannot acquire a second mutex/transaction | `ContextUnavailable` is returned before roster SQL; caller owns retry and failure classification |
 | Chronicle `nir1_chronicle_index::{build,canonical,source}` and `restore_rebuild::owned_edges` | Existing Chronicle runtime owner or `MaintenanceExecution`; controlled reader is nested, never re-admitted | Caller snapshot/publish transaction, complete roster and canonical bytes/digest retained | generation/stop check at page and serialize checkpoints; publish commit or exact recovery descriptor |
 | Verify/Rebuild/discovery/Graph coverage | `MaintenanceExecution` registration and work membership | Controlled connection scope and existing file lease | common finalizer records Run/Task/Attempt outcome; no `NeverStop` fallback for reachable eligibility |
-| `domain_writes::project_delete` and project recreation | Project destructive and creation reservations exist, but their admission maps are separate and the cross-operation check is not atomic | Project-scoped permit plus lineage/birth evidence; process-local only | normal conflict checks and durable lineage receipt exist; the delete-versus-Run reservation race remains a C0/C3 blocker |
-| `WorkspaceLifecycleCore::{admit_delivery_at,resolve_or_fence,ack_delivery}` and main `NarrativeMaintenanceDeliveryLedger` | Main owns at most one unresolved H+1; Native atomically reserves record/cells/execution | Sequence/fingerprint and descriptor control slot; ACK is transport-only | Full seals H+1; `SealedAbsent` is not retried; ACK retires record while descriptor responsibility remains |
+| `domain_writes::project_delete` and project recreation | One mutex-backed project lifecycle admission table atomically excludes destructive delete from Reserved/CreationUnknown Run reservations | Project-scoped permit plus lineage/birth evidence; process-local only | normal conflict checks and durable lineage receipt remain mandatory; cross-process authority is not claimed |
+| `WorkspaceLifecycleCore::{admit_delivery_at,resolve_or_fence,ack_delivery}` and main `NarrativeMaintenanceDeliveryLedger` | Main owns at most one unresolved H+1; Native atomically reserves record/cells/execution | Sequence/fingerprint and descriptor control slot; ACK is transport-only | Full returns temporary `NotAdmitted` without consuming H+1; explicit fence yields `SealedAbsent`; ACK retires record while descriptor responsibility remains |
 | Renderer `events.ts` / `workspaceLifecycleProjection.ts` | Main `workspace:lifecycle-state` subscription followed by `get_workspace_lifecycle_view` snapshot | Opaque UI binding token and monotonic revision only; no locator/Run/descriptor | RecoveryRequired stores dirty drafts before unmount; explicit Open → hydration is the only resume path |
 | `shutdown_workspace_lifecycle` / `AppState::wait_workspace_operations` | Core `request_shutdown` closes admission before Native observation; independent cleanup starts in main | Native worker/permit count is process-local; 30s is monotonic observation budget | only observed Native terminal plus independent cleanup yields graceful success; timeout keeps Transition/owners |
-| standalone MCP and frozen compatibility adapters | Existing verified workspace/lease owner supplies the compatibility context; renderer-facing foreground context is still being migrated | Existing connection/file lease; no permanent `NeverStop` authority is accepted for the target lanes | same terminal receipt/cleanup contract is required; remaining adapters and the shared `ValidationConnectionScope` are C0/C3 follow-up |
+| standalone MCP and frozen compatibility adapters | Existing verified workspace/lease owner supplies the explicit compatibility context; Native product lanes cannot fall back to it | Existing connection/file lease; no permanent `NeverStop` authority is accepted for reachable product eligibility | same terminal receipt/cleanup contract is required; adapter coverage remains a C5 evidence item |
 
 The C0 reviewers must trace every symbol above to its caller and record the
 resolved base/head in the candidate ledger.  A new callsite that reaches full

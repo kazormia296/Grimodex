@@ -341,6 +341,10 @@ impl GraphWorkControl for NarrativeMaintenanceGraphControl<'_> {
         }
         Ok(())
     }
+
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
 }
 
 /// Run a controlled Graph operation while the caller owns the exact

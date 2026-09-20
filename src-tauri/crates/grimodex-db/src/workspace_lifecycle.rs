@@ -143,6 +143,10 @@ impl LifecycleSnapshot {
 pub enum AdmissionKind {
     Open,
     Restore,
+    /// A foreground write/eligibility transaction.  It participates in the
+    /// same shared admission boundary as maintenance so a transition or a
+    /// second foreground owner cannot begin while its transaction is alive.
+    Foreground,
     Maintenance,
     Recover,
     Snapshot,
@@ -158,10 +162,15 @@ impl AdmissionKind {
         matches!(self, Self::Snapshot | Self::Shutdown | Self::Recover)
     }
 
+    fn is_foreground_execution(self) -> bool {
+        matches!(self, Self::Foreground | Self::Maintenance)
+    }
+
     fn responsibility_kind(self) -> Option<ResponsibilityKind> {
         match self {
             Self::Open | Self::Restore => Some(ResponsibilityKind::WorkspaceOperation),
             Self::Maintenance => Some(ResponsibilityKind::ExactRun),
+            Self::Foreground => None,
             // A descriptor-bound recovery reuses the responsibility cell that
             // is already owned by its root.  Reserving a fresh emergency cell
             // for every retry makes a failed recovery permanently block its
@@ -280,6 +289,30 @@ impl MaintenancePermit {
 
     pub fn start(&mut self) -> Result<(), LifecycleError> {
         self.core.start_execution(self.execution_id)
+    }
+
+    /// Retire a permit whose worker never entered its body.  `start` can
+    /// reject after shutdown/stop has marked the pending execution; dropping
+    /// that permit would leave a Reserved/StopRequested owner indefinitely.
+    /// This path is valid only before Join and never fabricates a body result.
+    pub fn cancel_before_start(mut self) -> Result<bool, LifecycleError> {
+        let result = self.core.cancel_unstarted_execution(self.execution_id);
+        if result.is_ok() {
+            self.released = true;
+        }
+        result
+    }
+
+    /// In-place counterpart for a supervisor lease that must retain the
+    /// permit until it can publish the rejected pending-start result.  This
+    /// avoids consuming the only handle before the async supervisor has
+    /// observed the worker boundary.
+    pub fn cancel_before_start_in_place(&mut self) -> Result<bool, LifecycleError> {
+        let result = self.core.cancel_unstarted_execution(self.execution_id);
+        if result.is_ok() {
+            self.released = true;
+        }
+        result
     }
 
     pub fn stop_requested(&self) -> Result<bool, LifecycleError> {
@@ -1335,12 +1368,30 @@ impl WorkspaceLifecycleCore {
     pub fn admit_maintenance_permit(
         &self,
     ) -> Result<PermitAdmission<MaintenancePermit>, LifecycleError> {
-        Ok(match self.admit(AdmissionKind::Maintenance)? {
+        self.admit_execution_permit(AdmissionKind::Maintenance)
+    }
+
+    /// Admit a foreground transaction through the same execution membership
+    /// used by maintenance.  Foreground owns no durable Run responsibility,
+    /// but its execution slot remains visible until the enclosing connection
+    /// and transaction have returned, so workspace transitions cannot race
+    /// the validation/DML cleanup boundary.
+    pub fn admit_foreground_permit(
+        &self,
+    ) -> Result<PermitAdmission<MaintenancePermit>, LifecycleError> {
+        self.admit_execution_permit(AdmissionKind::Foreground)
+    }
+
+    fn admit_execution_permit(
+        &self,
+        kind: AdmissionKind,
+    ) -> Result<PermitAdmission<MaintenancePermit>, LifecycleError> {
+        Ok(match self.admit(kind)? {
             AdmissionOutcome::Admitted(ticket) => {
                 // Operation ids are monotonic within this core and therefore
                 // provide a collision-free process-local execution slot for
-                // the synchronous Native maintenance supervisor.  The slot
-                // is reserved before the caller can start any DB work.
+                // the synchronous Native supervisor.  The slot is reserved
+                // before the caller can start any DB work.
                 let execution_id = ExecutionId::new(ticket.operation_id.get());
                 self.reserve_execution(ticket.operation_id, execution_id)?;
                 PermitAdmission::Admitted(MaintenancePermit {
@@ -1424,14 +1475,16 @@ impl WorkspaceLifecycleCore {
             {
                 Some(AdmissionRejection::Closed)
             }
-            // Maintenance is a single execution lane.  The second caller is
-            // a typed non-admission; it does not create a second owner or a
-            // second retry record.
-            (_, AdmissionKind::Maintenance)
-                if state
+            // Foreground and maintenance share one execution lane.  A second
+            // caller is a typed non-admission; it does not create a second
+            // owner or a second retry record while the first transaction is
+            // still holding its connection/cleanup boundary.
+            (_, kind)
+                if kind.is_foreground_execution()
+                    && state
                     .admissions
                     .values()
-                    .any(|ticket| matches!(ticket.kind, AdmissionKind::Maintenance)) =>
+                    .any(|ticket| ticket.kind.is_foreground_execution()) =>
             {
                 Some(AdmissionRejection::ActiveOperation)
             }
@@ -1488,6 +1541,9 @@ impl WorkspaceLifecycleCore {
                 Some(AdmissionRejection::RecoveryRequired)
             }
             (LifecycleState::NoWorkspace, AdmissionKind::Maintenance) => {
+                Some(AdmissionRejection::NoWorkspace)
+            }
+            (LifecycleState::NoWorkspace, AdmissionKind::Foreground) => {
                 Some(AdmissionRejection::NoWorkspace)
             }
             (LifecycleState::RecoveryRequired { .. }, AdmissionKind::Recover)
@@ -1933,6 +1989,57 @@ impl WorkspaceLifecycleCore {
         }
         execution.phase = ExecutionPhase::Started;
         Ok(())
+    }
+
+    pub fn cancel_unstarted_execution(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<bool, LifecycleError> {
+        let mut state = self.lock_state()?;
+        if state.work_executions.values().any(|work| {
+            work.execution_id == execution_id && work.phase != ExecutionPhase::Completed
+        }) {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        }
+        let shutdown_requested = state.shutdown_requested;
+        let (operation_id, project_reservations) = {
+            let execution = state
+                .executions
+                .get_mut(&execution_id)
+                .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+            if !matches!(
+                execution.phase,
+                ExecutionPhase::Reserved | ExecutionPhase::StopRequested
+            ) {
+                return Err(LifecycleError::InvalidExecutionTransition);
+            }
+            if execution.phase == ExecutionPhase::Reserved && !shutdown_requested {
+                return Err(LifecycleError::InvalidExecutionTransition);
+            }
+            execution.phase = ExecutionPhase::Completed;
+            (
+                execution.operation_id,
+                execution
+                    .run
+                    .iter()
+                    .chain(execution.additional_runs.iter())
+                    .map(|ownership| ownership.handle.project_id.clone())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let responsibility = state
+            .admissions
+            .get(&operation_id)
+            .and_then(|ticket| ticket.responsibility.clone());
+        state.admissions.remove(&operation_id);
+        state.joined_operations.remove(&operation_id);
+        if let Some(reservation) = responsibility {
+            Self::release_responsibility_locked(&mut state, &reservation);
+        }
+        for project_id in project_reservations {
+            crate::narrative_extraction::release_project_creation(&project_id);
+        }
+        Ok(true)
     }
 
     pub fn request_execution_stop(&self, execution_id: ExecutionId) -> Result<(), LifecycleError> {
@@ -2977,11 +3084,11 @@ impl WorkspaceLifecycleCore {
             });
         }
         if state.delivery.records.len() >= DELIVERY_CAPACITY {
-            // A capacity rejection is still a decision about H+1.  Seal the
-            // sequence atomically with the rejection so a delayed retry after
-            // an unrelated ACK cannot execute the same request.
-            state.delivery.high_water = sequence;
-            state.delivery.fenced.insert(sequence);
+            // Capacity is a temporary admission condition.  This call does
+            // not send a Native fence, so consuming H+1 here would leave the
+            // shared core permanently ahead of main after an ACK frees a
+            // record.  Leave the sequence untouched and let the exact retry
+            // be admitted once capacity is available.
             return Ok(DeliveryAdmissionOutcome::Full {
                 next_sequence: sequence,
             });
@@ -3541,6 +3648,37 @@ mod tests {
     }
 
     #[test]
+    fn foreground_and_maintenance_share_one_execution_lane() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let mut foreground = match core.admit_foreground_permit().expect("foreground") {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { .. } => panic!("foreground must be admitted"),
+        };
+        foreground.start().expect("foreground start");
+        assert!(matches!(
+            core.admit_maintenance_permit().expect("maintenance conflict"),
+            PermitAdmission::NotAdmitted {
+                reason: AdmissionRejection::ActiveOperation,
+                ..
+            }
+        ));
+        assert!(matches!(
+            core.admit_foreground_permit().expect("foreground conflict"),
+            PermitAdmission::NotAdmitted {
+                reason: AdmissionRejection::ActiveOperation,
+                ..
+            }
+        ));
+        foreground.mark_joined().expect("foreground Join");
+        foreground.release().expect("foreground release");
+        assert!(matches!(
+            core.admit_foreground_permit().expect("next foreground"),
+            PermitAdmission::Admitted(_)
+        ));
+    }
+
+    #[test]
     fn shutdown_wins_transition_without_publishing_ready() {
         let core = WorkspaceLifecycleCore::new();
         core.set_ready(binding(1)).expect("ready");
@@ -3579,6 +3717,7 @@ mod tests {
             PermitAdmission::Admitted(permit) => permit,
             PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
         };
+        let execution_id = permit.execution_id();
         core.request_shutdown().expect("shutdown request");
         assert_eq!(
             permit.start().expect_err("shutdown blocks pending start"),
@@ -3590,8 +3729,15 @@ mod tests {
                 .phase,
             ExecutionPhase::StopRequested
         );
-        permit.mark_joined().expect("scope Join");
-        permit.release().expect("release stopped reservation");
+        permit
+            .cancel_before_start()
+            .expect("retire rejected pending start");
+        assert_eq!(
+            core.execution_membership(execution_id)
+                .expect("membership")
+                .phase,
+            ExecutionPhase::Completed
+        );
         assert!(matches!(
             core.close().expect("close"),
             LifecycleSnapshot {
@@ -3893,10 +4039,14 @@ mod tests {
                 .expect("full delivery admission"),
             DeliveryAdmissionOutcome::Full { .. }
         ));
+        assert_eq!(
+            core.delivery_high_water().expect("high water").get(),
+            DELIVERY_CAPACITY as u64
+        );
         assert!(matches!(
             core.resolve_or_fence(DeliverySequence::new(DELIVERY_CAPACITY as u64 + 1))
                 .expect("fence"),
-            FenceOutcome::AlreadyFenced { .. }
+            FenceOutcome::Fenced { .. }
         ));
         assert!(matches!(
             core.admit_delivery_at(

@@ -117,11 +117,11 @@ export class NarrativeMaintenanceDeliveryLedger {
       return { admission: "out-of-order", sequence };
     }
     if (this.records.size >= NORMAL_CAPACITY) {
-      // Capacity rejection is itself a high-water decision.  Seal H+1 while
-      // the ledger is full so a delayed retry cannot execute after an ACK
-      // frees an unrelated record.
-      this.sealedAbsent.add(sequence);
-      this.highWaterMark = sequence;
+      // Capacity is a temporary admission condition.  Do not consume H+1 or
+      // seal it here: the scheduler does not send a Native fence for this
+      // local rejection, and the exact request must be retriable after an ACK
+      // retires one ordinary record.  A capacity rejection therefore has no
+      // transport side effect at all.
       return { admission: "not-admitted", sequence };
     }
     const record: DeliveryRecord = {

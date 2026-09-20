@@ -1311,45 +1311,65 @@ export function createNarrativeMaintenanceScheduler(
     if (typeof getter !== "function") return undefined;
     return normalizeWorkspaceBinding(getter.call(backend));
   };
-  const refreshClaimedWorkspaceBinding = (
+  const rebindClaimedWorkspaceBinding = (
     projectIds: readonly string[],
-  ): NarrativeMaintenanceWorkspaceBinding | null | undefined => {
-    const refreshed = captureWorkspaceBinding();
-    if (refreshed === undefined) return undefined;
+    original: NarrativeMaintenanceWorkspaceBinding | null | undefined,
+    rebound: NarrativeMaintenanceWorkspaceBinding | null | undefined,
+  ): boolean => {
+    // A current active binding is not evidence that an old queue belongs to
+    // it.  Only Native's descriptor reconciliation may provide the exact
+    // original-binding -> rebound-binding proof.  In particular, a W1
+    // descriptor resolved while unrelated W2 is Ready has no rebound value
+    // and must leave W1 work parked for its own later recovery.
+    if (
+      original === undefined ||
+      original === null ||
+      rebound === undefined ||
+      rebound === null ||
+      workspaceBindingKey(original) === workspaceBindingKey(rebound)
+    ) {
+      return false;
+    }
     const claimed = new Set(projectIds);
     let changed = false;
     for (const [key, work] of [...pending.entries()]) {
-      if (!claimed.has(work.projectId)) continue;
-      if (workspaceBindingKey(work.workspaceBinding) === workspaceBindingKey(refreshed)) {
+      if (
+        !claimed.has(work.projectId) ||
+        workspaceBindingKey(work.workspaceBinding) !== workspaceBindingKey(original)
+      ) {
         continue;
       }
-      const rebound = { ...work, workspaceBinding: refreshed };
+      const reboundWork = { ...work, workspaceBinding: rebound };
       pending.delete(key);
-      const reboundKey = scopedWorkKey(rebound);
+      const reboundKey = scopedWorkKey(reboundWork);
       const existing = pending.get(reboundKey);
       if (existing) {
         pending.set(reboundKey, {
           ...existing,
           reasons: [
             ...existing.reasons,
-            ...rebound.reasons.filter((reason) => !existing.reasons.includes(reason)),
+            ...reboundWork.reasons.filter(
+              (reason) => !existing.reasons.includes(reason),
+            ),
           ],
         });
       } else {
-        pending.set(reboundKey, rebound);
+        pending.set(reboundKey, reboundWork);
       }
       changed = true;
     }
     for (const [wakeKey, entry] of [...durableWakeProjects.entries()]) {
-      if (!claimed.has(entry.projectId)) continue;
-      if (workspaceBindingKey(entry.workspaceBinding) === workspaceBindingKey(refreshed)) {
+      if (
+        !claimed.has(entry.projectId) ||
+        workspaceBindingKey(entry.workspaceBinding) !== workspaceBindingKey(original)
+      ) {
         continue;
       }
-      const reboundKey = scopedWakeKey(entry.projectId, refreshed);
+      const reboundKey = scopedWakeKey(entry.projectId, rebound);
       durableWakeProjects.delete(wakeKey);
       durableWakeProjects.set(reboundKey, {
         ...entry,
-        workspaceBinding: refreshed,
+        workspaceBinding: rebound,
       });
       const retryCount = durableWakeRetryCounts.get(wakeKey);
       durableWakeRetryCounts.delete(wakeKey);
@@ -1362,7 +1382,7 @@ export function createNarrativeMaintenanceScheduler(
       changed = true;
     }
     if (changed) noteMutation();
-    return refreshed;
+    return changed;
   };
   const persistDeliveryFailure = async (
     failure: NarrativeMaintenanceDeliveryFailure,
@@ -1817,6 +1837,7 @@ export function createNarrativeMaintenanceScheduler(
                   reason?: unknown;
                   recoveredBinding?: unknown;
                   activeBinding?: unknown;
+                  reboundBinding?: unknown;
                 })
               : (raw as {
                   status?: unknown;
@@ -1824,6 +1845,7 @@ export function createNarrativeMaintenanceScheduler(
                   reason?: unknown;
                   recoveredBinding?: unknown;
                   activeBinding?: unknown;
+                  reboundBinding?: unknown;
                 } | null);
           const markerWasCleared = clearRecoveredTerminalReceiptFailure(
             recovery ?? {},
@@ -1866,6 +1888,7 @@ export function createNarrativeMaintenanceScheduler(
                   reason?: unknown;
                   recoveredBinding?: unknown;
                   activeBinding?: unknown;
+                  reboundBinding?: unknown;
                 })
               : (raw as {
                   status?: unknown;
@@ -1873,6 +1896,7 @@ export function createNarrativeMaintenanceScheduler(
                   reason?: unknown;
                   recoveredBinding?: unknown;
                   activeBinding?: unknown;
+                  reboundBinding?: unknown;
                 } | null);
           if (
             recovery?.status === "workspace-unavailable" ||
@@ -2016,6 +2040,7 @@ export function createNarrativeMaintenanceScheduler(
                 reason?: unknown;
                 recoveredBinding?: unknown;
                 activeBinding?: unknown;
+                reboundBinding?: unknown;
               })
             : (raw as {
                 status?: unknown;
@@ -2023,6 +2048,7 @@ export function createNarrativeMaintenanceScheduler(
                 reason?: unknown;
                 recoveredBinding?: unknown;
                 activeBinding?: unknown;
+                reboundBinding?: unknown;
               } | null);
         if (
           recovery?.status === "workspace-unavailable" ||
@@ -2038,10 +2064,14 @@ export function createNarrativeMaintenanceScheduler(
           ) {
             await acknowledgeRecoveredRecovery(recovery);
           }
-          // Recovery may have installed a new authority or advanced the
-          // lifecycle revision. The pre-recovery binding captured above is
-          // stale by definition; rediscover it before issuing any delivery.
-          refreshClaimedWorkspaceBinding(claimedProjects);
+          // Only the descriptor's explicit original -> rebound proof may
+          // move retained work. An active binding alone is insufficient:
+          // W1 recovery can complete while unrelated W2 remains Ready.
+          rebindClaimedWorkspaceBinding(
+            claimedProjects,
+            normalizeWorkspaceBinding(recovery?.recoveredBinding),
+            normalizeWorkspaceBinding(recovery?.reboundBinding),
+          );
           sharedCoordinator?.release(claimedProjects);
           schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
           return;
@@ -2055,48 +2085,6 @@ export function createNarrativeMaintenanceScheduler(
         schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
         return;
       }
-    }
-    // The recovery preflight may have completed between scheduler ticks (or
-    // another owner may have published a new Ready binding). Refresh the
-    // claimed work once more immediately before delivery admission so a
-    // retained queue item cannot be sent with the authority it observed on a
-    // previous tick.
-    const refreshedBinding =
-      typeof reconcileRecovery === "function"
-        ? refreshClaimedWorkspaceBinding(claimedProjects)
-        : undefined;
-    if (refreshedBinding !== undefined) {
-      // The binding may change while recovery is being reconciled. Rebuild
-      // every delivery-derived value from the same snapshot so the record,
-      // Native wire request, fingerprint, and lifecycle attempt cannot mix
-      // the old and new authority identities.
-      backendBatch = backendBatch.map((work) => ({
-        ...work,
-        workspaceBinding: refreshedBinding,
-      }));
-      sendingWakeEntries = sendingWakeEntries.map((entry) => ({
-        ...entry,
-        wakeKey: scopedWakeKey(entry.projectId, refreshedBinding),
-        workspaceBinding: refreshedBinding,
-      }));
-      cycleBinding =
-        backendBatch[0]?.workspaceBinding ??
-        (sendingWakeEntries.length > 0
-          ? sendingWakeEntries[0]!.workspaceBinding
-          : undefined);
-      wireBatch = backendBatch.map((work) => ({
-        projectId: work.projectId,
-        runKind: work.runKind,
-        workKey: work.workKey,
-        semanticEpochId: work.semanticEpochId,
-        reasons: work.reasons,
-      }));
-      deliveryFingerprint = narrativeMaintenanceDeliveryFingerprint(
-        backendBatch,
-        sendingWakeProjects,
-        cycleBinding,
-      );
-      deliverySequence = resolveDeliverySequence();
     }
     const deliveryAdmission = deliveryLedger.submit(
       deliverySequence,

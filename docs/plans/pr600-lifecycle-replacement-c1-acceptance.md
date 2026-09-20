@@ -35,33 +35,37 @@ the unresolved cross-boundary owner gaps.
 - the recovery root's expected binding remains immutable across retries while
   the current active binding is kept separate; Native preflight reaches
   descriptor reconciliation before normal delivery admission.
+- background descriptor recovery does not publish a transient renderer
+  Transition while an unrelated Ready binding is active; the final Ready view
+  therefore does not clear the live renderer hydration scope.
 - creation evidence records stable file identity and semantic epoch lineage
   at reservation time, and the supervisor records connection retirement after
   Join before resolving an unknown creation.
 - automatic-delivery permit ownership remains with the outer supervisor on
   worker panic or JoinError, and terminal delivery is persisted only after
-  Join plus release or descriptor transfer. Freshness and manual start-failure
-  paths still need this same outer-supervisor treatment.
+  Join plus release or descriptor transfer. Freshness and manual pending-start
+  failures now use explicit cancellation before returning, and the foreground
+  transaction lane has its own shared execution permit.
 
-The bounded core review does not accept the renderer-facing foreground owner
-as lifecycle-integrated: Prepare/Apply and bound proposal writes still use a
-process-local operation counter and sampled stop checks. Manual/legacy
-maintenance has a synchronous permit helper but not the automatic path's
-async supervisor-owned slot. Project destructive admission and Run creation
-reservation are also not one atomic coordination state machine. These remain
-independent C3/C4 blockers.
+The bounded core review still does not claim whole-product acceptance: the
+renderer-facing Layer C journeys, compatibility/MCP positive-context matrix,
+and all T01-T36 evidence remain separate C5 work. Native Prepare/Apply and
+bound proposal writes now use a shared foreground execution permit held
+through the borrowed transaction cleanup. Project destructive admission and
+Run creation use one atomic process-local coordination table, while durable
+lineage checks remain the cross-process authority.
 
 ## Evidence inspected
 
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib
-  workspace_lifecycle` passed 26 tests.
+  workspace_lifecycle` passed 27 tests.
 - `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib`
   passed 146 tests, including lifecycle view and open/restore ownership cases.
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib
   narrative_extraction::maintenance_lifecycle` passed 20 tests.
-- Electron lifecycle result, projection, delivery, scheduler, and shutdown
-  focused tests passed (85 tests); `pnpm exec tsc -p electron/tsconfig.json
-  --noEmit` passed.
+- Electron lifecycle result, delivery, scheduler, and wiring focused tests
+  passed (28 tests); `pnpm exec tsc -p electron/tsconfig.json --noEmit`
+  passed.
 - The maintenance lifecycle DB suite passed 20 tests after adding the
   reservation/control callback path; Native Freshness restore-lock tests
   passed 4 tests with the shared maintenance permit.

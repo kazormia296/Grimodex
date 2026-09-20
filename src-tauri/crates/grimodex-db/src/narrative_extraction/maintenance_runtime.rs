@@ -1425,6 +1425,10 @@ impl GraphWorkControl for MaintenanceCycleGraphControl<'_, '_> {
         }
         self.inner.check(stage)
     }
+
+    fn allows_full_eligibility(&self) -> bool {
+        self.inner.allows_full_eligibility()
+    }
 }
 
 /// RAII scope for the process-local finalization mask. The Native grant stays
