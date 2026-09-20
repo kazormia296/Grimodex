@@ -5,8 +5,8 @@ Parent branch: `codex/nir1-b-capacity-implementation`
 Base SHA: `8df6be62b2652a5c3e7bca1ffb0e874937313d43`
 Child branch: `codex/pr600-lifecycle-replacement`
 Contract: `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`
-Implementation checkpoint: `ce2417589d82b423d28fba350ba0882524aa0c80` plus the
-post-checkpoint working-tree fixes recorded in the final candidate commit
+Implementation checkpoint: `0f21b2f4` plus the final documentation commit
+recorded in the freeze receipt
 Candidate HEAD: recorded in the external C5 freeze receipt after the final
 documentation commit
 Worktree: `/home/grimodex/.codex/worktrees/pr600-lifecycle-replacement`

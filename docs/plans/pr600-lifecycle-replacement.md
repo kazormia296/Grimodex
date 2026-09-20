@@ -6,9 +6,9 @@ Parent base: `codex/nir1-b-capacity-implementation` at
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`
 Child branch: `codex/pr600-lifecycle-replacement`
 
-Latest committed implementation checkpoint: `ce2417589d82b423d28fba350ba0882524aa0c80`;
-the clean candidate SHA is recorded in the external C5 freeze receipt after
-the final documentation commit. The working implementation additionally
+Latest committed implementation checkpoint: `0f21b2f4` (full SHA is recorded
+in the C5 freeze receipt); the clean candidate SHA is recorded in the external
+C5 freeze receipt after the final documentation commit. The working implementation additionally
 closes the Freshness-only recovery pump, preserves replayable recovery
 receipts until main ACK, prevents W1 descriptor recovery from overtaking an
 active W2 execution, and routes manual Verify/Rebuild/legacy Backfill through
