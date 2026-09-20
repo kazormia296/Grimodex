@@ -619,6 +619,14 @@ describe("narrative maintenance scheduler", () => {
   );
 
   it("retries the exact H+1 delivery after Native capacity frees", async () => {
+    const binding = { authorityId: "authority-capacity", generation: 3 };
+    const originalWork = work(
+      "project-capacity",
+      "backfill",
+      "backfill:v2",
+      "capacity-retry",
+    );
+    const canonicalWorkKey = canonicalNarrativeMaintenanceWorkKey(originalWork);
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockResolvedValueOnce({
@@ -630,25 +638,55 @@ describe("narrative maintenance scheduler", () => {
       .fn()
       .mockResolvedValue({ status: "retired" });
     const resolveNarrativeMaintenanceDelivery = vi.fn();
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      const interrupted =
+        cancelNarrativeMaintenanceAttempt.mock.calls.length === 1;
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: interrupted ? "interrupted" : "succeeded",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: interrupted ? null : binding.generation,
+        works: [
+          {
+            workKey: canonicalWorkKey,
+            status: interrupted ? "interrupted" : "succeeded",
+          },
+        ],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    });
     const { scheduler, warn } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
       runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
       ackNarrativeMaintenanceDelivery,
       resolveNarrativeMaintenanceDelivery,
     });
-    const originalWork = work(
-      "project-capacity",
-      "backfill",
-      "backfill:v2",
-      "capacity-retry",
-    );
 
     scheduler.request(originalWork);
     scheduler.start();
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(beginNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+    expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
     const firstRequest = runNarrativeMaintenanceCycle.mock.calls[0]?.[0];
     expect(firstRequest?.deliverySequence).toBe(1);
     expect(firstRequest?.deliveryFingerprint).toBeTypeOf("string");
+    expect(firstRequest?.attemptId).toBeTypeOf("string");
     expect(resolveNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining("delivery capacity is full"),
@@ -656,11 +694,96 @@ describe("narrative maintenance scheduler", () => {
 
     await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(beginNarrativeMaintenanceAttempt).toHaveBeenCalledTimes(2);
+    expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledTimes(2);
     const retryRequest = runNarrativeMaintenanceCycle.mock.calls[1]?.[0];
-    expect(retryRequest).toEqual(firstRequest);
+    expect(retryRequest).toEqual({
+      ...firstRequest,
+      attemptId: expect.any(String),
+    });
+    expect(retryRequest?.attemptId).toBeTypeOf("string");
+    expect(retryRequest?.attemptId).not.toBe(firstRequest?.attemptId);
     expect(resolveNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
     expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledTimes(1);
     expect(ackNarrativeMaintenanceDelivery).toHaveBeenLastCalledWith(1);
+  });
+
+  it("keeps a capacity retry cancellable during workspace quiescence", async () => {
+    const binding = {
+      authorityId: "authority-capacity-quiesce",
+      generation: 4,
+    };
+    const originalWork = work(
+      "project-capacity-quiesce",
+      "backfill",
+      "backfill:v2",
+      "capacity-retry",
+    );
+    const canonicalWorkKey = canonicalNarrativeMaintenanceWorkKey(originalWork);
+    const retry = deferred<NarrativeMaintenanceCycleResult>();
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "workspace-unavailable",
+        reason: "maintenance-delivery-capacity",
+      })
+      .mockReturnValueOnce(retry.promise);
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      const workspaceStop =
+        cancelNarrativeMaintenanceAttempt.mock.calls.length > 1;
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: workspaceStop ? "workspace-generation-changed" : null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [{ workKey: canonicalWorkKey, status: "interrupted" }],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    });
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+    });
+
+    scheduler.request(originalWork);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(beginNarrativeMaintenanceAttempt).toHaveBeenCalledTimes(2);
+    expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+
+    const quiescing = scheduler.quiesceForWorkspaceSwitch?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledTimes(2);
+
+    let quiescenceSettled = false;
+    void quiescing?.then(() => {
+      quiescenceSettled = true;
+    });
+    await Promise.resolve();
+    expect(quiescenceSettled).toBe(false);
+
+    retry.resolve(acceptedCycle());
+    const lease = await quiescing;
+    expect(lease).toBeDefined();
+    lease?.resume(true);
   });
 
   it("keeps an unavailable-workspace trigger beyond the bounded error budget", async () => {

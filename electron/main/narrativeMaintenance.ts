@@ -2353,12 +2353,16 @@ export function createNarrativeMaintenanceScheduler(
       releaseEarlyCycleClaim();
       return;
     }
-    const replayingDelivery = deliveryAdmission.admission === "duplicate";
-    // A duplicate is a read of the same Native sequence/fingerprint. Native
-    // admission is idempotent and returns the retained terminal wire result;
-    // it never starts a second worker. This path is required after a lost
-    // response, when the original delivery remains pending in both ledgers.
-    if (!replayingDelivery) {
+    const duplicateDeliveryRecord = deliveryAdmission.admission === "duplicate";
+    // A duplicate is normally a read of the same Native sequence/fingerprint.
+    // Native admission is idempotent and returns the retained terminal wire
+    // result; it never starts a second worker. A locally retained capacity
+    // retry is different: Native did not advance H or create a delivery
+    // record, so the next attempt is a fresh Native admission even though the
+    // main-side ledger still has the exact tuple reserved.
+    const replayingDelivery =
+      duplicateDeliveryRecord && capacityRetry === null;
+    if (!duplicateDeliveryRecord) {
       deliverySequences.set(deliveryFingerprint, deliverySequence);
     }
     clearCoordinatorWait();
