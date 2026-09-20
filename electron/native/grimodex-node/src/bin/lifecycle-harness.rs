@@ -7,7 +7,7 @@
 
 use anyhow::{ensure, Result};
 use grimodex_db::{
-    AdmissionRejection, DeliveryAdmissionOutcome, DeliverySequence, LiveBinding, PermitAdmission,
+    DeliveryAdmissionOutcome, DeliverySequence, LiveBinding, PermitAdmission,
     WorkspaceLifecycleCore, DELIVERY_CAPACITY,
 };
 
@@ -33,16 +33,20 @@ fn main() -> Result<()> {
         }
     };
     maintenance.start()?;
-    ensure!(
-        matches!(
-            core.admit_foreground_permit()?,
-            PermitAdmission::NotAdmitted {
-                reason: AdmissionRejection::ActiveOperation,
-                ..
-            }
-        ),
-        "a second foreground owner must be rejected while maintenance remains independent"
-    );
+    // Foreground admission has its own lifecycle membership and must remain
+    // available while maintenance is active. The existing foreground
+    // priority/SQLite busy-timeout policy decides how concurrent foreground
+    // waiters serialize; the lifecycle core must not reject the second waiter
+    // merely because maintenance owns its separate slot.
+    let mut second_foreground = match core.admit_foreground_permit()? {
+        PermitAdmission::Admitted(permit) => permit,
+        PermitAdmission::NotAdmitted { reason, .. } => {
+            anyhow::bail!("foreground waiter unexpectedly rejected: {reason:?}")
+        }
+    };
+    second_foreground.start()?;
+    second_foreground.mark_joined()?;
+    second_foreground.release()?;
     foreground.mark_joined()?;
     foreground.release()?;
     maintenance.mark_joined()?;
