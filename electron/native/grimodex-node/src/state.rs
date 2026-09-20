@@ -18,7 +18,7 @@ use grimodex_db::narrative_extraction::{
     ForegroundSystemWorkRun, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
     NarrativeMaintenanceCiFault, RecoveryMode, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
 };
-use grimodex_db::{GlobalSettingsPath, WorkspaceState};
+use grimodex_db::{GlobalSettingsPath, PinnedWorkspaceDb, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
 use crate::profile_egress::ProfileEgressState;
@@ -2416,6 +2416,12 @@ pub struct AppState {
     pub workspace_operation_active: Arc<AtomicUsize>,
     pub workspace_operation_notify: Arc<Notify>,
     pub workspace_shutdown_requested: Arc<AtomicBool>,
+    /// Lease-only baton for a retired maintenance authority. The SQLite
+    /// handle inside the pinned authority has already been closed and marked
+    /// unusable; retaining this Arc keeps the shared lease continuous until a
+    /// descriptor resolver has opened and verified its replacement.
+    pub(crate) narrative_maintenance_recovery_batons:
+        Mutex<HashMap<String, PinnedWorkspaceDb>>,
 }
 
 pub struct WorkspaceOperationGuard {
@@ -2524,6 +2530,7 @@ impl AppState {
             workspace_operation_active: Arc::new(AtomicUsize::new(0)),
             workspace_operation_notify: Arc::new(Notify::new()),
             workspace_shutdown_requested: Arc::new(AtomicBool::new(false)),
+            narrative_maintenance_recovery_batons: Mutex::new(HashMap::new()),
         })
     }
 

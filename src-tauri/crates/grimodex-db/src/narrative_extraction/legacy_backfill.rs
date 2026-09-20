@@ -99,7 +99,9 @@ use super::restore_rebuild::{
 };
 use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
-use super::task_leases::with_immediate_transaction;
+use super::task_leases::{
+    with_immediate_transaction, with_immediate_transaction_with_creation_outcome,
+};
 use super::terminal_failure::{
     project_terminal_failure_for_run_generated_in_tx,
     resolve_terminal_failure_for_run_generated_in_tx,
@@ -675,7 +677,12 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
         db,
         control,
         |conn, graph| {
-            let mut created = with_immediate_transaction(conn, |conn| {
+            if let Some(reset) = control.reset_run_creation_tracking {
+                reset()?;
+            }
+            let mut created = with_immediate_transaction_with_creation_outcome(
+                conn,
+                |conn| {
                 graph.check(GraphWorkStage::Restore)?;
                 require_current_c2zb_marker(conn)?;
                 let epoch_id = match get_current_epoch(conn, project_id)? {
@@ -700,7 +707,14 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
                     Some(control),
                 )?;
                 Ok((handle, epoch_id, false))
-            })?;
+                },
+                |outcome| {
+                    if let Some(mark_outcome) = control.mark_run_creation_outcome {
+                        mark_outcome(outcome)?;
+                    }
+                    Ok(())
+                },
+            )?;
             if !created.2 {
                 if !created.0.reused {
                     created.0.mark_creation_committed();
@@ -2363,6 +2377,10 @@ mod tests {
             work_deferred: &no_work,
             attach_run: None,
             reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
         };
         let cancellation = super::super::source_revision::validation_terminated(
             super::super::source_revision::ValidationTerminationReason::Cancelled,

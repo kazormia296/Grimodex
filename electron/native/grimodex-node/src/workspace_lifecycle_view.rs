@@ -15,7 +15,7 @@ use grimodex_db::{
     ControlGeneration, ControlRequest, ControlSlotOutcome, DeliveryAdmissionOutcome,
     DeliverySequence, FenceOutcome, LifecycleResult, LifecycleState, LiveBinding,
     MaintenancePermit, PermitAdmission, RecoveryDescriptor, RecoveryDescriptorId, StateRevision,
-    WorkspaceExclusive, WorkspaceLifecycleCore,
+    RunOwnership, WorkspaceExclusive, WorkspaceLifecycleCore,
 };
 use grimodex_db::AppResult;
 use serde::{Deserialize, Serialize};
@@ -108,6 +108,25 @@ impl WorkspaceLifecycleViewAdapter {
 
     pub(crate) fn recovery_descriptor_ids(&self) -> AppResult<Vec<RecoveryDescriptorId>> {
         Ok(self.core.unresolved_descriptor_ids()?)
+    }
+
+    pub(crate) fn attach_reuse_selection_to_descriptor(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+        run: RunOwnership,
+    ) -> AppResult<()> {
+        Ok(self
+            .core
+            .attach_reuse_selection_to_descriptor(descriptor_id, run)?)
+    }
+
+    pub(crate) fn mark_descriptor_connection_retired(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+    ) -> AppResult<()> {
+        Ok(self
+            .core
+            .mark_descriptor_connection_retired(descriptor_id)?)
     }
 
     pub(crate) fn recovery_authority(

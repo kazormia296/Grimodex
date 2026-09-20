@@ -361,6 +361,7 @@ pub use restore_rebuild::{
     RebuildDerivedStateOutcome, RebuildDerivedStateSummary, RebuildShadowVerificationSummary,
     VerifyRunOutcome,
 };
+pub use maintenance_lifecycle::resolve_reused_maintenance_run;
 #[allow(unused_imports)]
 pub(crate) use semantic_epoch::{create_epoch_in_tx, list_epochs};
 // `pub`: `get_current_epoch`/`CurrentEpoch` resolve the Semantic Epoch a

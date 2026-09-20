@@ -88,6 +88,10 @@ pub struct BatchStatement {
 
 pub struct Database {
     conn: Mutex<Connection>,
+    /// Connections whose close returned the owned handle for an explicit
+    /// retry. They never re-enter normal access; the owner keeps them here
+    /// until a close succeeds and only then emits retirement proof.
+    retired_connections: Mutex<Vec<Connection>>,
     foreground_connection_waiters: std::sync::Arc<AtomicUsize>,
     maintenance_finalization_reserved: std::sync::Arc<AtomicBool>,
     connection_health: ConnectionHealth,
@@ -241,6 +245,7 @@ impl Database {
     pub fn from_connection(conn: Connection) -> Self {
         Self {
             conn: Mutex::new(conn),
+            retired_connections: Mutex::new(Vec::new()),
             foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
             maintenance_finalization_reserved: std::sync::Arc::new(AtomicBool::new(false)),
             connection_health: ConnectionHealth::new(),
@@ -319,6 +324,7 @@ impl Database {
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            retired_connections: Mutex::new(Vec::new()),
             foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
             maintenance_finalization_reserved: std::sync::Arc::new(AtomicBool::new(false)),
             connection_health: ConnectionHealth::new(),
@@ -827,7 +833,8 @@ pub use workspace_lifecycle::{
     LifecycleResult, LifecycleSnapshot, LifecycleState, LiveBinding, MaintenancePermit,
     OperationId, PermitAdmission, PublicationPermit,
     RecoveryDescriptor, RecoveryDescriptorId, ResponsibilityError, ResponsibilityKind,
-    ResponsibilityReservation, RunCreationState, RunOwnership, StateRevision, TransitionStage,
+    ResponsibilityReservation, RunCreationState, RunCreationTransactionOutcome, RunOwnership,
+    StateRevision, TransitionStage,
     WorkspaceExclusive, WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore,
     WorkspaceTransitionPermit, WorkExecutionId, WorkExecutionMembership,
     DELIVERY_CAPACITY, EMERGENCY_RESPONSIBILITY_CAPACITY, GENERAL_RESPONSIBILITY_CAPACITY,

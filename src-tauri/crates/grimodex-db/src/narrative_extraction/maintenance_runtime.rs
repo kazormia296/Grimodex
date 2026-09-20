@@ -51,7 +51,7 @@ use super::restore_rebuild::{
 };
 use super::source_revision::is_validation_terminated;
 use super::task_leases::with_immediate_transaction;
-use crate::workspace_lifecycle::RunOwnership;
+use crate::workspace_lifecycle::{RunCreationTransactionOutcome, RunOwnership};
 use crate::narrative_maintenance_connection::{
     with_narrative_maintenance_graph_control, NarrativeMaintenanceGraphControlConfig,
 };
@@ -1314,6 +1314,22 @@ pub struct MaintenanceCycleControl<'a> {
     /// lost; it is intentionally separate from `attach_run`, which records
     /// the post-COMMIT Created/Reused evidence.
     pub reserve_run: Option<&'a dyn Fn(RunOwnership) -> anyhow::Result<()>>,
+    /// Promote the exact reservation immediately before the first Run DML.
+    /// This keeps a partial insert from remaining indistinguishable from a
+    /// pre-transaction reservation.
+    pub mark_run_creation_started: Option<&'a dyn Fn(&str) -> anyhow::Result<()>>,
+    /// Mark a reuse decision whose exact existing tuple has not yet been
+    /// attached. Recovery must retain this root instead of resolving the
+    /// reservation IDs as absent.
+    pub mark_run_reuse_selection_unknown:
+        Option<&'a dyn Fn(&str, &str) -> anyhow::Result<()>>,
+    /// Resolve the most recently reserved creation slot after the outer
+    /// transaction reports a confirmed rollback or an ambiguous failure.
+    pub mark_run_creation_outcome:
+        Option<&'a dyn Fn(RunCreationTransactionOutcome) -> anyhow::Result<()>>,
+    /// Clear the process-local creation slot before beginning a new creation
+    /// transaction, so an early validation error cannot update an older Run.
+    pub reset_run_creation_tracking: Option<&'a dyn Fn() -> anyhow::Result<()>>,
 }
 
 impl MaintenanceCycleRequest {
@@ -6190,6 +6206,10 @@ mod tests {
                 work_deferred: &work_deferred,
                 attach_run: None,
                 reserve_run: None,
+                mark_run_creation_started: None,
+                mark_run_reuse_selection_unknown: None,
+                mark_run_creation_outcome: None,
+                reset_run_creation_tracking: None,
             };
             let result =
                 run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
@@ -6656,6 +6676,10 @@ mod tests {
                 work_deferred: &work_noop_completed,
                 attach_run: None,
                 reserve_run: None,
+                mark_run_creation_started: None,
+                mark_run_reuse_selection_unknown: None,
+                mark_run_creation_outcome: None,
+                reset_run_creation_tracking: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db,
@@ -6718,6 +6742,10 @@ mod tests {
                 work_deferred: &work_completed,
                 attach_run: None,
                 reserve_run: None,
+                mark_run_creation_started: None,
+                mark_run_reuse_selection_unknown: None,
+                mark_run_creation_outcome: None,
+                reset_run_creation_tracking: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6792,6 +6820,10 @@ mod tests {
                 work_deferred: &work_completed,
                 attach_run: None,
                 reserve_run: None,
+                mark_run_creation_started: None,
+                mark_run_reuse_selection_unknown: None,
+                mark_run_creation_outcome: None,
+                reset_run_creation_tracking: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6883,6 +6915,10 @@ mod tests {
                 work_deferred: &work_completed,
                 attach_run: None,
                 reserve_run: None,
+                mark_run_creation_started: None,
+                mark_run_reuse_selection_unknown: None,
+                mark_run_creation_outcome: None,
+                reset_run_creation_tracking: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6975,6 +7011,10 @@ mod tests {
                 work_deferred: &work_completed,
                 attach_run: None,
                 reserve_run: None,
+                mark_run_creation_started: None,
+                mark_run_reuse_selection_unknown: None,
+                mark_run_creation_outcome: None,
+                reset_run_creation_tracking: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -7096,6 +7136,10 @@ mod tests {
             work_deferred: &no_op,
             attach_run: None,
             reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
         };
 
         let error = discover_durable_maintenance_work_with_coordinates_and_control(
@@ -7237,6 +7281,10 @@ mod tests {
             work_deferred: &no_op,
             attach_run: None,
             reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
         };
         let controlled = discover_before_cutover_maintenance_work_with_coordinates_and_control(
             &db,

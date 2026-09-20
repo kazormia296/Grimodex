@@ -80,7 +80,9 @@ use super::source_revision::{
     is_validation_terminated, resolve_current_source_state,
     resolve_current_source_state_with_control, CurrentSourceState, ForegroundValidationControl,
 };
-use super::task_leases::with_immediate_transaction;
+use super::task_leases::{
+    with_immediate_transaction, with_immediate_transaction_with_creation_outcome,
+};
 use super::terminal_failure::{
     project_terminal_failure_for_run_generated_in_tx,
     resolve_terminal_failure_for_run_generated_in_tx,
@@ -1143,7 +1145,12 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
     let now = grimodex_core::now_rfc3339_millis();
 
     let (created, semantic_epoch_id) = run_maintenance_graph_phase(db, control, |conn, graph| {
-            let mut created = with_immediate_transaction(conn, |conn| {
+            if let Some(reset) = control.reset_run_creation_tracking {
+                reset()?;
+            }
+            let mut created = with_immediate_transaction_with_creation_outcome(
+                conn,
+                |conn| {
                 graph.check(GraphWorkStage::Restore)?;
                 let epoch_id = get_current_epoch(conn, project_id)?.ok_or_else(|| {
                     anyhow::anyhow!(
@@ -1164,7 +1171,14 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
                     Some(control),
                 )?;
                 Ok((handle, epoch_id))
-            })?;
+                },
+                |outcome| {
+                    if let Some(mark_outcome) = control.mark_run_creation_outcome {
+                        mark_outcome(outcome)?;
+                    }
+                    Ok(())
+                },
+            )?;
             // Attach ownership while the creation phase still owns its
             // controlled connection. A later cleanup failure must not erase
             // the only process-local proof of the committed exact tuple.
@@ -4107,15 +4121,20 @@ fn verify_creation_lineage(
             |row| row.get(0),
         )
         .optional()?;
-    let epoch_project: Option<String> = conn
+    let epoch_lineage: Option<(String, i64)> = conn
         .query_row(
-            "SELECT project_id FROM narrative_semantic_epochs WHERE id = ?1",
+            "SELECT project_id, epoch_number
+               FROM narrative_semantic_epochs
+              WHERE id = ?1",
             [&handle.semantic_epoch_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
+    let expected_epoch = i64::try_from(handle.epoch).ok();
     Ok(current.as_deref() == handle.project_created_at.as_deref()
-        && epoch_project.as_deref() == Some(handle.project_id.as_str()))
+        && epoch_lineage.as_ref().is_some_and(|(project_id, epoch_number)| {
+            project_id == &handle.project_id && Some(*epoch_number) == expected_epoch
+        }))
 }
 
 pub(crate) fn run_maintenance_graph_phase_for_run<T, F>(
@@ -6261,6 +6280,10 @@ mod tests {
             work_deferred: &no_work,
             attach_run: None,
             reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
         };
 
         {
@@ -6320,6 +6343,10 @@ mod tests {
             work_deferred: &no_work,
             attach_run: None,
             reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
         };
 
         let error = record_verify_failure_controlled(
@@ -6388,6 +6415,10 @@ mod tests {
             work_deferred: &no_work,
             attach_run: None,
             reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
         };
 
         let error = record_rebuild_failure_controlled(
