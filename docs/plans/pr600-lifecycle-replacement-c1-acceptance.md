@@ -1,6 +1,6 @@
 # PR #600 lifecycle replacement: C1 acceptance record
 
-Candidate under review: `cb9f8caa66d07c8b624abc400998841387f28309` (built from parent
+Candidate under review: `2d5d1de2` (built from parent
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`). Contract:
 `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`.
 
@@ -20,7 +20,11 @@ review record; it does not claim whole-product acceptance.
   normal DB access while a core transition remains active.
 - delivery high-water/fingerprint replay, `resolveOrFence`, terminal result
   retention, ACK retirement, descriptor control generation, and the
-  255+1 responsibility capacity are covered by core tests.
+  255+1 responsibility capacity are covered by core tests. Descriptor-bound
+  recovery is admitted from `Ready` only for the exact unresolved root.
+- Native recovery consumes exact descriptor Run tuples, resolves unknown
+  creation only with the post-Join evidence contract, and replays the control
+  generation idempotently before activation.
 - the projection exposes only revision, opaque UI token, allowlisted status,
   and activation; repeated same-revision payloads are idempotent and stale
   results do not restore a renderer binding.
@@ -30,14 +34,17 @@ review record; it does not claim whole-product acceptance.
 ## Evidence inspected
 
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib
-  workspace_lifecycle` passed 23 tests.
+  workspace_lifecycle` passed 24 tests.
 - `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib`
   passed 146 tests, including lifecycle view and open/restore ownership cases.
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib
   narrative_extraction::maintenance_lifecycle` passed 20 tests.
 - Electron lifecycle result, projection, delivery, scheduler, and shutdown
-  focused tests passed (85 tests); `pnpm exec tsc -p electron/tsconfig.json
+  focused tests passed (83 tests); `pnpm exec tsc -p electron/tsconfig.json
   --noEmit` passed.
+- The maintenance lifecycle DB suite passed 20 tests after adding the
+  reservation/control callback path; Native Freshness restore-lock tests
+  passed 4 tests with the shared maintenance permit.
 - `git diff --check` and the staged candidate diff check passed before the
   candidate commit.
 

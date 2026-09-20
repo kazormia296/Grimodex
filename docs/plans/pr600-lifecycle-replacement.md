@@ -6,6 +6,12 @@ Parent base: `codex/nir1-b-capacity-implementation` at
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`
 Child branch: `codex/pr600-lifecycle-replacement`
 
+Latest implementation checkpoint: `2d5d1de2`. The checkpoint closes the
+descriptor product-caller path, exact Run creation/recovery evidence, Native
+Freshness lifecycle membership, frozen Tauri compatibility access, and main
+delivery ACK retry. C5 still requires an independent Astra High review and a
+clean candidate-specific Quick/verify receipt.
+
 This document is the C0 contract and impact ledger for the single stacked PR
 that replaces the workspace maintenance control path. It is normative for the
 implementation and for the independent C0/C1/C5 reviews. The attached v1 plan
@@ -52,6 +58,11 @@ and Quick verification. No partial slice is published independently.
 | `Transition(Draining\|Replacing\|Recovering\|Finishing)` | Normal admission is closed. Registered participants receive stop and are joined. |
 | `RecoveryRequired` | Normal access is closed. Only an exact descriptor-bound recovery or limited diagnostic is allowed. |
 | `Closed` | No new execution is accepted. |
+
+The frozen Tauri compatibility shell may temporarily read a directly installed
+verified authority before it publishes a shared-core `Ready` binding. This is
+an explicitly bounded legacy owner path; Electron Transition,
+RecoveryRequired, and Closed states never use it as a fallback.
 
 `LiveBinding` contains the verified locator, workspace identity, authority
 instance, and recovery generation. A matching metadata ID alone is never a
