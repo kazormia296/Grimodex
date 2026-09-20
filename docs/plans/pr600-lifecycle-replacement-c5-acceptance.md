@@ -62,15 +62,19 @@ and the latest four boundary findings:
 - Scheduler quiescence owns the complete cycle, including recovery preflight,
   so a re-entrant no-op cycle cannot replace the Promise observed by
   `performWorkspaceQuiesce`.
+- A Native delivery-capacity rejection retains the exact H+1 tuple without
+  fencing or retiring it. The later retry is a fresh lifecycle attempt owner,
+  while a true Native lost-response duplicate remains idempotent; workspace
+  quiescence can cancel the retry before awaiting its in-flight Promise.
 - Project lifecycle reservations are keyed by verified database identity plus
   project id, so equal ids in independent workspace copies do not interfere.
 
-The candidate is ready for an independent Luna max re-review. It is not a claim
+The candidate is ready for an independent Sol max re-review. It is not a claim
 that every Layer C journey or T01–T36 case has been executed.
 
 ## Focused implementation evidence
 
-- `pnpm test:electron --run electron/shared/workspaceRestoreOutcome.test.ts electron/shared/ipcContract.test.ts electron/main/profileEgress.test.ts electron/main/narrativeMaintenanceDelivery.test.ts electron/main/narrativeMaintenance.reacceptance.test.ts electron/main/narrativeMaintenance.wiring.test.ts` — 6 files, 551 tests passed.
+- `pnpm test:electron --run electron/main/profileEgress.test.ts electron/main/narrativeMaintenance.test.ts electron/main/ipc.test.ts electron/shared/ipcContract.test.ts` — 4 files, 659 tests passed on the frozen candidate.
 - `pnpm exec vitest run electron/shared/workspaceRestoreOutcome.test.ts src/features/settings/backupRestoreAuthority.test.ts src/features/workspace/workspaceLifecycleProjection.test.ts src/features/workspace/recovery/applyNativeOpenOutcome.test.ts` — 3 files, 16 tests passed.
 - `pnpm exec tsc -p electron/tsconfig.json --noEmit` — passed.
 - `pnpm test:narrative:lifecycle` — 36 shared-core tests, one Freshness lifecycle-control test, and the opt-in foreground/maintenance plus full-capacity lifecycle harness passed.
@@ -90,10 +94,10 @@ that every Layer C journey or T01–T36 case has been executed.
 | --- | --- | --- |
 | C0 contract review | bounded/limited | Contract and entry ledger are updated; full Layer C and T01–T36 evidence remain separate. |
 | C1 core review | bounded/limited | Shared core, owner permits, delivery/descriptors, result axes, and resource order have focused coverage. |
-| Luna max C5 review | pending | Must review the exact clean final HEAD read-only, including the three PR #601 P1 findings, the four additional boundary findings, and prior ownership findings. |
+| Sol max C5 review | approved/bounded | Exact clean final HEAD was reviewed read-only with `gpt-5.6-sol`, max reasoning; P1: 0 and P2: 0. The review verified the fresh capacity-retry owner, exact H+1 retention, quiescence cancellation, and the prior Restore `Unchanged` proof. |
 | Layer C IPC journey | pending | A full Electron IPC → N-API → SQLite → renderer run has not been claimed. |
 | T01–T36 matrix | pending | Focused tests cover representative cases; absence of a complete matrix is not a pass. |
-| Quick + immediate verify | passed for code checkpoint; final docs commit pending | Both commands must use the same frozen base/head pair after the final commit. |
+| Quick + immediate verify | passed | Both commands use the frozen base/head pair recorded below. |
 
 The Windows GNU target check remains environment-blocked when the
 `x86_64-w64-mingw32-gcc` toolchain is unavailable. No hosted-check, merge, or
@@ -108,19 +112,19 @@ parent_branch=codex/nir1-b-capacity-implementation
 base_sha=8df6be62b2652a5c3e7bca1ffb0e874937313d43
 child_branch=codex/pr600-lifecycle-replacement
 worktree=/home/grimodex/.codex/worktrees/pr600-lifecycle-replacement
-head_sha=f90fe49644496a18ef986b9501a48b4dd1a644d0 (code checkpoint; final docs-only freeze SHA follows)
+head_sha=1a87684b368f6b05f03a15d907e9ef34eae24ad9 (code checkpoint before this acceptance-record update; the final docs-only freeze SHA follows)
 tree_status=must be clean before Quick/verify
 implementer=Luna max
-independent_reviewers=Luna max (C5; read-only; model gpt-5.6-luna, max reasoning)
+independent_reviewers=Sol max (C5; read-only; model gpt-5.6-sol, max reasoning)
 threat_model_ref_and_confirmation=policies/quality/iron-laws.md#GDX-PRECHECK-001; lifecycle ownership, renderer trust boundary, and process-local evidence limits are recorded in the contract
 gate_status_c0=bounded-review
 gate_status_c1=bounded-review
-gate_status_c5=pending exact-head Luna max plus final docs-only Quick/verify
-quick_command=pnpm ci:local:quick -- --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head f90fe49644496a18ef986b9501a48b4dd1a644d0
-verify_command=pnpm ci:local:verify -- quick --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head f90fe49644496a18ef986b9501a48b4dd1a644d0
-unresolved_findings=full Layer C IPC journey, complete T01-T36 evidence, independent final Luna max review, and candidate-bound Quick/verify
+gate_status_c5=bounded-approve exact-head Sol max plus candidate-bound Quick/verify
+quick_command=pnpm ci:local:quick -- --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head 1a87684b368f6b05f03a15d907e9ef34eae24ad9
+verify_command=pnpm ci:local:verify -- quick --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head 1a87684b368f6b05f03a15d907e9ef34eae24ad9
+unresolved_findings=full Layer C IPC journey, complete T01-T36 evidence, and Windows GNU cross-build when x86_64-w64-mingw32-gcc is unavailable
 environment_limits=Windows GNU check may be blocked by missing x86_64-w64-mingw32-gcc; no hosted-check claim
-freeze_timestamp=to be recorded after the final clean-head gates
+freeze_timestamp=to be recorded after this acceptance-record update and its clean-head gates
 ```
 
 No merge or master publication is included in this child PR.
