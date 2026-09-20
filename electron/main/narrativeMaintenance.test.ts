@@ -786,6 +786,65 @@ describe("narrative maintenance scheduler", () => {
     lease?.resume(true);
   });
 
+  it("releases partial project claims before waiting on a capacity retry", async () => {
+    const firstProjectWork = work(
+      "project-capacity-first",
+      "backfill",
+      "backfill:v2",
+      "capacity-retry",
+    );
+    const blockedProjectWork = work(
+      "project-capacity-blocked",
+      "dependency-verify",
+      "verify:v2",
+      "capacity-retry",
+    );
+    const runOwner = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "workspace-unavailable",
+        reason: "maintenance-delivery-capacity",
+      })
+      .mockResolvedValue(acceptedCycle());
+    const ackNarrativeMaintenanceDelivery = vi
+      .fn()
+      .mockResolvedValue({ status: "retired" });
+    const { scheduler: owner } = createScheduler({
+      runNarrativeMaintenanceCycle: runOwner,
+      ackNarrativeMaintenanceDelivery,
+    });
+
+    owner.request(firstProjectWork);
+    owner.request(blockedProjectWork);
+    owner.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runOwner).toHaveBeenCalledOnce();
+
+    const competingRun = deferred<NarrativeMaintenanceCycleResult>();
+    const runCompeting = vi.fn().mockReturnValue(competingRun.promise);
+    const { scheduler: competing } = createScheduler({
+      runNarrativeMaintenanceCycle: runCompeting,
+    });
+    competing.request(blockedProjectWork);
+    competing.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runCompeting).toHaveBeenCalledOnce();
+
+    // The owner can claim project-capacity-first, but the competing scheduler
+    // still owns project-capacity-blocked. It must release its partial claim
+    // before waiting, or the next wake will see its own stale claim.
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runOwner).toHaveBeenCalledOnce();
+
+    competingRun.resolve(acceptedCycle());
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+
+    expect(runOwner).toHaveBeenCalledTimes(2);
+    expect(runOwner.mock.calls[1]?.[0]).toEqual(runOwner.mock.calls[0]?.[0]);
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledOnce();
+  });
+
   it("keeps an unavailable-workspace trigger beyond the bounded error budget", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()

@@ -2227,7 +2227,13 @@ export function createNarrativeMaintenanceScheduler(
     if (batch.length === 0 && sendingWakeProjects.length === 0) {
       // A competing scheduler owns every project we need. Release-driven
       // wakeup removes the old 10ms busy-poll and cannot starve a project.
-      waitForProjectRelease(projectIds);
+      // `claimAvailable` is intentionally best-effort for ordinary batches,
+      // so a capacity retry may have claimed a strict subset before it
+      // discovered a blocked project. Release that subset before waiting;
+      // otherwise the next retry can treat its own previous claim as the
+      // blocker and deadlock the exact H+1 delivery forever.
+      sharedCoordinator?.release(claimedProjects);
+      waitForProjectRelease(blockedProjectIds);
       releaseEarlyCycleClaim();
       return;
     }
