@@ -6,7 +6,9 @@ Parent base: `codex/nir1-b-capacity-implementation` at
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`
 Child branch: `codex/pr600-lifecycle-replacement`
 
-Latest implementation checkpoint: `6b7407e7`. The checkpoint closes the
+Latest implementation checkpoint: `6b7407e7`; the clean candidate recorded for
+the current acceptance pass is `19d19d7823838a67c16d44a667708dab485dea91`.
+The checkpoint closes the
 descriptor product-caller path before normal delivery admission, records
 explicit connection-retirement evidence, captures stable database file
 identity and semantic epoch lineage at Run reservation, protects project

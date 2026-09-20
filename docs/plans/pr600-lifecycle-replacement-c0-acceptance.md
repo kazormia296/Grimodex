@@ -1,6 +1,6 @@
 # PR #600 lifecycle replacement: C0 acceptance record
 
-Candidate under review: `6b7407e7` (built from parent
+Candidate under review: `19d19d7823838a67c16d44a667708dab485dea91` (built from parent
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`). Contract:
 `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`.
 
@@ -49,7 +49,7 @@ acceptance.
 - `docs/plans/pr600-lifecycle-replacement.md` and the implementation diff at
   candidate `6b7407e7`.
 - Layer A shared-core tests: `cargo test --manifest-path
-  src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle` (24 tests,
+  src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle` (26 tests,
   including independent W2 Open with an unresolved W1 descriptor).
 - Native lifecycle/open/restore and supervisor tests: `cargo test
   --manifest-path electron/native/grimodex-node/Cargo.toml --lib` (146 tests).
@@ -57,7 +57,7 @@ acceptance.
   src-tauri/Cargo.toml -p grimodex-db --lib
   narrative_extraction::maintenance_lifecycle` (20 tests).
 - Electron lifecycle, delivery, scheduler, result, and shutdown focused
-  tests: 83 tests passed in the three maintenance suites; the new ACK-only
+  tests: 85 tests passed in the three maintenance suites; the new ACK-only
   retry case is included. Electron TypeScript typecheck also passed.
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib
   state::tests::active_workspace_snapshot_pins_authority_including_lease`
