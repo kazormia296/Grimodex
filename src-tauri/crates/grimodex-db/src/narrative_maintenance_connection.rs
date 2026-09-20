@@ -845,24 +845,14 @@ impl Database {
     /// descriptor is handed to a replacement authority. The SQLite handle is
     /// kept only as quarantined storage until its owning authority is dropped;
     /// no later recovery path may reuse it. A transaction still open at this
-    /// boundary is not a retirement proof.
+    /// boundary is not a retirement proof. The health transition is part of
+    /// this primitive, so a successful receipt always makes this authority
+    /// ineligible for normal access and resolver selection.
     pub fn retire_connection_for_recovery(&self) -> anyhow::Result<()> {
         // This primitive is intentionally allowed to inspect a connection
         // that was already quarantined by cleanup. `with_conn` first checks
         // the reusable flag and would make the cleanup-failure -> recovery
         // path permanently unable to emit its retirement receipt.
-        self.prove_connection_retired_for_recovery()?;
-        self.connection_health
-            .mark_unusable("retired for exact lifecycle recovery");
-        Ok(())
-    }
-
-    /// Prove that the worker-owned connection has no open transaction without
-    /// changing its reusable state. A clean connection may need a recovery
-    /// descriptor for an operation-level error while remaining readable by
-    /// existing diagnostic callers; cleanup-quarantined connections use the
-    /// stronger `retire_connection_for_recovery` wrapper above.
-    pub fn prove_connection_retired_for_recovery(&self) -> anyhow::Result<()> {
         let conn = self
             .conn
             .lock()
@@ -871,6 +861,13 @@ impl Database {
             conn.is_autocommit(),
             "NEX_MAINTENANCE_CONNECTION_RETIREMENT_UNPROVEN: transaction is still active"
         );
+        self.connection_health
+            .mark_unusable("retired for exact lifecycle recovery");
+        // Publish the unusable state while the connection mutex is still
+        // held. A waiter that already passed its first health check must not
+        // acquire this guard in the gap between the autocommit proof and the
+        // retirement receipt.
+        drop(conn);
         Ok(())
     }
 
@@ -1299,6 +1296,20 @@ mod tests {
             .expect("quarantined autocommit connection is retired");
         assert!(!db.connection_reusable());
         assert!(db.connection_unusable_reason().is_some());
+    }
+
+    #[test]
+    fn clean_retirement_quarantines_original_connection_before_recovery() {
+        let db = test_db();
+        assert!(db.connection_reusable());
+
+        db.retire_connection_for_recovery()
+            .expect("clean autocommit connection is retired");
+
+        assert!(!db.connection_reusable());
+        assert!(db
+            .with_conn(|_| Ok::<_, anyhow::Error>(()))
+            .is_err());
     }
 
     #[test]

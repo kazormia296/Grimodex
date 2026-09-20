@@ -6275,24 +6275,17 @@ impl Backend {
                         .mark_joined()
                         .map_err(|error| Error::from_reason(error.to_string()))?;
                     let connection_retired = match worker.authority.as_ref() {
-                        Some(authority) => {
-                            let result = if authority.db().connection_reusable() {
-                                authority.db().prove_connection_retired_for_recovery()
-                            } else {
-                                authority.db().retire_connection_for_recovery()
-                            };
-                            match result {
-                                Ok(()) => true,
-                                Err(retire_error) => {
-                                    tracing::error!(
-                                        target: "narrative.maintenance",
-                                        %retire_error,
-                                        "maintenance recovery could not prove old connection retirement"
-                                    );
-                                    false
-                                }
+                        Some(authority) => match authority.db().retire_connection_for_recovery() {
+                            Ok(()) => true,
+                            Err(retire_error) => {
+                                tracing::error!(
+                                    target: "narrative.maintenance",
+                                    %retire_error,
+                                    "maintenance recovery could not retire old connection"
+                                );
+                                false
                             }
-                        }
+                        },
                         None => false,
                     };
                     if connection_retired {
