@@ -17,8 +17,8 @@ describe("NarrativeMaintenanceDeliveryLedger", () => {
       );
     }
     expect(ledger.submit(257, "full").admission).toBe("not-admitted");
-    const descriptor = ledger.reserveRecovery("root-w1");
-    expect(ledger.recover("root-w1", "run-proof").admission).toBe("recovered");
+    const descriptor = ledger.reserveRecovery("1");
+    expect(ledger.recover("1", "run-proof").admission).toBe("recovered");
     expect(ledger.descriptorsSnapshot()[0]?.generation).toBe(
       descriptor.generation + 1,
     );
@@ -50,31 +50,31 @@ describe("NarrativeMaintenanceDeliveryLedger", () => {
     const ledger = new NarrativeMaintenanceDeliveryLedger();
     ledger.submit(1, "fp", "root-w1");
     ledger.markTerminal(1);
-    ledger.reserveRecovery("root-w1");
+    ledger.reserveRecovery("1");
     expect(ledger.ack(1)).toBe(true);
     expect(ledger.descriptorsSnapshot()).toHaveLength(1);
-    expect(ledger.retireRecovery("root-w1")).toBe(false);
-    ledger.ackRecovery("root-w1");
-    expect(ledger.retireRecovery("root-w1")).toBe(true);
-    expect(ledger.recover("root-w1", "late").admission).toBe("retired");
+    expect(ledger.retireRecovery("1")).toBe(false);
+    ledger.ackRecovery("1");
+    expect(ledger.retireRecovery("1")).toBe(true);
+    expect(ledger.recover("1", "late").admission).toBe("retired");
   });
 
   it("gives each recovery root its own control slot", () => {
     const ledger = new NarrativeMaintenanceDeliveryLedger();
-    ledger.reserveRecovery("root-w1");
-    ledger.reserveRecovery("root-w2");
-    expect(ledger.recover("root-w1", "proof-w1").admission).toBe("recovered");
-    expect(ledger.recover("root-w2", "proof-w2").admission).toBe("recovered");
+    ledger.reserveRecovery("1");
+    ledger.reserveRecovery("2");
+    expect(ledger.recover("1", "proof-w1").admission).toBe("recovered");
+    expect(ledger.recover("2", "proof-w2").admission).toBe("recovered");
     expect(ledger.descriptorsSnapshot()).toHaveLength(2);
   });
 
   it("does not replay an acknowledged recovery generation", () => {
     const ledger = new NarrativeMaintenanceDeliveryLedger();
-    ledger.reserveRecovery("root-w1");
-    const first = ledger.recover("root-w1", "proof-w1");
+    ledger.reserveRecovery("1");
+    const first = ledger.recover("1", "proof-w1");
     expect(first.descriptor?.generation).toBe(2);
-    expect(ledger.ackRecovery("root-w1")).toBe(true);
-    const next = ledger.recover("root-w1", "proof-w1");
+    expect(ledger.ackRecovery("1")).toBe(true);
+    const next = ledger.recover("1", "proof-w1");
     expect(next.admission).toBe("recovered");
     expect(next.descriptor?.generation).toBe(3);
     expect(next.descriptor?.resultAcked).toBe(false);
@@ -86,5 +86,25 @@ describe("NarrativeMaintenanceDeliveryLedger", () => {
     ledger.markTerminal(1);
     expect(ledger.ack(1)).toBe(true);
     expect(ledger.submit(1, "late").admission).toBe("sealed-absent");
+  });
+
+  it("keeps recovery roots retired for the whole session", () => {
+    const ledger = new NarrativeMaintenanceDeliveryLedger();
+    for (let index = 1; index <= 257; index += 1) {
+      const root = String(index);
+      ledger.reserveRecovery(root);
+      ledger.ackRecovery(root);
+      expect(ledger.retireRecovery(root)).toBe(true);
+    }
+    expect(() => ledger.reserveRecovery("1")).toThrow();
+    expect(ledger.recover("1", "late").admission).toBe("retired");
+  });
+
+  it("retires a locally admitted sequence after Native fences it without a record", () => {
+    const ledger = new NarrativeMaintenanceDeliveryLedger();
+    expect(ledger.submit(1, "pre-admission-rejection").admission).toBe("admitted");
+    expect(ledger.retireFenced(1)).toBe(true);
+    expect(ledger.recordsSnapshot()).toHaveLength(0);
+    expect(ledger.submit(2, "next").admission).toBe("admitted");
   });
 });

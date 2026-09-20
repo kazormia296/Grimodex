@@ -35,6 +35,9 @@ import {
 
 const cancelScheduledImeExportsMock = vi.hoisted(() => vi.fn());
 const cancelAllScheduledSemanticIndexesMock = vi.hoisted(() => vi.fn());
+const lifecycleHarness = vi.hoisted(() => ({
+  listener: null as ((payload: unknown) => void) | null,
+}));
 
 vi.mock("@/features/ime/scheduler", () => ({
   cancelScheduledImeExports: cancelScheduledImeExportsMock,
@@ -46,6 +49,10 @@ vi.mock("@/features/semantic-search/scheduler", () => ({
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
+  listen: vi.fn(async (_channel: string, listener: (payload: unknown) => void) => {
+    lifecycleHarness.listener = listener;
+    return () => {};
+  }),
 }));
 
 // Import the mocked module to configure per-test
@@ -64,6 +71,10 @@ function resetStore() {
     workspaceSwitchInProgress: false,
     workspaceOpenRequestInProgress: false,
     workspaceHydrated: false,
+    workspaceLifecycleRevision: 0,
+    workspaceLifecycleStatus: "closed",
+    workspaceLifecycleActivation: "none",
+    workspaceLifecycleBindingToken: null,
     activeWorkspaceName: null,
     error: null,
     pendingTrustPath: null,
@@ -643,7 +654,45 @@ describe("useWorkspaceStore", () => {
       expect(isQuiescenceLeaseActive()).toBe(false);
     });
 
-    it("restores the previous hydrated workspace when native open rejects before swap", async () => {
+    it("keeps an event-before-reject RecoveryRequired projection instead of restoring the old binding", async () => {
+      if (!lifecycleHarness.listener) {
+        await useWorkspaceStore.getState().initialize();
+      }
+      useWorkspaceStore.setState({
+        view: "editor",
+        activeWorkspacePath: "D:\\Novels\\Existing",
+        activeWorkspaceName: "Existing",
+        workspaceOpenRevision: 3,
+        workspaceHydrated: true,
+        workspaceLifecycleRevision: 9998,
+        workspaceLifecycleStatus: "ready",
+        workspaceLifecycleActivation: "ready",
+        workspaceLifecycleBindingToken: "old-token",
+      });
+      lifecycleHarness.listener?.({
+        schemaVersion: 1,
+        revision: 9999,
+        status: "recovery-required",
+        bindingToken: "old-token",
+        activation: "requires-open",
+      });
+      mockInvoke.mockRejectedValueOnce(new Error("open post-admission failed"));
+
+      await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\Broken");
+
+      expect(useWorkspaceStore.getState()).toMatchObject({
+        view: "recovery",
+        workspaceHydrated: false,
+        activeWorkspacePath: null,
+        recoveryShell: expect.objectContaining({
+          mode: "recovery-required",
+          workspacePath: "D:\\Novels\\Existing",
+        }),
+        error: "open post-admission failed",
+      });
+    });
+
+    it("fails closed when the Native open request rejects without a terminal outcome", async () => {
       useWorkspaceStore.setState({
         view: "editor",
         activeWorkspacePath: "D:\\Novels\\Existing",
@@ -655,10 +704,12 @@ describe("useWorkspaceStore", () => {
 
       await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\Broken");
       const state = useWorkspaceStore.getState();
-      expect(state.activeWorkspacePath).toBe("D:\\Novels\\Existing");
+      expect(state.view).toBe("launcher");
+      expect(state.activeWorkspacePath).toBe("D:\\Novels\\Broken");
       expect(state.workspaceOpenRevision).toBe(3);
-      expect(state.workspaceHydrated).toBe(true);
+      expect(state.workspaceHydrated).toBe(false);
       expect(state.workspaceSwitchInProgress).toBe(false);
+      expect(getCurrentImeWorkspaceIdentity()).toBeNull();
     });
 
     it("publishes the replacement identity only after mandatory hydration completes", async () => {

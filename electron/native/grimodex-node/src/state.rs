@@ -6,7 +6,7 @@
 //! コンストラクタで明示注入される (dirs:: を napi 内で解決しない。§4.2)。
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -174,6 +174,52 @@ pub(crate) struct NarrativeMaintenanceRecoveryReceipt {
     /// Ready.  Main may rebind retained work only from this proof; an active
     /// binding for an unrelated workspace is intentionally not sufficient.
     pub rebound_binding: Option<MaintenanceWorkspaceBinding>,
+}
+
+/// Idempotency tombstones for recovery-receipt ACKs. Native removes the
+/// replayable receipt as soon as an ACK is accepted, but the main response may
+/// be lost and retry the same ACK long after newer receipts have completed.
+/// Descriptor IDs are monotonic and never reused, but unresolved descriptors
+/// can leave gaps. Coalesced ranges retain every acknowledged ID while the
+/// number of ranges is bounded by those outstanding gaps; evicting old
+/// tombstones would turn a lost response into a permanently false negative.
+#[derive(Default)]
+pub(crate) struct NarrativeMaintenanceRecoveryAckLedger {
+    retired_ranges: BTreeMap<u64, u64>,
+}
+
+impl NarrativeMaintenanceRecoveryAckLedger {
+    pub(crate) fn contains(&self, descriptor_id: u64) -> bool {
+        self.retired_ranges
+            .range(..=descriptor_id)
+            .next_back()
+            .is_some_and(|(_, end)| *end >= descriptor_id)
+    }
+
+    pub(crate) fn mark(&mut self, descriptor_id: u64) {
+        let mut start = descriptor_id;
+        let mut end = descriptor_id;
+        if let Some((&range_start, &range_end)) = self.retired_ranges.range(..=start).next_back() {
+            if range_end.saturating_add(1) >= start {
+                start = range_start;
+                end = end.max(range_end);
+                self.retired_ranges.remove(&range_start);
+            }
+        }
+        while let Some((range_start, range_end)) = self
+            .retired_ranges
+            .range(start..)
+            .next()
+            .map(|(range_start, range_end)| (*range_start, *range_end))
+        {
+            if range_start > end.saturating_add(1) {
+                break;
+            }
+            end = end.max(range_end);
+            self.retired_ranges.remove(&range_start);
+        }
+        self.retired_ranges.insert(start, end);
+    }
 }
 
 /// Process-local ownership for a transiently preempted maintenance Run whose
@@ -2488,8 +2534,7 @@ pub struct AppState {
     /// handle inside the pinned authority has already been closed and marked
     /// unusable; retaining this Arc keeps the shared lease continuous until a
     /// descriptor resolver has opened and verified its replacement.
-    pub(crate) narrative_maintenance_recovery_batons:
-        Mutex<HashMap<String, PinnedWorkspaceDb>>,
+    pub(crate) narrative_maintenance_recovery_batons: Mutex<HashMap<String, PinnedWorkspaceDb>>,
     /// Exact main-side binding for a descriptor transferred by a scheduled
     /// maintenance attempt.  Lifecycle `LiveBinding.recovery_generation` is
     /// a different identity from the maintenance gate generation; retain the
@@ -2502,6 +2547,9 @@ pub struct AppState {
     /// scheduler can clear its cleanup-failed marker.
     pub(crate) narrative_maintenance_recovery_receipts:
         Mutex<BTreeMap<u64, NarrativeMaintenanceRecoveryReceipt>>,
+    /// Bounded-by-watermark ACK tombstones make recovery ACK retry idempotent
+    /// after the first call has already retired its process-local receipt.
+    pub(crate) narrative_maintenance_recovery_acks: Mutex<NarrativeMaintenanceRecoveryAckLedger>,
 }
 
 pub struct WorkspaceOperationGuard {
@@ -2573,9 +2621,7 @@ impl AppState {
                 open_lock: Mutex::new(()),
             },
             workspace_lifecycle:
-                crate::workspace_lifecycle_view::WorkspaceLifecycleViewAdapter::new(
-                    lifecycle_core,
-                ),
+                crate::workspace_lifecycle_view::WorkspaceLifecycleViewAdapter::new(lifecycle_core),
             gs: GlobalSettingsPath {
                 path: dir.join("global-settings.json"),
                 write_lock: Mutex::new(()),
@@ -2613,6 +2659,9 @@ impl AppState {
             narrative_maintenance_recovery_batons: Mutex::new(HashMap::new()),
             narrative_maintenance_recovery_bindings: Mutex::new(HashMap::new()),
             narrative_maintenance_recovery_receipts: Mutex::new(BTreeMap::new()),
+            narrative_maintenance_recovery_acks: Mutex::new(
+                NarrativeMaintenanceRecoveryAckLedger::default(),
+            ),
         })
     }
 
@@ -2621,9 +2670,11 @@ impl AppState {
             !self.workspace_shutdown_requested.load(Ordering::Acquire),
             "NEX_NATIVE_SHUTDOWN_REQUESTED: workspace operation admission is closed"
         );
-        self.workspace_operation_active.fetch_add(1, Ordering::AcqRel);
+        self.workspace_operation_active
+            .fetch_add(1, Ordering::AcqRel);
         if self.workspace_shutdown_requested.load(Ordering::Acquire) {
-            self.workspace_operation_active.fetch_sub(1, Ordering::AcqRel);
+            self.workspace_operation_active
+                .fetch_sub(1, Ordering::AcqRel);
             self.workspace_operation_notify.notify_waiters();
             anyhow::bail!("NEX_NATIVE_SHUTDOWN_REQUESTED: workspace operation admission is closed");
         }
@@ -2634,7 +2685,8 @@ impl AppState {
     }
 
     pub fn request_workspace_shutdown(&self) {
-        self.workspace_shutdown_requested.store(true, Ordering::Release);
+        self.workspace_shutdown_requested
+            .store(true, Ordering::Release);
         self.workspace_operation_notify.notify_waiters();
     }
 
@@ -4043,6 +4095,29 @@ mod tests {
             .is_some(),
             "a failed post-claim commit must not strand the one-shot reservation"
         );
+    }
+
+    #[test]
+    fn recovery_ack_ranges_keep_lost_response_retries_after_many_acks() {
+        let mut ledger = NarrativeMaintenanceRecoveryAckLedger::default();
+        ledger.mark(1);
+        ledger.mark(3);
+        for descriptor_id in 4..=512 {
+            ledger.mark(descriptor_id);
+        }
+
+        assert!(ledger.contains(1));
+        assert!(
+            !ledger.contains(2),
+            "an unresolved descriptor remains a gap"
+        );
+        assert!(ledger.contains(3));
+        assert!(ledger.contains(512));
+
+        ledger.mark(2);
+        assert!(ledger.contains(1));
+        assert!(ledger.contains(256));
+        assert!(ledger.contains(512));
     }
 
     /// テスト用の雑な一意サフィックス (uuid 依存を増やさない)。

@@ -76,10 +76,16 @@ pub use nir1_graph::{read_nir1_graph, Nir1GraphRequest, Nir1GraphResponse};
 pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 pub(crate) use repository::{
-    project_creation_reservation_active, release_project_destructive_permit,
-    try_reserve_project_destructive_permit,
+    project_creation_reservation_active_for_database,
+    release_project_destructive_permit_in_namespace,
+    try_reserve_project_destructive_permit_in_namespace,
 };
-pub use repository::{release_project_creation, try_reserve_project_creation};
+pub use repository::project_lifecycle_namespace_for_database;
+pub use repository::{
+    release_project_creation, release_project_creation_for_handle,
+    try_reserve_project_creation, try_reserve_project_creation_for_database,
+    try_reserve_project_creation_in_namespace,
+};
 pub(crate) use scene_scope::backfill_scene_scope_storage_in_tx;
 pub(crate) use scene_scope::ensure_scene_scope_binding_in_tx;
 pub(crate) use scene_scope::ensure_scope_registry_in_tx;

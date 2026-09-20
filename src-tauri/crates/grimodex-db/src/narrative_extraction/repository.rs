@@ -14,6 +14,7 @@ use grimodex_core::{
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
@@ -89,6 +90,37 @@ static PROJECT_LIFECYCLE_ADMISSIONS: OnceLock<
     Mutex<HashMap<String, ProjectLifecycleAdmission>>,
 > = OnceLock::new();
 
+fn project_lifecycle_key(namespace: &str, project_id: &str) -> String {
+    format!("{namespace}\u{0}{project_id}")
+}
+
+/// Stable namespace for a verified Database authority. The canonical path is
+/// retained for diagnostics, while the file identity distinguishes a
+/// same-path replacement. Reopening the same DB keeps both values stable;
+/// copying/replacing it produces a different key.
+pub fn project_lifecycle_namespace_for_database(
+    db: &Database,
+) -> anyhow::Result<String> {
+    db.with_conn(|conn| {
+        let path: String = conn.query_row(
+            "SELECT file FROM pragma_database_list WHERE name = 'main'",
+            [],
+            |row| row.get(0),
+        )?;
+        if path.trim().is_empty() {
+            return Ok("memory".to_owned());
+        }
+        let canonical = std::fs::canonicalize(&path)
+            .unwrap_or_else(|_| Path::new(&path).to_path_buf())
+            .to_string_lossy()
+            .into_owned();
+        let identity = super::maintenance_lifecycle::sqlite_database_file_identity(
+            Path::new(&canonical),
+        )?;
+        Ok(format!("{canonical}#{identity}"))
+    })
+}
+
 fn project_lifecycle_admissions(
 ) -> &'static Mutex<HashMap<String, ProjectLifecycleAdmission>> {
     PROJECT_LIFECYCLE_ADMISSIONS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -98,11 +130,19 @@ fn project_lifecycle_admissions(
 /// lifecycle owner and the project delete path in this process only; it is
 /// deliberately not advertised as cross-process SQLite authority.
 pub(crate) fn try_reserve_project_destructive_permit(project_id: &str) -> anyhow::Result<()> {
+    try_reserve_project_destructive_permit_in_namespace("legacy", project_id)
+}
+
+pub(crate) fn try_reserve_project_destructive_permit_in_namespace(
+    namespace: &str,
+    project_id: &str,
+) -> anyhow::Result<()> {
     let admissions = project_lifecycle_admissions();
     let mut admissions = admissions
         .lock()
         .map_err(|error| anyhow::anyhow!("project lifecycle admissions poisoned: {error}"))?;
-    let admission = admissions.entry(project_id.to_owned()).or_default();
+    let key = project_lifecycle_key(namespace, project_id);
+    let admission = admissions.entry(key).or_default();
     anyhow::ensure!(
         !admission.destructive && admission.creation_reservations == 0,
         "NEX_PROJECT_DESTRUCTIVE_BUSY: project '{project_id}' has lifecycle ownership"
@@ -112,21 +152,48 @@ pub(crate) fn try_reserve_project_destructive_permit(project_id: &str) -> anyhow
 }
 
 pub(crate) fn release_project_destructive_permit(project_id: &str) {
+    release_project_destructive_permit_in_namespace("legacy", project_id);
+}
+
+pub(crate) fn release_project_destructive_permit_in_namespace(
+    namespace: &str,
+    project_id: &str,
+) {
     if let Ok(mut admissions) = project_lifecycle_admissions().lock() {
-        if let Some(admission) = admissions.get_mut(project_id) {
+        let key = project_lifecycle_key(namespace, project_id);
+        if let Some(admission) = admissions.get_mut(&key) {
             admission.destructive = false;
             if admission.creation_reservations == 0 {
-                admissions.remove(project_id);
+                admissions.remove(&key);
             }
         }
     }
 }
 
 pub(crate) fn project_destructive_permit_active(project_id: &str) -> bool {
+    project_destructive_permit_active_in_namespace("legacy", project_id)
+}
+
+pub(crate) fn project_destructive_permit_active_for_database(
+    db: &Database,
+    project_id: &str,
+) -> anyhow::Result<bool> {
+    let namespace = project_lifecycle_namespace_for_database(db)?;
+    Ok(project_destructive_permit_active_in_namespace(
+        &namespace,
+        project_id,
+    ))
+}
+
+fn project_destructive_permit_active_in_namespace(namespace: &str, project_id: &str) -> bool {
     project_lifecycle_admissions()
         .lock()
         .ok()
-        .and_then(|admissions| admissions.get(project_id).map(|entry| entry.destructive))
+        .and_then(|admissions| {
+            admissions
+                .get(&project_lifecycle_key(namespace, project_id))
+                .map(|entry| entry.destructive)
+        })
         .unwrap_or(false)
 }
 
@@ -136,6 +203,34 @@ pub(crate) fn project_destructive_permit_active(project_id: &str) -> bool {
 /// INSERT. This is coordination only; durable Run/lineage evidence remains
 /// mandatory for recovery and the registry is not a cross-process authority.
 pub fn try_reserve_project_creation(project_id: &str) -> anyhow::Result<()> {
+    try_reserve_project_creation_in_namespace_impl("legacy", project_id)
+}
+
+pub fn try_reserve_project_creation_for_database(
+    db: &Database,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    let namespace = project_lifecycle_namespace_for_database(db)?;
+    try_reserve_project_creation_in_namespace_impl(&namespace, project_id)
+}
+
+/// Reserve a Run creation slot when the caller already owns the database
+/// connection (for example from inside its creation transaction). Resolving
+/// the namespace through `db.with_conn` at that point would try to lock the
+/// same SQLite mutex recursively and turn a valid foreground-priority path
+/// into a synthetic maintenance preemption. The namespace must have been
+/// captured from the verified authority before the transaction began.
+pub fn try_reserve_project_creation_in_namespace(
+    namespace: &str,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    try_reserve_project_creation_in_namespace_impl(namespace, project_id)
+}
+
+fn try_reserve_project_creation_in_namespace_impl(
+    namespace: &str,
+    project_id: &str,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         !project_id.trim().is_empty(),
         "NEX_PROJECT_CREATION_RESERVATION_INVALID: project id is empty"
@@ -144,7 +239,8 @@ pub fn try_reserve_project_creation(project_id: &str) -> anyhow::Result<()> {
     let mut admissions = admissions
         .lock()
         .map_err(|error| anyhow::anyhow!("project lifecycle admissions poisoned: {error}"))?;
-    let admission = admissions.entry(project_id.to_owned()).or_default();
+    let key = project_lifecycle_key(namespace, project_id);
+    let admission = admissions.entry(key).or_default();
     anyhow::ensure!(
         !admission.destructive,
         "NEX_PROJECT_DESTRUCTIVE_BUSY: project '{project_id}' is under a destructive permit"
@@ -154,8 +250,32 @@ pub fn try_reserve_project_creation(project_id: &str) -> anyhow::Result<()> {
 }
 
 pub fn release_project_creation(project_id: &str) {
+    release_project_creation_in_namespace("legacy", project_id);
+}
+
+pub fn release_project_creation_for_handle(
+    project_id: &str,
+    database_path: Option<&str>,
+    database_file_identity: Option<&str>,
+) {
+    let namespace = match (database_path, database_file_identity) {
+        (Some(":memory:"), Some(":memory:")) => "memory".to_owned(),
+        (Some(path), Some(identity)) if !path.trim().is_empty() && !identity.trim().is_empty() => {
+            let canonical = std::fs::canonicalize(path)
+                .unwrap_or_else(|_| Path::new(path).to_path_buf())
+                .to_string_lossy()
+                .into_owned();
+            format!("{}#{}", canonical, identity)
+        }
+        _ => "legacy".to_owned(),
+    };
+    release_project_creation_in_namespace(&namespace, project_id);
+}
+
+fn release_project_creation_in_namespace(namespace: &str, project_id: &str) {
     if let Ok(mut admissions) = project_lifecycle_admissions().lock() {
-        let Some(admission) = admissions.get_mut(project_id) else {
+        let key = project_lifecycle_key(namespace, project_id);
+        let Some(admission) = admissions.get_mut(&key) else {
             return;
         };
         if admission.creation_reservations == 0 {
@@ -163,18 +283,33 @@ pub fn release_project_creation(project_id: &str) {
         }
         admission.creation_reservations -= 1;
         if admission.creation_reservations == 0 && !admission.destructive {
-            admissions.remove(project_id);
+            admissions.remove(&key);
         }
     }
 }
 
 pub(crate) fn project_creation_reservation_active(project_id: &str) -> bool {
+    project_creation_reservation_active_in_namespace("legacy", project_id)
+}
+
+pub(crate) fn project_creation_reservation_active_for_database(
+    db: &Database,
+    project_id: &str,
+) -> anyhow::Result<bool> {
+    let namespace = project_lifecycle_namespace_for_database(db)?;
+    Ok(project_creation_reservation_active_in_namespace(
+        &namespace,
+        project_id,
+    ))
+}
+
+fn project_creation_reservation_active_in_namespace(namespace: &str, project_id: &str) -> bool {
     project_lifecycle_admissions()
         .lock()
         .ok()
         .and_then(|admissions| {
             admissions
-                .get(project_id)
+                .get(&project_lifecycle_key(namespace, project_id))
                 .map(|entry| entry.creation_reservations > 0)
         })
         .unwrap_or(false)

@@ -16,17 +16,28 @@ pub(crate) async fn begin(state: Arc<AppState>, dto: BeginRequest) -> Result<Val
             && dto.query.encode_utf16().count() <= 500,
         "RELATED_SCENES_INVALID_REQUEST"
     );
+    // Keep a lifecycle participant for the registry entry and every detached
+    // scoring/build task. The short-lived pin below only validates the launch
+    // binding; the participant is the long-lived ownership proof.
+    let participant = state
+        .ws
+        .lifecycle_core()
+        .begin_workspace_participant()
+        .map_err(|error| anyhow!(error.to_string()))?;
     // Pin before entering the blocking queue, as in the existing Raw command.
     let request = crate::pin_scoped_semantic_request(&state, &dto.expected_workspace_path)
         .map_err(|_| anyhow!("RELATED_SCENES_WORKSPACE_CHANGED"))?;
     let spawn = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || begin_blocking(state, request, dto, spawn, accepted_at))
-        .await?
+    tokio::task::spawn_blocking(move || {
+        begin_blocking(state, request, participant, dto, spawn, accepted_at)
+    })
+    .await?
 }
 
 fn begin_blocking(
     state: Arc<AppState>,
     request: SemanticRequest,
+    participant: grimodex_db::workspace_lifecycle::WorkspaceParticipant,
     dto: BeginRequest,
     spawn: tokio::runtime::Handle,
     accepted_at: Instant,
@@ -89,6 +100,7 @@ fn begin_blocking(
     let ticket = if snapshot.original_snapshot_usable && snapshot.supported_profile {
         let operation = Operation {
             request: request.clone(),
+            participant: participant.clone(),
             source: source.clone(),
             query_binding: query_binding.clone(),
             original: original.ok_or_else(|| anyhow!("RELATED_SCENES_SNAPSHOT_UNAVAILABLE"))?,
@@ -175,7 +187,7 @@ fn begin_blocking(
         }
     }
     if snapshot.supported_profile && current_request(&state, &request)? {
-        build::schedule(state.clone(), request, dto.project_id)?;
+        build::schedule(state.clone(), request, participant, dto.project_id)?;
     }
     outcome
 }

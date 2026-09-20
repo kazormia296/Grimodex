@@ -550,6 +550,54 @@ describe("D2a profile egress gate", () => {
     expect(gate.issueCallerIdentity(11).workspaceId).toBe("workspace-2");
   });
 
+  it("does not invalidate Ready callers for a same-token revision-only snapshot", async () => {
+    const invalidateProfileEgressCallers = vi.fn();
+    const gate = await createProfileEgressGate({
+      ...backend(),
+      invalidateProfileEgressCallers,
+    });
+    gate.issueCallerIdentity(11);
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 4,
+      status: "ready",
+      bindingToken: "bnd-ready",
+      activation: "ready",
+    });
+    const currentIdentity = gate.issueCallerIdentity(11);
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 5,
+      status: "ready",
+      bindingToken: "bnd-ready",
+      activation: "ready",
+    });
+    expect(invalidateProfileEgressCallers).toHaveBeenCalledOnce();
+    expect(() =>
+      gate.assertInvoke("save_global_settings", {
+        callerIdentity: currentIdentity,
+      }),
+    ).not.toThrow();
+  });
+
+  it("retains the Native recovery binding through requires-open", async () => {
+    const gate = await createProfileEgressGate(backend());
+    gate.observeBackendEvent?.("workspace:opened", {
+      path: "/workspace-recovery",
+      restoreOnly: true,
+    });
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 5,
+      status: "recovery-required",
+      bindingToken: null,
+      activation: "requires-open",
+    });
+    expect(gate.issueCallerIdentity(11).workspaceId).toBe(
+      "/workspace-recovery",
+    );
+  });
+
   it.each([
     ["send_chat_message", {}],
     ["send_inline_ai_stream", {}],

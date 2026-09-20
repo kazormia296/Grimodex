@@ -337,7 +337,7 @@ export declare class Backend {
    * 再open時にDB由来のCodex matcherを破棄し、semantic 4-cache epochも
    * rotateして復元前DBへのlate writeを不可視にする。
    */
-  restoreBackup(fileName: string): Promise<void>
+  restoreBackup(fileName: string): Promise<string>
   /** Safe Mode中の復元候補をopaque idだけで列挙する。 */
   listRecoveryCandidates(): Promise<string>
   /** candidate idを検証し、復元前の候補メタデータを返す。 */

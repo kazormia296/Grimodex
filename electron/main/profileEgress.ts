@@ -562,6 +562,11 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     () => Promise<void>
   >();
   private workspaceId: string | null = null;
+  // Safe Mode/restore-only keeps a restricted authorization target even while
+  // no Ready database binding exists. This is intentionally separate from the
+  // normal Ready workspace so lifecycle projection cannot erase the target
+  // needed by list/verify/restore/explicit-open commands.
+  private recoveryWorkspaceId: string | null = null;
   private lifecycleRevision = -1;
   private lifecycleBindingToken: string | null = null;
   private lifecycleStatus: string | null = null;
@@ -616,7 +621,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
         callerId: randomUUID(),
         callerEpoch: this.callerEpoch,
         senderId,
-        workspaceId: this.workspaceId,
+        workspaceId: this.workspaceId ?? this.recoveryWorkspaceId,
         sessionId: randomUUID(),
       } satisfies MainIssuedCallerIdentity);
     if (!existing) this.identities.set(senderId, identity);
@@ -871,16 +876,22 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       if (revision < this.lifecycleRevision) return;
       const token =
         typeof record.bindingToken === "string" ? record.bindingToken : null;
-      const changed =
-        revision > this.lifecycleRevision ||
+      const bindingChanged =
         token !== this.lifecycleBindingToken ||
         record.status !== this.lifecycleStatus ||
         record.activation !== this.lifecycleActivation;
+      const changed = revision > this.lifecycleRevision || bindingChanged;
       this.lifecycleRevision = revision;
       this.lifecycleBindingToken = token;
       this.lifecycleStatus = record.status;
       this.lifecycleActivation = record.activation;
       if (!changed) return;
+      // A descriptor recovery that is unrelated to the currently Ready
+      // workspace advances the shared lifecycle revision while preserving the
+      // same renderer binding token/status.  Revision is still published for
+      // freshness, but it is not proof that caller authorization changed.
+      // Keep in-flight W2 profile work alive in this revision-only case.
+      if (!bindingChanged) return;
       const senderIds = [...this.identities.keys()];
       try {
         this.invalidateCallers?.();
@@ -891,11 +902,20 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
         }
       }
       // `workspace:opened` is emitted by Native before the terminal Ready
-      // lifecycle snapshot. Preserve that trusted workspace id across the
-      // Ready projection so a valid caller is not stranded after every open;
-      // all caller identities are still invalidated and must re-register.
-      if (!(record.status === "ready" && record.activation === "ready")) {
+      // lifecycle snapshot. Preserve a trusted recovery target across the
+      // requires-open projection, while ordinary Transition/Closed states
+      // still clear the normal binding. All caller identities are invalidated
+      // and must re-register against the retained target.
+      if (record.status === "ready" && record.activation === "ready") {
+        this.recoveryWorkspaceId = null;
+      } else if (
+        record.status === "recovery-required" ||
+        record.activation === "requires-open"
+      ) {
+        this.workspaceId = this.recoveryWorkspaceId;
+      } else {
         this.workspaceId = null;
+        this.recoveryWorkspaceId = null;
       }
       this.identities.clear();
       this.registrationErrors.clear();
@@ -930,10 +950,12 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
           this.registrationErrors.set(senderId, detail);
         }
       }
-      this.workspaceId = workspaceId;
       this.identities.clear();
       this.registrationErrors.clear();
     }
+    const restoreOnly = record.restoreOnly === true;
+    this.workspaceId = workspaceId;
+    this.recoveryWorkspaceId = restoreOnly ? workspaceId : null;
   }
 }
 

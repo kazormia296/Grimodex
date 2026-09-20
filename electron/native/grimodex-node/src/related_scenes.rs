@@ -13,6 +13,7 @@ use grimodex_db::narrative_extraction::nir1_chronicle_index::{
     self as index, NirEvidenceHandle, NirQualifiedBatch,
 };
 use grimodex_db::narrative_extraction::{read_retrieval_scene_source, RetrievalSceneSourceRead};
+use grimodex_db::workspace_lifecycle::WorkspaceParticipant;
 use grimodex_semantic::runtime::{AuditedSemanticQuery, SemanticRequest};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -50,6 +51,11 @@ impl Default for RelatedScenesService {
 
 struct Operation {
     request: SemanticRequest,
+    /// The registry entry and any scoring task keep the captured workspace
+    /// participant alive until release/invalidation.  This prevents a
+    /// transition from publishing a replacement while the related-scenes
+    /// worker still reads the old authority.
+    participant: WorkspaceParticipant,
     source: Arc<RelatedScenesSourceContext>,
     query_binding: String,
     original: index::NirQuerySnapshot,
@@ -165,6 +171,34 @@ impl RelatedScenesService {
             .find(|(key, entry)| key == ticket && entry.is_owned_by(owner))
             .map(|(_, entry)| entry))
     }
+
+    /// Invalidate every registry lease before a workspace transition starts.
+    /// The lease owns the participant retained by scoring/query tasks; taking
+    /// the entries out of the registry lets those tasks observe cancellation
+    /// and release before physical replacement is attempted.
+    pub(crate) fn stop_for_workspace_transition(&self) -> Result<usize> {
+        let entries = lock(&self.registry)?.entries();
+        let mut stopped = 0;
+        for (ticket, lease) in entries {
+            if invalidate_from_registry(&self.registry, &ticket, &lease)? {
+                stopped += 1;
+            }
+        }
+        Ok(stopped)
+    }
+}
+
+fn invalidate_from_registry(
+    registry: &Mutex<RelatedScenesRegistry<Operation>>,
+    ticket: &str,
+    lease: &Lease,
+) -> Result<bool> {
+    if lock(registry)?.invalidate(ticket) {
+        lease.data.completed.notify_waiters();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 pub(crate) use begin::begin;
@@ -237,6 +271,7 @@ pub(crate) fn reconcile(state: &Arc<AppState>) -> Result<Value> {
             build::schedule(
                 state.clone(),
                 lease.data.request.clone(),
+                lease.data.participant.clone(),
                 lease.data.source.project_id().into(),
             )?;
         }

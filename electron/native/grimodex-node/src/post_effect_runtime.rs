@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use grimodex_db::events::EventSink;
 use grimodex_db::state::active_workspace_snapshot;
-use grimodex_db::{with_db_state, AppError, Database, PinnedWorkspaceDb};
+use grimodex_db::{
+    with_db_state, workspace_lifecycle::WorkspaceParticipant, AppError, Database, PinnedWorkspaceDb,
+};
 use grimodex_post_effect::{
     apply_model_override, PostEffectAiClient, PostEffectAiDispatch, PostEffectAiOutput,
     PostEffectAiRequest, PostEffectAiResolvedRoute, PostEffectRuntime,
@@ -24,6 +26,10 @@ use crate::state::AppState;
 pub(crate) struct NodePostEffectRuntime {
     state: Arc<AppState>,
     db: Option<PinnedWorkspaceDb>,
+    /// Detached post-effect workers retain this participant for their whole
+    /// lifetime.  A transition must stop/observe the worker before replacing
+    /// the authority it captured at launch.
+    participant: Option<WorkspaceParticipant>,
     /// The permit is cloned into detached run runtimes so the profile startup
     /// barrier waits for the actual AI task, not only its fire-and-forget
     /// launch call.
@@ -35,6 +41,7 @@ impl NodePostEffectRuntime {
         Self {
             state,
             db: None,
+            participant: None,
             dispatch: None,
         }
     }
@@ -44,7 +51,18 @@ impl NodePostEffectRuntime {
         expected_workspace_path: &str,
         dispatch: ProfileDispatchPermit,
     ) -> Result<Self, AppError> {
-        let workspace = active_workspace_snapshot(&state.ws)?;
+        let participant = state
+            .ws
+            .lifecycle_core()
+            .begin_workspace_participant()
+            .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+        let workspace = match active_workspace_snapshot(&state.ws) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                drop(participant);
+                return Err(error);
+            }
+        };
         let active = workspace
             .path()
             .canonicalize()
@@ -62,6 +80,7 @@ impl NodePostEffectRuntime {
         Ok(Self {
             state,
             db: Some(Arc::clone(workspace.db())),
+            participant: Some(participant),
             dispatch: Some(dispatch),
         })
     }
@@ -72,10 +91,23 @@ impl PostEffectRuntime for NodePostEffectRuntime {
         if self.db.is_some() {
             return Ok(self.clone());
         }
-        let db = grimodex_db::state::active_database(&self.state.ws)?;
+        let participant = self
+            .state
+            .ws
+            .lifecycle_core()
+            .begin_workspace_participant()
+            .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+        let db = match grimodex_db::state::active_database(&self.state.ws) {
+            Ok(db) => db,
+            Err(error) => {
+                drop(participant);
+                return Err(error);
+            }
+        };
         Ok(Self {
             state: Arc::clone(&self.state),
             db: Some(db),
+            participant: Some(participant),
             dispatch: self.dispatch.clone(),
         })
     }

@@ -79,6 +79,12 @@ pub struct LiveBinding {
     pub recovery_generation: u64,
 }
 
+fn same_binding_identity(left: &LiveBinding, right: &LiveBinding) -> bool {
+    left.locator == right.locator
+        && left.workspace_id == right.workspace_id
+        && left.authority_instance == right.authority_instance
+}
+
 impl LiveBinding {
     pub fn new(
         locator: impl Into<String>,
@@ -143,9 +149,10 @@ impl LifecycleSnapshot {
 pub enum AdmissionKind {
     Open,
     Restore,
-    /// A foreground write/eligibility transaction.  It participates in the
-    /// same shared admission boundary as maintenance so a transition or a
-    /// second foreground owner cannot begin while its transaction is alive.
+    /// A foreground write/eligibility transaction. It participates in the
+    /// shared lifecycle drain membership, while retaining its own foreground
+    /// execution slot so maintenance cannot reject user work before the
+    /// existing foreground-priority/SQLite wait policy runs.
     Foreground,
     Maintenance,
     Recover,
@@ -163,7 +170,11 @@ impl AdmissionKind {
     }
 
     fn is_foreground_execution(self) -> bool {
-        matches!(self, Self::Foreground | Self::Maintenance)
+        matches!(self, Self::Foreground)
+    }
+
+    fn is_maintenance_execution(self) -> bool {
+        matches!(self, Self::Maintenance)
     }
 
     fn responsibility_kind(self) -> Option<ResponsibilityKind> {
@@ -262,6 +273,21 @@ pub struct WorkspaceTransitionPermit {
 pub struct WorkspaceExclusive {
     core: WorkspaceLifecycleCore,
     operation_id: OperationId,
+}
+
+/// A short-lived participant for any DB operation that has already pinned an
+/// authority. It is intentionally independent from the foreground and
+/// maintenance execution slots: it only prevents transition activation and
+/// shutdown from claiming terminal proof while the operation is still using
+/// its connection.
+#[derive(Clone)]
+pub struct WorkspaceParticipant {
+    lease: Arc<WorkspaceParticipantLease>,
+}
+
+struct WorkspaceParticipantLease {
+    core: WorkspaceLifecycleCore,
+    released: AtomicBool,
 }
 
 /// Work-scoped publication marker. It prevents a broad transition permit from
@@ -517,6 +543,14 @@ impl Drop for WorkspaceExclusive {
     }
 }
 
+impl Drop for WorkspaceParticipantLease {
+    fn drop(&mut self) {
+        if !self.released.swap(true, Ordering::AcqRel) {
+            let _ = self.core.release_workspace_participant();
+        }
+    }
+}
+
 impl PublicationPermit {
     pub fn operation_id(&self) -> OperationId {
         self.operation_id
@@ -752,6 +786,16 @@ pub struct RunOwnership {
     pub handle: DurableRunHandle,
 }
 
+/// Identifies which supervisor owns a recovery descriptor. Workspace
+/// transition descriptors belong to the explicit Open/Restore owner; only
+/// maintenance descriptors may be consumed by the automatic maintenance
+/// recovery pump.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum RecoveryDescriptorOwner {
+    WorkspaceTransition,
+    Maintenance,
+}
+
 fn same_run_work_identity(left: &DurableRunHandle, right: &DurableRunHandle) -> bool {
     left.project_id == right.project_id
         && left.kind == right.kind
@@ -766,6 +810,7 @@ fn same_run_work_identity(left: &DurableRunHandle, right: &DurableRunHandle) -> 
 pub struct RecoveryDescriptor {
     pub descriptor_id: RecoveryDescriptorId,
     pub root_operation_id: OperationId,
+    pub owner: RecoveryDescriptorOwner,
     pub expected_binding: Option<LiveBinding>,
     pub run: Option<RunOwnership>,
     pub additional_runs: Vec<RunOwnership>,
@@ -928,10 +973,47 @@ struct DeliveryLedger {
     high_water: DeliverySequence,
     records: BTreeMap<DeliverySequence, DeliveryRecord>,
     fenced: BTreeSet<DeliverySequence>,
-    /// ACK retirement is idempotent across a lost Native reply.  Keep the
-    /// monotonic receipt identity after the record leaves `records` so a
-    /// replayed ACK can converge instead of becoming a permanent `pending`.
-    retired: BTreeSet<DeliverySequence>,
+    /// ACK retirement is idempotent across a lost Native reply. Retired
+    /// sequences may be sparse when an early record is still unACKed, so keep
+    /// coalesced inclusive ranges rather than a watermark plus an unbounded
+    /// sparse set.
+    retired_ranges: BTreeMap<u64, u64>,
+}
+
+impl DeliveryLedger {
+    fn is_retired(&self, sequence: DeliverySequence) -> bool {
+        self.retired_ranges
+            .range(..=sequence.get())
+            .next_back()
+            .is_some_and(|(_, end)| *end >= sequence.get())
+    }
+
+    fn mark_retired(&mut self, sequence: DeliverySequence) {
+        let mut start = sequence.get();
+        let mut end = sequence.get();
+        if let Some((&range_start, &range_end)) = self.retired_ranges.range(..=start).next_back()
+        {
+            if range_end.saturating_add(1) >= start {
+                start = range_start;
+                end = end.max(range_end);
+                self.retired_ranges.remove(&range_start);
+            }
+        }
+        while let Some((range_start, range_end)) = self
+            .retired_ranges
+            .range(start..)
+            .next()
+            .map(|(range_start, range_end)| (*range_start, *range_end))
+        {
+            if range_start > end.saturating_add(1) {
+                break;
+            }
+            end = end.max(range_end);
+            self.retired_ranges.remove(&range_start);
+        }
+        self.retired_ranges.insert(start, end);
+    }
+
 }
 
 #[derive(Clone, Debug)]
@@ -942,10 +1024,6 @@ struct ControlSlot {
     result: Option<String>,
     acked: bool,
     retired: bool,
-    /// Results from prior failed/retried generations remain immutable even
-    /// after the active slot advances.  This prevents an unACKed result from
-    /// being overwritten in place.
-    completed_history: BTreeMap<ControlGeneration, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -977,6 +1055,7 @@ struct CoreState {
     executions: BTreeMap<ExecutionId, ExecutionMembership>,
     work_executions: BTreeMap<WorkExecutionId, WorkExecutionMembership>,
     physical_exclusive_operations: BTreeSet<OperationId>,
+    workspace_participants: usize,
     shutdown_requested: bool,
     descriptors: BTreeMap<RecoveryDescriptorId, RecoveryDescriptor>,
     control_slots: BTreeMap<RecoveryDescriptorId, ControlSlot>,
@@ -997,6 +1076,7 @@ impl Default for CoreState {
             executions: BTreeMap::new(),
             work_executions: BTreeMap::new(),
             physical_exclusive_operations: BTreeSet::new(),
+            workspace_participants: 0,
             shutdown_requested: false,
             descriptors: BTreeMap::new(),
             control_slots: BTreeMap::new(),
@@ -1033,6 +1113,17 @@ impl Default for WorkspaceLifecycleCore {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Descriptor IDs are allocated monotonically without gaps. Once an ID below
+/// `next_descriptor` is no longer present in the live descriptor map, it has
+/// been resolved and retired. Deriving the tombstone from that monotonic
+/// allocator keeps stale retries permanently `Retired` without retaining an
+/// unbounded set of old IDs.
+fn is_retired_descriptor_locked(state: &CoreState, descriptor_id: RecoveryDescriptorId) -> bool {
+    descriptor_id != SAFE_MODE_RECOVERY_DESCRIPTOR_ID
+        && descriptor_id < state.next_descriptor
+        && !state.descriptors.contains_key(&descriptor_id)
 }
 
 impl WorkspaceLifecycleCore {
@@ -1078,6 +1169,50 @@ impl WorkspaceLifecycleCore {
         Ok(self.lock_state()?.revision)
     }
 
+    /// Register a DB operation that has pinned the current authority. This is
+    /// a participant boundary rather than an execution admission: it does not
+    /// change foreground/maintenance scheduling, but transitions and shutdown
+    /// must wait for it to release before publishing replacement or Closed.
+    pub fn begin_workspace_participant(&self) -> Result<WorkspaceParticipant, LifecycleError> {
+        let mut state = self.lock_state()?;
+        if state.shutdown_requested || matches!(state.state, LifecycleState::Closed) {
+            return Err(LifecycleError::Closed);
+        }
+        // A participant is proof that a caller has pinned the current
+        // authority. Once a transition or recovery has begun, admitting a new
+        // participant would let the drain target keep increasing and could
+        // prevent physical replacement from ever reaching its Join boundary.
+        // Recovery/control operations use their descriptor-bound paths and do
+        // not enter through this ordinary participant API.
+        if matches!(
+            state.state,
+            LifecycleState::Transition { .. } | LifecycleState::RecoveryRequired { .. }
+        ) {
+            return Err(LifecycleError::ActiveOperations);
+        }
+        state.workspace_participants = state.workspace_participants.saturating_add(1);
+        Ok(WorkspaceParticipant {
+            lease: Arc::new(WorkspaceParticipantLease {
+                core: self.clone(),
+                released: AtomicBool::new(false),
+            }),
+        })
+    }
+
+    /// Return the number of pinned authorities still participating in a
+    /// transition or shutdown. This is an observation only; callers must keep
+    /// the lifecycle lock out of their blocking wait and re-check before
+    /// publishing a terminal state.
+    pub fn workspace_participant_count(&self) -> Result<usize, LifecycleError> {
+        Ok(self.lock_state()?.workspace_participants)
+    }
+
+    fn release_workspace_participant(&self) -> Result<(), LifecycleError> {
+        let mut state = self.lock_state()?;
+        state.workspace_participants = state.workspace_participants.saturating_sub(1);
+        Ok(())
+    }
+
     pub fn set_ready(&self, binding: LiveBinding) -> Result<LifecycleSnapshot, LifecycleError> {
         let mut state = self.lock_state()?;
         match &state.state {
@@ -1107,6 +1242,7 @@ impl WorkspaceLifecycleCore {
                         })
             })
             || !state.physical_exclusive_operations.is_empty()
+            || state.workspace_participants != 0
         {
             return Err(LifecycleError::ActiveOperations);
         }
@@ -1140,6 +1276,7 @@ impl WorkspaceLifecycleCore {
                 .values()
                 .any(|work| work.phase != ExecutionPhase::Completed)
             || !state.physical_exclusive_operations.is_empty()
+            || state.workspace_participants != 0
             || state
                 .descriptors
                 .values()
@@ -1172,6 +1309,22 @@ impl WorkspaceLifecycleCore {
         }
         if !state.shutdown_requested {
             state.shutdown_requested = true;
+            // Shutdown owns the stop request for every admitted execution,
+            // including manual foreground/maintenance owners that are not
+            // present in the Electron scheduler. Join and cleanup remain
+            // separate terminal proofs; this only makes their cooperative
+            // stop checks observe the same shutdown boundary.
+            for execution in state.executions.values_mut() {
+                if matches!(execution.phase, ExecutionPhase::Reserved | ExecutionPhase::Started) {
+                    execution.phase = ExecutionPhase::StopRequested;
+                    execution.stop_requested = true;
+                }
+            }
+            for work in state.work_executions.values_mut() {
+                if matches!(work.phase, ExecutionPhase::Reserved | ExecutionPhase::Started) {
+                    work.phase = ExecutionPhase::StopRequested;
+                }
+            }
             if !matches!(state.state, LifecycleState::Transition { .. }) {
                 state.state = LifecycleState::Transition {
                     operation_id: OperationId::new(0),
@@ -1226,6 +1379,156 @@ impl WorkspaceLifecycleCore {
         Ok(())
     }
 
+    /// Retire an initial Open/Restore transition that never had an old
+    /// authority and never published a candidate.  In this case there is no
+    /// binding or durable recovery root to preserve: the failed transition
+    /// returns to `NoWorkspace` instead of manufacturing a descriptor whose
+    /// expected binding is `None`.
+    pub fn abandon_initial_transition(
+        &self,
+        ticket: &AdmissionTicket,
+    ) -> Result<LifecycleSnapshot, LifecycleError> {
+        let mut state = self.lock_state()?;
+        self.require_ticket_locked(&state, ticket)?;
+        if !ticket.kind.is_transition()
+            || ticket.original_binding.is_some()
+            || !state.joined_operations.contains(&ticket.operation_id)
+            || !matches!(
+                state.state,
+                LifecycleState::Transition { operation_id, .. }
+                    if operation_id == ticket.operation_id
+            )
+            || state.physical_exclusive_operations.contains(&ticket.operation_id)
+            || state.admissions.values().any(|admission| {
+                admission.operation_id != ticket.operation_id
+                    && !admission.kind.is_capacity_independent()
+            })
+            || state.executions.values().any(|execution| {
+                execution.operation_id != ticket.operation_id
+                    && execution.phase != ExecutionPhase::Completed
+                    && execution.phase != ExecutionPhase::RecoveryRequired
+            })
+        {
+            return Err(LifecycleError::ActiveOperations);
+        }
+        state.admissions.remove(&ticket.operation_id);
+        state.joined_operations.remove(&ticket.operation_id);
+        if let Some(reservation) = &ticket.responsibility {
+            Self::release_responsibility_locked(&mut state, reservation);
+        }
+        state.state = LifecycleState::NoWorkspace;
+        state.revision = state.revision.saturating_add(1);
+        self.inner
+            .compatibility_switching
+            .store(false, Ordering::SeqCst);
+        Ok(LifecycleSnapshot::new(state.state.clone(), state.revision))
+    }
+
+    /// Fail a descriptor-bound recovery that was running in the background
+    /// while an unrelated workspace remained Ready.  The descriptor and its
+    /// responsibility stay live for a later retry, but the temporary
+    /// recovery admission is retired and the active binding is restored as
+    /// the authoritative Ready state.  This is deliberately separate from
+    /// `require_recovery`, which would make the whole process enter the
+    /// global RecoveryRequired state and stop the unrelated renderer scope.
+    pub fn abandon_background_recovery(
+        &self,
+        ticket: &AdmissionTicket,
+        binding: LiveBinding,
+    ) -> Result<LifecycleSnapshot, LifecycleError> {
+        let mut state = self.lock_state()?;
+        self.require_ticket_locked(&state, ticket)?;
+        let shutdown_finishing = state.shutdown_requested
+            && matches!(
+                state.state,
+                LifecycleState::Transition {
+                    operation_id,
+                    stage: TransitionStage::Finishing,
+                } if operation_id == OperationId::new(0)
+            );
+        if ticket.kind != AdmissionKind::Recover
+            || !state.joined_operations.contains(&ticket.operation_id)
+            || !(matches!(
+                state.state,
+                LifecycleState::Transition { operation_id, .. }
+                    if operation_id == ticket.operation_id
+            ) || matches!(state.state, LifecycleState::Ready(_))
+                || shutdown_finishing)
+            || state.physical_exclusive_operations.contains(&ticket.operation_id)
+        {
+            return Err(LifecycleError::ActiveOperations);
+        }
+        let current_binding = match &state.state {
+            LifecycleState::Ready(current) => current.clone(),
+            LifecycleState::Transition { .. } => binding.clone(),
+            _ => return Err(LifecycleError::ActiveOperations),
+        };
+        if !same_binding_identity(&current_binding, &binding) {
+            return Err(LifecycleError::BindingChanged {
+                operation_id: ticket.operation_id,
+            });
+        }
+        state.admissions.remove(&ticket.operation_id);
+        state.joined_operations.remove(&ticket.operation_id);
+        // Do not release the descriptor's responsibility here.  The exact
+        // root remains pending and is the only owner allowed to retry it.
+        Self::release_temporary_responsibility_locked(
+            &mut state,
+            ticket,
+            ticket.recovery_descriptor_id,
+        );
+        if !shutdown_finishing {
+            state.state = LifecycleState::Ready(current_binding);
+        }
+        state.revision = state.revision.saturating_add(1);
+        if !shutdown_finishing {
+            self.inner
+                .compatibility_switching
+                .store(false, Ordering::SeqCst);
+        }
+        Ok(LifecycleSnapshot::new(state.state.clone(), state.revision))
+    }
+
+    /// Complete a descriptor-bound background recovery while preserving the
+    /// unrelated active Ready binding. The temporary admission is retired,
+    /// but the descriptor responsibility remains owned by its completion
+    /// receipt until the transport ACK releases it.
+    pub fn complete_background_recovery(
+        &self,
+        ticket: &AdmissionTicket,
+        binding: LiveBinding,
+    ) -> Result<LifecycleSnapshot, LifecycleError> {
+        let mut state = self.lock_state()?;
+        self.require_ticket_locked(&state, ticket)?;
+        let shutdown_finishing = state.shutdown_requested
+            && matches!(
+                state.state,
+                LifecycleState::Transition {
+                    operation_id,
+                    stage: TransitionStage::Finishing,
+                } if operation_id == OperationId::new(0)
+            );
+        if ticket.kind != AdmissionKind::Recover
+            || !state.joined_operations.contains(&ticket.operation_id)
+            || !(matches!(
+                state.state,
+                LifecycleState::Ready(ref current) if same_binding_identity(current, &binding)
+            ) || shutdown_finishing)
+            || state.physical_exclusive_operations.contains(&ticket.operation_id)
+        {
+            return Err(LifecycleError::ActiveOperations);
+        }
+        state.admissions.remove(&ticket.operation_id);
+        state.joined_operations.remove(&ticket.operation_id);
+        Self::release_temporary_responsibility_locked(
+            &mut state,
+            ticket,
+            ticket.recovery_descriptor_id,
+        );
+        state.revision = state.revision.saturating_add(1);
+        Ok(LifecycleSnapshot::new(state.state.clone(), state.revision))
+    }
+
     /// Project an already durable Safe Mode session into the shared lifecycle
     /// state before an explicit recovery/open operation is admitted. Descriptor
     /// zero is reserved for this process-independent Safe Mode holder; it is
@@ -1272,7 +1575,7 @@ impl WorkspaceLifecycleCore {
 
     pub fn admit(&self, kind: AdmissionKind) -> Result<AdmissionOutcome, LifecycleError> {
         let mut state = self.lock_state()?;
-        self.admit_locked(&mut state, kind, None)
+        self.admit_locked(&mut state, kind, None, false)
     }
 
     /// Admit recovery only for the exact descriptor root that owns the
@@ -1284,7 +1587,56 @@ impl WorkspaceLifecycleCore {
         descriptor_id: RecoveryDescriptorId,
     ) -> Result<AdmissionOutcome, LifecycleError> {
         let mut state = self.lock_state()?;
+        self.admit_recovery_locked(&mut state, descriptor_id, false)
+    }
+
+    /// Admit a descriptor-bound recovery while an unrelated Ready workspace
+    /// remains active. The admission and descriptor responsibility are still
+    /// tracked by the core, but the public lifecycle state stays Ready so
+    /// ordinary DB participants for that exact active authority can proceed.
+    /// The caller must use the descriptor's isolated authority and must not
+    /// install it into the active slot while this admission is backgrounded.
+    pub fn admit_background_recovery(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+    ) -> Result<AdmissionOutcome, LifecycleError> {
+        let mut state = self.lock_state()?;
+        self.admit_recovery_locked(&mut state, descriptor_id, true)
+    }
+
+    fn admit_recovery_locked(
+        &self,
+        state: &mut CoreState,
+        descriptor_id: RecoveryDescriptorId,
+        background: bool,
+    ) -> Result<AdmissionOutcome, LifecycleError> {
         let is_safe_mode_root = descriptor_id == SAFE_MODE_RECOVERY_DESCRIPTOR_ID;
+        // Each descriptor has one live recovery control owner.  A retry is
+        // admitted only after the prior owner has explicitly completed or
+        // abandoned its generation; otherwise a single projection ticket
+        // could be overwritten and a late completion could retire the wrong
+        // operation.
+        if state.admissions.values().any(|admission| {
+            admission.kind == AdmissionKind::Recover
+                && admission.recovery_descriptor_id == Some(descriptor_id)
+        }) {
+            return Ok(AdmissionOutcome::NotAdmitted {
+                reason: AdmissionRejection::ActiveOperation,
+                snapshot: LifecycleSnapshot::new(
+                    self.projected_state_locked(&state),
+                    state.revision,
+                ),
+            });
+        }
+        if !is_safe_mode_root && is_retired_descriptor_locked(&state, descriptor_id) {
+            return Ok(AdmissionOutcome::NotAdmitted {
+                reason: AdmissionRejection::Retired,
+                snapshot: LifecycleSnapshot::new(
+                    self.projected_state_locked(&state),
+                    state.revision,
+                ),
+            });
+        }
         let has_descriptor_root = state.descriptors.contains_key(&descriptor_id);
         let descriptor_is_unresolved = state
             .descriptors
@@ -1331,8 +1683,14 @@ impl WorkspaceLifecycleCore {
                 ),
             });
         }
-        let outcome = self.admit_locked(&mut state, AdmissionKind::Recover, Some(descriptor_id))?;
-        if let AdmissionOutcome::Admitted(ticket) = &outcome {
+        let outcome = self.admit_locked(
+            state,
+            AdmissionKind::Recover,
+            Some(descriptor_id),
+            background,
+        )?;
+        if !background {
+            if let AdmissionOutcome::Admitted(ticket) = &outcome {
             state.state = LifecycleState::Transition {
                 operation_id: ticket.operation_id,
                 stage: TransitionStage::Recovering,
@@ -1341,6 +1699,7 @@ impl WorkspaceLifecycleCore {
             self.inner
                 .compatibility_switching
                 .store(true, Ordering::SeqCst);
+            }
         }
         Ok(outcome)
     }
@@ -1371,11 +1730,13 @@ impl WorkspaceLifecycleCore {
         self.admit_execution_permit(AdmissionKind::Maintenance)
     }
 
-    /// Admit a foreground transaction through the same execution membership
-    /// used by maintenance.  Foreground owns no durable Run responsibility,
-    /// but its execution slot remains visible until the enclosing connection
-    /// and transaction have returned, so workspace transitions cannot race
-    /// the validation/DML cleanup boundary.
+    /// Admit a foreground transaction through the shared lifecycle membership.
+    /// Foreground owns no durable Run responsibility, but its execution slot
+    /// remains visible until the enclosing connection and transaction have
+    /// returned, so workspace transitions cannot race the validation/DML
+    /// cleanup boundary. Maintenance has a separate single-owner slot and
+    /// therefore cannot reject this request before the existing DB priority
+    /// policy is consulted.
     pub fn admit_foreground_permit(
         &self,
     ) -> Result<PermitAdmission<MaintenancePermit>, LifecycleError> {
@@ -1386,14 +1747,29 @@ impl WorkspaceLifecycleCore {
         &self,
         kind: AdmissionKind,
     ) -> Result<PermitAdmission<MaintenancePermit>, LifecycleError> {
-        Ok(match self.admit(kind)? {
+        // Admission and execution reservation share one core lock.  Keeping
+        // them as two public calls lets an Open/Restore enter the gap after
+        // the ticket is admitted but before its Reserved execution exists;
+        // the transition would then be unable to request a pending-start
+        // stop and the body could begin after replacement admission.
+        let mut state = self.lock_state()?;
+        Ok(match self.admit_locked(&mut state, kind, None, false)? {
             AdmissionOutcome::Admitted(ticket) => {
                 // Operation ids are monotonic within this core and therefore
                 // provide a collision-free process-local execution slot for
                 // the synchronous Native supervisor.  The slot is reserved
                 // before the caller can start any DB work.
                 let execution_id = ExecutionId::new(ticket.operation_id.get());
-                self.reserve_execution(ticket.operation_id, execution_id)?;
+                let membership = ExecutionMembership {
+                    execution_id,
+                    operation_id: ticket.operation_id,
+                    phase: ExecutionPhase::Reserved,
+                    binding_revision: ticket.admitted_revision,
+                    run: None,
+                    additional_runs: Vec::new(),
+                    stop_requested: false,
+                };
+                state.executions.insert(execution_id, membership);
                 PermitAdmission::Admitted(MaintenancePermit {
                     core: self.clone(),
                     ticket,
@@ -1457,6 +1833,22 @@ impl WorkspaceLifecycleCore {
         if let Some(reservation) = &ticket.responsibility {
             Self::release_responsibility_locked(&mut state, reservation);
         }
+        // The admission is now terminal and no descriptor/delivery can still
+        // reference this execution.  Retire the heavyweight membership and
+        // its child rows; old IDs intentionally become Unknown rather than
+        // retaining every Run/Attempt spec for the lifetime of the process.
+        let retired_execution_ids = state
+            .executions
+            .values()
+            .filter(|execution| execution.operation_id == ticket.operation_id)
+            .map(|execution| execution.execution_id)
+            .collect::<Vec<_>>();
+        for execution_id in retired_execution_ids {
+            state
+                .work_executions
+                .retain(|_, work| work.execution_id != execution_id);
+            state.executions.remove(&execution_id);
+        }
         Ok(true)
     }
 
@@ -1465,8 +1857,17 @@ impl WorkspaceLifecycleCore {
         state: &mut CoreState,
         kind: AdmissionKind,
         recovery_descriptor_id: Option<RecoveryDescriptorId>,
+        background_recovery: bool,
     ) -> Result<AdmissionOutcome, LifecycleError> {
         let current = self.projected_state_locked(&state);
+        let has_live_transition = state
+            .admissions
+            .values()
+            .any(|admission| admission.kind.is_transition());
+        let has_live_recovery = state
+            .admissions
+            .values()
+            .any(|admission| admission.kind == AdmissionKind::Recover);
         let rejection = match (&current, kind) {
             (LifecycleState::Closed, _) => Some(AdmissionRejection::Closed),
             (_, kind)
@@ -1475,16 +1876,28 @@ impl WorkspaceLifecycleCore {
             {
                 Some(AdmissionRejection::Closed)
             }
-            // Foreground and maintenance share one execution lane.  A second
-            // caller is a typed non-admission; it does not create a second
-            // owner or a second retry record while the first transaction is
-            // still holding its connection/cleanup boundary.
+            // Maintenance owns one scheduler execution slot. Foreground
+            // commands are lifecycle participants rather than a second
+            // single-owner lane: multiple foreground waiters must reach the
+            // existing priority/SQLite busy-timeout rules while maintenance
+            // drains, instead of being rejected by the lifecycle core.
             (_, kind)
-                if kind.is_foreground_execution()
+                if kind.is_maintenance_execution()
                     && state
-                    .admissions
-                    .values()
-                    .any(|ticket| ticket.kind.is_foreground_execution()) =>
+                        .admissions
+                        .values()
+                        .any(|ticket| ticket.kind.is_maintenance_execution()) =>
+            {
+                Some(AdmissionRejection::ActiveOperation)
+            }
+            // A background descriptor recovery may coexist with ordinary
+            // foreground/maintenance participants on an unrelated Ready
+            // binding, but it owns the one Native transition projection slot.
+            // Do not allow Open/Restore or another Recover to replace it.
+            (_, kind)
+                if (kind.is_transition() && has_live_recovery)
+                    || (kind == AdmissionKind::Recover
+                        && (has_live_transition || has_live_recovery)) =>
             {
                 Some(AdmissionRejection::ActiveOperation)
             }
@@ -1495,13 +1908,14 @@ impl WorkspaceLifecycleCore {
             // W2 has joined so activation cannot fail against an unrelated
             // owner and wedge the lifecycle transition.
             (_, AdmissionKind::Recover)
-                if state.admissions.values().any(|ticket| {
-                    !ticket.kind.is_capacity_independent()
-                })
-                    || state.executions.values().any(|execution| {
-                        execution.phase != ExecutionPhase::Completed
-                            && execution.phase != ExecutionPhase::RecoveryRequired
-                    }) =>
+                if !background_recovery
+                    && (state.admissions.values().any(|ticket| {
+                        !ticket.kind.is_capacity_independent()
+                    })
+                        || state.executions.values().any(|execution| {
+                            execution.phase != ExecutionPhase::Completed
+                                && execution.phase != ExecutionPhase::RecoveryRequired
+                        })) =>
             {
                 Some(AdmissionRejection::ActiveOperation)
             }
@@ -1546,6 +1960,13 @@ impl WorkspaceLifecycleCore {
             (LifecycleState::NoWorkspace, AdmissionKind::Foreground) => {
                 Some(AdmissionRejection::NoWorkspace)
             }
+            // Restore needs an existing authority to own the transition and
+            // a worker boundary to produce the Safe Mode/recovery proof. A
+            // restore request with no current workspace cannot create that
+            // owner; callers must use Open/Shutdown from this state.
+            (LifecycleState::NoWorkspace, AdmissionKind::Restore) => {
+                Some(AdmissionRejection::NoWorkspace)
+            }
             (LifecycleState::RecoveryRequired { .. }, AdmissionKind::Recover)
                 if recovery_descriptor_id.is_none() =>
             {
@@ -1566,9 +1987,50 @@ impl WorkspaceLifecycleCore {
             });
         }
 
+        if matches!(kind, AdmissionKind::Open | AdmissionKind::Restore) {
+            if let Some(descriptor_id) = recovery_descriptor_id {
+                let valid_retry = state.descriptors.get(&descriptor_id).is_some_and(|descriptor| {
+                    descriptor.owner == RecoveryDescriptorOwner::WorkspaceTransition
+                        && !descriptor.resolved
+                        && descriptor.responsibility.is_some()
+                        && match &state.state {
+                            LifecycleState::RecoveryRequired { descriptor_id: current } => {
+                                *current == descriptor_id
+                            }
+                            LifecycleState::Ready(_) => true,
+                            _ => false,
+                        }
+                });
+                if !valid_retry {
+                    return Ok(AdmissionOutcome::NotAdmitted {
+                        reason: AdmissionRejection::RecoveryPrerequisite,
+                        snapshot: LifecycleSnapshot::new(current, state.revision),
+                    });
+                }
+            }
+        }
+
         let operation_id = state.next_operation;
         state.next_operation = OperationId::new(operation_id.get().saturating_add(1));
-        let responsibility = match kind.responsibility_kind() {
+        // An explicit Open/Restore retry that names an existing workspace
+        // transition descriptor reuses that descriptor's already-held
+        // responsibility cell.  Reserving a new general cell here makes a
+        // full 255-cell ledger unable to admit the very retry that would
+        // release the old root.  The ticket therefore carries no second
+        // reservation; completion retires the descriptor atomically.
+        let reuses_transition_descriptor = matches!(
+            (kind, recovery_descriptor_id),
+            (AdmissionKind::Open | AdmissionKind::Restore, Some(descriptor_id))
+                if state.descriptors.get(&descriptor_id).is_some_and(|descriptor| {
+                    descriptor.owner == RecoveryDescriptorOwner::WorkspaceTransition
+                        && !descriptor.resolved
+                        && descriptor.responsibility.is_some()
+                })
+        );
+        let responsibility = if reuses_transition_descriptor {
+            None
+        } else {
+            match kind.responsibility_kind() {
             Some(responsibility_kind) => {
                 match self.reserve_responsibility_locked(state, responsibility_kind, operation_id) {
                 Ok(reservation) => Some(reservation),
@@ -1582,6 +2044,7 @@ impl WorkspaceLifecycleCore {
                 }
             }
             None => None,
+            }
         };
         let original_binding = match &current {
             LifecycleState::Ready(binding) => Some(binding.clone()),
@@ -1609,6 +2072,25 @@ impl WorkspaceLifecycleCore {
         &self,
         kind: AdmissionKind,
     ) -> Result<AdmissionOutcome, LifecycleError> {
+        self.begin_transition_with_recovery_descriptor(kind, None)
+    }
+
+    /// Begin an Open/Restore transition that is an exact retry of an existing
+    /// workspace-transition recovery root. The descriptor ID is carried on the
+    /// ticket so the joined activation can retire that root atomically.
+    pub fn begin_transition_for_recovery(
+        &self,
+        kind: AdmissionKind,
+        descriptor_id: RecoveryDescriptorId,
+    ) -> Result<AdmissionOutcome, LifecycleError> {
+        self.begin_transition_with_recovery_descriptor(kind, Some(descriptor_id))
+    }
+
+    fn begin_transition_with_recovery_descriptor(
+        &self,
+        kind: AdmissionKind,
+        recovery_descriptor_id: Option<RecoveryDescriptorId>,
+    ) -> Result<AdmissionOutcome, LifecycleError> {
         if !kind.is_transition() {
             return self.admit(kind);
         }
@@ -1617,7 +2099,7 @@ impl WorkspaceLifecycleCore {
         // two concurrent Open/Restore requests both observe Ready and both
         // become exclusive owners.
         let mut state = self.lock_state()?;
-        let outcome = self.admit_locked(&mut state, kind, None)?;
+        let outcome = self.admit_locked(&mut state, kind, recovery_descriptor_id, false)?;
         if let AdmissionOutcome::Admitted(ticket) = &outcome {
             let draining_operations = state
                 .admissions
@@ -1689,6 +2171,28 @@ impl WorkspaceLifecycleCore {
                     state.joined_operations.insert(ticket.operation_id);
                     Ok(())
                 }
+            LifecycleState::Ready(_) if ticket.kind == AdmissionKind::Recover => {
+                // Background descriptor recovery keeps the unrelated Ready
+                // binding visible; its worker still needs an explicit Join
+                // proof before the temporary admission can retire.
+                state.joined_operations.insert(ticket.operation_id);
+                Ok(())
+            }
+            LifecycleState::Transition {
+                operation_id: shutdown_operation,
+                stage: TransitionStage::Finishing,
+            } if ticket.kind == AdmissionKind::Recover
+                && shutdown_operation == OperationId::new(0)
+                && state.shutdown_requested =>
+            {
+                // Shutdown may win after a background recovery was admitted
+                // but before its worker joined.  The synthetic shutdown
+                // transition is not the recovery operation id, yet the
+                // exact ticket still owns the worker and must record Join so
+                // completion/abandon can retire it before Closed.
+                state.joined_operations.insert(ticket.operation_id);
+                Ok(())
+            }
             _ => Err(LifecycleError::BindingChanged {
                 operation_id: ticket.operation_id,
             }),
@@ -1975,10 +2479,9 @@ impl WorkspaceLifecycleCore {
             .executions
             .get_mut(&execution_id)
             .ok_or(LifecycleError::UnknownExecution(execution_id))?;
-        if execution.phase != ExecutionPhase::Reserved {
-            return Err(LifecycleError::InvalidExecutionTransition);
-        }
-        if shutdown_requested {
+        if shutdown_requested
+            && matches!(execution.phase, ExecutionPhase::Reserved | ExecutionPhase::StopRequested)
+        {
             // A pending-start owner remains visible to the supervisor, but
             // its body must not begin after shutdown has closed admission.
             // Marking the stop request before returning lets the common
@@ -1986,6 +2489,9 @@ impl WorkspaceLifecycleCore {
             execution.phase = ExecutionPhase::StopRequested;
             execution.stop_requested = true;
             return Err(LifecycleError::Closed);
+        }
+        if execution.phase != ExecutionPhase::Reserved {
+            return Err(LifecycleError::InvalidExecutionTransition);
         }
         execution.phase = ExecutionPhase::Started;
         Ok(())
@@ -2023,7 +2529,13 @@ impl WorkspaceLifecycleCore {
                     .run
                     .iter()
                     .chain(execution.additional_runs.iter())
-                    .map(|ownership| ownership.handle.project_id.clone())
+                    .map(|ownership| {
+                        (
+                            ownership.handle.project_id.clone(),
+                            ownership.handle.database_path.clone(),
+                            ownership.handle.database_file_identity.clone(),
+                        )
+                    })
                     .collect::<Vec<_>>(),
             )
         };
@@ -2036,9 +2548,22 @@ impl WorkspaceLifecycleCore {
         if let Some(reservation) = responsibility {
             Self::release_responsibility_locked(&mut state, &reservation);
         }
-        for project_id in project_reservations {
-            crate::narrative_extraction::release_project_creation(&project_id);
+        for (project_id, database_path, database_file_identity) in project_reservations {
+            crate::narrative_extraction::release_project_creation_for_handle(
+                &project_id,
+                database_path.as_deref(),
+                database_file_identity.as_deref(),
+            );
         }
+        // A pending-start cancellation has no worker Join boundary to retain:
+        // the body was never allowed to begin, and the admission, ownership
+        // reservation, and any child slots have all been retired above.
+        // Remove the terminal rows now so repeated shutdown/admission churn
+        // cannot grow the process-local execution maps.
+        state
+            .work_executions
+            .retain(|_, work| work.execution_id != execution_id);
+        state.executions.remove(&execution_id);
         Ok(true)
     }
 
@@ -2126,14 +2651,24 @@ impl WorkspaceLifecycleCore {
                 .run
                 .iter()
                 .chain(execution.additional_runs.iter())
-                .map(|ownership| ownership.handle.project_id.clone())
+                .map(|ownership| {
+                    (
+                        ownership.handle.project_id.clone(),
+                        ownership.handle.database_path.clone(),
+                        ownership.handle.database_file_identity.clone(),
+                    )
+                })
                 .collect::<Vec<_>>();
         let operation_id = execution.operation_id;
         execution.phase = ExecutionPhase::Completed;
             (operation_id, project_reservations)
         };
-        for project_id in project_reservations {
-            crate::narrative_extraction::release_project_creation(&project_id);
+        for (project_id, database_path, database_file_identity) in project_reservations {
+            crate::narrative_extraction::release_project_creation_for_handle(
+                &project_id,
+                database_path.as_deref(),
+                database_file_identity.as_deref(),
+            );
         }
         state.joined_operations.remove(&operation_id);
         Ok(())
@@ -2208,6 +2743,7 @@ impl WorkspaceLifecycleCore {
             RecoveryDescriptor {
                 descriptor_id,
                 root_operation_id: ticket.operation_id,
+                owner: RecoveryDescriptorOwner::Maintenance,
                 expected_binding: ticket.original_binding.clone(),
                 run,
                 additional_runs,
@@ -2226,7 +2762,6 @@ impl WorkspaceLifecycleCore {
                 result: None,
                 acked: false,
                 retired: false,
-                completed_history: BTreeMap::new(),
             },
         );
         if let Some(execution) = state.executions.get_mut(&execution_id) {
@@ -2390,6 +2925,14 @@ impl WorkspaceLifecycleCore {
             .ok_or(LifecycleError::UnknownExecution(execution_id))
     }
 
+    /// Test/diagnostic view of the live membership ledgers.  Completed
+    /// executions are removed at admission release; this keeps the bounded
+    /// lifecycle core from growing with every successful maintenance cycle.
+    pub fn execution_membership_counts(&self) -> Result<(usize, usize), LifecycleError> {
+        let state = self.lock_state()?;
+        Ok((state.executions.len(), state.work_executions.len()))
+    }
+
     /// Acquire the core-side marker that must be paired with Native's real
     /// open_lock/file-lease guard.  It is never inferred from a snapshot.
     fn acquire_physical_exclusive(&self, ticket: &AdmissionTicket) -> Result<(), LifecycleError> {
@@ -2403,6 +2946,20 @@ impl WorkspaceLifecycleCore {
             return Err(LifecycleError::BindingChanged {
                 operation_id: ticket.operation_id,
             });
+        }
+        if state.admissions.values().any(|admission| {
+            admission.operation_id != ticket.operation_id
+                && !admission.kind.is_capacity_independent()
+        }) || state.executions.values().any(|execution| {
+            execution.operation_id != ticket.operation_id
+                && execution.phase != ExecutionPhase::Completed
+                && execution.phase != ExecutionPhase::RecoveryRequired
+        }) || state.workspace_participants != 0 {
+            // Stop requests are not terminal proof.  The Native supervisor
+            // retries this boundary after every participant has joined and
+            // cleaned up, so replacement cannot begin against a live DB
+            // transaction or statement.
+            return Err(LifecycleError::ActiveOperations);
         }
         if !state
             .physical_exclusive_operations
@@ -2475,6 +3032,15 @@ impl WorkspaceLifecycleCore {
         {
             return Err(LifecycleError::ActiveOperations);
         }
+        if matches!(ticket.kind, AdmissionKind::Open | AdmissionKind::Restore) {
+            if let Some(descriptor_id) = ticket.recovery_descriptor_id {
+                Self::complete_workspace_transition_recovery_locked(
+                    &mut state,
+                    descriptor_id,
+                    &binding,
+                )?;
+            }
+        }
         state.state = LifecycleState::Ready(binding.clone());
         state.admissions.remove(&ticket.operation_id);
         state.joined_operations.remove(&ticket.operation_id);
@@ -2533,6 +3099,15 @@ impl WorkspaceLifecycleCore {
             .contains(&ticket.operation_id)
         {
             return Err(LifecycleError::ActiveOperations);
+        }
+        if matches!(ticket.kind, AdmissionKind::Open | AdmissionKind::Restore) {
+            if let Some(descriptor_id) = ticket.recovery_descriptor_id {
+                Self::complete_workspace_transition_recovery_locked(
+                    &mut state,
+                    descriptor_id,
+                    &binding,
+                )?;
+            }
         }
         state.state = LifecycleState::Ready(binding.clone());
         state.admissions.remove(&ticket.operation_id);
@@ -2609,25 +3184,32 @@ impl WorkspaceLifecycleCore {
                     },
                 ));
             }
-            let descriptor = state
-                .descriptors
-                .get_mut(&existing_id)
-                .ok_or(LifecycleError::UnknownDescriptor(existing_id))?;
-            if descriptor.resolved && descriptor.responsibility.is_none() {
-                return Err(LifecycleError::RetiredDescriptor(existing_id));
+            {
+                let descriptor = state
+                    .descriptors
+                    .get_mut(&existing_id)
+                    .ok_or(LifecycleError::UnknownDescriptor(existing_id))?;
+                if descriptor.resolved && descriptor.responsibility.is_none() {
+                    return Err(LifecycleError::RetiredDescriptor(existing_id));
+                }
+                // The descriptor root is immutable. A recovery ticket admitted
+                // while another workspace (for example W2) is Ready carries the
+                // current UI binding in `original_binding`; that binding is not
+                // evidence that this W1 descriptor changed owners. Only a legacy
+                // descriptor with no captured binding may be completed with the
+                // ticket's binding.
+                if descriptor.expected_binding.is_none() {
+                    descriptor.expected_binding = expected_binding;
+                }
+                if run.is_some() {
+                    descriptor.run = run;
+                }
             }
-            // The descriptor root is immutable. A recovery ticket admitted
-            // while another workspace (for example W2) is Ready carries the
-            // current UI binding in `original_binding`; that binding is not
-            // evidence that this W1 descriptor changed owners. Only a legacy
-            // descriptor with no captured binding may be completed with the
-            // ticket's binding.
-            if descriptor.expected_binding.is_none() {
-                descriptor.expected_binding = expected_binding;
-            }
-            if run.is_some() {
-                descriptor.run = run;
-            }
+            Self::release_temporary_responsibility_locked(
+                &mut state,
+                ticket,
+                Some(existing_id),
+            );
             state.state = LifecycleState::RecoveryRequired {
                 descriptor_id: existing_id,
             };
@@ -2653,6 +3235,7 @@ impl WorkspaceLifecycleCore {
         let descriptor = RecoveryDescriptor {
             descriptor_id,
             root_operation_id: ticket.operation_id,
+            owner: RecoveryDescriptorOwner::WorkspaceTransition,
             expected_binding,
             run,
             additional_runs: Vec::new(),
@@ -2671,7 +3254,6 @@ impl WorkspaceLifecycleCore {
                 result: None,
                 acked: false,
                 retired: false,
-                completed_history: BTreeMap::new(),
             },
         );
         state.state = LifecycleState::RecoveryRequired { descriptor_id };
@@ -2697,10 +3279,13 @@ impl WorkspaceLifecycleCore {
         request: &ControlRequest,
     ) -> Result<ControlSlotOutcome, LifecycleError> {
         let mut state = self.lock_state()?;
-        let slot = state
-            .control_slots
-            .get_mut(&descriptor_id)
-            .ok_or(LifecycleError::UnknownDescriptor(descriptor_id))?;
+        let Some(slot) = state.control_slots.get_mut(&descriptor_id) else {
+            return if is_retired_descriptor_locked(&state, descriptor_id) {
+                Ok(ControlSlotOutcome::Retired)
+            } else {
+                Err(LifecycleError::UnknownDescriptor(descriptor_id))
+            };
+        };
         if slot.retired {
             return Ok(ControlSlotOutcome::Retired);
         }
@@ -2757,8 +3342,9 @@ impl WorkspaceLifecycleCore {
     }
 
     /// Advance a failed control attempt without allocating a new descriptor
-    /// or responsibility cell.  The previous result is retained by generation
-    /// and cannot be overwritten or replayed as a new execution.
+    /// or responsibility cell.  The prior result has already been transport
+    /// ACKed, so retaining its full body would make retry memory grow with the
+    /// number and size of generations without providing a replay path.
     pub fn retry_control(
         &self,
         descriptor_id: RecoveryDescriptorId,
@@ -2788,8 +3374,7 @@ impl WorkspaceLifecycleCore {
             .result
             .take()
             .ok_or(LifecycleError::ControlResultPending(descriptor_id))?;
-        slot.completed_history
-            .insert(slot.generation, previous_result);
+        drop(previous_result);
         slot.generation = ControlGeneration::new(slot.generation.get().saturating_add(1));
         slot.fingerprint.clear();
         slot.payload.clear();
@@ -2860,11 +3445,18 @@ impl WorkspaceLifecycleCore {
         &self,
         descriptor_id: RecoveryDescriptorId,
     ) -> Result<RecoveryDescriptor, LifecycleError> {
-        self.lock_state()?
+        let state = self.lock_state()?;
+        state
             .descriptors
             .get(&descriptor_id)
             .cloned()
-            .ok_or(LifecycleError::UnknownDescriptor(descriptor_id))
+            .ok_or_else(|| {
+                if is_retired_descriptor_locked(&state, descriptor_id) {
+                    LifecycleError::RetiredDescriptor(descriptor_id)
+                } else {
+                    LifecycleError::UnknownDescriptor(descriptor_id)
+                }
+            })
     }
 
     /// Replace a reuse-selection placeholder with the exact durable tuple
@@ -2980,13 +3572,20 @@ impl WorkspaceLifecycleCore {
 
     /// Release the responsibility cell after the descriptor's exact root has
     /// been durably resolved and its control result/delivery references have
-    /// been acknowledged. The descriptor itself remains queryable until the
-    /// caller retires it through the existing control protocol.
+    /// been acknowledged. Heavy descriptor/control state is reclaimed here;
+    /// a bounded tombstone preserves stale-retry semantics.
     pub fn release_descriptor_responsibility(
         &self,
         descriptor_id: RecoveryDescriptorId,
     ) -> Result<bool, LifecycleError> {
         let mut state = self.lock_state()?;
+        Self::release_descriptor_responsibility_locked(&mut state, descriptor_id)
+    }
+
+    fn release_descriptor_responsibility_locked(
+        state: &mut CoreState,
+        descriptor_id: RecoveryDescriptorId,
+    ) -> Result<bool, LifecycleError> {
         let slot = state
             .control_slots
             .get(&descriptor_id)
@@ -3010,7 +3609,13 @@ impl WorkspaceLifecycleCore {
             .run
             .iter()
             .chain(descriptor.additional_runs.iter())
-            .map(|ownership| ownership.handle.project_id.clone())
+            .map(|ownership| {
+                (
+                    ownership.handle.project_id.clone(),
+                    ownership.handle.database_path.clone(),
+                    ownership.handle.database_file_identity.clone(),
+                )
+            })
             .collect::<Vec<_>>();
         let reservation = state
             .descriptors
@@ -3030,13 +3635,119 @@ impl WorkspaceLifecycleCore {
                 execution.phase = ExecutionPhase::Completed;
             }
         }
-        for project_id in project_reservations {
-            crate::narrative_extraction::release_project_creation(&project_id);
+        let retired_execution_ids = state
+            .executions
+            .values()
+            .filter(|execution| {
+                execution.operation_id == root_operation_id
+                    && execution.phase == ExecutionPhase::Completed
+            })
+            .map(|execution| execution.execution_id)
+            .collect::<Vec<_>>();
+        for execution_id in retired_execution_ids {
+            state
+                .work_executions
+                .retain(|_, work| work.execution_id != execution_id);
+            state.executions.remove(&execution_id);
         }
-        Ok(reservation
+        for (project_id, database_path, database_file_identity) in project_reservations {
+            crate::narrative_extraction::release_project_creation_for_handle(
+                &project_id,
+                database_path.as_deref(),
+                database_file_identity.as_deref(),
+            );
+        }
+        let released = reservation
             .as_ref()
-            .map(|value| Self::release_responsibility_locked(&mut state, value))
-            .unwrap_or(false))
+            .map(|value| Self::release_responsibility_locked(state, value))
+            .unwrap_or(false);
+        // The transport/control receipt has already been ACKed and retired at
+        // this point, so retaining the full descriptor (Run handles, sealed
+        // specs, and completed generation history) only grows the process
+        // ledger. The monotonic descriptor allocator supplies the permanent
+        // retired tombstone after both heavy maps are reclaimed.
+        state.descriptors.remove(&descriptor_id);
+        state.control_slots.remove(&descriptor_id);
+        Ok(released)
+    }
+
+    /// Complete the exact workspace-transition descriptor that caused an
+    /// Open retry to enter RecoveryRequired. The replacement authority is
+    /// already published by the same joined transition, so this path can
+    /// atomically acknowledge and retire the descriptor without routing it
+    /// through the maintenance recovery lane. Run-bearing descriptors are
+    /// never silently discarded; they remain an explicit recovery error.
+    pub fn complete_workspace_transition_recovery(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+        binding: LiveBinding,
+    ) -> Result<bool, LifecycleError> {
+        let mut state = self.lock_state()?;
+        Self::complete_workspace_transition_recovery_locked(&mut state, descriptor_id, &binding)
+    }
+
+    fn complete_workspace_transition_recovery_locked(
+        state: &mut CoreState,
+        descriptor_id: RecoveryDescriptorId,
+        binding: &LiveBinding,
+    ) -> Result<bool, LifecycleError> {
+        let descriptor = state
+            .descriptors
+            .get(&descriptor_id)
+            .ok_or_else(|| {
+                if is_retired_descriptor_locked(&state, descriptor_id) {
+                    LifecycleError::RetiredDescriptor(descriptor_id)
+                } else {
+                    LifecycleError::UnknownDescriptor(descriptor_id)
+                }
+            })?;
+        if descriptor.owner != RecoveryDescriptorOwner::WorkspaceTransition {
+            return Err(LifecycleError::InvalidState);
+        }
+        let Some(expected_binding) = descriptor.expected_binding.as_ref() else {
+            return Err(LifecycleError::BindingChanged {
+                operation_id: descriptor.root_operation_id,
+            });
+        };
+        // A descriptor-bound retry may rotate the process-local authority
+        // instance, but it must still prove the same canonical locator and
+        // durable workspace identity captured when the candidate failed.
+        // This check is deliberately performed while the completion lock is
+        // held, after the replacement lease/authority has been installed, so
+        // a preflight path check cannot retire an old root for a newly
+        // replaced workspace at the same path.
+        if expected_binding.locator != binding.locator
+            || expected_binding.workspace_id != binding.workspace_id
+        {
+            return Err(LifecycleError::BindingChanged {
+                operation_id: descriptor.root_operation_id,
+            });
+        }
+        if descriptor.run.is_some() || !descriptor.additional_runs.is_empty() {
+            return Err(LifecycleError::ActiveOperations);
+        }
+        let generation = descriptor.control_generation;
+        let descriptor = state
+            .descriptors
+            .get_mut(&descriptor_id)
+            .ok_or(LifecycleError::UnknownDescriptor(descriptor_id))?;
+        descriptor.resolved = true;
+        let slot = state
+            .control_slots
+            .get_mut(&descriptor_id)
+            .ok_or(LifecycleError::UnknownDescriptor(descriptor_id))?;
+        if slot.generation != generation {
+            return Err(LifecycleError::ControlGenerationMismatch {
+                descriptor: descriptor_id,
+                generation,
+            });
+        }
+        slot.fingerprint = format!("workspace-transition-open:{descriptor_id}");
+        slot.payload = "activated".to_owned();
+        slot.result = Some("activated".to_owned());
+        slot.acked = true;
+        slot.retired = true;
+        Self::release_descriptor_responsibility_locked(state, descriptor_id)
     }
 
     pub fn admit_delivery(
@@ -3170,14 +3881,22 @@ impl WorkspaceLifecycleCore {
     pub fn ack_delivery(&self, sequence: DeliverySequence) -> Result<bool, LifecycleError> {
         let mut state = self.lock_state()?;
         let Some(record) = state.delivery.records.get_mut(&sequence) else {
-            return Ok(state.delivery.retired.contains(&sequence));
+            // A fenced sequence deliberately has no DeliveryRecord.  ACKing
+            // that record-less terminal is still a valid transport retirement
+            // and must not leave main waiting forever for a record that was
+            // never admitted.
+            if state.delivery.fenced.remove(&sequence) {
+                state.delivery.mark_retired(sequence);
+                return Ok(true);
+            }
+            return Ok(state.delivery.is_retired(sequence));
         };
         if !record.terminal {
             return Ok(false);
         }
         record.acked = true;
         state.delivery.records.remove(&sequence);
-        state.delivery.retired.insert(sequence);
+        state.delivery.mark_retired(sequence);
         Ok(true)
     }
 
@@ -3248,6 +3967,28 @@ impl WorkspaceLifecycleCore {
             .general
             .remove(&reservation.id)
             .is_some()
+    }
+
+    /// A descriptor-bound retry normally carries no fresh reservation. Keep
+    /// this guard for legacy/test tickets and future emergency continuations:
+    /// when the descriptor already owns the exact cell, preserve it; any
+    /// temporary reservation attached only to the retry must be released on a
+    /// failed handoff so each retry can make progress under the 256-cell cap.
+    fn release_temporary_responsibility_locked(
+        state: &mut CoreState,
+        ticket: &AdmissionTicket,
+        descriptor_id: Option<RecoveryDescriptorId>,
+    ) {
+        let Some(reservation) = ticket.responsibility.as_ref() else {
+            return;
+        };
+        let descriptor_owns_reservation = descriptor_id
+            .and_then(|id| state.descriptors.get(&id))
+            .and_then(|descriptor| descriptor.responsibility.as_ref())
+            .is_some_and(|owned| owned.id == reservation.id);
+        if !descriptor_owns_reservation {
+            Self::release_responsibility_locked(state, reservation);
+        }
     }
 
     pub fn release_responsibility(
@@ -3576,6 +4317,75 @@ mod tests {
     }
 
     #[test]
+    fn physical_exclusive_waits_for_foreground_cleanup_and_join() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let mut foreground = match core.admit_foreground_permit().expect("foreground") {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { .. } => panic!("foreground must be admitted"),
+        };
+        foreground.start().expect("foreground start");
+        let transition = match core
+            .begin_transition(AdmissionKind::Open)
+            .expect("transition admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("transition must be admitted"),
+        };
+
+        assert!(matches!(
+            core.physical_exclusive_for_ticket(&transition),
+            Err(LifecycleError::ActiveOperations)
+        ));
+
+        foreground.mark_joined().expect("foreground Join");
+        foreground.release().expect("foreground release");
+        let exclusive = core
+            .physical_exclusive_for_ticket(&transition)
+            .expect("protected I/O after foreground cleanup");
+        drop(exclusive);
+        core.mark_transition_joined(&transition)
+            .expect("transition Join");
+        core.complete_unchanged(&transition, binding(1))
+            .expect("transition completion");
+    }
+
+    #[test]
+    fn ordinary_participants_are_drained_and_closed_after_transition_admission() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let participant = core
+            .begin_workspace_participant()
+            .expect("ready workspace accepts a participant");
+        let transition = match core
+            .begin_transition(AdmissionKind::Open)
+            .expect("transition admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("transition must be admitted"),
+        };
+
+        assert!(matches!(
+            core.begin_workspace_participant(),
+            Err(LifecycleError::ActiveOperations)
+        ));
+        assert!(matches!(
+            core.physical_exclusive_for_ticket(&transition),
+            Err(LifecycleError::ActiveOperations)
+        ));
+
+        drop(participant);
+        let exclusive = core
+            .physical_exclusive_for_ticket(&transition)
+            .expect("physical exclusion after participant drain");
+        drop(exclusive);
+        core.mark_transition_joined(&transition)
+            .expect("transition Join");
+        core.complete_unchanged(&transition, binding(1))
+            .expect("transition completion");
+    }
+
+    #[test]
     fn maintenance_admission_and_execution_membership_are_single_owner() {
         let core = WorkspaceLifecycleCore::new();
         core.set_ready(binding(1)).expect("ready");
@@ -3648,30 +4458,53 @@ mod tests {
     }
 
     #[test]
-    fn foreground_and_maintenance_share_one_execution_lane() {
+    fn completed_execution_memberships_are_pruned_after_release() {
         let core = WorkspaceLifecycleCore::new();
         core.set_ready(binding(1)).expect("ready");
+        for _ in 0..512 {
+            let mut permit = match core.admit_maintenance_permit().expect("maintenance") {
+                PermitAdmission::Admitted(permit) => permit,
+                PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
+            };
+            permit.start().expect("start");
+            permit.mark_joined().expect("join");
+            permit.release().expect("release");
+        }
+        assert_eq!(
+            core.execution_membership_counts().expect("membership counts"),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn foreground_and_maintenance_have_independent_execution_slots() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let mut maintenance = match core.admit_maintenance_permit().expect("maintenance") {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
+        };
+        maintenance.start().expect("maintenance start");
         let mut foreground = match core.admit_foreground_permit().expect("foreground") {
             PermitAdmission::Admitted(permit) => permit,
             PermitAdmission::NotAdmitted { .. } => panic!("foreground must be admitted"),
         };
         foreground.start().expect("foreground start");
-        assert!(matches!(
-            core.admit_maintenance_permit().expect("maintenance conflict"),
-            PermitAdmission::NotAdmitted {
-                reason: AdmissionRejection::ActiveOperation,
-                ..
+        let mut second_foreground = match core.admit_foreground_permit().expect("foreground waiter") {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { .. } => {
+                panic!("foreground waiters must reach the existing priority path")
             }
-        ));
-        assert!(matches!(
-            core.admit_foreground_permit().expect("foreground conflict"),
-            PermitAdmission::NotAdmitted {
-                reason: AdmissionRejection::ActiveOperation,
-                ..
-            }
-        ));
+        };
+        second_foreground.start().expect("second foreground start");
+        second_foreground.mark_joined().expect("second foreground Join");
+        second_foreground
+            .release()
+            .expect("second foreground release");
         foreground.mark_joined().expect("foreground Join");
         foreground.release().expect("foreground release");
+        maintenance.mark_joined().expect("maintenance Join");
+        maintenance.release().expect("maintenance release");
         assert!(matches!(
             core.admit_foreground_permit().expect("next foreground"),
             PermitAdmission::Admitted(_)
@@ -3732,11 +4565,13 @@ mod tests {
         permit
             .cancel_before_start()
             .expect("retire rejected pending start");
+        assert!(matches!(
+            core.execution_membership(execution_id),
+            Err(LifecycleError::UnknownExecution(id)) if id == execution_id
+        ));
         assert_eq!(
-            core.execution_membership(execution_id)
-                .expect("membership")
-                .phase,
-            ExecutionPhase::Completed
+            core.execution_membership_counts().expect("pruned membership"),
+            (0, 0)
         );
         assert!(matches!(
             core.close().expect("close"),
@@ -3981,6 +4816,232 @@ mod tests {
     }
 
     #[test]
+    fn background_recovery_keeps_unrelated_ready_binding_and_accepts_participants() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready W1");
+        let restore = match core
+            .begin_transition(AdmissionKind::Restore)
+            .expect("restore admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("restore must admit"),
+        };
+        core.mark_transition_joined(&restore).expect("restore Join");
+        let (descriptor_id, _) = core
+            .require_recovery(&restore, Some(binding(1)), None)
+            .expect("transfer W1 responsibility");
+
+        let open = match core
+            .begin_transition(AdmissionKind::Open)
+            .expect("W2 open admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("W2 open must admit"),
+        };
+        core.mark_transition_joined(&open).expect("W2 Join");
+        core.activate(&open, binding(2), ContentEffect::Retained)
+            .expect("W2 activation");
+
+        let recovery = match core
+            .admit_background_recovery(descriptor_id)
+            .expect("background recovery admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("background recovery must admit"),
+        };
+        assert_eq!(
+            core.snapshot().expect("background snapshot").binding(),
+            Some(&binding(2))
+        );
+        let mut foreground = match core
+            .admit_foreground_permit()
+            .expect("W2 foreground admission")
+        {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { reason, .. } => {
+                panic!("W2 foreground must remain admitted: {reason:?}")
+            }
+        };
+        foreground.start().expect("foreground start");
+        assert!(matches!(
+            core.begin_transition(AdmissionKind::Open)
+                .expect("Open admission while background recovery is live"),
+            AdmissionOutcome::NotAdmitted {
+                reason: AdmissionRejection::ActiveOperation,
+                ..
+            }
+        ));
+        assert!(matches!(
+            core.begin_transition(AdmissionKind::Restore)
+                .expect("Restore admission while background recovery is live"),
+            AdmissionOutcome::NotAdmitted {
+                reason: AdmissionRejection::ActiveOperation,
+                ..
+            }
+        ));
+        assert!(matches!(
+            core.admit_background_recovery(descriptor_id)
+                .expect("duplicate background recovery admission"),
+            AdmissionOutcome::NotAdmitted {
+                reason: AdmissionRejection::ActiveOperation,
+                ..
+            }
+        ));
+        core.mark_transition_joined(&recovery)
+            .expect("background recovery Join");
+        core.abandon_background_recovery(&recovery, binding(2))
+            .expect("background recovery failure handoff");
+        let retry = match core
+            .admit_background_recovery(descriptor_id)
+            .expect("background recovery retry admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("retry must admit"),
+        };
+        core.mark_transition_joined(&retry)
+            .expect("background retry Join");
+        core.complete_background_recovery(&retry, binding(2))
+            .expect("background recovery completion");
+        foreground.mark_joined().expect("foreground Join");
+        foreground.release().expect("foreground release");
+        assert_eq!(
+            core.snapshot().expect("final snapshot").binding(),
+            Some(&binding(2))
+        );
+    }
+
+    #[test]
+    fn shutdown_can_retire_background_recovery_without_restoring_ready() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready W1");
+        let restore = match core
+            .begin_transition(AdmissionKind::Restore)
+            .expect("restore admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("restore must admit"),
+        };
+        core.mark_transition_joined(&restore).expect("restore Join");
+        let (descriptor_id, _) = core
+            .require_recovery(&restore, Some(binding(1)), None)
+            .expect("transfer W1 responsibility");
+        let open = match core
+            .begin_transition(AdmissionKind::Open)
+            .expect("W2 open admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("W2 open must admit"),
+        };
+        core.mark_transition_joined(&open).expect("W2 Join");
+        core.activate(&open, binding(2), ContentEffect::Retained)
+            .expect("W2 activation");
+        let recovery = match core
+            .admit_background_recovery(descriptor_id)
+            .expect("background recovery admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("background recovery must admit"),
+        };
+        core.request_shutdown().expect("shutdown request");
+        core.mark_transition_joined(&recovery)
+            .expect("background recovery Join after shutdown");
+        core.complete_background_recovery(&recovery, binding(2))
+            .expect("shutdown background completion");
+        assert!(matches!(
+            core.snapshot().expect("shutdown snapshot").state,
+            LifecycleState::Transition {
+                operation_id: OperationId(0),
+                stage: TransitionStage::Finishing,
+            }
+        ));
+
+        let generation = core
+            .control_request(
+                descriptor_id,
+                &ControlRequest {
+                    generation: core
+                        .descriptor(descriptor_id)
+                        .expect("descriptor")
+                        .control_generation,
+                    fingerprint: format!("shutdown-recovery:{descriptor_id}"),
+                    payload: "resolved".to_owned(),
+                },
+            )
+            .expect("control request");
+        let generation = match generation {
+            ControlSlotOutcome::Accepted { generation }
+            | ControlSlotOutcome::Replay {
+                generation,
+                result: None,
+            } => generation,
+            other => panic!("unexpected control slot outcome: {other:?}"),
+        };
+        core.complete_control(descriptor_id, generation, "resolved")
+            .expect("control complete");
+        core.resolve_control(descriptor_id, generation)
+            .expect("control resolve");
+        core.ack_control(descriptor_id, generation)
+            .expect("control ack");
+        assert!(core
+            .release_descriptor_responsibility(descriptor_id)
+            .expect("descriptor release"));
+        assert!(matches!(
+            core.close().expect("close after shutdown handoff").state,
+            LifecycleState::Closed
+        ));
+    }
+
+    #[test]
+    fn shutdown_can_abandon_background_recovery_after_late_join() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready W1");
+        let restore = match core
+            .begin_transition(AdmissionKind::Restore)
+            .expect("restore admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("restore must admit"),
+        };
+        core.mark_transition_joined(&restore).expect("restore Join");
+        let (descriptor_id, _) = core
+            .require_recovery(&restore, Some(binding(1)), None)
+            .expect("transfer W1 responsibility");
+        let open = match core
+            .begin_transition(AdmissionKind::Open)
+            .expect("W2 open admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("W2 open must admit"),
+        };
+        core.mark_transition_joined(&open).expect("W2 Join");
+        core.activate(&open, binding(2), ContentEffect::Retained)
+            .expect("W2 activation");
+        let recovery = match core
+            .admit_background_recovery(descriptor_id)
+            .expect("background recovery admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("background recovery must admit"),
+        };
+        core.request_shutdown().expect("shutdown request");
+        core.mark_transition_joined(&recovery)
+            .expect("late background recovery Join");
+        core.abandon_background_recovery(&recovery, binding(2))
+            .expect("background recovery failure handoff during shutdown");
+        assert!(matches!(
+            core.snapshot().expect("shutdown snapshot").state,
+            LifecycleState::Transition {
+                operation_id: OperationId(0),
+                stage: TransitionStage::Finishing,
+            }
+        ));
+        assert!(matches!(
+            core.close().expect_err("unresolved descriptor must block close"),
+            LifecycleError::ActiveOperations
+        ));
+    }
+
+    #[test]
     fn transition_reserves_and_transfers_responsibility_to_descriptor() {
         let core = WorkspaceLifecycleCore::new();
         core.set_ready(binding(1)).expect("ready");
@@ -4073,6 +5134,22 @@ mod tests {
             core.delivery_high_water().expect("high water").get(),
             DELIVERY_CAPACITY as u64 + 1
         );
+    }
+
+    #[test]
+    fn fenced_delivery_ack_retires_recordless_sequence() {
+        let core = WorkspaceLifecycleCore::new();
+        assert!(matches!(
+            core.resolve_or_fence(DeliverySequence::new(1))
+                .expect("fence"),
+            FenceOutcome::Fenced { sequence } if sequence == DeliverySequence::new(1)
+        ));
+        assert!(core
+            .ack_delivery(DeliverySequence::new(1))
+            .expect("recordless fence ACK"));
+        assert!(core
+            .ack_delivery(DeliverySequence::new(1))
+            .expect("idempotent fence ACK"));
     }
 
     #[test]
@@ -4300,6 +5377,53 @@ mod tests {
     }
 
     #[test]
+    fn control_retry_does_not_retain_acknowledged_result_history() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let ticket = match core
+            .begin_transition(AdmissionKind::Restore)
+            .expect("transition")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("admitted"),
+        };
+        core.mark_transition_joined(&ticket).expect("join");
+        let (descriptor_id, _) = core
+            .require_recovery(&ticket, Some(binding(1)), None)
+            .expect("descriptor");
+
+        let mut generation = ControlGeneration::new(1);
+        for index in 0..2048_u32 {
+            let request = ControlRequest {
+                generation,
+                fingerprint: format!("bounded-{index}"),
+                payload: "x".repeat(16 * 1024),
+            };
+            assert!(matches!(
+                core.control_request(descriptor_id, &request).expect("accept"),
+                ControlSlotOutcome::Accepted { .. }
+            ));
+            core.complete_control(descriptor_id, generation, "retryable-result")
+                .expect("complete");
+            core.ack_control(descriptor_id, generation).expect("ack");
+            generation = core.retry_control(descriptor_id).expect("retry");
+        }
+        // The final acknowledged result is retired in-place. There is no
+        // generation history to replay or retain after the next retry.
+        let next = core
+            .control_request(
+                descriptor_id,
+                &ControlRequest {
+                    generation,
+                    fingerprint: "bounded-final".into(),
+                    payload: "next".into(),
+                },
+            )
+            .expect("current generation remains addressable");
+        assert!(matches!(next, ControlSlotOutcome::Accepted { .. }));
+    }
+
+    #[test]
     fn close_waits_for_control_ack_and_descriptor_responsibility_release() {
         let core = WorkspaceLifecycleCore::new();
         core.set_ready(binding(1)).expect("ready");
@@ -4335,6 +5459,17 @@ mod tests {
         core.ack_control(descriptor_id, generation).expect("ack");
         core.release_descriptor_responsibility(descriptor_id)
             .expect("release responsibility");
+        assert!(matches!(
+            core.descriptor(descriptor_id),
+            Err(LifecycleError::RetiredDescriptor(id)) if id == descriptor_id
+        ));
+        assert!(matches!(
+            core.admit_recovery(descriptor_id).expect("retired recovery"),
+            AdmissionOutcome::NotAdmitted {
+                reason: AdmissionRejection::Retired,
+                ..
+            }
+        ));
         core.close().expect("closed after descriptor ACK");
     }
 

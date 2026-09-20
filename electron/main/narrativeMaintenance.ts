@@ -946,6 +946,36 @@ function deliveryAckRetired(raw: unknown): boolean {
   throw new Error("native maintenance delivery ACK returned invalid status");
 }
 
+function deliveryFenceWasCommitted(raw: unknown): boolean {
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw) as unknown;
+    } catch {
+      throw new Error("native maintenance delivery fence returned malformed JSON");
+    }
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("native maintenance delivery fence returned invalid status");
+  }
+  const record = value as Record<string, unknown>;
+  // Native's strict Rust enum serializes as {"Fenced":{...}} while the
+  // compatibility adapter uses a small status object. Accept both shapes but
+  // only classify an explicit fence as record-less terminal proof.
+  if (record.status === "fenced" || record.status === "already-fenced") {
+    return true;
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "Fenced")) return true;
+  if (Object.prototype.hasOwnProperty.call(record, "AlreadyFenced")) return true;
+  if (
+    record.status === "out-of-order" ||
+    Object.prototype.hasOwnProperty.call(record, "OutOfOrder")
+  ) {
+    return false;
+  }
+  throw new Error("native maintenance delivery fence returned invalid status");
+}
+
 const NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE =
   "NEX_MAINTENANCE_TRANSIENT";
 const NARRATIVE_VERIFY_GRAPH_STATE_CHANGED_FAILURE_CODE =
@@ -1173,7 +1203,7 @@ export function createNarrativeMaintenanceScheduler(
    * scheduler-owned queue so a later retry sends the same sequence without
    * re-dispatching the batch or reusing its fingerprint for a new occurrence.
    */
-  const pendingDeliveryAcks = new Map<number, { fingerprint: string }>();
+  const pendingDeliveryAcks = new Map<number, { fingerprint: string; fenced?: boolean }>();
   let deliveryAckRetryTimer: ReturnType<typeof setTimeout> | null = null;
   const sharedCoordinator = backend ? processCoordinator : null;
   // hasMore is a durable native backlog signal, so retain the project that
@@ -1221,7 +1251,11 @@ export function createNarrativeMaintenanceScheduler(
       noteMutation();
       timer = null;
       const cycle = runCycle();
-      inFlightPromise = cycle;
+      // `runCycle` claims `inFlight` before its first await. A second timer
+      // may still call it while the first cycle is in recovery preflight and
+      // return immediately; never replace the promise quiescence must await
+      // with that short no-op promise.
+      if (inFlightPromise === null) inFlightPromise = cycle;
       void cycle
         .finally(() => {
           if (inFlightPromise === cycle) inFlightPromise = null;
@@ -1311,8 +1345,7 @@ export function createNarrativeMaintenanceScheduler(
     if (typeof getter !== "function") return undefined;
     return normalizeWorkspaceBinding(getter.call(backend));
   };
-  const rebindClaimedWorkspaceBinding = (
-    projectIds: readonly string[],
+  const rebindRetainedWorkspaceBinding = (
     original: NarrativeMaintenanceWorkspaceBinding | null | undefined,
     rebound: NarrativeMaintenanceWorkspaceBinding | null | undefined,
   ): boolean => {
@@ -1330,17 +1363,18 @@ export function createNarrativeMaintenanceScheduler(
     ) {
       return false;
     }
-    const claimed = new Set(projectIds);
     let changed = false;
     for (const [key, work] of [...pending.entries()]) {
       if (
-        !claimed.has(work.projectId) ||
         workspaceBindingKey(work.workspaceBinding) !== workspaceBindingKey(original)
       ) {
         continue;
       }
       const reboundWork = { ...work, workspaceBinding: rebound };
       pending.delete(key);
+      if (deferredWorkKeys.delete(key)) {
+        deferredWorkKeys.add(scopedWorkKey(reboundWork));
+      }
       const reboundKey = scopedWorkKey(reboundWork);
       const existing = pending.get(reboundKey);
       if (existing) {
@@ -1360,7 +1394,6 @@ export function createNarrativeMaintenanceScheduler(
     }
     for (const [wakeKey, entry] of [...durableWakeProjects.entries()]) {
       if (
-        !claimed.has(entry.projectId) ||
         workspaceBindingKey(entry.workspaceBinding) !== workspaceBindingKey(original)
       ) {
         continue;
@@ -1429,7 +1462,10 @@ export function createNarrativeMaintenanceScheduler(
           await Promise.resolve(ack.call(backend, sequence)),
         );
         if (!retired) continue;
-        if (!deliveryLedger.ack(sequence)) {
+        const retiredLocally = entry.fenced
+          ? deliveryLedger.retireFenced(sequence)
+          : deliveryLedger.ack(sequence);
+        if (!retiredLocally) {
           throw new Error("delivery ACK arrived before terminal result application");
         }
         pendingDeliveryAcks.delete(sequence);
@@ -1640,6 +1676,8 @@ export function createNarrativeMaintenanceScheduler(
     // original binding matches the failed receipt, and a current binding was
     // published after descriptor control/Run reconciliation.
     if (
+      !Number.isSafeInteger(recovery.descriptorId) ||
+      (recovery.descriptorId as number) <= 0 ||
       !matchesBinding(recoveredBinding) ||
       !matchesBinding(activeBinding) ||
       terminalReceiptFailure.binding === null ||
@@ -1677,19 +1715,119 @@ export function createNarrativeMaintenanceScheduler(
     if (
       recovery.reason !== "maintenance-recovery-complete" ||
       !Number.isSafeInteger(recovery.descriptorId) ||
-      (recovery.descriptorId as number) < 0
+      (recovery.descriptorId as number) <= 0
     ) {
-      return true;
+      return recovery.reason !== "maintenance-recovery-complete";
     }
     const acknowledge = backend?.ackNarrativeMaintenanceRecovery;
     if (typeof acknowledge !== "function") return true;
     try {
-      await acknowledge.call(backend, String(recovery.descriptorId));
-      return true;
+      const raw = await acknowledge.call(backend, String(recovery.descriptorId));
+      let value: unknown = raw;
+      if (typeof raw === "string") value = JSON.parse(raw) as unknown;
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        return false;
+      }
+      const record = value as Record<string, unknown>;
+      return (
+        record.status === "acknowledged" &&
+        record.descriptorId === recovery.descriptorId &&
+        record.acknowledged === true
+      );
     } catch (error) {
       warn("[narrative-maintenance] recovery receipt ACK failed:", error);
       return false;
     }
+  };
+
+  const applyRecoveredRecoveryProof = (recovery: {
+    status?: unknown;
+    descriptorId?: unknown;
+    recoveredBinding?: unknown;
+    reboundBinding?: unknown;
+    activeBinding?: unknown;
+    reason?: unknown;
+  }): boolean => {
+    const isCompletion = recovery.reason === "maintenance-recovery-complete";
+    const hasRecoveredBinding = Object.prototype.hasOwnProperty.call(
+      recovery,
+      "recoveredBinding",
+    );
+    const hasActiveBinding = Object.prototype.hasOwnProperty.call(
+      recovery,
+      "activeBinding",
+    );
+    const hasReboundBinding = Object.prototype.hasOwnProperty.call(
+      recovery,
+      "reboundBinding",
+    );
+    const hasProofEnvelope =
+      hasRecoveredBinding || hasActiveBinding || hasReboundBinding || recovery.descriptorId !== undefined;
+    // Ordinary no-workspace/transition responses carry no recovery proof and
+    // remain retryable. Once a response claims a descriptor boundary, it must
+    // be a strict completion envelope; a reason string alone cannot authorize
+    // ACK or rebinding.
+    if (!hasProofEnvelope && !isCompletion) return true;
+    if (
+      isCompletion &&
+      (Object.keys(recovery).some(
+          (key) =>
+            ![
+              "status",
+              "descriptorId",
+              "reason",
+              "recoveredBinding",
+              "activeBinding",
+              "reboundBinding",
+            ].includes(key),
+        ) ||
+        recovery.status !== "reconciled" ||
+        !Number.isSafeInteger(recovery.descriptorId) ||
+        (recovery.descriptorId as number) <= 0 ||
+        !hasRecoveredBinding ||
+        !hasActiveBinding ||
+        !hasReboundBinding)
+    ) {
+      return false;
+    }
+    if (!isCompletion) return false;
+
+    const strictBinding = (
+      raw: unknown,
+      allowNull: boolean,
+    ): NarrativeMaintenanceWorkspaceBinding | null => {
+      if (raw === null && allowNull) return null;
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+      const keys = Object.keys(raw as Record<string, unknown>).sort();
+      if (keys.join(",") !== "authorityId,generation") return null;
+      try {
+        return normalizeWorkspaceBinding(raw);
+      } catch {
+        return null;
+      }
+    };
+    const recovered = strictBinding(recovery.recoveredBinding, false);
+    const rawRebound = recovery.reboundBinding;
+    const rebound = strictBinding(rawRebound, true);
+    const active = strictBinding(recovery.activeBinding, false);
+    // `null` is an intentional proof that the descriptor resolved while an
+    // unrelated workspace stayed active. Any other malformed value must keep
+    // the receipt replayable; ACK would otherwise discard the only proof that
+    // could safely move retained work later.
+    if (
+      recovered === null ||
+      active === null ||
+      (rawRebound !== null && rebound === null) ||
+      (rebound !== null &&
+        workspaceBindingKey(active) !== workspaceBindingKey(rebound))
+    ) {
+      return false;
+    }
+    rebindRetainedWorkspaceBinding(
+      recovered,
+      rebound,
+    );
+    return true;
   };
 
   const cancelAttemptById = async (
@@ -1812,12 +1950,26 @@ export function createNarrativeMaintenanceScheduler(
     ) {
       return;
     }
+    // Own the whole cycle before the first await, including recovery
+    // preflight. A second timer/enqueue must observe this claim rather than
+    // replacing the quiescence promise while the first cycle still owns a
+    // project claim or descriptor wait.
+    inFlight = true;
+    noteMutation();
+    let cycleClaimed = true;
+    const releaseEarlyCycleClaim = (): void => {
+      if (!cycleClaimed) return;
+      cycleClaimed = false;
+      inFlight = false;
+      noteMutation();
+    };
     const method = backend?.runNarrativeMaintenanceCycle;
     const reconcileRecovery = backend?.reconcileNarrativeMaintenanceRecovery;
     if (
       typeof method !== "function" &&
       typeof reconcileRecovery !== "function"
     ) {
+      releaseEarlyCycleClaim();
       return;
     }
 
@@ -1847,19 +1999,20 @@ export function createNarrativeMaintenanceScheduler(
                   activeBinding?: unknown;
                   reboundBinding?: unknown;
                 } | null);
-          const markerWasCleared = clearRecoveredTerminalReceiptFailure(
-            recovery ?? {},
-          );
+          const proofApplied = applyRecoveredRecoveryProof(recovery ?? {});
+          const markerWasCleared =
+            proofApplied && clearRecoveredTerminalReceiptFailure(recovery ?? {});
           // A completed descriptor receipt is replayable until its exact
           // failed-cleanup marker has been retired.  Do not ACK a mismatched
           // receipt: doing so would discard the only main-side evidence that
           // the quarantined binding is still unsafe to reuse.
-          const receiptAcked =
+          const shouldAckRecovery =
             terminalReceiptFailure === null ||
             markerWasCleared ||
-            !recoveryReceiptMatchesFailedBinding(recovery ?? {})
-              ? await acknowledgeRecoveredRecovery(recovery ?? {})
-              : false;
+            !recoveryReceiptMatchesFailedBinding(recovery ?? {});
+          const receiptAcked = proofApplied && shouldAckRecovery
+            ? await acknowledgeRecoveredRecovery(recovery ?? {})
+            : false;
           if (terminalReceiptFailure === null && receiptAcked) {
             schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
           } else {
@@ -1870,6 +2023,7 @@ export function createNarrativeMaintenanceScheduler(
           schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
         }
       }
+      releaseEarlyCycleClaim();
       return;
     }
 
@@ -1902,15 +2056,16 @@ export function createNarrativeMaintenanceScheduler(
             recovery?.status === "workspace-unavailable" ||
             recovery?.status === "reconciled"
           ) {
-            const markerWasCleared = clearRecoveredTerminalReceiptFailure(
-              recovery,
-            );
+            const proofApplied = applyRecoveredRecoveryProof(recovery);
+            const markerWasCleared =
+              proofApplied && clearRecoveredTerminalReceiptFailure(recovery);
             if (
-              terminalReceiptFailure === null ||
-              markerWasCleared ||
-              !recoveryReceiptMatchesFailedBinding(recovery)
+              proofApplied &&
+              (terminalReceiptFailure === null ||
+                markerWasCleared ||
+                !recoveryReceiptMatchesFailedBinding(recovery))
             ) {
-              await acknowledgeRecoveredRecovery(recovery);
+              if (proofApplied) await acknowledgeRecoveredRecovery(recovery);
             }
             schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
           }
@@ -1919,10 +2074,14 @@ export function createNarrativeMaintenanceScheduler(
           schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
         }
       }
+      releaseEarlyCycleClaim();
       return;
     }
     noteMutation();
-    if (typeof method !== "function") return;
+    if (typeof method !== "function") {
+      releaseEarlyCycleClaim();
+      return;
+    }
 
     const candidates = [...pending.values()].filter(
       (work) => !deferredWorkKeys.has(scopedWorkKey(work)),
@@ -2005,6 +2164,7 @@ export function createNarrativeMaintenanceScheduler(
       // A competing scheduler owns every project we need. Release-driven
       // wakeup removes the old 10ms busy-poll and cannot starve a project.
       waitForProjectRelease(projectIds);
+      releaseEarlyCycleClaim();
       return;
     }
     let deliveryFingerprint = narrativeMaintenanceDeliveryFingerprint(
@@ -2021,12 +2181,16 @@ export function createNarrativeMaintenanceScheduler(
       typeof backend?.resolveNarrativeMaintenanceDelivery === "function";
     const resolveDeliverySequence = (): number => {
       const mappedDeliverySequence = deliverySequences.get(deliveryFingerprint);
-      const existingDeliverySequence =
-        mappedDeliverySequence !== undefined &&
-        !pendingDeliveryAcks.has(mappedDeliverySequence)
-          ? mappedDeliverySequence
-          : undefined;
-      return existingDeliverySequence ?? deliveryLedger.H + 1;
+      if (mappedDeliverySequence !== undefined) return mappedDeliverySequence;
+      // A fence may have been committed after Native rejected admission, and
+      // the response ACK may then have been lost. Keep the exact sequence even
+      // if the correlation map was not written by an older adapter: allocating
+      // H+1 here would create an endless chain of recordless fences while the
+      // first unknown sequence remains unacknowledged.
+      const pendingSequence = [...pendingDeliveryAcks.entries()].find(
+        ([, entry]) => entry.fingerprint === deliveryFingerprint,
+      )?.[0];
+      return pendingSequence ?? deliveryLedger.H + 1;
     };
     let deliverySequence = resolveDeliverySequence();
     if (typeof reconcileRecovery === "function") {
@@ -2054,26 +2218,20 @@ export function createNarrativeMaintenanceScheduler(
           recovery?.status === "workspace-unavailable" ||
           recovery?.status === "reconciled"
         ) {
-          const markerWasCleared = clearRecoveredTerminalReceiptFailure(
-            recovery,
-          );
+          const proofApplied = applyRecoveredRecoveryProof(recovery);
+          const markerWasCleared =
+            proofApplied && clearRecoveredTerminalReceiptFailure(recovery);
           if (
-            terminalReceiptFailure === null ||
-            markerWasCleared ||
-            !recoveryReceiptMatchesFailedBinding(recovery)
+            proofApplied &&
+            (terminalReceiptFailure === null ||
+              markerWasCleared ||
+              !recoveryReceiptMatchesFailedBinding(recovery))
           ) {
             await acknowledgeRecoveredRecovery(recovery);
           }
-          // Only the descriptor's explicit original -> rebound proof may
-          // move retained work. An active binding alone is insufficient:
-          // W1 recovery can complete while unrelated W2 remains Ready.
-          rebindClaimedWorkspaceBinding(
-            claimedProjects,
-            normalizeWorkspaceBinding(recovery?.recoveredBinding),
-            normalizeWorkspaceBinding(recovery?.reboundBinding),
-          );
           sharedCoordinator?.release(claimedProjects);
           schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+          releaseEarlyCycleClaim();
           return;
         }
       } catch (error) {
@@ -2083,8 +2241,31 @@ export function createNarrativeMaintenanceScheduler(
         sharedCoordinator?.release(claimedProjects);
         warn("[narrative-maintenance] descriptor recovery preflight failed:", error);
         schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+        releaseEarlyCycleClaim();
         return;
       }
+    }
+    // A record-less fence is a session-wide H+1 barrier, not a fingerprint-
+    // scoped delivery. While any fence ACK is unresolved, creating a new
+    // fingerprinted fence would grow Native's fenced set one sequence at a
+    // time and make the ACK outage proportional to queue input. Retry the
+    // single existing fence first; only after it retires may the next
+    // delivery/fence advance the high-water mark.
+    const pendingFenceSequence = [...pendingDeliveryAcks.entries()].find(
+      ([, entry]) => entry.fenced,
+    )?.[0];
+    if (pendingFenceSequence !== undefined) {
+      // Resolve a lost fence ACK before asking either ledger to admit another
+      // request. If the ACK is still unknown, retain the exact queue claim and
+      // let the bounded retry timer make progress; no new sequence is legal.
+      await retryPendingDeliveryAcks();
+      if (pendingDeliveryAcks.has(pendingFenceSequence)) {
+        sharedCoordinator?.release(claimedProjects);
+        schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+        releaseEarlyCycleClaim();
+        return;
+      }
+      deliverySequence = resolveDeliverySequence();
     }
     const deliveryAdmission = deliveryLedger.submit(
       deliverySequence,
@@ -2102,6 +2283,7 @@ export function createNarrativeMaintenanceScheduler(
         `[narrative-maintenance] delivery admission ${deliveryAdmission.admission}; retaining batch`,
       );
       schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+      releaseEarlyCycleClaim();
       return;
     }
     const replayingDelivery = deliveryAdmission.admission === "duplicate";
@@ -2120,8 +2302,6 @@ export function createNarrativeMaintenanceScheduler(
     for (const work of backendBatch) {
       pending.delete(scopedWorkKey(work));
     }
-    inFlight = true;
-    noteMutation();
     let nextDelayMs = NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS;
     let shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
     let workspaceUnavailable = false;
@@ -2404,11 +2584,39 @@ export function createNarrativeMaintenanceScheduler(
       // second execution on the next retry.
       const resolveNative = backend?.resolveNarrativeMaintenanceDelivery;
       if (typeof resolveNative === "function") {
-        void Promise.resolve(resolveNative.call(backend, deliverySequence)).catch(
-          (fenceError: unknown) => {
-            warn("[narrative-maintenance] Native delivery fence failed:", fenceError);
-          },
-        );
+        try {
+          const fenceCommitted = deliveryFenceWasCommitted(
+            await Promise.resolve(resolveNative.call(backend, deliverySequence)),
+          );
+          if (fenceCommitted) {
+            // A fenced sequence has no Native DeliveryRecord, so the normal
+            // terminal-record ACK path can never converge. Retire both
+            // ledgers only after Native has acknowledged the explicit fence.
+            const ack = backend?.ackNarrativeMaintenanceDelivery;
+            const nativeRetired =
+              typeof ack === "function"
+                ? deliveryAckRetired(
+                    await Promise.resolve(ack.call(backend, deliverySequence)),
+                  )
+                : true;
+            if (nativeRetired && deliveryLedger.retireFenced(deliverySequence)) {
+              pendingDeliveryAcks.delete(deliverySequence);
+              if (deliverySequences.get(deliveryFingerprint) === deliverySequence) {
+                deliverySequences.delete(deliveryFingerprint);
+              }
+              deliveryRetired = true;
+              deliveryRetirement = Promise.resolve(true);
+            } else if (!nativeRetired) {
+              pendingDeliveryAcks.set(deliverySequence, {
+                fingerprint: deliveryFingerprint,
+                fenced: true,
+              });
+              scheduleDeliveryAckRetry();
+            }
+          }
+        } catch (fenceError) {
+          warn("[narrative-maintenance] Native delivery fence failed:", fenceError);
+        }
       }
       if (!disposed) {
         const attemptSnapshotBeforeCleanup = cycleAttemptId
@@ -2585,14 +2793,16 @@ export function createNarrativeMaintenanceScheduler(
             );
           }
           // A stale authority must not hot-loop while open/restore is in
-          // progress. A replacement-workspace enqueue clears the park.
+          // progress. The parked scope is excluded by deferredWorkKeys /
+          // deferredWakeProjects, so other workspace scopes can continue
+          // without requiring an unrelated enqueue to wake the scheduler.
           if (
             nativeTerminalReceipt === null &&
             !nativeAttemptIds.has(cycleAttemptId ?? "")
           ) {
             await retireCurrentDelivery();
           }
-          shouldSchedule = false;
+          shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
         } else if (notAdmitted) {
           // NotAdmitted proves only that this request did not start. Keep the
           // exact work/wake trigger for a later lifecycle snapshot and retire
@@ -2764,6 +2974,7 @@ export function createNarrativeMaintenanceScheduler(
       }
     } finally {
       sharedCoordinator?.release(claimedProjects);
+      cycleClaimed = false;
       inFlight = false;
       if (cycleAttemptId && !lifecycleEnabled) {
         const attemptSnapshot = activeAttemptController.snapshot(cycleAttemptId);

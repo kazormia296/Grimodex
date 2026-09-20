@@ -368,6 +368,23 @@ const state: RecorderState = {
   initEpoch: 0,
 };
 
+/** Reversible renderer pause used only for an admitted lifecycle transition
+ * that later proves the exact old LiveBinding Unchanged. A normal workspace
+ * replacement uses invalidateWorkspaceBindingForLifecycle instead. */
+let lifecyclePauseEpoch: number | null = null;
+const lifecycleResumeWaiters = new Set<() => void>();
+
+function resolveLifecycleResumeWaiters(): void {
+  const waiters = [...lifecycleResumeWaiters];
+  lifecycleResumeWaiters.clear();
+  for (const resolve of waiters) resolve();
+}
+
+function waitForLifecycleResume(): Promise<void> {
+  if (lifecyclePauseEpoch === null) return Promise.resolve();
+  return new Promise((resolve) => lifecycleResumeWaiters.add(resolve));
+}
+
 function newSessionId(): string {
   return crypto.randomUUID();
 }
@@ -1120,6 +1137,8 @@ function reportDroppedWhileInvalidated(): void {
  * 有効に戻す。戻り値は新しい切替世代 (テスト/診断用)。
  */
 export function beginWorkspaceSwitch(): number {
+  resolveLifecycleResumeWaiters();
+  lifecyclePauseEpoch = null;
   abortTimelapseGenesisBarriers("Workspace switch started");
   invalidateCoverageAuthorities();
   state.switchEpoch += 1;
@@ -1173,6 +1192,8 @@ export function endWorkspaceSwitch(options?: {
  * normal recorder initialization must establish a new session.
  */
 export function invalidateWorkspaceBindingForLifecycle(): void {
+  resolveLifecycleResumeWaiters();
+  lifecyclePauseEpoch = null;
   abortTimelapseGenesisBarriers("Workspace lifecycle binding invalidated");
   invalidateCoverageAuthorities();
   state.switchEpoch += 1;
@@ -1185,6 +1206,61 @@ export function invalidateWorkspaceBindingForLifecycle(): void {
   }
   state.flushRetries = 0;
   state.queue = [];
+}
+
+/**
+ * Pause capture for a lifecycle Transition without destroying the current
+ * queue, coverage authorities, or genesis barriers. Native may still prove
+ * that the exact old authority survived (Unchanged); in that case the saved
+ * scope can resume without pretending that a Ready event alone re-bound it.
+ */
+export function pauseWorkspaceBindingForLifecycle(): void {
+  if (lifecyclePauseEpoch !== null) return;
+  lifecyclePauseEpoch = state.switchEpoch;
+  state.switchInProgress = true;
+  state.bindingInvalidated = true;
+  if (state.flushTimer) {
+    clearTimeout(state.flushTimer);
+    state.flushTimer = null;
+  }
+}
+
+/** Resume the exact paused recorder scope after a proven Unchanged result. */
+export function resumeWorkspaceBindingAfterLifecycleUnchanged(): boolean {
+  if (lifecyclePauseEpoch === null || lifecyclePauseEpoch !== state.switchEpoch) {
+    return false;
+  }
+  lifecyclePauseEpoch = null;
+  resolveLifecycleResumeWaiters();
+  state.switchInProgress = false;
+  state.bindingInvalidated = false;
+  if (state.queue.some((event) => event.status === "committed")) {
+    scheduleFlush();
+  }
+  return true;
+}
+
+/**
+ * Resume the recorder after an explicit Open has published the operation's
+ * exact Native lifecycle proof and the replacement scope has been hydrated.
+ *
+ * This is deliberately separate from the Unchanged path: a successful Open
+ * may publish a new authority instance, so it must never be described as a
+ * proof that the old binding survived.  The operation-specific proof and the
+ * normal recorder rebind have already established the new scope; this helper
+ * only retires a reversible Transition pause that raced that Open.
+ */
+export function resumeWorkspaceBindingAfterExplicitOpen(): boolean {
+  if (lifecyclePauseEpoch === null) return true;
+  if (lifecyclePauseEpoch !== state.switchEpoch) return false;
+  lifecyclePauseEpoch = null;
+  resolveLifecycleResumeWaiters();
+  state.switchInProgress = false;
+  state.bindingInvalidated = false;
+  if (state.queue.some((event) => event.status === "committed")) {
+    scheduleFlush();
+  }
+  return true;
 }
 
 /**
@@ -1329,6 +1405,8 @@ export function getRecorderChainHead(): number {
  * call this — `initRecorderForProject` is the normal entry point.
  */
 export function _resetRecorderForTests(): void {
+  resolveLifecycleResumeWaiters();
+  lifecyclePauseEpoch = null;
   abortTimelapseGenesisBarriers("recorder test reset");
   invalidateCoverageAuthorities();
   state.enabled = false;
@@ -1535,6 +1613,12 @@ export async function flushNow(): Promise<void> {
   if (state.flushPromise) return state.flushPromise;
   state.flushPromise = (async () => {
     const queueGeneration = state.queueGeneration;
+    if (state.switchInProgress && lifecyclePauseEpoch !== null) {
+      // A reversible lifecycle pause owns the current binding until Native
+      // proves Unchanged. Preserve the queued old-scope events; clearing them
+      // here would turn a temporary Transition into data loss.
+      return;
+    }
     if (state.switchInProgress) {
       state.queue = [];
       return;
@@ -1639,7 +1723,12 @@ export async function flushNow(): Promise<void> {
       // the append itself, if it completed, remains durable audit history.
       if (state.queueGeneration !== queueGeneration) return;
       if (isWorkspaceSwitchingError(err)) {
-        if (state.strictFlushWaiters > 0) {
+        // The lifecycle may have paused the binding after this flush removed
+        // its batch from the queue. Keep that in-flight batch until the exact
+        // old binding is proven Unchanged; only an irreversible invalidation
+        // (which clears `lifecyclePauseEpoch` and advances queueGeneration)
+        // may discard it.
+        if (state.strictFlushWaiters > 0 || lifecyclePauseEpoch !== null) {
           state.queue = batch.concat(state.queue);
           debugLog.warn(
             "timelapse",
@@ -1685,7 +1774,12 @@ export async function flushStrict(): Promise<void> {
   }
   try {
     for (let round = 0; round < 50; round++) {
+      if (lifecyclePauseEpoch !== null) {
+        await waitForLifecycleResume();
+        continue;
+      }
       await flushNow();
+      if (lifecyclePauseEpoch !== null) continue;
       if (state.queue.length === 0 && state.flushPromise === null) {
         completed = true;
         return;

@@ -611,7 +611,17 @@ fn sqlite_database_file_identity_in_tx(conn: &Connection) -> anyhow::Result<Stri
     if path == ":memory:" {
         return Ok(path);
     }
-    let metadata = std::fs::metadata(&path)?;
+    sqlite_database_file_identity(std::path::Path::new(&path))
+}
+
+/// Stable file-identity helper shared by creation evidence and recovery
+/// verification. Windows' `MetadataExt` file-index methods are nightly-only;
+/// use the stable Win32 handle API through the already-supported
+/// `windows-sys` dependency instead of weakening identity to path/mtime.
+pub(crate) fn sqlite_database_file_identity(
+    path: &std::path::Path,
+) -> anyhow::Result<String> {
+    let metadata = std::fs::metadata(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -619,13 +629,26 @@ fn sqlite_database_file_identity_in_tx(conn: &Connection) -> anyhow::Result<Stri
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        let volume = metadata
-            .volume_serial_number()
-            .ok_or_else(|| anyhow::anyhow!("database volume identity is unavailable"))?;
-        let file = metadata
-            .file_index()
-            .ok_or_else(|| anyhow::anyhow!("database file identity is unavailable"))?;
+        use std::fs::File;
+        use std::os::windows::io::AsRawHandle;
+        use std::mem::MaybeUninit;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+        let file = File::open(path)?;
+        let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        let success = unsafe {
+            GetFileInformationByHandle(file.as_raw_handle() as _, information.as_mut_ptr())
+        };
+        if success == 0 {
+            return Err(anyhow::anyhow!(
+                "database file identity is unavailable"
+            ));
+        }
+        let information = unsafe { information.assume_init() };
+        let volume = information.dwVolumeSerialNumber as u64;
+        let file = ((information.nFileIndexHigh as u64) << 32)
+            | information.nFileIndexLow as u64;
         return Ok(format!(
             "volume:{}:file:{}",
             volume, file
@@ -633,8 +656,8 @@ fn sqlite_database_file_identity_in_tx(conn: &Connection) -> anyhow::Result<Stri
     }
     #[cfg(all(not(unix), not(windows)))]
     {
-        Ok(std::fs::canonicalize(&path)
-            .unwrap_or_else(|_| std::path::PathBuf::from(path))
+        Ok(std::fs::canonicalize(path)
+            .unwrap_or_else(|_| path.to_path_buf())
             .to_string_lossy()
             .into_owned())
     }

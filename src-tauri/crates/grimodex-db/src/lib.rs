@@ -836,6 +836,7 @@ pub use workspace_lifecycle::{
     ResponsibilityReservation, RunCreationState, RunCreationTransactionOutcome, RunOwnership,
     StateRevision, TransitionStage,
     WorkspaceExclusive, WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore,
+    WorkspaceParticipant,
     WorkspaceTransitionPermit, WorkExecutionId, WorkExecutionMembership,
     DELIVERY_CAPACITY, EMERGENCY_RESPONSIBILITY_CAPACITY, GENERAL_RESPONSIBILITY_CAPACITY,
 };

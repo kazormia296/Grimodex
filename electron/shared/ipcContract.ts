@@ -23,6 +23,10 @@
 // envelope
 // ─────────────────────────────────────────────────────────────────────────────
 
+import {
+  parseWorkspaceRestoreOutcome,
+} from "./workspaceRestoreOutcome.js";
+
 export type IpcErrorCode =
   | "WORKSPACE_SWITCHING"
   | "WORKSPACE_SAFE_MODE"
@@ -96,12 +100,25 @@ export interface OpenWorkspacePayload {
   workspaceId: string;
 }
 
+export interface WorkspaceLifecycleOpenProof {
+  schemaVersion: 1;
+  revision: number;
+  status: "ready";
+  bindingToken: string;
+  activation: "ready";
+}
+
 export type WorkspaceOpenOutcome =
-  | { status: "ready"; workspace: OpenWorkspacePayload }
+  | {
+      status: "ready";
+      workspace: OpenWorkspacePayload;
+      lifecycle?: WorkspaceLifecycleOpenProof;
+    }
   | {
       status: "migrated";
       workspace: OpenWorkspacePayload;
       migration: MigrationReceipt;
+      lifecycle?: WorkspaceLifecycleOpenProof;
     }
   | {
       status: "recovery-required";
@@ -519,7 +536,7 @@ export interface NapiBackendLike {
     expectedWorkspacePath: string,
   ): Promise<void>;
   listBackups?(): Promise<string>;
-  restoreBackup?(fileName: string): Promise<void>;
+  restoreBackup?(fileName: string): Promise<string>;
   listRecoveryCandidates?(): Promise<string>;
   verifyRecoveryCandidate?(candidateId: string): Promise<string>;
   restoreRecoveryCandidate?(candidateId: string): Promise<void>;
@@ -7329,12 +7346,12 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   },
   restore_backup: {
     run: async (b, a) => {
-      await requireNapiMethod(
+      const wire = await requireNapiMethod(
         b,
         b.restoreBackup,
         "restoreBackup",
       )(requireBackupFileName(a));
-      return null;
+      return parseWorkspaceRestoreOutcome(wire);
     },
   },
   list_recovery_candidates: {

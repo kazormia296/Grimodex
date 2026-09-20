@@ -69,13 +69,16 @@ function cloneDescriptor(descriptor: RecoveryDescriptor): RecoveryDescriptor {
 export class NarrativeMaintenanceDeliveryLedger {
   private highWaterMark = 0;
   private readonly records = new Map<number, DeliveryRecord>();
-  private readonly sealedAbsent = new Set<number>();
   private readonly descriptors = new Map<string, RecoveryDescriptor>();
   private readonly recoveryRequests = new Map<
     string,
     { fingerprint: string; generation: number }
   >();
-  private readonly retiredRoots = new Set<string>();
+  // Native descriptor roots are decimal, session-monotonic IDs. Keep retired
+  // roots as coalesced numeric ranges so a long-lived session cannot grow a
+  // string tombstone set in proportion to every completed recovery. Gaps are
+  // retained for unresolved roots and therefore bound the range count.
+  private readonly retiredRootRanges = new Map<number, number>();
 
   get H(): number {
     return this.highWaterMark;
@@ -103,9 +106,6 @@ export class NarrativeMaintenanceDeliveryLedger {
         sequence,
         record: cloneRecord(existing),
       };
-    }
-    if (this.sealedAbsent.has(sequence)) {
-      return { admission: "sealed-absent", sequence };
     }
     // ACK retires the record but never rewinds the sealed high-water mark.
     // A late callback for an older sequence therefore resolves to the same
@@ -150,7 +150,6 @@ export class NarrativeMaintenanceDeliveryLedger {
     if (sequence !== this.highWaterMark + 1) {
       return { admission: "out-of-order", sequence };
     }
-    this.sealedAbsent.add(sequence);
     this.highWaterMark = sequence;
     return { admission: "sealed-absent", sequence };
   }
@@ -171,9 +170,14 @@ export class NarrativeMaintenanceDeliveryLedger {
     return true;
   }
 
+  /** Retire a sequence that Native explicitly fenced without a record. */
+  retireFenced(sequence: number): boolean {
+    return this.records.delete(sequence);
+  }
+
   reserveRecovery(rootId: string): RecoveryDescriptor {
-    if (!rootId.trim()) throw new Error("recovery root is required");
-    if (this.retiredRoots.has(rootId)) {
+    const ordinal = this.parseRootOrdinal(rootId);
+    if (this.isRetiredRoot(ordinal)) {
       throw new Error("recovery root is retired");
     }
     const existing = this.descriptors.get(rootId);
@@ -190,7 +194,8 @@ export class NarrativeMaintenanceDeliveryLedger {
 
   recover(rootId: string, fingerprint: string): RecoveryResult {
     const descriptor = this.descriptors.get(rootId);
-    if (!descriptor || this.retiredRoots.has(rootId)) {
+    const ordinal = this.parseRootOrdinal(rootId);
+    if (!descriptor || this.isRetiredRoot(ordinal)) {
       return { admission: "retired" };
     }
     if (!fingerprint.trim()) {
@@ -249,11 +254,45 @@ export class NarrativeMaintenanceDeliveryLedger {
   }
 
   retireRecovery(rootId: string): boolean {
+    const ordinal = this.parseRootOrdinal(rootId);
     const descriptor = this.descriptors.get(rootId);
     if (!descriptor || !descriptor.resultAcked) return false;
     this.descriptors.delete(rootId);
-    this.retiredRoots.add(rootId);
+    this.recoveryRequests.delete(rootId);
+    this.markRetiredRoot(ordinal);
     return true;
+  }
+
+  private parseRootOrdinal(rootId: string): number {
+    if (!/^\d+$/.test(rootId)) {
+      throw new Error("recovery root must be a monotonic decimal descriptor id");
+    }
+    const ordinal = Number(rootId);
+    if (!Number.isSafeInteger(ordinal) || ordinal <= 0) {
+      throw new Error("recovery root must be a positive safe descriptor id");
+    }
+    return ordinal;
+  }
+
+  private isRetiredRoot(ordinal: number): boolean {
+    return [...this.retiredRootRanges.entries()]
+      .reverse()
+      .some(([start, end]) => start <= ordinal && end >= ordinal);
+  }
+
+  private markRetiredRoot(ordinal: number): void {
+    let start = ordinal;
+    let end = ordinal;
+    const ranges = [...this.retiredRootRanges.entries()].sort(
+      ([left], [right]) => left - right,
+    );
+    for (const [rangeStart, rangeEnd] of ranges) {
+      if (rangeEnd + 1 < start || rangeStart > end + 1) continue;
+      start = Math.min(start, rangeStart);
+      end = Math.max(end, rangeEnd);
+      this.retiredRootRanges.delete(rangeStart);
+    }
+    this.retiredRootRanges.set(start, end);
   }
 
   recordsSnapshot(): readonly DeliveryRecord[] {

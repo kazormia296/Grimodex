@@ -1,7 +1,12 @@
 import { listen } from "@/lib/tauri";
 import { setCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import { invalidateWorkspaceProjectLoads } from "@/application/project/workspaceProjectCommands";
-import { invalidateWorkspaceBindingForLifecycle } from "@/features/timelapse/recorder";
+import {
+  invalidateWorkspaceBindingForLifecycle,
+  pauseWorkspaceBindingForLifecycle,
+  resumeWorkspaceBindingAfterExplicitOpen,
+  resumeWorkspaceBindingAfterLifecycleUnchanged,
+} from "@/features/timelapse/recorder";
 import type { RecoveryShellState } from "./recovery/types";
 import type { WorkspaceState } from "./workspaceState";
 
@@ -26,9 +31,36 @@ export interface WorkspaceLifecycleProjection {
 type WorkspaceGetter = () => WorkspaceState;
 type WorkspaceSetter = (patch: Partial<WorkspaceState>) => void;
 
+interface ReadyScopeProof {
+  readonly bindingToken: string;
+  readonly workspacePath: string;
+  readonly workspaceId: string | null;
+  readonly workspaceName: string | null;
+  readonly openRevision: number;
+}
+
+interface ExplicitWorkspaceHydrationEvidence {
+  readonly workspacePath: string;
+  readonly workspaceId: string | null;
+  readonly workspaceName: string | null;
+  readonly openRevision: number;
+  /** Exact proof returned by the Native Open operation. */
+  readonly lifecycleRevision: number;
+  readonly lifecycleBindingToken: string;
+}
+
+interface ReadyObservation {
+  readonly revision: number;
+  readonly bindingToken: string;
+}
+
 let subscription: Promise<() => void> | null = null;
 let latestRevision = -1;
 let latestWire: string | null = null;
+let lastReadyScope: ReadyScopeProof | null = null;
+let latestReadyObservation: ReadyObservation | null = null;
+let pendingExplicitWorkspaceHydration: ExplicitWorkspaceHydrationEvidence | null =
+  null;
 
 function parseProjection(raw: unknown): WorkspaceLifecycleProjection {
   let value = raw;
@@ -103,6 +135,7 @@ function applyProjection(
   get: WorkspaceGetter,
   set: WorkspaceSetter,
   raw: unknown,
+  forceUnchangedProof = false,
 ): void {
   let view: WorkspaceLifecycleProjection;
   try {
@@ -116,7 +149,7 @@ function applyProjection(
   // particular, do not run RecoveryRequired teardown twice: the first pass
   // intentionally clears activeWorkspacePath after copying the binding into
   // RecoveryShell, and a second pass must retain that shell and retry target.
-  if (view.revision === latestRevision && latestWire === wire) return;
+  if (view.revision === latestRevision && latestWire === wire && !forceUnchangedProof) return;
   if (
     view.revision === latestRevision &&
     latestWire !== null &&
@@ -135,16 +168,174 @@ function applyProjection(
   } satisfies Partial<WorkspaceState>;
 
   if (view.status === "ready" && view.activation === "ready") {
-    set(base);
+    latestReadyObservation = {
+      revision: view.revision,
+      bindingToken: view.bindingToken,
+    };
+    const explicitOpenReady =
+      pendingExplicitWorkspaceHydration !== null &&
+      current.activeWorkspacePath ===
+        pendingExplicitWorkspaceHydration.workspacePath &&
+      current.workspaceOpenRevision ===
+        pendingExplicitWorkspaceHydration.openRevision &&
+      view.revision === pendingExplicitWorkspaceHydration.lifecycleRevision &&
+      view.bindingToken ===
+        pendingExplicitWorkspaceHydration.lifecycleBindingToken;
+    if (explicitOpenReady && pendingExplicitWorkspaceHydration) {
+      // The Open proof establishes a new authority after the normal
+      // recorder/project rebind.  If a Transition raced the Open, retire only
+      // that reversible pause; do not route this through Unchanged, which has
+      // the stronger meaning that the old authority survived.
+      if (!resumeWorkspaceBindingAfterExplicitOpen()) {
+        invalidateWorkspaceBindingForLifecycle();
+        invalidateWorkspaceProjectLoads();
+        pendingExplicitWorkspaceHydration = null;
+        set({
+          ...base,
+          view: "launcher",
+          workspaceSwitchInProgress: false,
+          workspaceHydrated: false,
+          activeWorkspacePath: null,
+          activeWorkspaceId: null,
+          activeWorkspaceName: null,
+          recoveryShell: null,
+        });
+        return;
+      }
+      // An explicit Open is the renderer-side evidence that the new Native
+      // authority has already been hydrated.  Accept a Ready event that was
+      // delivered after that hydration even when the non-blocking Native
+      // event raced the Open Promise.  The path and renderer open revision
+      // bind this proof to this Open; the lifecycle revision prevents an old
+      // Ready snapshot from being adopted as the new authority.
+      set({
+        ...base,
+        view: "editor",
+        workspaceSwitchInProgress: false,
+        workspaceHydrated: true,
+        activeWorkspacePath: pendingExplicitWorkspaceHydration.workspacePath,
+        activeWorkspaceId: pendingExplicitWorkspaceHydration.workspaceId,
+        activeWorkspaceName: pendingExplicitWorkspaceHydration.workspaceName,
+        recoveryShell: null,
+      });
+      lastReadyScope = {
+        bindingToken: view.bindingToken,
+        workspacePath: pendingExplicitWorkspaceHydration.workspacePath,
+        workspaceId: pendingExplicitWorkspaceHydration.workspaceId,
+        workspaceName: pendingExplicitWorkspaceHydration.workspaceName,
+        openRevision: pendingExplicitWorkspaceHydration.openRevision,
+      };
+      pendingExplicitWorkspaceHydration = null;
+      return;
+    }
+    const unchangedResume =
+      (forceUnchangedProof || current.workspaceLifecycleStatus === "transition") &&
+      view.bindingToken !== null &&
+      lastReadyScope?.bindingToken === view.bindingToken &&
+      current.activeWorkspacePath === lastReadyScope.workspacePath &&
+      current.workspaceOpenRevision === lastReadyScope.openRevision &&
+      (forceUnchangedProof || current.workspaceHydrated === false);
+    const sameReadyBinding =
+      current.workspaceLifecycleStatus === "ready" &&
+      current.workspaceLifecycleActivation === "ready" &&
+      current.workspaceLifecycleBindingToken === view.bindingToken &&
+      current.workspaceHydrated;
+    if (unchangedResume && lastReadyScope) {
+      // The Native core has proved Unchanged for the exact old LiveBinding.
+      // Re-enable the existing renderer scope only from that proof; an
+      // ordinary Ready event with a new token still requires the normal open
+      // hydration path.
+      const resumed = resumeWorkspaceBindingAfterLifecycleUnchanged();
+      if (!resumed) return;
+      set({
+        ...base,
+        view: "editor",
+        activeWorkspacePath: lastReadyScope.workspacePath,
+        activeWorkspaceId: lastReadyScope.workspaceId,
+        activeWorkspaceName: lastReadyScope.workspaceName,
+        workspaceSwitchInProgress: false,
+        workspaceHydrated: true,
+        recoveryShell: null,
+      });
+      setCurrentImeWorkspaceIdentity({
+        path: lastReadyScope.workspacePath,
+        openRevision: lastReadyScope.openRevision,
+      });
+    } else if (sameReadyBinding) {
+      // A revision-only snapshot (for example, an unrelated descriptor
+      // recovery while this workspace remains Ready) must not tear down the
+      // live renderer scope. The opaque binding token is the proof that this
+      // snapshot describes the same authority.
+      set(base);
+      lastReadyScope = {
+        bindingToken: view.bindingToken,
+        workspacePath: current.activeWorkspacePath!,
+        workspaceId: current.activeWorkspaceId,
+        workspaceName: current.activeWorkspaceName,
+        openRevision: current.workspaceOpenRevision,
+      };
+      return;
+    } else {
+      // A different Ready binding is a real replacement. Discard the paused
+      // old-scope queue and force the normal project/recorder hydration path
+      // before the renderer can claim the new scope.
+      invalidateWorkspaceBindingForLifecycle();
+      invalidateWorkspaceProjectLoads();
+      lastReadyScope = null;
+      pendingExplicitWorkspaceHydration = null;
+      set({
+        ...base,
+        view: "launcher",
+        workspaceSwitchInProgress: false,
+        workspaceHydrated: false,
+        activeWorkspacePath: null,
+        activeWorkspaceId: null,
+        activeWorkspaceName: null,
+        recoveryShell: null,
+      });
+    }
+    const readyScope = unchangedResume && lastReadyScope
+      ? lastReadyScope
+      : current.activeWorkspacePath
+      ? {
+          bindingToken: view.bindingToken ?? "",
+          workspacePath: current.activeWorkspacePath,
+          workspaceId: current.activeWorkspaceId,
+          workspaceName: current.activeWorkspaceName,
+          openRevision: current.workspaceOpenRevision,
+        }
+      : null;
+    lastReadyScope = readyScope;
     return;
   }
 
-  // Transition and recovery both invalidate the old renderer scope. This is
-  // deliberately a local teardown: it never flushes an isolated connection,
-  // guesses a path from Native, or resumes a binding from a rejected request.
-  invalidateWorkspaceBindingForLifecycle();
-  invalidateWorkspaceProjectLoads();
-  setCurrentImeWorkspaceIdentity(null);
+  // Transition is a reversible pause. Only a later exact Unchanged proof may
+  // resume this scope; RecoveryRequired and a replacement Ready event use the
+  // irreversible invalidation below.
+  if (view.status === "transition") {
+    if (
+      current.workspaceLifecycleStatus === "ready" &&
+      current.workspaceLifecycleBindingToken &&
+      current.activeWorkspacePath &&
+      current.workspaceHydrated
+    ) {
+      lastReadyScope = {
+        bindingToken: current.workspaceLifecycleBindingToken,
+        workspacePath: current.activeWorkspacePath,
+        workspaceId: current.activeWorkspaceId,
+        workspaceName: current.activeWorkspaceName,
+        openRevision: current.workspaceOpenRevision,
+      };
+    }
+    pauseWorkspaceBindingForLifecycle();
+  } else {
+    if (view.status !== "transition") {
+      pendingExplicitWorkspaceHydration = null;
+    }
+    invalidateWorkspaceBindingForLifecycle();
+    invalidateWorkspaceProjectLoads();
+  }
+  if (view.status !== "transition") setCurrentImeWorkspaceIdentity(null);
   if (view.status === "recovery-required") {
     // The first recovery projection moves the path into RecoveryShell while
     // invalidating the active binding.  A repeated snapshot for the same
@@ -173,6 +364,7 @@ function applyProjection(
     });
     return;
   }
+  if (view.status === "closed") lastReadyScope = null;
   set({
     ...base,
     workspaceSwitchInProgress: view.status === "transition",
@@ -208,4 +400,77 @@ export function applyWorkspaceLifecycleProjectionForTest(
   raw: unknown,
 ): void {
   applyProjection(get, set, raw);
+}
+
+/**
+ * Apply an operation-scoped exact Unchanged proof through the same projection
+ * machine used by Native lifecycle events. This handles both callback orders:
+ * a Ready proof may arrive after Transition, or it may arrive before a stale
+ * Transition event. The revision gate makes the latter event inert.
+ */
+export function applyWorkspaceLifecycleUnchangedProof(
+  get: WorkspaceGetter,
+  set: WorkspaceSetter,
+  raw: unknown,
+): boolean {
+  let view: WorkspaceLifecycleProjection;
+  try {
+    view = parseProjection(raw);
+  } catch {
+    return false;
+  }
+  if (
+    view.status !== "ready" ||
+    view.activation !== "ready" ||
+    view.bindingToken === null ||
+    latestRevision > view.revision
+  ) {
+    return false;
+  }
+  applyProjection(get, set, view, true);
+  const current = get();
+  return (
+    current.workspaceLifecycleRevision === view.revision &&
+    current.workspaceLifecycleStatus === "ready" &&
+    current.workspaceLifecycleActivation === "ready" &&
+    current.workspaceLifecycleBindingToken === view.bindingToken &&
+    current.workspaceHydrated
+  );
+}
+
+/**
+ * Record the renderer evidence for a successful explicit Open.  Native emits
+ * lifecycle state through a non-blocking callback, so the Ready observation
+ * may arrive either before or after the Open Promise resolves.  Keep the
+ * evidence until the exact Ready revision/token is observed, and only bind it
+ * to the proof returned by this Open after it crossed Native.
+ */
+export function noteExplicitWorkspaceHydration(
+  evidence: ExplicitWorkspaceHydrationEvidence,
+): void {
+  pendingExplicitWorkspaceHydration = evidence;
+  if (
+    latestReadyObservation &&
+    latestRevision === evidence.lifecycleRevision &&
+    latestReadyObservation.revision === evidence.lifecycleRevision &&
+    latestReadyObservation.bindingToken === evidence.lifecycleBindingToken
+  ) {
+    if (!resumeWorkspaceBindingAfterExplicitOpen()) return;
+    lastReadyScope = {
+      bindingToken: evidence.lifecycleBindingToken,
+      workspacePath: evidence.workspacePath,
+      workspaceId: evidence.workspaceId,
+      workspaceName: evidence.workspaceName,
+      openRevision: evidence.openRevision,
+    };
+    pendingExplicitWorkspaceHydration = null;
+  }
+}
+
+export function resetWorkspaceLifecycleProjectionForTest(): void {
+  latestRevision = -1;
+  latestWire = null;
+  lastReadyScope = null;
+  latestReadyObservation = null;
+  pendingExplicitWorkspaceHydration = null;
 }

@@ -56,7 +56,11 @@ import {
   type NativeWorkspaceOpenResult,
 } from "./recovery/applyNativeOpenOutcome";
 import type { WorkspaceState } from "./workspaceState";
-import { subscribeWorkspaceLifecycleProjection } from "./workspaceLifecycleProjection";
+import type { NativeWorkspaceLifecycleProof } from "./recovery/types";
+import {
+  noteExplicitWorkspaceHydration,
+  subscribeWorkspaceLifecycleProjection,
+} from "./workspaceLifecycleProjection";
 
 export type {
   GlobalSettings,
@@ -122,6 +126,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     const previousProjectId = getCurrentProjectId();
     let swapDone = false;
     let openResult: NativeWorkspacePayload | null = null;
+    let openLifecycleProof: NativeWorkspaceLifecycleProof | null = null;
     let targetOpenRevision: number | null = null;
     let targetSettings: GlobalSettings | null = null;
     let projectLoadLease: WorkspaceProjectLoadLease | null = null;
@@ -222,7 +227,26 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
           set(nativeOpenOutcome.state);
           return nativeOpenOutcome.status;
         }
+        if (nativeOpenOutcome.kind === "invalid") {
+          // A structured Open result without its operation-specific lifecycle
+          // proof is not a usable authority handoff. The Native operation may
+          // already have changed the authority, so keep the renderer in the
+          // launcher and require a fresh lifecycle snapshot/retry.
+          swapDone = true;
+          set({
+            view: "launcher",
+            workspaceSwitchInProgress: false,
+            workspaceHydrated: false,
+            activeWorkspacePath: null,
+            activeWorkspaceId: null,
+            activeWorkspaceName: null,
+            recoveryShell: null,
+            error: nativeOpenOutcome.reasonCode,
+          });
+          return "failed";
+        }
         openResult = nativeOpenOutcome.workspace;
+        openLifecycleProof = nativeOpenOutcome.lifecycle;
         swapDone = true;
         targetOpenRevision = get().workspaceOpenRevision + 1;
         await compositionReady;
@@ -230,7 +254,14 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         // swap 未実行の失敗 = 旧 workspace 続行なので旧束縛は依然正しい →
         // 復元して記録をそのまま再開する。swap 済みなら束縛は無効のまま =
         // 正規 rebind (initRecorderForProject) の完了だけが記録を再開する。
-        endWorkspaceSwitch({ restoreBinding: !swapDone });
+        // Once the Native request has been issued, a rejected Promise is not
+        // proof that the old authority remained untouched.  Only failures
+        // before the IPC boundary may restore the old recorder binding;
+        // admitted/unknown Native failures must remain fail-closed until the
+        // lifecycle snapshot proves an exact Unchanged result.
+        endWorkspaceSwitch({
+          restoreBinding: !swapDone && !nativeOpenRequested,
+        });
       }
       if (!openResult || targetOpenRevision === null) {
         throw new Error("Workspace swap completed without target identity");
@@ -292,6 +323,21 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // through this publication, so a queued Project load cannot supersede
       // the mandatory hydrate in between.
       quiescenceLease.sealReadsForAuthorityCommit();
+      if (openLifecycleProof) {
+        const lifecycle = get();
+        if (
+          lifecycle.workspaceLifecycleRevision > openLifecycleProof.revision ||
+          (lifecycle.workspaceLifecycleRevision === openLifecycleProof.revision &&
+            (lifecycle.workspaceLifecycleStatus !== "ready" ||
+              lifecycle.workspaceLifecycleActivation !== "ready" ||
+              lifecycle.workspaceLifecycleBindingToken !==
+                openLifecycleProof.bindingToken))
+        ) {
+          throw new Error(
+            "Native lifecycle changed before explicit workspace hydration completed",
+          );
+        }
+      }
       setCurrentImeWorkspaceIdentity({
         path,
         openRevision: nextOpenRevision,
@@ -313,6 +359,16 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         workspaceSwitchInProgress: false,
         workspaceHydrated: true,
       });
+      if (openLifecycleProof) {
+        noteExplicitWorkspaceHydration({
+          workspacePath: path,
+          workspaceId: result.workspaceId ?? path,
+          workspaceName: result.name,
+          openRevision: nextOpenRevision,
+          lifecycleRevision: openLifecycleProof.revision,
+          lifecycleBindingToken: openLifecycleProof.bindingToken,
+        });
+      }
       // Only discard the old scope's detached drafts after the replacement
       // authority has hydrated and been published. Recovery-required and
       // post-swap hydration failures keep them available to the RecoveryShell.
@@ -344,19 +400,32 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
           recoveryShell: null,
         });
       } else if (nativeOpenRequested) {
-        // The request crossed the Native lifecycle boundary, but no terminal
-        // outcome was received. Treat the old binding as untrusted: an
-        // admitted open may already have retired it or entered recovery. The
-        // lifecycle projection/explicit retry is the only rebind authority.
-        set({
-          view: "launcher",
-          activeWorkspacePath: path,
-          activeWorkspaceId: null,
-          activeWorkspaceName: null,
-          error,
-          workspaceHydrated: false,
-          recoveryShell: null,
-        });
+        // The request crossed the Native lifecycle boundary, but no usable
+        // terminal outcome was received. Treat the old binding as untrusted:
+        // an admitted Open may already have retired it or entered recovery.
+        // If the lifecycle event won the race, preserve its RecoveryShell;
+        // otherwise leave an unhydrated launcher until a fresh snapshot/Open
+        // proves the next authority. Never restore the previous IME or
+        // recorder binding from this error path.
+        const lifecycle = get();
+        if (
+          lifecycle.workspaceLifecycleStatus === "recovery-required" ||
+          lifecycle.view === "recovery"
+        ) {
+          set({ error });
+        } else {
+          set({
+            view: "launcher",
+            activeWorkspacePath: path,
+            activeWorkspaceId: null,
+            activeWorkspaceName: null,
+            error,
+            workspaceHydrated: false,
+            workspaceSwitchInProgress:
+              lifecycle.workspaceLifecycleStatus === "transition",
+            recoveryShell: null,
+          });
+        }
       } else {
         // Failure before the Native lifecycle boundary leaves the previous
         // binding valid, so restore its semantic-ready state.
@@ -373,7 +442,10 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     } finally {
       projectLoadLease?.release();
       quiescenceLease?.release();
-      if (get().workspaceSwitchInProgress) {
+      if (
+        get().workspaceSwitchInProgress &&
+        get().workspaceLifecycleStatus !== "transition"
+      ) {
         set({ workspaceSwitchInProgress: false });
       }
       openWorkspaceInFlight = false;

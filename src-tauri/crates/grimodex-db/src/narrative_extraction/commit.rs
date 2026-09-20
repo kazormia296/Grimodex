@@ -125,6 +125,15 @@ impl GraphWorkControl for StandaloneForegroundValidationControl {
     fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
         Ok(())
     }
+
+    // This adapter is constructed only by the public standalone transaction
+    // owner below. That owner already supplies the DB/transaction boundary
+    // required by the compatibility API, so it must explicitly opt into the
+    // full eligibility read rather than inheriting the fail-closed default
+    // used by arbitrary controls.
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
 }
 
 struct CommitPlanValidationContext<'a> {

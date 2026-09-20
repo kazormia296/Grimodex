@@ -29,9 +29,6 @@ use crate::narrative_extraction::{
     mint_c2zc_project_birth_epoch_in_tx, mint_c2zc_scan_publish_project_birth_epoch_in_tx,
     with_immediate_transaction,
 };
-use crate::narrative_extraction::{
-    release_project_destructive_permit, try_reserve_project_destructive_permit,
-};
 
 fn json_pointer_segment(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
@@ -1431,6 +1428,24 @@ pub struct ProjectDeletePayload {
     pub project_id: String,
 }
 
+/// Own the process-local destructive permit for the complete delete attempt.
+/// The namespace check itself can fail (or the writer can unwind) after the
+/// permit is acquired, so release must be tied to scope rather than to the
+/// final `with_conn` success path.
+struct ProjectDestructivePermitGuard {
+    namespace: String,
+    project_id: String,
+}
+
+impl Drop for ProjectDestructivePermitGuard {
+    fn drop(&mut self) {
+        crate::narrative_extraction::release_project_destructive_permit_in_namespace(
+            &self.namespace,
+            &self.project_id,
+        );
+    }
+}
+
 const PROJECT_CREATE_BUILTIN_SLUGS: [&str; 4] = ["character", "location", "item", "lore"];
 
 fn select_project_row(conn: &rusqlite::Connection, project_id: &str) -> anyhow::Result<Value> {
@@ -1963,13 +1978,24 @@ pub fn project_delete(db: &Database, payload: ProjectDeletePayload) -> anyhow::R
     // This permit is process-local coordination with the shared lifecycle
     // owner.  The durable running-Run check below remains mandatory because
     // another process may still hold a writer or recovery responsibility.
-    try_reserve_project_destructive_permit(&payload.project_id)?;
+    let lifecycle_namespace = crate::narrative_extraction::project_lifecycle_namespace_for_database(db)?;
+    crate::narrative_extraction::try_reserve_project_destructive_permit_in_namespace(
+        &lifecycle_namespace,
+        &payload.project_id,
+    )?;
+    let _permit = ProjectDestructivePermitGuard {
+        namespace: lifecycle_namespace,
+        project_id: payload.project_id.clone(),
+    };
+    let creation_reservation_active =
+        crate::narrative_extraction::project_creation_reservation_active_for_database(
+            db,
+            &payload.project_id,
+        )?;
     let result = db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         anyhow::ensure!(
-            !crate::narrative_extraction::project_creation_reservation_active(
-                &payload.project_id
-            ),
+            !creation_reservation_active,
             "project '{}' has a reserved or unresolved lifecycle Run; deletion is not admitted",
             payload.project_id
         );
@@ -2134,7 +2160,6 @@ pub fn project_delete(db: &Database, payload: ProjectDeletePayload) -> anyhow::R
         tx.commit()?;
         Ok(())
     });
-    release_project_destructive_permit(&payload.project_id);
     result
 }
 

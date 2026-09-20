@@ -195,6 +195,7 @@ describe("narrative maintenance main-only wiring", () => {
       .fn()
       .mockResolvedValueOnce({
         status: "reconciled",
+        descriptorId: 11,
         reason: "maintenance-recovery-complete",
         recoveredBinding: w1,
         activeBinding: w2,
@@ -226,6 +227,7 @@ describe("narrative maintenance main-only wiring", () => {
       .fn()
       .mockResolvedValueOnce({
         status: "reconciled",
+        descriptorId: 12,
         reason: "maintenance-recovery-complete",
         recoveredBinding: w1,
         activeBinding: reopenedW1,

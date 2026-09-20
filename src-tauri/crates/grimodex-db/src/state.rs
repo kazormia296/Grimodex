@@ -155,6 +155,9 @@ impl WorkspaceState {
 #[derive(Clone)]
 pub struct ActiveWorkspaceSnapshot {
     pub authority: PinnedWorkspaceDb,
+    /// Keeps the lifecycle core aware of the pinned DB operation until this
+    /// snapshot (and any intentional clone) is dropped.
+    _participant: crate::workspace_lifecycle::WorkspaceParticipant,
 }
 
 impl ActiveWorkspaceSnapshot {
@@ -186,6 +189,7 @@ pub struct GlobalSettingsPath {
 /// `with_db_state` 経由で毎回解決する。どちらも switching / no-workspace の
 /// fail-closed 契約は同一。
 pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveWorkspaceSnapshot> {
+    let participant = ws_state.lifecycle_core().begin_workspace_participant()?;
     let lock_started = std::time::Instant::now();
     {
         let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -219,6 +223,7 @@ pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveW
                 if let Some(ws) = inner.as_ref() {
                     return Ok(ActiveWorkspaceSnapshot {
                         authority: Arc::clone(&ws.authority),
+                        _participant: participant,
                     });
                 }
             }
@@ -242,6 +247,7 @@ pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveW
         }
         Ok(ActiveWorkspaceSnapshot {
             authority: Arc::clone(&ws.authority),
+            _participant: participant,
         })
     }
 }
@@ -268,6 +274,12 @@ pub fn with_db_state<T>(
     ws_state: &WorkspaceState,
     f: impl FnOnce(&Database) -> anyhow::Result<T>,
 ) -> AppResult<T> {
+    // Register before resolving the active authority. A concurrent
+    // transition or shutdown therefore cannot publish physical replacement or
+    // Closed in the small gap between pinning the Arc and entering the DB
+    // closure. The participant is independent of foreground/maintenance
+    // scheduling and is released after the caller's transaction returns.
+    let _participant = ws_state.lifecycle_core().begin_workspace_participant()?;
     let authority = active_database(ws_state)?;
     Ok(f(authority.db())?)
 }

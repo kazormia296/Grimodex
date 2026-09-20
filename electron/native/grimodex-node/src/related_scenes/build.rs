@@ -7,6 +7,7 @@ use grimodex_semantic::runtime::{
 pub(super) fn schedule(
     state: Arc<AppState>,
     request: SemanticRequest,
+    participant: grimodex_db::workspace_lifecycle::WorkspaceParticipant,
     project: String,
 ) -> Result<()> {
     if !current_request(&state, &request)? {
@@ -24,6 +25,10 @@ pub(super) fn schedule(
     // needed index publication. Workspace/model changes still revoke the job.
     let weak_state = Arc::downgrade(&state);
     tokio::spawn(async move {
+        // Keep the workspace participant across every retry and blocking
+        // build. A transition must observe this task before publishing a
+        // replacement authority.
+        let _participant = participant;
         loop {
             let Some(state) = weak_state.upgrade() else {
                 break;

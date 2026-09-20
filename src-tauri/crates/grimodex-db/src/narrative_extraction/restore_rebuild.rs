@@ -4078,36 +4078,10 @@ fn verify_creation_file_identity(
     if path.trim().is_empty() {
         return Ok(handle.database_file_identity.as_deref() == Some(":memory:"));
     }
-    let metadata = std::fs::metadata(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let identity = format!("dev:{}:ino:{}", metadata.dev(), metadata.ino());
-        return Ok(handle.database_file_identity.as_deref() == Some(identity.as_str()));
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        let volume = metadata
-            .volume_serial_number()
-            .ok_or_else(|| anyhow::anyhow!("database volume identity is unavailable"))?;
-        let file = metadata
-            .file_index()
-            .ok_or_else(|| anyhow::anyhow!("database file identity is unavailable"))?;
-        let identity = format!(
-            "volume:{}:file:{}",
-            volume, file
-        );
-        return Ok(handle.database_file_identity.as_deref() == Some(identity.as_str()));
-    }
-    #[cfg(all(not(unix), not(windows)))]
-    {
-        let identity = std::fs::canonicalize(&path)
-            .unwrap_or_else(|_| std::path::PathBuf::from(path))
-            .to_string_lossy()
-            .into_owned();
-        Ok(handle.database_file_identity.as_deref() == Some(identity.as_str()))
-    }
+    let canonical = std::fs::canonicalize(&path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(&path));
+    let identity = super::maintenance_lifecycle::sqlite_database_file_identity(&canonical)?;
+    Ok(handle.database_file_identity.as_deref() == Some(identity.as_str()))
 }
 
 fn verify_creation_lineage(

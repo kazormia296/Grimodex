@@ -1,4 +1,5 @@
 import { invoke } from "@/lib/tauri";
+import type { WorkspaceRestoreOutcome } from "@/../electron/shared/workspaceRestoreOutcome";
 
 /**
  * `<ws>/backups/` に置かれた 1 バックアップのメタ情報。Rust の
@@ -24,6 +25,6 @@ export function listBackups(): Promise<BackupInfo[]> {
  * Rust 側で復元前の安全退避 → 接続クローズ → ファイル置換 → 再オープンまで行う。
  * 呼び出し側は成功後に `window.location.reload()` して全状態を作り直すこと。
  */
-export function restoreBackup(fileName: string): Promise<void> {
-  return invoke<void>("restore_backup", { fileName });
+export function restoreBackup(fileName: string): Promise<WorkspaceRestoreOutcome> {
+  return invoke<WorkspaceRestoreOutcome>("restore_backup", { fileName });
 }

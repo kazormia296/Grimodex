@@ -1,14 +1,14 @@
 //! Isolated Layer-A lifecycle model harness.
 //!
 //! This binary is opt-in (`--features test-lifecycle`) and is deliberately
-//! separate from the N-API cdylib. It exercises the shared core's foreground
-//! admission lane and the full-delivery -> ACK -> exact retry progress rule
+//! separate from the N-API cdylib. It exercises the shared core's independent
+//! foreground/maintenance admission slots and the full-delivery -> ACK -> exact retry progress rule
 //! without exposing a renderer or product capability in normal builds.
 
 use anyhow::{ensure, Result};
 use grimodex_db::{
-    AdmissionRejection, DeliveryAdmissionOutcome, DeliverySequence, LiveBinding,
-    PermitAdmission, WorkspaceLifecycleCore, DELIVERY_CAPACITY,
+    AdmissionRejection, DeliveryAdmissionOutcome, DeliverySequence, LiveBinding, PermitAdmission,
+    WorkspaceLifecycleCore, DELIVERY_CAPACITY,
 };
 
 fn binding(instance: u64) -> LiveBinding {
@@ -26,18 +26,27 @@ fn main() -> Result<()> {
         }
     };
     foreground.start()?;
+    let mut maintenance = match core.admit_maintenance_permit()? {
+        PermitAdmission::Admitted(permit) => permit,
+        PermitAdmission::NotAdmitted { reason, .. } => {
+            anyhow::bail!("maintenance admission unexpectedly rejected: {reason:?}")
+        }
+    };
+    maintenance.start()?;
     ensure!(
         matches!(
-            core.admit_maintenance_permit()?,
+            core.admit_foreground_permit()?,
             PermitAdmission::NotAdmitted {
                 reason: AdmissionRejection::ActiveOperation,
                 ..
             }
         ),
-        "maintenance must share the foreground execution lane"
+        "a second foreground owner must be rejected while maintenance remains independent"
     );
     foreground.mark_joined()?;
     foreground.release()?;
+    maintenance.mark_joined()?;
+    maintenance.release()?;
 
     for sequence in 1..=DELIVERY_CAPACITY as u64 {
         let sequence = DeliverySequence::new(sequence);
