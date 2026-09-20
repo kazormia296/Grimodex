@@ -4627,7 +4627,6 @@ fn run_narrative_freshness_cycle_inner(
         }
         PermitAdmission::NotAdmitted { .. } => return Ok(None),
     };
-    let recovery_authority = active_database(&state.ws).ok();
     let result = run_narrative_freshness_cycle_body(state, after_cycle);
     lifecycle_permit
         .mark_joined()
@@ -4640,7 +4639,7 @@ fn run_narrative_freshness_cycle_inner(
                 .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))
         }
         Err(error) => {
-            if retire_authority_for_recovery(state, recovery_authority) {
+            if retire_authority_for_recovery(state, active_database(&state.ws).ok()) {
                 lifecycle_permit
                     .mark_connection_retired()
                     .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
@@ -5179,7 +5178,6 @@ impl Backend {
             }
             PermitAdmission::NotAdmitted { .. } => return Ok(None),
         };
-        let recovery_authority = active_database(&state.ws).ok();
         // Keep the permit in the async supervisor. A cancelled blocking task
         // therefore cannot consume it before JoinError is observed.
         let worker_state = Arc::clone(&state);
@@ -5202,7 +5200,10 @@ impl Backend {
                     }
                     Err(error) => {
                         let connection_retired =
-                            retire_authority_for_recovery(&state, recovery_authority);
+                            retire_authority_for_recovery(
+                                &state,
+                                active_database(&state.ws).ok(),
+                            );
                         if connection_retired {
                             lifecycle_permit
                                 .mark_connection_retired()
@@ -5230,7 +5231,7 @@ impl Backend {
             }
             Ok(Err(_)) | Err(_) => {
                 let connection_retired =
-                    retire_authority_for_recovery(&state, recovery_authority);
+                    retire_authority_for_recovery(&state, active_database(&state.ws).ok());
                 lifecycle_permit
                     .mark_joined()
                     .map_err(|error| Error::from_reason(error.to_string()))?;
