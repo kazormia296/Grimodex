@@ -1257,12 +1257,16 @@ impl WorkspaceLifecycleCore {
             .descriptors
             .get(&descriptor_id)
             .is_some_and(|descriptor| !descriptor.resolved);
+        let descriptor_activation_pending = state
+            .descriptors
+            .get(&descriptor_id)
+            .is_some_and(|descriptor| descriptor.resolved && descriptor.responsibility.is_some());
         let state_allows_descriptor = matches!(
             state.state,
             LifecycleState::RecoveryRequired { descriptor_id: current }
                 if current == descriptor_id
         ) || (matches!(state.state, LifecycleState::Ready(_))
-            && descriptor_is_unresolved);
+            && (descriptor_is_unresolved || descriptor_activation_pending));
         if !state_allows_descriptor || (!has_descriptor_root && !is_safe_mode_root) {
             return Ok(AdmissionOutcome::NotAdmitted {
                 reason: AdmissionRejection::RecoveryPrerequisite,
@@ -1276,12 +1280,15 @@ impl WorkspaceLifecycleCore {
             && state
                 .descriptors
                 .get(&descriptor_id)
-                .is_some_and(|descriptor| descriptor.resolved))
+                .is_some_and(|descriptor| {
+                    descriptor.resolved && descriptor.responsibility.is_none()
+                }))
             || (!is_safe_mode_root
                 && state
                     .control_slots
                     .get(&descriptor_id)
-                    .is_some_and(|slot| slot.retired))
+                    .is_some_and(|slot| slot.retired)
+                && !descriptor_activation_pending)
         {
             return Ok(AdmissionOutcome::NotAdmitted {
                 reason: AdmissionRejection::Retired,
@@ -1428,6 +1435,23 @@ impl WorkspaceLifecycleCore {
             {
                 Some(AdmissionRejection::ActiveOperation)
             }
+            // Descriptor recovery is capacity-independent with respect to
+            // transport and responsibility cells, but it cannot overtake a
+            // live foreground/maintenance execution.  A W1 descriptor may
+            // remain while W2 is Ready; leave the descriptor pending until
+            // W2 has joined so activation cannot fail against an unrelated
+            // owner and wedge the lifecycle transition.
+            (_, AdmissionKind::Recover)
+                if state.admissions.values().any(|ticket| {
+                    !ticket.kind.is_capacity_independent()
+                })
+                    || state.executions.values().any(|execution| {
+                        execution.phase != ExecutionPhase::Completed
+                            && execution.phase != ExecutionPhase::RecoveryRequired
+                    }) =>
+            {
+                Some(AdmissionRejection::ActiveOperation)
+            }
             (LifecycleState::Transition { .. }, kind) if !kind.is_capacity_independent() => {
                 Some(AdmissionRejection::Transition)
             }
@@ -1445,7 +1469,9 @@ impl WorkspaceLifecycleCore {
                         if state
                             .descriptors
                             .get(&descriptor_id)
-                            .is_some_and(|descriptor| !descriptor.resolved)
+                            .is_some_and(|descriptor| {
+                                !descriptor.resolved || descriptor.responsibility.is_some()
+                            })
                 ) =>
             {
                 Some(AdmissionRejection::RecoveryPrerequisite)
@@ -2480,7 +2506,7 @@ impl WorkspaceLifecycleCore {
                 .descriptors
                 .get_mut(&existing_id)
                 .ok_or(LifecycleError::UnknownDescriptor(existing_id))?;
-            if descriptor.resolved {
+            if descriptor.resolved && descriptor.responsibility.is_none() {
                 return Err(LifecycleError::RetiredDescriptor(existing_id));
             }
             // The descriptor root is immutable. A recovery ticket admitted
@@ -2814,7 +2840,7 @@ impl WorkspaceLifecycleCore {
             .lock_state()?
             .descriptors
             .values()
-            .filter(|descriptor| !descriptor.resolved)
+            .filter(|descriptor| !descriptor.resolved || descriptor.responsibility.is_some())
             .map(|descriptor| descriptor.descriptor_id)
             .collect())
     }

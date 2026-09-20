@@ -4,6 +4,7 @@ import {
   createNarrativeMaintenanceAttemptController,
   parseNarrativeMaintenanceBeginReceipt,
   parseNarrativeMaintenanceTerminalReceipt,
+  type NarrativeMaintenanceAttemptBinding,
   type NarrativeMaintenanceTerminalReceipt,
   type NarrativeMaintenanceStopReason,
 } from "./narrativeMaintenanceAttempt.js";
@@ -157,6 +158,8 @@ export interface NarrativeMaintenanceBackendLike {
   ): Promise<unknown>;
   /** Resolve an existing Native recovery descriptor before delivery admission. */
   reconcileNarrativeMaintenanceRecovery?(): Promise<unknown> | unknown;
+  /** ACK a replayable recovery receipt after main has matched its binding. */
+  ackNarrativeMaintenanceRecovery?(descriptorId: string): Promise<unknown> | unknown;
   ackNarrativeMaintenanceDelivery?(sequence: number): Promise<unknown> | unknown;
   resolveNarrativeMaintenanceDelivery?(sequence: number):
     | Promise<unknown>
@@ -1149,7 +1152,10 @@ export function createNarrativeMaintenanceScheduler(
   const nativeTerminalReceiptAttemptIds = new Set<string>();
   const ownedAttemptIds = new Set<string>();
   const cancellationFlights = new Map<string, Promise<unknown>>();
-  let terminalReceiptFailure: Error | null = null;
+  let terminalReceiptFailure: {
+    error: Error;
+    binding: NarrativeMaintenanceAttemptBinding | null;
+  } | null = null;
   const activeAttemptController = createNarrativeMaintenanceAttemptController();
   let cycleGeneration = 0;
   let mutationRevision = 0;
@@ -1589,6 +1595,83 @@ export function createNarrativeMaintenanceScheduler(
       : null;
   };
 
+  const clearRecoveredTerminalReceiptFailure = (recovery: {
+    descriptorId?: unknown;
+    reason?: unknown;
+    recoveredBinding?: unknown;
+    activeBinding?: unknown;
+  }): boolean => {
+    if (
+      terminalReceiptFailure === null ||
+      recovery.reason !== "maintenance-recovery-complete"
+    ) {
+      return false;
+    }
+    const recoveredBinding = recovery.recoveredBinding;
+    const activeBinding = recovery.activeBinding;
+    const matchesBinding = (value: unknown): value is NarrativeMaintenanceAttemptBinding =>
+      !!value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      typeof (value as Record<string, unknown>).authorityId === "string" &&
+      Number.isSafeInteger((value as Record<string, unknown>).generation) &&
+      ((value as Record<string, unknown>).generation as number) > 0;
+    // Native proves both sides of the boundary: the descriptor's exact
+    // original binding matches the failed receipt, and a current binding was
+    // published after descriptor control/Run reconciliation.
+    if (
+      !matchesBinding(recoveredBinding) ||
+      !matchesBinding(activeBinding) ||
+      terminalReceiptFailure.binding === null ||
+      recoveredBinding.authorityId !== terminalReceiptFailure.binding.authorityId ||
+      recoveredBinding.generation !== terminalReceiptFailure.binding.generation
+    ) {
+      return false;
+    }
+    terminalReceiptFailure = null;
+    return true;
+  };
+
+  const recoveryReceiptMatchesFailedBinding = (recovery: {
+    recoveredBinding?: unknown;
+  }): boolean => {
+    const failedBinding = terminalReceiptFailure?.binding;
+    const recoveredBinding = recovery.recoveredBinding;
+    return (
+      failedBinding !== null &&
+      failedBinding !== undefined &&
+      recoveredBinding !== null &&
+      typeof recoveredBinding === "object" &&
+      !Array.isArray(recoveredBinding) &&
+      (recoveredBinding as Record<string, unknown>).authorityId ===
+        failedBinding.authorityId &&
+      (recoveredBinding as Record<string, unknown>).generation ===
+        failedBinding.generation
+    );
+  };
+
+  const acknowledgeRecoveredRecovery = async (recovery: {
+    descriptorId?: unknown;
+    reason?: unknown;
+  }): Promise<boolean> => {
+    if (
+      recovery.reason !== "maintenance-recovery-complete" ||
+      !Number.isSafeInteger(recovery.descriptorId) ||
+      (recovery.descriptorId as number) < 0
+    ) {
+      return true;
+    }
+    const acknowledge = backend?.ackNarrativeMaintenanceRecovery;
+    if (typeof acknowledge !== "function") return true;
+    try {
+      await acknowledge.call(backend, String(recovery.descriptorId));
+      return true;
+    } catch (error) {
+      warn("[narrative-maintenance] recovery receipt ACK failed:", error);
+      return false;
+    }
+  };
+
   const cancelAttemptById = async (
     attemptId: string,
     reason: NarrativeMaintenanceStopReason,
@@ -1633,7 +1716,10 @@ export function createNarrativeMaintenanceScheduler(
         // workspace switching can discard the old Native authority, while
         // retaining a fail-closed marker that prevents ordinary maintenance
         // from resuming on the quarantined connection.
-        terminalReceiptFailure = terminalReceiptReuseError(parsedReceipt);
+        const reuseError = terminalReceiptReuseError(parsedReceipt);
+        terminalReceiptFailure = reuseError
+          ? { error: reuseError, binding: parsedReceipt.workspaceBinding }
+          : null;
       }
       const localReceipt = await localCancellation;
       if (
@@ -1707,10 +1793,112 @@ export function createNarrativeMaintenanceScheduler(
       return;
     }
     const method = backend?.runNarrativeMaintenanceCycle;
-    if (typeof method !== "function") return;
+    const reconcileRecovery = backend?.reconcileNarrativeMaintenanceRecovery;
+    if (
+      typeof method !== "function" &&
+      typeof reconcileRecovery !== "function"
+    ) {
+      return;
+    }
 
-    if (pending.size === 0 && durableWakeProjects.size === 0) return;
+    if (terminalReceiptFailure !== null) {
+      // A failed cleanup receipt closes ordinary delivery until Native proves
+      // the exact descriptor root was reconciled and a current binding was
+      // published. Never send queued work to an authority whose retirement
+      // evidence is still unresolved.
+      if (typeof reconcileRecovery === "function") {
+        try {
+          const raw = await reconcileRecovery.call(backend);
+          const recovery =
+            typeof raw === "string"
+              ? (JSON.parse(raw) as {
+                  status?: unknown;
+                  descriptorId?: unknown;
+                  reason?: unknown;
+                  recoveredBinding?: unknown;
+                  activeBinding?: unknown;
+                })
+              : (raw as {
+                  status?: unknown;
+                  descriptorId?: unknown;
+                  reason?: unknown;
+                  recoveredBinding?: unknown;
+                  activeBinding?: unknown;
+                } | null);
+          const markerWasCleared = clearRecoveredTerminalReceiptFailure(
+            recovery ?? {},
+          );
+          // A completed descriptor receipt is replayable until its exact
+          // failed-cleanup marker has been retired.  Do not ACK a mismatched
+          // receipt: doing so would discard the only main-side evidence that
+          // the quarantined binding is still unsafe to reuse.
+          const receiptAcked =
+            terminalReceiptFailure === null ||
+            markerWasCleared ||
+            !recoveryReceiptMatchesFailedBinding(recovery ?? {})
+              ? await acknowledgeRecoveredRecovery(recovery ?? {})
+              : false;
+          if (terminalReceiptFailure === null && receiptAcked) {
+            schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
+          } else {
+            schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+          }
+        } catch (error) {
+          warn("[narrative-maintenance] cleanup recovery pump failed:", error);
+          schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+        }
+      }
+      return;
+    }
+
+    if (pending.size === 0 && durableWakeProjects.size === 0) {
+      // Freshness can create an exact recovery descriptor without leaving a
+      // normal delivery record behind. Keep pumping that descriptor even
+      // when this scheduler has no ordinary work to claim.
+      if (typeof reconcileRecovery === "function") {
+        try {
+          const raw = await reconcileRecovery.call(backend);
+          const recovery =
+            typeof raw === "string"
+              ? (JSON.parse(raw) as {
+                  status?: unknown;
+                  descriptorId?: unknown;
+                  reason?: unknown;
+                  recoveredBinding?: unknown;
+                  activeBinding?: unknown;
+                })
+              : (raw as {
+                  status?: unknown;
+                  descriptorId?: unknown;
+                  reason?: unknown;
+                  recoveredBinding?: unknown;
+                  activeBinding?: unknown;
+                } | null);
+          if (
+            recovery?.status === "workspace-unavailable" ||
+            recovery?.status === "reconciled"
+          ) {
+            const markerWasCleared = clearRecoveredTerminalReceiptFailure(
+              recovery,
+            );
+            if (
+              terminalReceiptFailure === null ||
+              markerWasCleared ||
+              !recoveryReceiptMatchesFailedBinding(recovery)
+            ) {
+              await acknowledgeRecoveredRecovery(recovery);
+            }
+            schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+          }
+        } catch (error) {
+          warn("[narrative-maintenance] idle descriptor recovery failed:", error);
+          schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+        }
+      }
+      return;
+    }
     noteMutation();
+    if (typeof method !== "function") return;
 
     const candidates = [...pending.values()].filter(
       (work) => !deferredWorkKeys.has(scopedWorkKey(work)),
@@ -1817,18 +2005,39 @@ export function createNarrativeMaintenanceScheduler(
       return existingDeliverySequence ?? deliveryLedger.H + 1;
     };
     let deliverySequence = resolveDeliverySequence();
-    const reconcileRecovery = backend?.reconcileNarrativeMaintenanceRecovery;
     if (typeof reconcileRecovery === "function") {
       try {
         const raw = await reconcileRecovery.call(backend);
         const recovery =
           typeof raw === "string"
-            ? (JSON.parse(raw) as { status?: unknown })
-            : (raw as { status?: unknown } | null);
+            ? (JSON.parse(raw) as {
+                status?: unknown;
+                descriptorId?: unknown;
+                reason?: unknown;
+                recoveredBinding?: unknown;
+                activeBinding?: unknown;
+              })
+            : (raw as {
+                status?: unknown;
+                descriptorId?: unknown;
+                reason?: unknown;
+                recoveredBinding?: unknown;
+                activeBinding?: unknown;
+              } | null);
         if (
           recovery?.status === "workspace-unavailable" ||
           recovery?.status === "reconciled"
         ) {
+          const markerWasCleared = clearRecoveredTerminalReceiptFailure(
+            recovery,
+          );
+          if (
+            terminalReceiptFailure === null ||
+            markerWasCleared ||
+            !recoveryReceiptMatchesFailedBinding(recovery)
+          ) {
+            await acknowledgeRecoveredRecovery(recovery);
+          }
           // Recovery may have installed a new authority or advanced the
           // lifecycle revision. The pre-recovery binding captured above is
           // stale by definition; rediscover it before issuing any delivery.
@@ -2259,10 +2468,13 @@ export function createNarrativeMaintenanceScheduler(
               "[narrative-maintenance] Native terminal receipt unavailable after cycle failure:",
               receiptError,
             );
-            terminalReceiptFailure =
-              receiptError instanceof Error
-                ? receiptError
-                : new Error(String(receiptError));
+            terminalReceiptFailure = {
+              error:
+                receiptError instanceof Error
+                  ? receiptError
+                  : new Error(String(receiptError)),
+              binding: cycleBinding ?? null,
+            };
           }
         }
         const attemptSnapshot = cycleAttemptId
@@ -2595,6 +2807,18 @@ export function createNarrativeMaintenanceScheduler(
       noteMutation();
       if (
         !disposed &&
+        terminalReceiptFailure !== null &&
+        !quiescing &&
+        started &&
+        timer === null
+      ) {
+        // A failed cleanup receipt blocks ordinary delivery, but it must not
+        // suppress the delivery-independent recovery pump that can prove the
+        // old authority retired and clear this exact binding's marker.
+        schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+      }
+      if (
+        !disposed &&
         terminalReceiptFailure === null &&
         !haltForProcessInterruption &&
         (shouldSchedule || hasRunnablePendingWork() || hasRunnableWake())
@@ -2811,13 +3035,22 @@ export function createNarrativeMaintenanceScheduler(
       if (started || disposed) return;
       started = true;
       noteMutation();
-      if (typeof backend?.runNarrativeMaintenanceCycle !== "function") {
+      if (
+        typeof backend?.runNarrativeMaintenanceCycle !== "function" &&
+        typeof backend?.reconcileNarrativeMaintenanceRecovery !== "function"
+      ) {
         warn(
           "[narrative-maintenance] background runtime disabled: native method unavailable",
         );
         return;
       }
-      if (pending.size > 0) {
+      // Descriptor recovery and completed receipt replay are independent of
+      // the ordinary queue. Start the pump even when Freshness was the only
+      // producer and no delivery record is pending.
+      if (
+        pending.size > 0 ||
+        typeof backend?.reconcileNarrativeMaintenanceRecovery === "function"
+      ) {
         schedule(NARRATIVE_MAINTENANCE_INITIAL_DELAY_MS);
       }
     },
@@ -2944,7 +3177,7 @@ export function createNarrativeMaintenanceScheduler(
       // Native connection. Keep the process fail-closed and surface the
       // unusable terminal receipt to the quit finalizer.
       if (terminalReceiptFailure !== null) {
-        throw terminalReceiptFailure;
+        throw terminalReceiptFailure.error;
       }
       await retryPendingDeliveryAcks();
       if (pendingDeliveryAcks.size > 0) {

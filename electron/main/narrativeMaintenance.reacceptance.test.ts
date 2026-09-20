@@ -139,6 +139,21 @@ describe("narrative maintenance reacceptance boundaries", () => {
     scheduler.dispose();
   });
 
+  it("starts the descriptor recovery pump even when ordinary delivery is idle", async () => {
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValue({ status: "none" });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery,
+    });
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
+    scheduler.dispose();
+  });
+
   it("rediscovers the binding after descriptor reconciliation before retrying work", async () => {
     let currentBinding = binding("authority-before-recovery", 1);
     const reconcileNarrativeMaintenanceRecovery = vi

@@ -6,8 +6,9 @@ freeze receipt (built from parent
 `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`.
 
 This is the independent C0 record for the lifecycle contract and entry-point
-ledger. It is a read-only review record; it does not replace the C5 product
-acceptance.
+ledger. It is a read-only, bounded contract review; it does not replace the
+C5 product acceptance and is not a green implementation gate for the rows
+listed below as unresolved.
 
 ## Accepted contract boundaries
 
@@ -38,17 +39,27 @@ acceptance.
   project/semantic-epoch lineage, and a single all-ID absence check. A
   cleanup-quarantined authority cannot be reused as the resolver.
 - Project creation reservations are counted by project, so Fresh-to-Reused
-  selection cannot leak a generated reservation or race project deletion.
-- Maintenance and Freshness permits remain under the outer Native supervisor;
-  JoinError/panic returns the permit to the supervisor-owned recovery slot.
+  selection cannot leak a generated reservation. The destructive-delete versus
+  Run-reservation admission race remains open because the two maps are not one
+  atomic project state machine.
+- Automatic maintenance permits remain under the outer Native supervisor;
+  manual/legacy maintenance and Freshness start-failure paths still need the
+  same supervisor-owned handling for JoinError/panic and `start()` rejection.
 - The frozen Tauri compatibility owner may use a directly installed verified
   authority when the shared core has not yet published a binding; explicit
   Electron Transition/RecoveryRequired/Closed states remain fail-closed.
 
+The following C0 rows remain open and block a green C1/C5 conclusion: the
+renderer-facing foreground lanes still use the process-local operation counter
+instead of a shared-core participant; project deletion and Run creation use
+separate coordination maps; the strict borrowed validation context is not
+present at every reachable callsite; and manual/legacy maintenance paths need
+outer async supervision equivalent to the automatic worker.
+
 ## Evidence inspected
 
 - `docs/plans/pr600-lifecycle-replacement.md` and the implementation diff at
-  candidate `6b7407e7`.
+  the candidate checkpoint recorded above.
 - Layer A shared-core tests: `cargo test --manifest-path
   src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle` (26 tests,
   including independent W2 Open with an unresolved W1 descriptor).

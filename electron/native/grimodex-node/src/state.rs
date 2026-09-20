@@ -6,7 +6,7 @@
 //! コンストラクタで明示注入される (dirs:: を napi 内で解決しない。§4.2)。
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -156,6 +156,19 @@ pub(crate) enum NarrativeMaintenanceAdmissionOwner {
 /// shared `WorkspaceLifecycleCore` decides every admission and terminal state.
 pub struct NarrativeMaintenanceRecoveryGate {
     state: Mutex<NarrativeMaintenanceRecoveryState>,
+}
+
+/// A replayable receipt for a descriptor that has completed exact Run
+/// reconciliation and has crossed the Ready/activation boundary.  The
+/// descriptor itself may already have released its responsibility cell, so
+/// this process-local receipt is kept until the main owner explicitly ACKs
+/// it.  It is deliberately separate from the lifecycle `LiveBinding` and
+/// carries the original maintenance binding that a cleanup-failed receipt
+/// must match before ordinary delivery may resume.
+#[derive(Clone, Debug)]
+pub(crate) struct NarrativeMaintenanceRecoveryReceipt {
+    pub recovered_binding: MaintenanceWorkspaceBinding,
+    pub active_binding: Option<MaintenanceWorkspaceBinding>,
 }
 
 /// Process-local ownership for a transiently preempted maintenance Run whose
@@ -705,6 +718,56 @@ impl NarrativeMaintenanceRecoveryGate {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.active_attempts.remove(attempt_id);
+    }
+
+    /// Retire one exact cleanup-failed attempt after its descriptor has been
+    /// reconciled. This is narrower than workspace-swap retirement: unrelated
+    /// attempts on an independent Ready workspace remain owners.
+    pub fn retire_recovered_attempt_binding(
+        &self,
+        attempt_id: &str,
+        binding: &MaintenanceWorkspaceBinding,
+    ) -> anyhow::Result<()> {
+        binding.validate()?;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(active_binding) = state.active_attempts.get(attempt_id) {
+            anyhow::ensure!(
+                active_binding == binding,
+                "NEX_MAINTENANCE_ATTEMPT_BINDING_MISMATCH: recovered descriptor binding differs from the failed attempt"
+            );
+            state.active_attempts.remove(attempt_id);
+        }
+        Ok(())
+    }
+
+    /// Rotate the maintenance generation only when the recovered descriptor
+    /// belonged to the currently bound authority. A descriptor for W1 may be
+    /// resolved while independent W2 remains Ready, so that case must not
+    /// invalidate W2's active generation.
+    pub fn rotate_generation_for_binding(
+        &self,
+        binding: &MaintenanceWorkspaceBinding,
+    ) -> Option<MaintenanceWorkspaceBinding> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.authority_id.as_deref() != Some(binding.authority_id.as_str())
+            || state.workspace_generation != binding.generation
+        {
+            return None;
+        }
+        state.workspace_generation = allocate_narrative_maintenance_generation(Some(
+            checked_next_narrative_maintenance_generation(state.workspace_generation),
+        ));
+        state.recovered_work_keys.clear();
+        Some(MaintenanceWorkspaceBinding {
+            authority_id: binding.authority_id.clone(),
+            generation: state.workspace_generation,
+        })
     }
 
     /// Close admission while retiring only attempts whose terminal receipt
@@ -2422,6 +2485,18 @@ pub struct AppState {
     /// descriptor resolver has opened and verified its replacement.
     pub(crate) narrative_maintenance_recovery_batons:
         Mutex<HashMap<String, PinnedWorkspaceDb>>,
+    /// Exact main-side binding for a descriptor transferred by a scheduled
+    /// maintenance attempt.  Lifecycle `LiveBinding.recovery_generation` is
+    /// a different identity from the maintenance gate generation; retain the
+    /// original wire binding explicitly for recovery receipts.
+    pub(crate) narrative_maintenance_recovery_bindings:
+        Mutex<HashMap<u64, (Option<String>, MaintenanceWorkspaceBinding)>>,
+    /// Completed descriptor receipts remain replayable until main has
+    /// observed and ACKed the exact recovery boundary.  This prevents a
+    /// Freshness-only preflight from consuming the receipt before the normal
+    /// scheduler can clear its cleanup-failed marker.
+    pub(crate) narrative_maintenance_recovery_receipts:
+        Mutex<BTreeMap<u64, NarrativeMaintenanceRecoveryReceipt>>,
 }
 
 pub struct WorkspaceOperationGuard {
@@ -2531,6 +2606,8 @@ impl AppState {
             workspace_operation_notify: Arc::new(Notify::new()),
             workspace_shutdown_requested: Arc::new(AtomicBool::new(false)),
             narrative_maintenance_recovery_batons: Mutex::new(HashMap::new()),
+            narrative_maintenance_recovery_bindings: Mutex::new(HashMap::new()),
+            narrative_maintenance_recovery_receipts: Mutex::new(BTreeMap::new()),
         })
     }
 

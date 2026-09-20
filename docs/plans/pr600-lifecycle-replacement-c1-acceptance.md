@@ -6,8 +6,9 @@ freeze receipt (built from parent
 `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`.
 
 This is the independent C1 record for the pure lifecycle core, strict DTOs,
-delivery ledger, responsibility capacity, and permit split. It is a read-only
-review record; it does not claim whole-product acceptance.
+delivery ledger, responsibility capacity, and permit split. It is a bounded,
+read-only review record; it does not claim whole-product acceptance or close
+the unresolved cross-boundary owner gaps.
 
 ## Accepted implementation checks
 
@@ -37,9 +38,18 @@ review record; it does not claim whole-product acceptance.
 - creation evidence records stable file identity and semantic epoch lineage
   at reservation time, and the supervisor records connection retirement after
   Join before resolving an unknown creation.
-- permit ownership remains with the outer supervisor on worker panic or
-  JoinError, and terminal delivery is persisted only after Join plus release
-  or descriptor transfer.
+- automatic-delivery permit ownership remains with the outer supervisor on
+  worker panic or JoinError, and terminal delivery is persisted only after
+  Join plus release or descriptor transfer. Freshness and manual start-failure
+  paths still need this same outer-supervisor treatment.
+
+The bounded core review does not accept the renderer-facing foreground owner
+as lifecycle-integrated: Prepare/Apply and bound proposal writes still use a
+process-local operation counter and sampled stop checks. Manual/legacy
+maintenance has a synchronous permit helper but not the automatic path's
+async supervisor-owned slot. Project destructive admission and Run creation
+reservation are also not one atomic coordination state machine. These remain
+independent C3/C4 blockers.
 
 ## Evidence inspected
 

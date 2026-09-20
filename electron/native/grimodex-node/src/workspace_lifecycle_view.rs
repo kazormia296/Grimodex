@@ -265,7 +265,7 @@ impl WorkspaceLifecycleViewAdapter {
         &self,
         descriptor_id: RecoveryDescriptorId,
     ) -> AppResult<(WorkspaceLifecycleView, bool)> {
-        let outcome = self.core.admit_recovery(descriptor_id)?;
+        let outcome = self.try_begin_recovery_transition(descriptor_id)?;
         let ticket = match outcome {
             AdmissionOutcome::Admitted(ticket) => ticket,
             AdmissionOutcome::NotAdmitted { .. } => {
@@ -279,6 +279,26 @@ impl WorkspaceLifecycleViewAdapter {
         projection.transition_ticket = Some(ticket);
         let view = self.projected_view_with_projection(&mut projection)?;
         Ok((view, true))
+    }
+
+    /// Attempt descriptor recovery without converting a normal active-owner
+    /// rejection into an exception.  Recovery may coexist with an unresolved
+    /// W1 descriptor while W2 is Ready, but it must wait until every active
+    /// maintenance participant has joined; callers use `NotAdmitted` to keep
+    /// the descriptor pending and retry without wedging the transition state.
+    pub(crate) fn try_begin_recovery_transition(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+    ) -> AppResult<AdmissionOutcome> {
+        let outcome = self.core.admit_recovery(descriptor_id)?;
+        if let AdmissionOutcome::Admitted(ticket) = &outcome {
+            self.lock_projection()?.transition_ticket = Some(ticket.clone());
+        }
+        Ok(outcome)
+    }
+
+    pub(crate) fn projected_recovery_transition_view(&self) -> AppResult<WorkspaceLifecycleView> {
+        self.projected_view()
     }
 
     pub(crate) fn mark_safe_mode_recovery_required(&self) -> AppResult<WorkspaceLifecycleView> {

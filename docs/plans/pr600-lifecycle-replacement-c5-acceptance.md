@@ -5,16 +5,18 @@ Parent branch: `codex/nir1-b-capacity-implementation`
 Base SHA: `8df6be62b2652a5c3e7bca1ffb0e874937313d43`
 Child branch: `codex/pr600-lifecycle-replacement`
 Contract: `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`
-Implementation checkpoint: `6b7407e7`
+Implementation checkpoint: `ce2417589d82b423d28fba350ba0882524aa0c80` plus the
+post-checkpoint working-tree fixes recorded in the final candidate commit
 Candidate HEAD: recorded in the external C5 freeze receipt after the final
 documentation commit
 Worktree: `/home/grimodex/.codex/worktrees/pr600-lifecycle-replacement`
 
 This record separates focused implementation evidence from independent final
 acceptance. The candidate keeps PR #600 Graph/SQL/measurement behavior and
-adds the five C0 contract corrections: result/effect separation, exact Run
-creation evidence, independent descriptor recovery capacity, positive context
-supply, and I7-P/I7-L resource ordering.
+implements the lifecycle result/recovery, capacity, permit, and resource-order
+changes that are covered by the focused suites. Positive context supply and
+complete cross-boundary ownership remain open findings. C5 status is
+**HOLD** pending the Sol max final review and exact-head Quick/verify receipts.
 
 ## Focused implementation evidence
 
@@ -47,8 +49,8 @@ and ACK-only retry without a second Native cycle dispatch.
 
 | Gate | Status | Evidence rule |
 | --- | --- | --- |
-| C0 independent contract review | accepted in `pr600-lifecycle-replacement-c0-acceptance.md` | Must remain separate from implementation claims. |
-| C1 independent core review | accepted in `pr600-lifecycle-replacement-c1-acceptance.md` | 26 core tests and Layer B Native tests are recorded. |
+| C0 independent contract review | bounded/limited; unresolved owner rows remain | Must remain separate from implementation claims. |
+| C1 independent core review | bounded/limited; cross-boundary owner rows remain | 26 core tests and Layer B Native tests are recorded. |
 | C5 Sol max review | required for the exact clean final HEAD | Reviewer must be read-only and check the prior P1 findings again. |
 | local Quick + immediate verify | required on the frozen final HEAD | Base and head must be the same exact pair in both commands. |
 
@@ -57,6 +59,15 @@ IPC → N-API → SQLite → renderer Layer C journey, and an all-green T01–T3
 run have not been claimed by this record. Their absence is an explicit
 environment/evidence limitation, not a pass. No merge or master publication
 is included in this child PR.
+
+Sol max must also recheck these concrete blockers on the final HEAD: manual
+and legacy maintenance supervision after an outer `run_blocking` JoinError;
+foreground Prepare/Apply and proposal writes still using the process-local
+operation counter instead of a shared-core participant; separate project
+destructive and Run-creation coordination maps; strict context-scope coverage
+for all reachable eligibility callsites; and complete result-combination
+validation. A static HOLD/REJECT is an honest outcome for this candidate and
+does not get converted into acceptance by the focused suite.
 
 ## Candidate ledger fields
 
@@ -74,9 +85,9 @@ implementer=Luna max
 independent_reviewer=Sol max (C5; read-only)
 threat_model_ref_and_confirmation=policies/quality/iron-laws.md#GDX-PRECHECK-001; lifecycle ownership, renderer trust boundary, and process-local evidence limits recorded in the contract
 entry_matrix_ref=docs/plans/pr600-lifecycle-replacement.md#concrete-c0-callsite-ledger
-gate_status_c0=accepted
-gate_status_c1=accepted
-gate_status_c5=pending exact-head Sol max plus Quick/verify
+gate_status_c0=bounded-review-with-open-findings
+gate_status_c1=bounded-review-with-open-findings
+gate_status_c5=HOLD pending exact-head Sol max plus Quick/verify
 focused_commands=see focused implementation evidence above
 focused_receipt_paths=docs/plans/pr600-lifecycle-replacement-c0-acceptance.md; docs/plans/pr600-lifecycle-replacement-c1-acceptance.md
 quick_command=pnpm ci:local:quick -- --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head "$candidate_head"
