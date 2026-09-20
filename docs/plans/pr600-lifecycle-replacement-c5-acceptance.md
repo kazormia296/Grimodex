@@ -6,7 +6,8 @@ Base SHA: `8df6be62b2652a5c3e7bca1ffb0e874937313d43`
 Child branch: `codex/pr600-lifecycle-replacement`
 Contract: `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`
 Implementation checkpoint: `6b7407e7`
-Candidate HEAD: `19d19d7823838a67c16d44a667708dab485dea91`
+Candidate HEAD: recorded in the external C5 freeze receipt after the final
+documentation commit
 Worktree: `/home/grimodex/.codex/worktrees/pr600-lifecycle-replacement`
 
 This record separates focused implementation evidence from independent final
@@ -66,7 +67,7 @@ parent_branch=codex/nir1-b-capacity-implementation
 base_sha=8df6be62b2652a5c3e7bca1ffb0e874937313d43
 child_branch=codex/pr600-lifecycle-replacement
 worktree=/home/grimodex/.codex/worktrees/pr600-lifecycle-replacement
-head_sha=19d19d7823838a67c16d44a667708dab485dea91
+head_sha=see external C5 freeze receipt for the clean final commit
 tree_status=clean before final focused/Quick/verify runs
 changed_paths=docs/plans, electron/main, electron/native/grimodex-node, src-tauri/crates/grimodex-db
 implementer=Luna max
@@ -78,11 +79,11 @@ gate_status_c1=accepted
 gate_status_c5=pending exact-head Sol max plus Quick/verify
 focused_commands=see focused implementation evidence above
 focused_receipt_paths=docs/plans/pr600-lifecycle-replacement-c0-acceptance.md; docs/plans/pr600-lifecycle-replacement-c1-acceptance.md
-quick_command=pnpm ci:local:quick -- --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head 19d19d7823838a67c16d44a667708dab485dea91
+quick_command=pnpm ci:local:quick -- --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head "$candidate_head"
 quick_base_sha=8df6be62b2652a5c3e7bca1ffb0e874937313d43
-quick_head_sha=19d19d7823838a67c16d44a667708dab485dea91
+quick_head_sha=see external C5 freeze receipt
 quick_receipt_path=to be recorded after exact-head run
-verify_command=pnpm ci:local:verify -- quick --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head 19d19d7823838a67c16d44a667708dab485dea91
+verify_command=pnpm ci:local:verify -- quick --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head "$candidate_head"
 verify_receipt_path=to be recorded after immediate exact-head run
 test_binary_hashes=to be recorded for final test-lifecycle/build artifacts if produced
 unresolved_findings=full Layer C IPC journey, dedicated test-lifecycle feature/binary, and all-green T01-T36 evidence are not yet run

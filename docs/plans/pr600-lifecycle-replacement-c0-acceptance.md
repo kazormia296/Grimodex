@@ -1,6 +1,7 @@
 # PR #600 lifecycle replacement: C0 acceptance record
 
-Candidate under review: `19d19d7823838a67c16d44a667708dab485dea91` (built from parent
+Candidate under review: the clean final checkout recorded in the external C5
+freeze receipt (built from parent
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`). Contract:
 `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`.
 
