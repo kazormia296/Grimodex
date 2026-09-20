@@ -76,8 +76,10 @@ pub use nir1_graph::{read_nir1_graph, Nir1GraphRequest, Nir1GraphResponse};
 pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 pub(crate) use repository::{
-    release_project_destructive_permit, try_reserve_project_destructive_permit,
+    project_creation_reservation_active, release_project_destructive_permit,
+    try_reserve_project_destructive_permit,
 };
+pub use repository::{release_project_creation, try_reserve_project_creation};
 pub(crate) use scene_scope::backfill_scene_scope_storage_in_tx;
 pub(crate) use scene_scope::ensure_scene_scope_binding_in_tx;
 pub(crate) use scene_scope::ensure_scope_registry_in_tx;
@@ -157,8 +159,7 @@ mod semantic_index_diagnostics;
 mod source_revision;
 #[allow(unused_imports)]
 pub(crate) use source_revision::{
-    resolve_current_source_state_with_control,
-    resolve_source_revision_with_control,
+    resolve_current_source_state_with_control, resolve_source_revision_with_control,
 };
 mod stage_provenance;
 mod task_leases;
@@ -262,6 +263,7 @@ pub(crate) use c2zc_canonical_cutover::{
     mint_c2zc_scan_publish_project_birth_epoch_in_tx,
 };
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
+pub use incremental_freshness::FreshnessLifecycleControl;
 pub use incremental_freshness::{
     run_incremental_freshness_cycle, run_incremental_freshness_cycle_with_hold,
     run_incremental_freshness_cycle_with_lifecycle_control,
@@ -272,12 +274,6 @@ pub use incremental_freshness::{
     IncrementalFreshnessHeldSummary, IncrementalFreshnessShadowConsumerSummary,
     IncrementalFreshnessShadowSummary, SuccessfulIncrementalFreshnessCycle,
     NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
-};
-pub use incremental_freshness::FreshnessLifecycleControl;
-pub use nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
-pub use source_revision::{
-    is_validation_terminated, validation_terminated, ValidationTerminated,
-    ValidationTerminationReason,
 };
 pub use maintenance_route_registry::{
     route_descriptor_by_id, route_descriptor_for_run_kind, route_descriptors,
@@ -312,6 +308,7 @@ pub use maintenance_runtime::{
     MaintenanceCycleResult, MaintenanceCycleStatus, MaintenanceWorkRequest,
     MaintenanceWorkspaceBinding, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
 };
+pub use nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 #[allow(unused_imports)]
 pub(crate) use publish_runtime::{
     publish_freshness_evaluation_in_tx, write_consumer_freshness_in_tx, write_edge_state_in_tx,
@@ -322,6 +319,10 @@ pub(crate) use restore_rebuild::{
     rebuild_verify_dependency_edges, rotate_epoch_for_restore_in_tx,
     validate_graph_state_digest_with_control, verify_dependency_graph_snapshot_with_control,
     RebuildVerifyReport,
+};
+pub use source_revision::{
+    is_validation_terminated, validation_terminated, ValidationTerminated,
+    ValidationTerminationReason,
 };
 pub(crate) use task_leases::with_immediate_transaction;
 pub use terminal_failure::{
@@ -351,14 +352,14 @@ pub use restore_rebuild::{
     ensure_restore_epochs_for_workspace, list_pending_maintenance_wakes,
     production_verify_check_coverage, rebuild_narrative_derived_state_for_project,
     rebuild_narrative_derived_state_for_project_with_control,
-    recover_maintenance_run_exact, resolve_maintenance_run_creation_unknown,
-    record_maintenance_delivery_failure_wake, run_dependency_verify_for_project,
+    record_maintenance_delivery_failure_wake, recover_maintenance_run_exact,
+    resolve_maintenance_run_creation_unknown, run_dependency_verify_for_project,
     run_dependency_verify_for_project_with_coordinates,
     run_dependency_verify_for_project_with_coordinates_and_control,
-    try_cancel_preempted_maintenance_run,
-    verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
-    CreationResolution, PendingMaintenanceWake, RebuildDerivedStateOutcome,
-    RebuildDerivedStateSummary, RebuildShadowVerificationSummary, VerifyRunOutcome,
+    try_cancel_preempted_maintenance_run, verify_narrative_dependency_graph_for_project,
+    CreationResolution, DependencyGraphVerifyReport, PendingMaintenanceWake,
+    RebuildDerivedStateOutcome, RebuildDerivedStateSummary, RebuildShadowVerificationSummary,
+    VerifyRunOutcome,
 };
 #[allow(unused_imports)]
 pub(crate) use semantic_epoch::{create_epoch_in_tx, list_epochs};

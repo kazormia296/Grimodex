@@ -234,9 +234,7 @@ impl NarrativeMaintenanceGraphControlConfig {
         }
     }
 
-    pub(crate) fn with_finalization_granted(
-        finalization_granted: Arc<AtomicBool>,
-    ) -> Self {
+    pub(crate) fn with_finalization_granted(finalization_granted: Arc<AtomicBool>) -> Self {
         Self {
             finalization_granted: Some(finalization_granted),
             ..Self::default()
@@ -393,9 +391,7 @@ impl<T> NarrativeMaintenanceConnectionResult<T> {
             (Some(_), None, Some(cleanup)) => Err(anyhow!(
                 "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: {cleanup}"
             )),
-            (None, None, None) => Err(anyhow!(
-                "NIR1_MAINTENANCE_CONNECTION_NO_RESULT"
-            )),
+            (None, None, None) => Err(anyhow!("NIR1_MAINTENANCE_CONNECTION_NO_RESULT")),
         }
     }
 }
@@ -747,10 +743,7 @@ where
         } else {
             let rollback_result = conn.execute_batch("ROLLBACK");
             if let Err(error) = rollback_result {
-                append_cleanup_error(
-                    &mut cleanup_error,
-                    anyhow!("rollback failed: {error}"),
-                );
+                append_cleanup_error(&mut cleanup_error, anyhow!("rollback failed: {error}"));
             }
         }
         if !conn.is_autocommit() {
@@ -848,6 +841,39 @@ impl Database {
         self.connection_health.unusable_reason()
     }
 
+    /// Retire the connection from the normal owner before a recovery
+    /// descriptor is handed to a replacement authority. The SQLite handle is
+    /// kept only as quarantined storage until its owning authority is dropped;
+    /// no later recovery path may reuse it. A transaction still open at this
+    /// boundary is not a retirement proof.
+    pub fn retire_connection_for_recovery(&self) -> anyhow::Result<()> {
+        // This primitive is intentionally allowed to inspect a connection
+        // that was already quarantined by cleanup. `with_conn` first checks
+        // the reusable flag and would make the cleanup-failure -> recovery
+        // path permanently unable to emit its retirement receipt.
+        self.prove_connection_retired_for_recovery()?;
+        self.connection_health
+            .mark_unusable("retired for exact lifecycle recovery");
+        Ok(())
+    }
+
+    /// Prove that the worker-owned connection has no open transaction without
+    /// changing its reusable state. A clean connection may need a recovery
+    /// descriptor for an operation-level error while remaining readable by
+    /// existing diagnostic callers; cleanup-quarantined connections use the
+    /// stronger `retire_connection_for_recovery` wrapper above.
+    pub fn prove_connection_retired_for_recovery(&self) -> anyhow::Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|error| anyhow!("NEX_MAINTENANCE_CONNECTION_RETIREMENT_LOCKED: {error}"))?;
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "NEX_MAINTENANCE_CONNECTION_RETIREMENT_UNPROVEN: transaction is still active"
+        );
+        Ok(())
+    }
+
     pub(crate) fn foreground_connection_waiter_count(&self) -> usize {
         self.foreground_connection_waiters.load(Ordering::SeqCst)
     }
@@ -915,9 +941,9 @@ fn set_maintenance_cleanup_failpoints_for_test(failpoints: MaintenanceCleanupFai
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ForegroundConnectionWaiter;
     use crate::narrative_extraction::nir1_entity_relation_index::GraphWorkStage;
     use crate::narrative_extraction::{is_validation_terminated, ValidationTerminated};
+    use crate::ForegroundConnectionWaiter;
     use std::sync::mpsc;
     use std::sync::Barrier;
     use std::thread;
@@ -1126,7 +1152,10 @@ mod tests {
                 reservation_cas_reached_for_thread.wait();
                 allow_reservation_post_check_for_thread.wait();
             });
-            assert!(reservation.is_none(), "late waiter must cancel the reservation");
+            assert!(
+                reservation.is_none(),
+                "late waiter must cancel the reservation"
+            );
         });
 
         // Pause after the reservation CAS and publish the foreground waiter
@@ -1204,20 +1233,14 @@ mod tests {
     fn latched_cancellation_clears_progress_before_rollback() {
         let db = test_db();
         let stop = Arc::new(AtomicBool::new(true));
-        let result = with_narrative_maintenance_connection(
-            &db,
-            Duration::ZERO,
-            1,
-            stop,
-            |conn| {
+        let result = with_narrative_maintenance_connection(&db, Duration::ZERO, 1, stop, |conn| {
                 conn.execute_batch("BEGIN")?;
                 assert!(!conn.is_autocommit());
                 Err::<(), _>(validation_terminated(
                     ValidationTerminationReason::Cancelled,
                     "ordinary cancellation",
                 ))
-            },
-        )
+        })
         .expect("acquisition")
         .expect("scope");
         let error = result
@@ -1264,6 +1287,21 @@ mod tests {
     }
 
     #[test]
+    fn retirement_receipt_can_be_emitted_after_cleanup_quarantine() {
+        let db = test_db();
+        db.quarantine_connection("cleanup proof unavailable");
+        assert!(!db.connection_reusable());
+
+        // Retirement must inspect the already-quarantined handle directly;
+        // routing through the normal reusable-only accessor would deadlock
+        // exact CreationUnknown recovery forever.
+        db.retire_connection_for_recovery()
+            .expect("quarantined autocommit connection is retired");
+        assert!(!db.connection_reusable());
+        assert!(db.connection_unusable_reason().is_some());
+    }
+
+    #[test]
     fn typed_cancellation_and_cleanup_failure_preserve_both_and_quarantine() {
         let db = test_db();
         set_maintenance_cleanup_failpoints_for_test(MaintenanceCleanupFailpoints {
@@ -1272,19 +1310,14 @@ mod tests {
             progress_reset: true,
             busy_timeout_restore: false,
         });
-        let result = with_narrative_maintenance_connection(
-            &db,
-            Duration::ZERO,
-            1,
-            stop_flag(),
-            |conn| {
+        let result =
+            with_narrative_maintenance_connection(&db, Duration::ZERO, 1, stop_flag(), |conn| {
                 conn.execute_batch("BEGIN")?;
                 Err::<(), _>(validation_terminated(
                     ValidationTerminationReason::Cancelled,
                     "typed cancellation",
                 ))
-            },
-        )
+            })
         .expect("acquisition")
         .expect("scope");
         assert!(!result.receipt.connection_reusable);

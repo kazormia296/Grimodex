@@ -1056,10 +1056,7 @@ fn apply_codex_rename_updates_in_tx(
     for scene_id in changed_scene_ids {
         feed_events.push(
             crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
-                conn,
-                project_id,
-                &scene_id,
-                updated_at,
+                conn, project_id, &scene_id, updated_at,
             )?,
         );
     }
@@ -1969,6 +1966,13 @@ pub fn project_delete(db: &Database, payload: ProjectDeletePayload) -> anyhow::R
     try_reserve_project_destructive_permit(&payload.project_id)?;
     let result = db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
+        anyhow::ensure!(
+            !crate::narrative_extraction::project_creation_reservation_active(
+                &payload.project_id
+            ),
+            "project '{}' has a reserved or unresolved lifecycle Run; deletion is not admitted",
+            payload.project_id
+        );
         let active_runs: i64 = tx.query_row(
             "SELECT COUNT(*) FROM narrative_extraction_runs
               WHERE project_id = ?1 AND status IN ('pending', 'running')",
@@ -7827,7 +7831,11 @@ mod tests {
                     ),
                     (
                         json!({"kind": "scene-scope", "sceneId": "moved"}),
-                        json!(["/binding/sourceToken", "/binding/updatedAt", "/binding/version"]),
+                        json!([
+                            "/binding/sourceToken",
+                            "/binding/updatedAt",
+                            "/binding/version"
+                        ]),
                         1,
                         2,
                     ),
@@ -8181,7 +8189,10 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(scope_version, 4, "forward/undo/redo refreshes scope OCC");
-            assert_eq!(scope_event_count, 3, "forward/undo/redo append scope Feed events");
+            assert_eq!(
+                scope_event_count, 3,
+                "forward/undo/redo append scope Feed events"
+            );
             Ok(())
         })
         .expect("inspect rename body snapshots");

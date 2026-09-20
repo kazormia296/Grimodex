@@ -54,14 +54,14 @@ use super::finding_identity::{
 use super::maintenance_contracts::{
     current_maintenance_coordinates, MaintenanceContractCoordinates,
 };
+pub use super::maintenance_lifecycle::CreationResolution;
 use super::maintenance_lifecycle::{
-    canonical_failure_message, complete_maintenance_run_in_tx, create_maintenance_run_in_tx,
-    create_maintenance_run_in_tx_with_control,
-    fail_maintenance_run_in_tx, hold_maintenance_run_in_tx, load_maintenance_run_in_tx,
-    cancel_maintenance_run_for_preemption_in_tx, resolve_creation_unknown_in_tx,
+    cancel_maintenance_run_for_preemption_in_tx, canonical_failure_message,
+    complete_maintenance_run_in_tx, create_maintenance_run_in_tx,
+    create_maintenance_run_in_tx_with_control, fail_maintenance_run_in_tx,
+    hold_maintenance_run_in_tx, load_maintenance_run_in_tx, resolve_creation_unknown_in_tx,
     CreationIdentity, CreationVerification, MaintenanceFailureKind, RunCreationReservation,
 };
-pub use super::maintenance_lifecycle::CreationResolution;
 use super::maintenance_runtime::{
     maintenance_stop_signal, validate_phase_success_outcome, FinalizationGrantScope,
     MaintenanceCycleControl, MaintenanceCycleGraphControl,
@@ -77,8 +77,8 @@ use super::repository::create_system_run_in_tx;
 use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::source_revision::{
-    is_validation_terminated, resolve_current_source_state, ForegroundValidationControl,
-    resolve_current_source_state_with_control, CurrentSourceState,
+    is_validation_terminated, resolve_current_source_state,
+    resolve_current_source_state_with_control, CurrentSourceState, ForegroundValidationControl,
 };
 use super::task_leases::with_immediate_transaction;
 use super::terminal_failure::{
@@ -86,10 +86,10 @@ use super::terminal_failure::{
     resolve_terminal_failure_for_run_generated_in_tx,
 };
 use super::verify_coverage::{self, VerifyCoverageCheck};
-use crate::Database;
 use crate::narrative_maintenance_connection::{
     with_narrative_maintenance_graph_control, NarrativeMaintenanceGraphControlConfig,
 };
+use crate::Database;
 use uuid::Uuid;
 
 const RESTORE_EPOCH_ID_DOMAIN: &[u8] = b"grimodex:semantic-epoch:restore:v1";
@@ -670,8 +670,7 @@ pub(crate) fn evaluate_edge_from_db_with_control(
     edge: &DependencyEdge,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<EdgeObservation> {
-    let input =
-        build_edge_comparison_input_with_control(conn, project_id, run_id, edge, control)?;
+    let input = build_edge_comparison_input_with_control(conn, project_id, run_id, edge, control)?;
     control.check(GraphWorkStage::Edge)?;
     Ok(evaluate_edge(&input))
 }
@@ -1143,10 +1142,7 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
     (control.should_stop)()?;
     let now = grimodex_core::now_rfc3339_millis();
 
-    let (created, semantic_epoch_id) = run_maintenance_graph_phase(
-        db,
-        control,
-        |conn, graph| {
+    let (created, semantic_epoch_id) = run_maintenance_graph_phase(db, control, |conn, graph| {
             let mut created = with_immediate_transaction(conn, |conn| {
                 graph.check(GraphWorkStage::Restore)?;
                 let epoch_id = get_current_epoch(conn, project_id)?.ok_or_else(|| {
@@ -1179,8 +1175,7 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
                 attach_run(created.0.core_ownership())?;
             }
             Ok(created)
-        },
-    )?;
+    })?;
     let run_id = created.run_id.clone();
     let already_running = created.reused;
     if already_running {
@@ -1191,13 +1186,17 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
     // Read the consumer roster and the V2 shadow in independent phases. Each
     // consumer publication below has its own transaction, so a later stop
     // leaves every earlier consumer commit durable.
-    let consumers = run_maintenance_graph_phase_for_run(db, control, &run_id, |conn, graph| {
+        let consumers =
+            run_maintenance_graph_phase_for_run(db, control, &run_id, |conn, graph| {
         graph.check(GraphWorkStage::Restore)?;
         list_distinct_consumers(conn, project_id)
     })?;
-    let v2_shadow = run_maintenance_graph_phase_for_run(db, control, &run_id, |conn, graph| {
+        let v2_shadow =
+            run_maintenance_graph_phase_for_run(db, control, &run_id, |conn, graph| {
         with_immediate_transaction(conn, |conn| {
-            verify_v2_shadow_for_rebuild_in_tx_with_control(conn, project_id, &run_id, graph)
+                    verify_v2_shadow_for_rebuild_in_tx_with_control(
+                        conn, project_id, &run_id, graph,
+                    )
         })
     })?;
     let mut summary = RebuildDerivedStateSummary {
@@ -1217,12 +1216,8 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
                     &run_id,
                     &semantic_epoch_id,
                 )?;
-                let edges = find_edges_by_consumer(
-                    conn,
-                    project_id,
-                    &consumer_kind,
-                    &consumer_key,
-                )?;
+                    let edges =
+                        find_edges_by_consumer(conn, project_id, &consumer_kind, &consumer_key)?;
                 if edges.is_empty() {
                     return Ok(());
                 }
@@ -1514,7 +1509,10 @@ pub(crate) fn rebuild_narrative_derived_state_for_project_with_graph_control(
             Ok(_) => Err(anyhow::anyhow!(
                 "NEX_REBUILD_DERIVED_FINALIZE_FAILED: {finalize_error}"
             )),
-            Err(work_error) => Err(combine_rebuild_finalization_errors(work_error, finalize_error)),
+            Err(work_error) => Err(combine_rebuild_finalization_errors(
+                work_error,
+                finalize_error,
+            )),
         };
     }
 
@@ -1852,11 +1850,8 @@ pub(crate) fn rebuild_derived_state_edges_in_project_with_control(
     // V2-only Consumers that have no V1 compatibility Edge. The sidecar is
     // returned in memory and skipped by the persisted Run outcome.
     let mut summary = RebuildDerivedStateSummary {
-        v2_shadow: db
-            .with_conn(|conn| {
-                verify_v2_shadow_for_rebuild_in_tx_with_control(
-                    conn, project_id, run_id, control,
-                )
+        v2_shadow: db.with_conn(|conn| {
+            verify_v2_shadow_for_rebuild_in_tx_with_control(conn, project_id, run_id, control)
             })?,
         ..Default::default()
     };
@@ -3175,10 +3170,7 @@ fn clone_json_value_with_control(
             let mut cloned = serde_json::Map::new();
             for (key, value) in values {
                 control.check(GraphWorkStage::Digest)?;
-                cloned.insert(
-                    key.clone(),
-                    clone_json_value_with_control(value, control)?,
-                );
+                cloned.insert(key.clone(), clone_json_value_with_control(value, control)?);
             }
             Value::Object(cloned)
         }
@@ -3714,7 +3706,9 @@ where
     let config = control
         .finalization_granted_signal
         .as_ref()
-        .map(|signal| NarrativeMaintenanceGraphControlConfig::with_finalization_granted(Arc::clone(signal)))
+        .map(|signal| {
+            NarrativeMaintenanceGraphControlConfig::with_finalization_granted(Arc::clone(signal))
+        })
         .unwrap_or_default();
     let result = with_narrative_maintenance_graph_control(
         db,
@@ -3860,8 +3854,15 @@ pub fn recover_maintenance_run_exact(
         |conn, graph| {
             graph.check(GraphWorkStage::ResultAssembly)?;
             with_immediate_transaction(conn, |conn| {
-                let row: Option<(String, Option<String>, Option<String>, Option<String>, String, String)> =
-                    conn.query_row(
+                let row: Option<(
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    String,
+                    String,
+                )> = conn
+                    .query_row(
                         "SELECT project_id, run_kind, semantic_epoch_id, work_key,
                                 spec_json, spec_digest
                            FROM narrative_extraction_runs
@@ -3918,7 +3919,12 @@ pub fn recover_maintenance_run_exact(
                             SELECT 1 FROM narrative_extraction_attempts a
                              JOIN narrative_extraction_tasks t ON t.id = a.task_id
                             WHERE a.id = ?3 AND t.id = ?4 AND t.run_id = ?2)",
-                        rusqlite::params![&handle.task_id, &handle.run_id, &handle.attempt_id, &handle.task_id],
+                        rusqlite::params![
+                            &handle.task_id,
+                            &handle.run_id,
+                            &handle.attempt_id,
+                            &handle.task_id
+                        ],
                         |row| row.get(0),
                     )?;
                     anyhow::ensure!(
@@ -3952,17 +3958,13 @@ pub fn resolve_maintenance_run_creation_unknown(
         db.connection_reusable(),
         "NEX_RUN_CREATION_UNKNOWN: source connection is quarantined"
     );
-    let connection_retired = db.with_conn(|conn| {
+    // The resolver runs on a fresh authority connection. Its autocommit
+    // state says nothing about the worker connection whose COMMIT result was
+    // lost, so require the supervisor's explicit retirement receipt carried
+    // by the exact Run handle instead of inferring retirement from this DB.
         anyhow::ensure!(
-            conn.is_autocommit(),
-            "NEX_RUN_CREATION_UNKNOWN: source worker connection still has an open transaction"
-        );
-        Ok::<_, anyhow::Error>(())
-    })
-    .is_ok();
-    anyhow::ensure!(
-        connection_retired,
-        "NEX_RUN_CREATION_UNKNOWN: connection retirement proof is unavailable"
+        handle.connection_retired,
+        "NEX_RUN_CREATION_UNKNOWN: connection retirement receipt is unavailable"
     );
     anyhow::ensure!(
         handle.worker_joined,
@@ -3988,10 +3990,12 @@ pub fn resolve_maintenance_run_creation_unknown(
             }
             .to_string(),
             task_input: handle.sealed_spec.clone(),
-            project_created_at: handle
-                .project_created_at
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("NEX_RUN_CREATION_UNKNOWN: creation lineage is unavailable"))?,
+            project_created_at: handle.project_created_at.clone().ok_or_else(|| {
+                anyhow::anyhow!("NEX_RUN_CREATION_UNKNOWN: creation lineage is unavailable")
+            })?,
+            database_file_identity: handle.database_file_identity.clone().ok_or_else(|| {
+                anyhow::anyhow!("NEX_RUN_CREATION_UNKNOWN: database file identity is unavailable")
+            })?,
         }),
     };
     let stop = Arc::new(AtomicBool::new(false));
@@ -4010,10 +4014,10 @@ pub fn resolve_maintenance_run_creation_unknown(
                     &handle.project_id,
                     CreationVerification {
                         worker_joined: handle.worker_joined,
-                        connection_retired,
+                        connection_retired: handle.connection_retired,
                         same_database_identity: verify_creation_database_identity(conn, handle)?,
                         lineage_continuous: verify_creation_lineage(conn, handle)?,
-                        no_destructive_boundary: verify_creation_lineage(conn, handle)?,
+                        no_destructive_boundary: verify_creation_file_identity(conn, handle)?,
                     },
                 )?;
                 graph.check(GraphWorkStage::ResultAssembly)?;
@@ -4038,11 +4042,58 @@ fn verify_creation_database_identity(
         [],
         |row| row.get(0),
     )?;
+    if path.trim().is_empty() {
+        return Ok(handle.database_path.as_deref() == Some(":memory:"));
+    }
     let canonical = std::fs::canonicalize(&path)
         .unwrap_or_else(|_| std::path::PathBuf::from(path))
         .to_string_lossy()
         .into_owned();
     Ok(handle.database_path.as_deref() == Some(canonical.as_str()))
+}
+
+fn verify_creation_file_identity(
+    conn: &Connection,
+    handle: &crate::workspace_lifecycle::DurableRunHandle,
+) -> anyhow::Result<bool> {
+    let path: String = conn.query_row(
+        "SELECT file FROM pragma_database_list WHERE name = 'main'",
+        [],
+        |row| row.get(0),
+    )?;
+    if path.trim().is_empty() {
+        return Ok(handle.database_file_identity.as_deref() == Some(":memory:"));
+    }
+    let metadata = std::fs::metadata(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let identity = format!("dev:{}:ino:{}", metadata.dev(), metadata.ino());
+        return Ok(handle.database_file_identity.as_deref() == Some(identity.as_str()));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        let volume = metadata
+            .volume_serial_number()
+            .ok_or_else(|| anyhow::anyhow!("database volume identity is unavailable"))?;
+        let file = metadata
+            .file_index()
+            .ok_or_else(|| anyhow::anyhow!("database file identity is unavailable"))?;
+        let identity = format!(
+            "volume:{}:file:{}",
+            volume, file
+        );
+        return Ok(handle.database_file_identity.as_deref() == Some(identity.as_str()));
+    }
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        let identity = std::fs::canonicalize(&path)
+            .unwrap_or_else(|_| std::path::PathBuf::from(path))
+            .to_string_lossy()
+            .into_owned();
+        Ok(handle.database_file_identity.as_deref() == Some(identity.as_str()))
+    }
 }
 
 fn verify_creation_lineage(
@@ -4056,7 +4107,15 @@ fn verify_creation_lineage(
             |row| row.get(0),
         )
         .optional()?;
-    Ok(current.as_deref() == handle.project_created_at.as_deref())
+    let epoch_project: Option<String> = conn
+        .query_row(
+            "SELECT project_id FROM narrative_semantic_epochs WHERE id = ?1",
+            [&handle.semantic_epoch_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(current.as_deref() == handle.project_created_at.as_deref()
+        && epoch_project.as_deref() == Some(handle.project_id.as_str()))
 }
 
 pub(crate) fn run_maintenance_graph_phase_for_run<T, F>(
@@ -4071,8 +4130,7 @@ where
     match run_maintenance_graph_phase(db, control, operation) {
         Ok(value) => Ok(value),
         Err(error) if is_transient_connection_preemption(&error) => {
-            if let Err(cleanup) = cancel_preempted_maintenance_run(db, run_id, &error.to_string())
-            {
+            if let Err(cleanup) = cancel_preempted_maintenance_run(db, run_id, &error.to_string()) {
                 if is_transient_connection_preemption(&cleanup)
                     || is_maintenance_connection_deferred_or_cleanup(&cleanup)
                 {
@@ -4209,8 +4267,7 @@ fn record_verify_failure_controlled(
             graph.check(GraphWorkStage::ResultAssembly)?;
             record_run_outcome_in_tx(conn, run_id, &json!({ "failure": message }))?;
             let handle = load_maintenance_run_in_tx(conn, run_id)?;
-            let finalized_at =
-                fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
+            let finalized_at = fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
             project_terminal_failure_for_run_generated_in_tx(
                 conn,
                 project_id,
@@ -4330,7 +4387,8 @@ fn run_dependency_verify_for_project_with_coordinates_controlled(
     }
 
     let execution = (|| -> anyhow::Result<VerifyRunOutcome> {
-    let verification = run_maintenance_graph_phase_for_run(db, control, &run_id, |conn, graph| {
+        let verification =
+            run_maintenance_graph_phase_for_run(db, control, &run_id, |conn, graph| {
         with_immediate_transaction(conn, |conn| {
             verify_dependency_graph_snapshot_with_control(conn, project_id, graph)
         })
@@ -4339,7 +4397,10 @@ fn run_dependency_verify_for_project_with_coordinates_controlled(
         Ok(value) => value,
         Err(error)
             if is_validation_terminated(&error)
-                || is_maintenance_connection_deferred_or_cleanup(&error) => return Err(error),
+                    || is_maintenance_connection_deferred_or_cleanup(&error) =>
+            {
+                return Err(error)
+            }
         Err(error) => return Err(error),
     };
 
@@ -4449,8 +4510,12 @@ fn run_dependency_verify_for_project_with_coordinates_controlled(
                             run_kind: VERIFY_RUN_KIND.to_string(),
                             work_key: format!("{VERIFY_RUN_KIND}:{epoch_id}"),
                             semantic_epoch_id: epoch_id.clone(),
-                            graph_contract_digest: effective_coordinates.graph_contract_digest.clone(),
-                            rule_registry_digest: effective_coordinates.rule_registry_digest.clone(),
+                                graph_contract_digest: effective_coordinates
+                                    .graph_contract_digest
+                                    .clone(),
+                                rule_registry_digest: effective_coordinates
+                                    .rule_registry_digest
+                                    .clone(),
                             producer_generation_set_digest: effective_coordinates
                                 .producer_generation_set_digest
                                 .clone(),
@@ -5157,9 +5222,7 @@ pub(crate) fn verify_narrative_dependency_graph_for_project_with_control(
     control.check(GraphWorkStage::Coverage)?;
     report.application_revision_artifact_references =
         verify_coverage::verify_application_revision_artifact_references_with_control(
-            conn,
-            project_id,
-            control,
+            conn, project_id, control,
         )?;
     control.check(GraphWorkStage::Coverage)?;
     let (semantic_index_digest, semantic_index_generation) =
@@ -5169,8 +5232,7 @@ pub(crate) fn verify_narrative_dependency_graph_for_project_with_control(
     control.check(GraphWorkStage::Coverage)?;
     report.contribution_to_application_commit_correspondence =
         verify_coverage::verify_contribution_to_application_commit_correspondence_with_control(
-            conn, project_id,
-            control,
+            conn, project_id, control,
         )?;
     control.check(GraphWorkStage::Coverage)?;
     report.legacy_mirror_migration_parity =
@@ -5324,8 +5386,7 @@ pub(crate) fn validate_report_rebuild_required_with_control(
     report: &DependencyGraphVerifyReport,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<()> {
-    let expected =
-        report_requires_derived_rebuild_with_control(conn, project_id, report, control)?;
+    let expected = report_requires_derived_rebuild_with_control(conn, project_id, report, control)?;
     anyhow::ensure!(
         report.rebuild_required == expected,
         "NEX_VERIFY_REBUILD_REQUIRED_MISMATCH: stored rebuildRequired does not match live derived repairability"
@@ -6134,9 +6195,8 @@ mod tests {
         assert!(!is_transient_connection_preemption(&error));
         assert!(is_maintenance_connection_deferred_or_cleanup(&error));
 
-        let foreground_only = anyhow::anyhow!(
-            "NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived"
-        );
+        let foreground_only =
+            anyhow::anyhow!("NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived");
         assert!(is_transient_connection_preemption(&foreground_only));
         assert!(!is_maintenance_connection_cleanup_failure(&foreground_only));
     }
@@ -6174,11 +6234,7 @@ mod tests {
 
         let held = db.lock().expect("hold the maintenance mutex");
         assert!(
-            !try_cancel_preempted_maintenance_run(
-                &db,
-                &run_id,
-                "foreground preemption retry",
-            )
+            !try_cancel_preempted_maintenance_run(&db, &run_id, "foreground preemption retry",)
             .expect("busy cleanup must be fail-fast"),
             "a busy mutex must leave the pending owner for retry"
         );
@@ -6191,9 +6247,7 @@ mod tests {
         let no_stop = || Ok::<_, anyhow::Error>(());
         let no_defer = |_run_id: &str| Ok::<_, anyhow::Error>(());
         let no_grant = |_work_key: &str| Ok::<_, anyhow::Error>(());
-        let no_work = |_item: &crate::narrative_extraction::DesiredWork| {
-            Ok::<_, anyhow::Error>(())
-        };
+        let no_work = |_item: &crate::narrative_extraction::DesiredWork| Ok::<_, anyhow::Error>(());
         let control = MaintenanceCycleControl {
             should_stop: &no_stop,
             stop_signal: None,
@@ -6252,9 +6306,7 @@ mod tests {
         };
         let no_defer = |_run_id: &str| Ok::<_, anyhow::Error>(());
         let no_grant = |_work_key: &str| Ok::<_, anyhow::Error>(());
-        let no_work = |_item: &crate::narrative_extraction::DesiredWork| {
-            Ok::<_, anyhow::Error>(())
-        };
+        let no_work = |_item: &crate::narrative_extraction::DesiredWork| Ok::<_, anyhow::Error>(());
         let control = MaintenanceCycleControl {
             should_stop: &stop,
             stop_signal: None,
@@ -6322,9 +6374,7 @@ mod tests {
         };
         let no_defer = |_run_id: &str| Ok::<_, anyhow::Error>(());
         let no_grant = |_work_key: &str| Ok::<_, anyhow::Error>(());
-        let no_work = |_item: &crate::narrative_extraction::DesiredWork| {
-            Ok::<_, anyhow::Error>(())
-        };
+        let no_work = |_item: &crate::narrative_extraction::DesiredWork| Ok::<_, anyhow::Error>(());
         let control = MaintenanceCycleControl {
             should_stop: &stop,
             stop_signal: None,
@@ -6393,13 +6443,15 @@ mod tests {
             if stage == GraphWorkStage::Digest {
                 self.check_count += 1;
                 if self.check_count == self.stop_on_check {
-                    return Err(crate::narrative_extraction::source_revision::validation_terminated(
+                    return Err(
+                        crate::narrative_extraction::source_revision::validation_terminated(
                         self.reason,
                         format!(
                             "controlled stop before digest lookup {}/{}",
                             self.check_count, self.stop_on_check
                         ),
-                    ));
+                        ),
+                    );
                 }
             }
             Ok(())
@@ -6417,9 +6469,8 @@ mod tests {
                 return Ok(());
             }
             if !self.rotated {
-                self.db.with_conn(|conn| {
-                    create_epoch_in_tx(conn, "project-1", "restore", None)
-                })?;
+                self.db
+                    .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "restore", None))?;
                 self.rotated = true;
                 return Ok(());
             }
@@ -8107,7 +8158,8 @@ mod tests {
     }
 
     #[test]
-    fn controlled_rebuildability_cancellation_happens_before_the_first_lookup() -> anyhow::Result<()> {
+    fn controlled_rebuildability_cancellation_happens_before_the_first_lookup() -> anyhow::Result<()>
+    {
         let db = current_schema_db();
         db.with_conn(|conn| {
             let report = DependencyGraphVerifyReport {
@@ -8154,7 +8206,8 @@ mod tests {
     }
 
     #[test]
-    fn controlled_rebuildability_foreground_preemption_happens_before_the_next_lookup() -> anyhow::Result<()> {
+    fn controlled_rebuildability_foreground_preemption_happens_before_the_next_lookup(
+    ) -> anyhow::Result<()> {
         let db = current_schema_db();
         db.with_conn(|conn| {
             let report = DependencyGraphVerifyReport {
@@ -8169,9 +8222,8 @@ mod tests {
             let select_count_for_hook = Arc::clone(&select_count);
             conn.authorizer(Some(move |context: AuthContext<'_>| {
                 if matches!(context.action, AuthAction::Select) {
-                    let count = select_count_for_hook
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                        + 1;
+                    let count =
+                        select_count_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                     // One repairability SELECT contains a top-level EXISTS
                     // and a nested SELECT. Denying the third SELECT makes a
                     // second lookup fail loudly if the control boundary is

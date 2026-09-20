@@ -76,6 +76,7 @@ const CHRONICLE_RUN_SPEC_KIND: &str = "chronicle.extract.run-spec@2";
 const CHRONICLE_EXISTING_EVENTS_CATALOG_KIND: &str = "chronicle.existing-events-catalog@1";
 
 static PROJECT_DESTRUCTIVE_PERMITS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static PROJECT_CREATION_RESERVATIONS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
 
 /// Process-local guard for destructive project writers.  It coordinates the
 /// lifecycle owner and the project delete path in this process only; it is
@@ -105,6 +106,46 @@ pub(crate) fn project_destructive_permit_active(project_id: &str) -> bool {
         .get()
         .and_then(|permits| permits.lock().ok())
         .is_some_and(|permits| permits.contains(project_id))
+}
+
+/// Process-local reservation count for maintenance Run creation. Destructive
+/// project writers consult this alongside the destructive permit so a project
+/// cannot be deleted between the lifecycle reservation and its first Run
+/// INSERT. This is coordination only; durable Run/lineage evidence remains
+/// mandatory for recovery and the registry is not a cross-process authority.
+pub fn try_reserve_project_creation(project_id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !project_id.trim().is_empty(),
+        "NEX_PROJECT_CREATION_RESERVATION_INVALID: project id is empty"
+    );
+    let reservations = PROJECT_CREATION_RESERVATIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut reservations = reservations
+        .lock()
+        .map_err(|error| anyhow::anyhow!("project creation reservations poisoned: {error}"))?;
+    *reservations.entry(project_id.to_owned()).or_insert(0) += 1;
+    Ok(())
+}
+
+pub fn release_project_creation(project_id: &str) {
+    if let Some(reservations) = PROJECT_CREATION_RESERVATIONS.get() {
+        if let Ok(mut reservations) = reservations.lock() {
+            let Some(count) = reservations.get_mut(project_id) else {
+                return;
+            };
+            if *count <= 1 {
+                reservations.remove(project_id);
+            } else {
+                *count -= 1;
+            }
+        }
+    }
+}
+
+pub(crate) fn project_creation_reservation_active(project_id: &str) -> bool {
+    PROJECT_CREATION_RESERVATIONS
+        .get()
+        .and_then(|reservations| reservations.lock().ok())
+        .is_some_and(|reservations| reservations.get(project_id).is_some_and(|count| *count > 0))
 }
 /// Canonical Review-resumability predicate shared by bounded discovery and
 /// the exact, limit-free authority query. Keep the Run alias fixed as `r` so
@@ -3997,12 +4038,7 @@ pub fn finish_task_with_control(
                 .chronicle_plan_proposal_set
                 .as_ref()
                 .map(|finish| {
-                    save_chronicle_plan_proposal_set_in_tx(
-                        conn,
-                        &payload,
-                        finish,
-                        validation_owner,
-                    )
+                    save_chronicle_plan_proposal_set_in_tx(conn, &payload, finish, validation_owner)
                 })
                 .transpose()?;
 
@@ -6211,6 +6247,21 @@ mod unit_tests {
         SetNarrativeRuntimePolicyInput,
     };
     use serde_json::json;
+
+    #[test]
+    fn project_creation_reservations_count_and_release_without_run_id_leaks() {
+        let project_id = format!("lifecycle-reservation-{}", Uuid::new_v4());
+        assert!(!project_creation_reservation_active(&project_id));
+        try_reserve_project_creation(&project_id).expect("first reservation");
+        try_reserve_project_creation(&project_id).expect("second reservation");
+        assert!(project_creation_reservation_active(&project_id));
+        release_project_creation(&project_id);
+        assert!(project_creation_reservation_active(&project_id));
+        release_project_creation(&project_id);
+        assert!(!project_creation_reservation_active(&project_id));
+        // An extra release is a no-op, which keeps error paths idempotent.
+        release_project_creation(&project_id);
+    }
 
     #[test]
     fn v2_evidence_binding_accepts_multiple_anchors_on_one_document() {

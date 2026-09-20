@@ -17,9 +17,7 @@ use super::maintenance_runtime::{
     select_unique_latest_lifecycle_evidence, spec_with_active_system_work_marker,
     LifecycleEvidence, MaintenanceCycleControl, NarrativeSystemWorkMarker,
 };
-use super::repository::{
-    create_system_run_in_tx_with_reserved_id, SystemRunWorkKeyReuse,
-};
+use super::repository::{create_system_run_in_tx_with_reserved_id, SystemRunWorkKeyReuse};
 use super::restore_rebuild::VERIFY_CONTRACT_VERSION;
 
 const FAILURE_POLICY_VERSION: &str = "v1";
@@ -139,6 +137,7 @@ pub(crate) struct MaintenanceRunHandle {
     pub(crate) creation_state: RunCreationState,
     pub(crate) project_created_at: String,
     pub(crate) database_path: String,
+    pub(crate) database_file_identity: String,
 }
 
 impl MaintenanceRunHandle {
@@ -166,7 +165,8 @@ impl MaintenanceRunHandle {
                 self.spec_digest.clone(),
             )
             .with_project_creation_lineage(self.project_created_at.clone())
-            .with_database_path(self.database_path.clone()),
+            .with_database_path(self.database_path.clone())
+            .with_database_file_identity(self.database_file_identity.clone()),
         }
     }
 
@@ -215,6 +215,7 @@ pub(crate) struct CreationIdentity {
     pub(crate) task_kind: String,
     pub(crate) task_input: String,
     pub(crate) project_created_at: String,
+    pub(crate) database_file_identity: String,
 }
 
 impl RunCreationReservation {
@@ -236,6 +237,7 @@ impl RunCreationReservation {
         task_kind: &str,
         task_input: &str,
         project_created_at: &str,
+        database_file_identity: &str,
     ) -> Self {
         let mut reservation = Self::new();
         reservation.expected = Some(CreationIdentity {
@@ -247,6 +249,7 @@ impl RunCreationReservation {
             task_kind: task_kind.to_owned(),
             task_input: task_input.to_owned(),
             project_created_at: project_created_at.to_owned(),
+            database_file_identity: database_file_identity.to_owned(),
         });
         reservation
     }
@@ -254,11 +257,18 @@ impl RunCreationReservation {
 
 fn reservation_matches_created_tuple(
     reservation: &RunCreationReservation,
-    actual_run: &(String, Option<String>, Option<String>, Option<String>, String),
+    actual_run: &(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+    ),
     actual_task: &(String, String, String, String),
     actual_attempt: &(String, i64, String),
     project_id: &str,
     project_created_at: Option<&str>,
+    database_file_identity: &str,
 ) -> bool {
     let Some(expected) = reservation.expected.as_ref() else {
         return false;
@@ -280,6 +290,7 @@ fn reservation_matches_created_tuple(
         && *attempt_number == 1
         && !reservation.attempt_id.is_empty()
         && project_created_at == Some(expected.project_created_at.as_str())
+        && database_file_identity == expected.database_file_identity
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -325,7 +336,13 @@ pub fn resolve_creation_unknown_in_tx(
         "NEX_RUN_CREATION_UNKNOWN: durable absence evidence is incomplete"
     );
 
-    let run: Option<(String, Option<String>, Option<String>, Option<String>, String)> = conn
+    let run: Option<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+    )> = conn
         .query_row(
             "SELECT project_id, run_kind, semantic_epoch_id, work_key, spec_digest
                FROM narrative_extraction_runs
@@ -370,6 +387,7 @@ pub fn resolve_creation_unknown_in_tx(
             |row| row.get(0),
         )
         .optional()?;
+    let database_file_identity = sqlite_database_file_identity_in_tx(conn)?;
     let hidden_children: i64 = conn.query_row(
         "SELECT
             (SELECT COUNT(*) FROM narrative_extraction_tasks
@@ -378,13 +396,18 @@ pub fn resolve_creation_unknown_in_tx(
                FROM narrative_extraction_attempts a
                JOIN narrative_extraction_tasks t ON t.id = a.task_id
               WHERE t.run_id = ?1 AND a.id <> ?3)",
-        params![&reservation.run_id, &reservation.task_id, &reservation.attempt_id],
+        params![
+            &reservation.run_id,
+            &reservation.task_id,
+            &reservation.attempt_id
+        ],
         |row| row.get(0),
     )?;
     match (run, task, attempt, hidden_children) {
         (None, None, None, 0)
             if reservation.expected.as_ref().map_or(true, |expected| {
                 project_created_at.as_deref() == Some(expected.project_created_at.as_str())
+                    && database_file_identity == expected.database_file_identity
             }) =>
         {
             // The caller may now release the process-local ownership slot
@@ -399,6 +422,7 @@ pub fn resolve_creation_unknown_in_tx(
                 &actual_attempt,
                 project_id,
                 project_created_at.as_deref(),
+                database_file_identity.as_str(),
             ) => Ok(CreationResolution::Created),
         _ => Err(ownership_error(
             "Run creation tuple is partial, cross-project, or does not match the reserved kind/epoch/work/spec identity",
@@ -576,6 +600,45 @@ fn sqlite_database_path_in_tx(conn: &Connection) -> anyhow::Result<String> {
         .into_owned())
 }
 
+/// Capture a process-local file identity in addition to the locator. A
+/// same-path restore can preserve project metadata while replacing the
+/// underlying inode; path-only checks are therefore not absence evidence.
+/// Use stable filesystem identity only; size and mtime change during ordinary
+/// SQLite writes and must not make a live database look like a replacement.
+fn sqlite_database_file_identity_in_tx(conn: &Connection) -> anyhow::Result<String> {
+    let path = sqlite_database_path_in_tx(conn)?;
+    if path == ":memory:" {
+        return Ok(path);
+    }
+    let metadata = std::fs::metadata(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return Ok(format!("dev:{}:ino:{}", metadata.dev(), metadata.ino()));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        let volume = metadata
+            .volume_serial_number()
+            .ok_or_else(|| anyhow::anyhow!("database volume identity is unavailable"))?;
+        let file = metadata
+            .file_index()
+            .ok_or_else(|| anyhow::anyhow!("database file identity is unavailable"))?;
+        return Ok(format!(
+            "volume:{}:file:{}",
+            volume, file
+        ));
+    }
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        Ok(std::fs::canonicalize(&path)
+            .unwrap_or_else(|_| std::path::PathBuf::from(path))
+            .to_string_lossy()
+            .into_owned())
+    }
+}
+
 fn recovery_lifecycle_counts_in_tx(conn: &Connection, run_id: &str) -> anyhow::Result<(i64, i64)> {
     let task_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = ?1",
@@ -685,6 +748,7 @@ pub(crate) fn create_maintenance_run_in_tx_with_control(
         "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: requested maintenance spec digest does not match the canonical phase spec digest"
     );
     let database_path = sqlite_database_path_in_tx(conn)?;
+    let database_file_identity = sqlite_database_file_identity_in_tx(conn)?;
     let project_created_at: String = conn.query_row(
         "SELECT created_at FROM projects WHERE id = ?1",
         params![project_id],
@@ -699,6 +763,7 @@ pub(crate) fn create_maintenance_run_in_tx_with_control(
         task_kind,
         &requested_full_spec_json,
         &project_created_at,
+        &database_file_identity,
     );
     let epoch = semantic_epoch_number_in_tx(conn, project_id, semantic_epoch_id)?;
     if let Some(reserve_run) = control.and_then(|control| control.reserve_run) {
@@ -715,7 +780,10 @@ pub(crate) fn create_maintenance_run_in_tx_with_control(
                 epoch,
                 &requested_full_spec_json,
                 spec_digest,
-            ),
+            )
+            .with_project_creation_lineage(project_created_at.clone())
+            .with_database_path(database_path.clone())
+            .with_database_file_identity(database_file_identity.clone()),
         };
         reserve_run(ownership)?;
     }
@@ -830,6 +898,7 @@ pub(crate) fn create_maintenance_run_in_tx_with_control(
             .map(|expected| expected.project_created_at.clone())
             .unwrap_or_default(),
         database_path,
+        database_file_identity,
     };
     validate_handle_in_tx(conn, &handle)?;
     if let Some(attach_run) = control.and_then(|control| control.attach_run) {
@@ -893,6 +962,7 @@ pub(crate) fn synthesize_recovery_lifecycle_in_tx(
         |row| row.get(0),
     )?;
     let database_path = sqlite_database_path_in_tx(conn)?;
+    let database_file_identity = sqlite_database_file_identity_in_tx(conn)?;
     if status != "running" {
         return Err(ownership_error(format!(
             "Run '{run_id}' is not running during recovery"
@@ -969,6 +1039,7 @@ pub(crate) fn synthesize_recovery_lifecycle_in_tx(
         creation_state: RunCreationState::CreationUnknown,
         project_created_at,
         database_path,
+        database_file_identity,
     };
     validate_handle_in_tx(conn, &handle)?;
     Ok(handle)
@@ -1007,6 +1078,7 @@ pub(crate) fn load_maintenance_run_in_tx(
         |row| row.get(0),
     )?;
     let database_path = sqlite_database_path_in_tx(conn)?;
+    let database_file_identity = sqlite_database_file_identity_in_tx(conn)?;
     let run_kind = run_kind.ok_or_else(|| ownership_error("Run kind is missing"))?;
     let semantic_epoch_id =
         semantic_epoch_id.ok_or_else(|| ownership_error("semantic epoch is missing"))?;
@@ -1104,6 +1176,7 @@ pub(crate) fn load_maintenance_run_in_tx(
         creation_state: RunCreationState::Reused,
         project_created_at,
         database_path,
+        database_file_identity,
     };
     validate_handle_in_tx(conn, &handle)?;
     Ok(handle)
@@ -1256,6 +1329,7 @@ pub(crate) fn load_completed_maintenance_run_in_tx(
     );
     let epoch = semantic_epoch_number_in_tx(conn, &project_id, &semantic_epoch_id)?;
     let database_path = sqlite_database_path_in_tx(conn)?;
+    let database_file_identity = sqlite_database_file_identity_in_tx(conn)?;
     let project_created_at: String = conn.query_row(
         "SELECT created_at FROM projects WHERE id = ?1",
         params![&project_id],
@@ -1277,6 +1351,7 @@ pub(crate) fn load_completed_maintenance_run_in_tx(
         creation_state: RunCreationState::Reused,
         project_created_at,
         database_path,
+        database_file_identity,
     };
     validate_lifecycle_timestamps_in_tx(conn, &handle, true)?;
     Ok(handle)
@@ -1948,12 +2023,7 @@ mod tests {
             };
             let tx = conn.unchecked_transaction()?;
             assert_eq!(
-                resolve_creation_unknown_in_tx(
-                    &tx,
-                    &reservation,
-                    "project-1",
-                    verification,
-                )?,
+                resolve_creation_unknown_in_tx(&tx, &reservation, "project-1", verification,)?,
                 CreationResolution::NotCommitted
             );
             tx.rollback()?;
@@ -1962,13 +2032,10 @@ mod tests {
                 no_destructive_boundary: false,
                 ..verification
             };
-            assert!(resolve_creation_unknown_in_tx(
-                &tx,
-                &reservation,
-                "project-1",
-                incomplete,
-            )
-            .is_err());
+            assert!(
+                resolve_creation_unknown_in_tx(&tx, &reservation, "project-1", incomplete,)
+                    .is_err()
+            );
             tx.rollback()?;
             Ok(())
         })

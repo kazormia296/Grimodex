@@ -155,6 +155,8 @@ export interface NarrativeMaintenanceBackendLike {
   runNarrativeMaintenanceCycle?(
     request: NarrativeMaintenanceCycleRequest,
   ): Promise<unknown>;
+  /** Resolve an existing Native recovery descriptor before delivery admission. */
+  reconcileNarrativeMaintenanceRecovery?(): Promise<unknown> | unknown;
   ackNarrativeMaintenanceDelivery?(sequence: number): Promise<unknown> | unknown;
   resolveNarrativeMaintenanceDelivery?(sequence: number):
     | Promise<unknown>
@@ -1759,6 +1761,35 @@ export function createNarrativeMaintenanceScheduler(
         ? mappedDeliverySequence
         : undefined;
     const deliverySequence = existingDeliverySequence ?? deliveryLedger.H + 1;
+    const reconcileRecovery = backend?.reconcileNarrativeMaintenanceRecovery;
+    if (typeof reconcileRecovery === "function") {
+      try {
+        const raw = await reconcileRecovery.call(backend);
+        const recovery =
+          typeof raw === "string"
+            ? (JSON.parse(raw) as { status?: unknown })
+            : (raw as { status?: unknown } | null);
+        if (
+          recovery?.status === "workspace-unavailable" ||
+          recovery?.status === "reconciled"
+        ) {
+          // Recovery may have installed a new authority or advanced the
+          // lifecycle revision. The pre-recovery binding captured above is
+          // stale by definition; rediscover it before issuing any delivery.
+          sharedCoordinator?.release(claimedProjects);
+          schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+          return;
+        }
+      } catch (error) {
+        // Descriptor recovery is independent of the normal delivery ledger.
+        // Retain the claimed work and retry; no delivery record may be
+        // created while the exact root is unavailable.
+        sharedCoordinator?.release(claimedProjects);
+        warn("[narrative-maintenance] descriptor recovery preflight failed:", error);
+        schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+        return;
+      }
+    }
     const deliveryAdmission = deliveryLedger.submit(
       deliverySequence,
       deliveryFingerprint,

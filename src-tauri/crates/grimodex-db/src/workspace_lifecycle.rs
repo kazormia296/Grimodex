@@ -293,6 +293,14 @@ impl MaintenancePermit {
         self.core.attach_run_ownership(self.execution_id, run)
     }
 
+    /// Record the supervisor-owned retirement receipt for every exact Run
+    /// tuple attached to this execution. Join proves execution termination;
+    /// this separate receipt proves the old connection cannot later commit.
+    pub fn mark_connection_retired(&self) -> Result<(), LifecycleError> {
+        self.core
+            .mark_execution_connection_retired(self.execution_id)
+    }
+
     pub fn release(mut self) -> Result<bool, LifecycleError> {
         if !self.joined {
             return Err(LifecycleError::NotJoined(self.ticket.operation_id));
@@ -309,8 +317,11 @@ impl MaintenancePermit {
     /// responsibility to a shared recovery descriptor. This is used only
     /// after the worker has joined and cleanup cannot prove a normal release.
     pub fn transfer_to_recovery(mut self) -> Result<RecoveryDescriptorId, LifecycleError> {
+        // A recovery handoff is only legal after the supervisor has observed
+        // the worker Join. The permit API deliberately does not fabricate
+        // that boundary for a dropped/panicking worker.
         if !self.joined {
-            self.mark_joined()?;
+            return Err(LifecycleError::NotJoined(self.ticket.operation_id));
         }
         let descriptor = match self
             .core
@@ -392,10 +403,8 @@ impl WorkspaceTransitionPermit {
         &self,
         work_execution_id: WorkExecutionId,
     ) -> Result<PublicationPermit, LifecycleError> {
-        self.core.reserve_work_for_operation(
-            self.ticket.operation_id,
-            work_execution_id,
-        )?;
+        self.core
+            .reserve_work_for_operation(self.ticket.operation_id, work_execution_id)?;
         Ok(PublicationPermit {
             core: self.core.clone(),
             operation_id: self.ticket.operation_id,
@@ -424,7 +433,8 @@ impl WorkspaceTransitionPermit {
         expected_binding: Option<LiveBinding>,
         run: Option<RunOwnership>,
     ) -> Result<(RecoveryDescriptorId, LifecycleResult), LifecycleError> {
-        self.core.require_recovery(&self.ticket, expected_binding, run)
+        self.core
+            .require_recovery(&self.ticket, expected_binding, run)
     }
 }
 
@@ -432,7 +442,6 @@ impl WorkspaceExclusive {
     pub fn operation_id(&self) -> OperationId {
         self.operation_id
     }
-
 }
 
 impl Drop for WorkspaceExclusive {
@@ -451,8 +460,7 @@ impl PublicationPermit {
     }
 
     pub fn complete(mut self) -> Result<(), LifecycleError> {
-        self.core
-            .complete_work_execution(self.work_execution_id)?;
+        self.core.complete_work_execution(self.work_execution_id)?;
         self.completed = true;
         Ok(())
     }
@@ -526,11 +534,21 @@ pub struct DurableRunHandle {
     /// with the same project id is not.
     #[serde(default)]
     pub database_path: Option<String>,
+    /// Process-local file identity captured with the reservation. This is
+    /// separate from the path so same-path replacement cannot be mistaken for
+    /// continuity.
+    #[serde(default)]
+    pub database_file_identity: Option<String>,
     /// Set only by the shared core after the execution supervisor has
     /// observed the worker Join.  A descriptor created before that boundary
     /// must never be used as absence evidence.
     #[serde(default)]
     pub worker_joined: bool,
+    /// Set only after the supervisor has quarantined the worker's connection
+    /// and recorded that retirement receipt. A new resolver connection is not
+    /// evidence that the old worker can no longer commit.
+    #[serde(default)]
+    pub connection_retired: bool,
 }
 
 impl DurableRunHandle {
@@ -560,7 +578,9 @@ impl DurableRunHandle {
             spec_digest: spec_digest.into(),
             project_created_at: None,
             database_path: None,
+            database_file_identity: None,
             worker_joined: false,
+            connection_retired: false,
         }
     }
 
@@ -587,6 +607,11 @@ impl DurableRunHandle {
 
     pub fn with_database_path(mut self, path: impl Into<String>) -> Self {
         self.database_path = Some(path.into());
+        self
+    }
+
+    pub fn with_database_file_identity(mut self, identity: impl Into<String>) -> Self {
+        self.database_file_identity = Some(identity.into());
         self
     }
 }
@@ -1173,9 +1198,9 @@ impl WorkspaceLifecycleCore {
             state.state,
             LifecycleState::RecoveryRequired { descriptor_id: current }
                 if current == descriptor_id
-        ) || (matches!(state.state, LifecycleState::Ready(_)) && descriptor_is_unresolved);
-        if !state_allows_descriptor || (!has_descriptor_root && !is_safe_mode_root)
-        {
+        ) || (matches!(state.state, LifecycleState::Ready(_))
+            && descriptor_is_unresolved);
+        if !state_allows_descriptor || (!has_descriptor_root && !is_safe_mode_root) {
             return Ok(AdmissionOutcome::NotAdmitted {
                 reason: AdmissionRejection::RecoveryPrerequisite,
                 snapshot: LifecycleSnapshot::new(
@@ -1225,10 +1250,12 @@ impl WorkspaceLifecycleCore {
         descriptor_id: RecoveryDescriptorId,
     ) -> Result<PermitAdmission<WorkspaceTransitionPermit>, LifecycleError> {
         Ok(match self.admit_recovery(descriptor_id)? {
-            AdmissionOutcome::Admitted(ticket) => PermitAdmission::Admitted(WorkspaceTransitionPermit {
+            AdmissionOutcome::Admitted(ticket) => {
+                PermitAdmission::Admitted(WorkspaceTransitionPermit {
                 core: self.clone(),
                 ticket,
-            }),
+                })
+            }
             AdmissionOutcome::NotAdmitted { reason, snapshot } => {
                 PermitAdmission::NotAdmitted { reason, snapshot }
             }
@@ -1284,10 +1311,7 @@ impl WorkspaceLifecycleCore {
     /// Release a non-transition admission after its worker has reached the
     /// common finalizer. Transition tickets must instead complete through
     /// Join/activation or recovery handoff.
-    pub fn release_admission(
-        &self,
-        ticket: &AdmissionTicket,
-    ) -> Result<bool, LifecycleError> {
+    pub fn release_admission(&self, ticket: &AdmissionTicket) -> Result<bool, LifecycleError> {
         let mut state = self.lock_state()?;
         self.require_ticket_locked(&state, ticket)?;
         if ticket.kind.is_transition() {
@@ -1334,9 +1358,13 @@ impl WorkspaceLifecycleCore {
             // a typed non-admission; it does not create a second owner or a
             // second retry record.
             (_, AdmissionKind::Maintenance)
-                if state.admissions.values().any(|ticket| {
-                    matches!(ticket.kind, AdmissionKind::Maintenance)
-                }) => Some(AdmissionRejection::ActiveOperation),
+                if state
+                    .admissions
+                    .values()
+                    .any(|ticket| matches!(ticket.kind, AdmissionKind::Maintenance)) =>
+            {
+                Some(AdmissionRejection::ActiveOperation)
+            }
             (LifecycleState::Transition { .. }, kind) if !kind.is_capacity_independent() => {
                 Some(AdmissionRejection::Transition)
             }
@@ -1366,8 +1394,7 @@ impl WorkspaceLifecycleCore {
                         | AdmissionKind::Snapshot
                         | AdmissionKind::Shutdown
                         | AdmissionKind::Recover
-                )
-                    =>
+                ) =>
             {
                 Some(AdmissionRejection::RecoveryRequired)
             }
@@ -1397,11 +1424,8 @@ impl WorkspaceLifecycleCore {
         let operation_id = state.next_operation;
         state.next_operation = OperationId::new(operation_id.get().saturating_add(1));
         let responsibility = match kind.responsibility_kind() {
-            Some(responsibility_kind) => match self.reserve_responsibility_locked(
-                state,
-                responsibility_kind,
-                operation_id,
-            ) {
+            Some(responsibility_kind) => {
+                match self.reserve_responsibility_locked(state, responsibility_kind, operation_id) {
                 Ok(reservation) => Some(reservation),
                 Err(LifecycleError::Responsibility(_)) => {
                     return Ok(AdmissionOutcome::NotAdmitted {
@@ -1410,7 +1434,8 @@ impl WorkspaceLifecycleCore {
                     });
                 }
                 Err(error) => return Err(error),
-            },
+                }
+            }
             None => None,
         };
         let original_binding = match &current {
@@ -1509,15 +1534,13 @@ impl WorkspaceLifecycleCore {
     /// Record the supervisor's Join observation.  Completion/activation and
     /// recovery handoff cannot publish a binding before this point; a stop
     /// request or timeout alone is not terminal proof.
-    pub fn mark_transition_joined(
-        &self,
-        ticket: &AdmissionTicket,
-    ) -> Result<(), LifecycleError> {
+    pub fn mark_transition_joined(&self, ticket: &AdmissionTicket) -> Result<(), LifecycleError> {
         let mut state = self.lock_state()?;
         self.require_ticket_locked(&state, ticket)?;
         match state.state {
             LifecycleState::Transition { operation_id, .. }
-                if operation_id == ticket.operation_id => {
+                if operation_id == ticket.operation_id =>
+            {
                     state.joined_operations.insert(ticket.operation_id);
                     Ok(())
                 }
@@ -1530,16 +1553,14 @@ impl WorkspaceLifecycleCore {
     /// Mark a non-transition execution as joined after its supervisor has
     /// observed the worker exit.  This is deliberately separate from a stop
     /// request and from a dropped Future.
-    pub fn mark_execution_joined(
-        &self,
-        ticket: &AdmissionTicket,
-    ) -> Result<(), LifecycleError> {
+    pub fn mark_execution_joined(&self, ticket: &AdmissionTicket) -> Result<(), LifecycleError> {
         let mut state = self.lock_state()?;
         self.require_ticket_locked(&state, ticket)?;
         if ticket.kind.is_transition() {
             match state.state {
                 LifecycleState::Transition { operation_id, .. }
-                    if operation_id == ticket.operation_id => {
+                    if operation_id == ticket.operation_id =>
+                {
                         state.joined_operations.insert(ticket.operation_id);
                     }
                 _ => {
@@ -1650,6 +1671,33 @@ impl WorkspaceLifecycleCore {
         Ok(())
     }
 
+    /// Record that the supervisor quarantined the worker-owned connection
+    /// after Join. This receipt belongs to the exact execution and is copied
+    /// into every recovery descriptor Run handle during transfer.
+    pub fn mark_execution_connection_retired(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<(), LifecycleError> {
+        let mut state = self.lock_state()?;
+        let execution = state
+            .executions
+            .get_mut(&execution_id)
+            .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+        if !matches!(
+            execution.phase,
+            ExecutionPhase::Joined | ExecutionPhase::CleanupPending
+        ) {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        }
+        if let Some(run) = execution.run.as_mut() {
+            run.handle.connection_retired = true;
+        }
+        for run in &mut execution.additional_runs {
+            run.handle.connection_retired = true;
+        }
+        Ok(())
+    }
+
     pub fn start_execution(&self, execution_id: ExecutionId) -> Result<(), LifecycleError> {
         let mut state = self.lock_state()?;
         let shutdown_requested = state.shutdown_requested;
@@ -1673,10 +1721,7 @@ impl WorkspaceLifecycleCore {
         Ok(())
     }
 
-    pub fn request_execution_stop(
-        &self,
-        execution_id: ExecutionId,
-    ) -> Result<(), LifecycleError> {
+    pub fn request_execution_stop(&self, execution_id: ExecutionId) -> Result<(), LifecycleError> {
         let mut state = self.lock_state()?;
         let execution = state
             .executions
@@ -1708,7 +1753,9 @@ impl WorkspaceLifecycleCore {
         Ok(execution.stop_requested
             || matches!(
                 execution.phase,
-                ExecutionPhase::StopRequested | ExecutionPhase::Joined | ExecutionPhase::CleanupPending
+                ExecutionPhase::StopRequested
+                    | ExecutionPhase::Joined
+                    | ExecutionPhase::CleanupPending
             ))
     }
 
@@ -1733,16 +1780,15 @@ impl WorkspaceLifecycleCore {
 
     pub fn complete_execution(&self, execution_id: ExecutionId) -> Result<(), LifecycleError> {
         let mut state = self.lock_state()?;
-        if state
-            .work_executions
-            .values()
-            .any(|work| work.execution_id == execution_id && work.phase != ExecutionPhase::Completed)
-        {
+        if state.work_executions.values().any(|work| {
+            work.execution_id == execution_id && work.phase != ExecutionPhase::Completed
+        }) {
             // A parent cannot be released while a child membership is still
             // reserved or running.  Releasing it first would let that child
             // start after the parent admission had already been retired.
             return Err(LifecycleError::InvalidExecutionTransition);
         }
+        let (operation_id, project_reservations) = {
         let execution = state
             .executions
             .get_mut(&execution_id)
@@ -1755,8 +1801,19 @@ impl WorkspaceLifecycleCore {
         ) {
             return Err(LifecycleError::InvalidExecutionTransition);
         }
+            let project_reservations = execution
+                .run
+                .iter()
+                .chain(execution.additional_runs.iter())
+                .map(|ownership| ownership.handle.project_id.clone())
+                .collect::<Vec<_>>();
         let operation_id = execution.operation_id;
         execution.phase = ExecutionPhase::Completed;
+            (operation_id, project_reservations)
+        };
+        for project_id in project_reservations {
+            crate::narrative_extraction::release_project_creation(&project_id);
+        }
         state.joined_operations.remove(&operation_id);
         Ok(())
     }
@@ -1888,7 +1945,9 @@ impl WorkspaceLifecycleCore {
             execution_id,
             phase: ExecutionPhase::Reserved,
         };
-        state.work_executions.insert(work_execution_id, membership.clone());
+        state
+            .work_executions
+            .insert(work_execution_id, membership.clone());
         Ok(membership)
     }
 
@@ -1923,11 +1982,7 @@ impl WorkspaceLifecycleCore {
             .executions
             .get(&execution_id)
             .ok_or(LifecycleError::UnknownExecution(execution_id))?;
-        if !matches!(
-            parent.phase,
-            ExecutionPhase::Started
-        ) || state.shutdown_requested
-        {
+        if !matches!(parent.phase, ExecutionPhase::Started) || state.shutdown_requested {
             return Err(LifecycleError::InvalidExecutionTransition);
         }
         let work = state
@@ -1964,9 +2019,7 @@ impl WorkspaceLifecycleCore {
             .ok_or(LifecycleError::UnknownWorkExecution(work_execution_id))?;
         if !matches!(
             work.phase,
-            ExecutionPhase::Started
-                | ExecutionPhase::Joined
-                | ExecutionPhase::CleanupPending
+            ExecutionPhase::Started | ExecutionPhase::Joined | ExecutionPhase::CleanupPending
         ) {
             return Err(LifecycleError::InvalidExecutionTransition);
         }
@@ -2018,10 +2071,7 @@ impl WorkspaceLifecycleCore {
 
     /// Acquire the core-side marker that must be paired with Native's real
     /// open_lock/file-lease guard.  It is never inferred from a snapshot.
-    fn acquire_physical_exclusive(
-        &self,
-        ticket: &AdmissionTicket,
-    ) -> Result<(), LifecycleError> {
+    fn acquire_physical_exclusive(&self, ticket: &AdmissionTicket) -> Result<(), LifecycleError> {
         let mut state = self.lock_state()?;
         self.require_ticket_locked(&state, ticket)?;
         if !matches!(
@@ -2245,7 +2295,13 @@ impl WorkspaceLifecycleCore {
             if descriptor.resolved {
                 return Err(LifecycleError::RetiredDescriptor(existing_id));
             }
-            if expected_binding.is_some() {
+            // The descriptor root is immutable. A recovery ticket admitted
+            // while another workspace (for example W2) is Ready carries the
+            // current UI binding in `original_binding`; that binding is not
+            // evidence that this W1 descriptor changed owners. Only a legacy
+            // descriptor with no captured binding may be completed with the
+            // ticket's binding.
+            if descriptor.expected_binding.is_none() {
                 descriptor.expected_binding = expected_binding;
             }
             if run.is_some() {
@@ -2557,6 +2613,12 @@ impl WorkspaceLifecycleCore {
             return Err(LifecycleError::ActiveOperations);
         }
         let root_operation_id = descriptor.root_operation_id;
+        let project_reservations = descriptor
+            .run
+            .iter()
+            .chain(descriptor.additional_runs.iter())
+            .map(|ownership| ownership.handle.project_id.clone())
+            .collect::<Vec<_>>();
         let reservation = state
             .descriptors
             .get_mut(&descriptor_id)
@@ -2574,6 +2636,9 @@ impl WorkspaceLifecycleCore {
             {
                 execution.phase = ExecutionPhase::Completed;
             }
+        }
+        for project_id in project_reservations {
+            crate::narrative_extraction::release_project_creation(&project_id);
         }
         Ok(reservation
             .as_ref()
@@ -2979,7 +3044,8 @@ mod tests {
             AdmissionOutcome::NotAdmitted { .. } => panic!("admitted"),
         };
         assert_eq!(
-            core.set_ready(binding(1)).expect_err("raw Ready must be rejected"),
+            core.set_ready(binding(1))
+                .expect_err("raw Ready must be rejected"),
             LifecycleError::InvalidState
         );
     }
@@ -2996,7 +3062,8 @@ mod tests {
             AdmissionOutcome::NotAdmitted { .. } => panic!("admitted"),
         };
         assert_eq!(
-            core.close().expect_err("active transition must block close"),
+            core.close()
+                .expect_err("active transition must block close"),
             LifecycleError::ActiveOperations
         );
         assert!(matches!(
@@ -3109,7 +3176,8 @@ mod tests {
             PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
         };
         assert!(matches!(
-            core.admit_maintenance_permit().expect("duplicate maintenance"),
+            core.admit_maintenance_permit()
+                .expect("duplicate maintenance"),
             PermitAdmission::NotAdmitted {
                 reason: AdmissionRejection::ActiveOperation,
                 ..
@@ -3119,8 +3187,7 @@ mod tests {
         let ticket = permit.ticket().clone();
         let execution_id = permit.execution_id();
         assert_eq!(execution_id, ExecutionId::new(operation_id.get()));
-        core.start_execution(execution_id)
-            .expect("execution start");
+        core.start_execution(execution_id).expect("execution start");
         permit
             .attach_run_ownership(RunOwnership {
                 state: RunCreationState::Reserved,
@@ -3148,6 +3215,17 @@ mod tests {
         core.start_work_execution(WorkExecutionId::new(45))
             .expect("work start");
         core.mark_execution_joined(&ticket).expect("Join");
+        permit
+            .mark_connection_retired()
+            .expect("connection retirement receipt");
+        assert!(
+            core.execution_membership(execution_id)
+                .expect("execution membership")
+                .run
+                .expect("run ownership")
+                .handle
+                .connection_retired
+        );
         core.mark_execution_cleanup_pending(execution_id)
             .expect("cleanup pending");
         core.complete_work_execution(WorkExecutionId::new(45))
@@ -3201,14 +3279,25 @@ mod tests {
             PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
         };
         core.request_shutdown().expect("shutdown request");
-        assert_eq!(permit.start().expect_err("shutdown blocks pending start"), LifecycleError::Closed);
         assert_eq!(
-            core.execution_membership(permit.execution_id()).expect("membership").phase,
+            permit.start().expect_err("shutdown blocks pending start"),
+            LifecycleError::Closed
+        );
+        assert_eq!(
+            core.execution_membership(permit.execution_id())
+                .expect("membership")
+                .phase,
             ExecutionPhase::StopRequested
         );
         permit.mark_joined().expect("scope Join");
         permit.release().expect("release stopped reservation");
-        assert!(matches!(core.close().expect("close"), LifecycleSnapshot { state: LifecycleState::Closed, .. }));
+        assert!(matches!(
+            core.close().expect("close"),
+            LifecycleSnapshot {
+                state: LifecycleState::Closed,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -3229,7 +3318,8 @@ mod tests {
             .expect("started child");
         core.complete_work_execution(WorkExecutionId::new(78))
             .expect("completed child before stop");
-        core.request_execution_stop(execution_id).expect("stop request");
+        core.request_execution_stop(execution_id)
+            .expect("stop request");
         assert_eq!(
             core.mark_execution_cleanup_pending(execution_id)
                 .expect_err("stop is not Join"),
@@ -3274,7 +3364,8 @@ mod tests {
                 ..
             }
         ));
-        core.mark_execution_joined(&ticket).expect("supervisor Join");
+        core.mark_execution_joined(&ticket)
+            .expect("supervisor Join");
         core.mark_execution_cleanup_pending(ExecutionId::new(ticket.operation_id.get()))
             .expect("cleanup pending");
         core.complete_execution(ExecutionId::new(ticket.operation_id.get()))
@@ -3302,12 +3393,16 @@ mod tests {
             AdmissionOutcome::Admitted(ticket) => ticket,
             AdmissionOutcome::NotAdmitted { .. } => panic!("recovery admitted"),
         };
-        core.mark_transition_joined(&recovery).expect("recovery join");
+        core.mark_transition_joined(&recovery)
+            .expect("recovery join");
         let (same_descriptor, _) = core
             .require_recovery(&recovery, Some(binding(1)), None)
             .expect("same descriptor retry");
         assert_eq!(same_descriptor, descriptor_id);
-        assert_eq!(core.responsibility_counts().expect("count after retry"), (1, false));
+        assert_eq!(
+            core.responsibility_counts().expect("count after retry"),
+            (1, false)
+        );
         assert!(matches!(
             core.admit_recovery(descriptor_id).expect("retry admission"),
             AdmissionOutcome::Admitted(_)
@@ -3380,10 +3475,7 @@ mod tests {
             AdmissionOutcome::Admitted(ticket) => ticket,
             AdmissionOutcome::NotAdmitted { .. } => panic!("descriptor recovery must admit"),
         };
-        assert_eq!(
-            recovery_ticket.recovery_descriptor_id,
-            Some(descriptor_id)
-        );
+        assert_eq!(recovery_ticket.recovery_descriptor_id, Some(descriptor_id));
         assert!(matches!(
             core.snapshot().expect("recovery transition").state,
             LifecycleState::Transition {
@@ -3435,7 +3527,8 @@ mod tests {
             AdmissionOutcome::Admitted(ticket) => ticket,
             AdmissionOutcome::NotAdmitted { .. } => panic!("exact recovery must admit from Ready"),
         };
-        core.mark_transition_joined(&recovery).expect("recovery Join");
+        core.mark_transition_joined(&recovery)
+            .expect("recovery Join");
         core.activate(&recovery, binding(2), ContentEffect::Retained)
             .expect("descriptor recovery keeps W2 active");
     }
@@ -3456,7 +3549,10 @@ mod tests {
         let (descriptor_id, _) = core
             .require_recovery(&ticket, Some(binding(1)), None)
             .expect("recovery descriptor");
-        assert_eq!(core.responsibility_counts().expect("transferred count").0, 1);
+        assert_eq!(
+            core.responsibility_counts().expect("transferred count").0,
+            1
+        );
         let request = ControlRequest {
             generation: ControlGeneration::new(1),
             fingerprint: "root-1".into(),
@@ -3614,11 +3710,16 @@ mod tests {
             ))
         ));
         assert_eq!(core.responsibility_counts().expect("counts"), (255, true));
-        core.release_responsibility(&emergency).expect("release emergency");
+        core.release_responsibility(&emergency)
+            .expect("release emergency");
         for reservation in general {
-            core.release_responsibility(&reservation).expect("release general");
+            core.release_responsibility(&reservation)
+                .expect("release general");
         }
-        assert_eq!(core.responsibility_counts().expect("empty counts"), (0, false));
+        assert_eq!(
+            core.responsibility_counts().expect("empty counts"),
+            (0, false)
+        );
     }
 
     #[test]
@@ -3774,7 +3875,8 @@ mod tests {
         core.complete_control(descriptor_id, generation, "done")
             .expect("complete");
         assert_eq!(
-            core.close().expect_err("unacked descriptor must block close"),
+            core.close()
+                .expect_err("unacked descriptor must block close"),
             LifecycleError::ActiveOperations
         );
         core.resolve_control(descriptor_id, generation)
