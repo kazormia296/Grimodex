@@ -154,6 +154,42 @@ describe("narrative maintenance reacceptance boundaries", () => {
     scheduler.dispose();
   });
 
+  it("reschedules work enqueued during an idle recovery preflight", async () => {
+    const preflight = deferred<{ status: "none" }>();
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockReturnValueOnce(preflight.promise)
+      .mockResolvedValue({ status: "none" });
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue(accepted());
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery,
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+
+    // The idle cycle still owns its slot while the preflight is pending, so
+    // this request cannot schedule a competing timer.  The cycle's release
+    // path must notice it after `none` is returned.
+    scheduler.request(backfill("idle-preflight-enqueue", "queued"));
+    preflight.resolve({ status: "none" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0].work).toEqual([
+      expect.objectContaining({
+        projectId: "idle-preflight-enqueue",
+        workKey: "legacy-dependency-backfill:queued",
+      }),
+    ]);
+    scheduler.dispose();
+  });
+
   it("rediscovers the binding after descriptor reconciliation before retrying work", async () => {
     let currentBinding = binding("authority-before-recovery", 1);
     const reconcileNarrativeMaintenanceRecovery = vi

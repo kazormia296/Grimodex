@@ -680,7 +680,11 @@ impl WorkspaceLifecycleViewAdapter {
                 let mut projection = self.lock_projection()?;
                 projection.last_terminal_kind = None;
                 projection.transition_ticket = None;
-                return self.projected_view();
+                // `projected_view` acquires the same mutex.  The shutdown
+                // path already owns its guard, so route through the
+                // guard-aware projector instead of attempting a recursive
+                // lock while publishing the terminal transition.
+                return self.projected_view_with_projection(&mut projection);
             }
             if !workspace.safe_mode.is_active()
                 && ticket.original_binding.is_none()
@@ -1395,6 +1399,52 @@ mod tests {
             .recovery_descriptor_ids()
             .expect("descriptor remains until control ACK")
             .contains(&descriptor_id));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn shutdown_during_open_completion_releases_projection_guard_before_closed() {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-lifecycle-open-shutdown-{}",
+            Uuid::new_v4()
+        ));
+        let workspace_path = root.join("workspace");
+        std::fs::create_dir_all(workspace_path.join(".grimodex")).expect("metadata directory");
+        std::fs::write(
+            workspace_path.join(".grimodex/workspace.json"),
+            serde_json::json!({"id": "workspace-open-shutdown"}).to_string(),
+        )
+        .expect("workspace metadata");
+        let authority = WorkspaceAuthority::from_database_for_test(
+            grimodex_db::Database::new(&workspace_path.join("grimodex.db"))
+                .expect("workspace database"),
+            workspace_path,
+        )
+        .expect("workspace authority");
+        let mut workspace = empty_workspace();
+        workspace.inner = Mutex::new(Some(ActiveWorkspace::new(authority)));
+        let adapter = WorkspaceLifecycleViewAdapter::new(workspace.lifecycle_core());
+
+        adapter
+            .ensure_authority_ready(&workspace)
+            .expect("initial Ready publication");
+        let (transition, changed) = adapter.begin_transition().expect("Open transition");
+        assert!(changed);
+        assert_eq!(transition.status, WorkspaceLifecycleStatus::Transition);
+
+        adapter.request_shutdown().expect("shutdown request");
+        // This is the adapter boundary reached after the blocking Open worker
+        // has joined.  It must return even though shutdown owns the race.
+        let after_join = adapter
+            .complete_transition_from_workspace(&workspace)
+            .expect("shutdown must retire Open completion");
+        assert_eq!(after_join.status, WorkspaceLifecycleStatus::Transition);
+        assert_eq!(after_join.activation, WorkspaceLifecycleActivation::None);
+
+        let closed = adapter.publish_closed().expect("terminal close");
+        assert_eq!(closed.status, WorkspaceLifecycleStatus::Closed);
+        assert_eq!(closed.binding_token, None);
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -65,6 +65,27 @@ evidence gaps remain explicit:
 - A Windows GNU target build remains environment-dependent on the installed
   cross compiler.
 
+### Latest re-review corrections
+
+The post-checkpoint review of `09f781ada0b2602f774db8f9252d3ddf0bf3c9d5`
+identified three completion-path gaps, now fixed in this candidate:
+
+- Shutdown completion uses the projection guard already held by the Native
+  adapter, so Open/Restore completion cannot recursively lock the same mutex.
+  The adapter test drives an admitted transition through Shutdown, Join, and
+  final `Closed` publication.
+- A trusted Safe Mode recovery target survives the `Transition` emitted while
+  `restore_recovery_candidate` runs.  Main still clears ordinary access and
+  invalidates callers, but keeps the exact recovery binding for the subsequent
+  `requires-open` and explicit Open sequence.
+- Releasing an idle recovery preflight now rechecks pending work before
+  returning.  A request enqueued while the preflight is awaiting Native is
+  scheduled without relying on another external trigger.
+
+These are implementation corrections, not independent C5 acceptance.  The
+candidate-bound focused receipts and Quick/verify evidence must be refreshed
+after the corrective commit.
+
 ## State, identity, and result contract
 
 ### Lifecycle states

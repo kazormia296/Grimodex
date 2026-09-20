@@ -902,10 +902,12 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
         }
       }
       // `workspace:opened` is emitted by Native before the terminal Ready
-      // lifecycle snapshot. Preserve a trusted recovery target across the
-      // requires-open projection, while ordinary Transition/Closed states
-      // still clear the normal binding. All caller identities are invalidated
-      // and must re-register against the retained target.
+      // lifecycle snapshot. Preserve a trusted recovery target across both
+      // the requires-open projection and the Transition emitted while a Safe
+      // Mode restore is in progress. Transition closes ordinary workspace
+      // access, but it must not erase the target that authorizes the next
+      // descriptor-bound recovery/Open. All caller identities are
+      // invalidated and must re-register against the retained target.
       if (record.status === "ready" && record.activation === "ready") {
         this.recoveryWorkspaceId = null;
       } else if (
@@ -913,6 +915,11 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
         record.activation === "requires-open"
       ) {
         this.workspaceId = this.recoveryWorkspaceId;
+      } else if (
+        record.status === "transition" &&
+        this.recoveryWorkspaceId !== null
+      ) {
+        this.workspaceId = null;
       } else {
         this.workspaceId = null;
         this.recoveryWorkspaceId = null;

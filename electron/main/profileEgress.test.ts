@@ -598,6 +598,79 @@ describe("D2a profile egress gate", () => {
     );
   });
 
+  it("retains the Safe Mode recovery binding across restore Transition and explicit Open", async () => {
+    const registerProfileEgressCaller = vi.fn((serialized: string) => {
+      const identity = JSON.parse(serialized) as {
+        workspaceId: string | null;
+      };
+      if (identity.workspaceId !== "/workspace-recovery") {
+        throw new Error("Native recovery binding mismatch");
+      }
+    });
+    const gate = await createProfileEgressGate({
+      ...backend(),
+      registerProfileEgressCaller,
+    });
+    gate.observeBackendEvent?.("workspace:opened", {
+      path: "/workspace-recovery",
+      restoreOnly: true,
+    });
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 5,
+      status: "recovery-required",
+      bindingToken: "bnd-recovery-1",
+      activation: "requires-open",
+    });
+    const beforeRestore = gate.issueCallerIdentity(11);
+    expect(beforeRestore.workspaceId).toBe("/workspace-recovery");
+    expect(() =>
+      gate.assertInvoke("save_global_settings", {
+        callerIdentity: beforeRestore,
+      }),
+    ).not.toThrow();
+
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 6,
+      status: "transition",
+      bindingToken: "bnd-recovery-transition",
+      activation: "none",
+    });
+    const duringRestore = gate.issueCallerIdentity(11);
+    expect(duringRestore.workspaceId).toBe("/workspace-recovery");
+    expect(() =>
+      gate.assertInvoke("save_global_settings", {
+        callerIdentity: duringRestore,
+      }),
+    ).not.toThrow();
+
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 7,
+      status: "recovery-required",
+      bindingToken: "bnd-recovery-2",
+      activation: "requires-open",
+    });
+    const afterRestore = gate.issueCallerIdentity(11);
+    expect(afterRestore.workspaceId).toBe("/workspace-recovery");
+    expect(() =>
+      gate.assertInvoke("save_global_settings", {
+        callerIdentity: afterRestore,
+      }),
+    ).not.toThrow();
+
+    // The successful explicit Open rotates the normal binding and retires the
+    // recovery-only slot; it still uses the same trusted workspace target.
+    gate.observeBackendEvent?.("workspace:opened", {
+      path: "/workspace-recovery",
+      restoreOnly: false,
+    });
+    const opened = gate.issueCallerIdentity(11);
+    expect(opened.workspaceId).toBe("/workspace-recovery");
+    expect(registerProfileEgressCaller).toHaveBeenCalledTimes(4);
+  });
+
   it.each([
     ["send_chat_message", {}],
     ["send_inline_ai_stream", {}],

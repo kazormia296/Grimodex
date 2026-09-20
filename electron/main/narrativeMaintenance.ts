@@ -2074,7 +2074,13 @@ export function createNarrativeMaintenanceScheduler(
           schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
         }
       }
+      // The cycle owns the execution slot while the recovery preflight is
+      // awaiting Native.  An enqueue can therefore arrive after the idle
+      // check but before this release and intentionally cannot schedule its
+      // own timer.  Recheck the queue immediately after releasing the slot so
+      // a normal `none` preflight result cannot strand that work indefinitely.
       releaseEarlyCycleClaim();
+      scheduleRunnableBacklogIfIdle();
       return;
     }
     noteMutation();
