@@ -65,11 +65,13 @@ and the latest four boundary findings:
 - A Native delivery-capacity rejection retains the exact H+1 tuple without
   fencing or retiring it. The later retry is a fresh lifecycle attempt owner,
   while a true Native lost-response duplicate remains idempotent; workspace
-  quiescence can cancel the retry before awaiting its in-flight Promise.
+  quiescence can cancel the retry before awaiting its in-flight Promise. If
+  only part of the retry's project set is available, that partial claim is
+  released before waiting and only the blocked projects are watched.
 - Project lifecycle reservations are keyed by verified database identity plus
   project id, so equal ids in independent workspace copies do not interfere.
 
-The implementation checkpoint `1a87684b368f6b05f03a15d907e9ef34eae24ad9`
+The implementation checkpoint `a076389526654206fe712ae7f4bacd7ce4b42731`
 received the bounded Sol max review below. The acceptance-record commits are
 docs-only; their exact-head Quick/verify receipts are recorded in the PR body
 after each final docs-only freeze. This is not a claim that every Layer C
@@ -77,7 +79,7 @@ journey or T01–T36 case has been executed.
 
 ## Focused implementation evidence
 
-- `pnpm test:electron --run electron/main/profileEgress.test.ts electron/main/narrativeMaintenance.test.ts electron/main/ipc.test.ts electron/shared/ipcContract.test.ts` — 4 files, 659 tests passed on implementation checkpoint `1a87684b368f6b05f03a15d907e9ef34eae24ad9`.
+- `pnpm test:electron --run electron/main/profileEgress.test.ts electron/main/narrativeMaintenance.test.ts electron/main/ipc.test.ts electron/shared/ipcContract.test.ts` — 4 files, 660 tests passed on implementation checkpoint `a076389526654206fe712ae7f4bacd7ce4b42731`.
 - `pnpm exec vitest run electron/shared/workspaceRestoreOutcome.test.ts src/features/settings/backupRestoreAuthority.test.ts src/features/workspace/workspaceLifecycleProjection.test.ts src/features/workspace/recovery/applyNativeOpenOutcome.test.ts` — 3 files, 16 tests passed.
 - `pnpm exec tsc -p electron/tsconfig.json --noEmit` — passed.
 - `pnpm test:narrative:lifecycle` — 36 shared-core tests, one Freshness lifecycle-control test, and the opt-in foreground/maintenance plus full-capacity lifecycle harness passed.
@@ -97,7 +99,7 @@ journey or T01–T36 case has been executed.
 | --- | --- | --- |
 | C0 contract review | bounded/limited | Contract and entry ledger are updated; full Layer C and T01–T36 evidence remain separate. |
 | C1 core review | bounded/limited | Shared core, owner permits, delivery/descriptors, result axes, and resource order have focused coverage. |
-| Sol max C5 review | approved/bounded for implementation checkpoint | `1a87684b368f6b05f03a15d907e9ef34eae24ad9` was reviewed read-only with `gpt-5.6-sol`, max reasoning; P1: 0 and P2: 0. The review verified the fresh capacity-retry owner, exact H+1 retention, quiescence cancellation, and the prior Restore `Unchanged` proof. The docs-only acceptance-record commit adds no code. |
+| Sol max C5 review | approved/bounded for implementation checkpoint | `a076389526654206fe712ae7f4bacd7ce4b42731` was reviewed read-only with `gpt-5.6-sol`, max reasoning; P1: 0 and P2: 0. The review verified the fresh capacity-retry owner, exact H+1 retention, quiescence cancellation, partial-claim release, and the prior Restore `Unchanged` proof. The docs-only acceptance-record commit adds no code. |
 | Layer C IPC journey | pending | A full Electron IPC → N-API → SQLite → renderer run has not been claimed. |
 | T01–T36 matrix | pending | Focused tests cover representative cases; absence of a complete matrix is not a pass. |
 | Quick + immediate verify | passed for implementation checkpoint; final docs-only receipt in PR body | The recorded commands below are bound to implementation checkpoint `1a87684b`; each later docs-only freeze is verified separately and reported with its exact HEAD in the PR body. |
@@ -115,7 +117,7 @@ parent_branch=codex/nir1-b-capacity-implementation
 base_sha=8df6be62b2652a5c3e7bca1ffb0e874937313d43
 child_branch=codex/pr600-lifecycle-replacement
 worktree=/home/grimodex/.codex/worktrees/pr600-lifecycle-replacement
-head_sha=1a87684b368f6b05f03a15d907e9ef34eae24ad9 (implementation checkpoint; this acceptance record is docs-only and its final freeze receipt is recorded in the PR body)
+head_sha=a076389526654206fe712ae7f4bacd7ce4b42731 (implementation checkpoint; this acceptance record is docs-only and its final freeze receipt is recorded in the PR body)
 tree_status=must be clean before Quick/verify
 implementer=Luna max
 independent_reviewers=Sol max (C5; read-only; model gpt-5.6-sol, max reasoning)
@@ -123,8 +125,8 @@ threat_model_ref_and_confirmation=policies/quality/iron-laws.md#GDX-PRECHECK-001
 gate_status_c0=bounded-review
 gate_status_c1=bounded-review
 gate_status_c5=bounded-approve implementation checkpoint Sol max; docs-only freeze Quick/verify recorded in PR body
-quick_command=pnpm ci:local:quick -- --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head 1a87684b368f6b05f03a15d907e9ef34eae24ad9
-verify_command=pnpm ci:local:verify -- quick --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head 1a87684b368f6b05f03a15d907e9ef34eae24ad9
+quick_command=pnpm ci:local:quick -- --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head a076389526654206fe712ae7f4bacd7ce4b42731
+verify_command=pnpm ci:local:verify -- quick --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head a076389526654206fe712ae7f4bacd7ce4b42731
 unresolved_findings=full Layer C IPC journey, complete T01-T36 evidence, Windows GNU cross-build when x86_64-w64-mingw32-gcc is unavailable, and no claim beyond the exact docs-only receipt in the PR body
 environment_limits=Windows GNU check may be blocked by missing x86_64-w64-mingw32-gcc; no hosted-check claim
 freeze_timestamp=docs-only record; final candidate timestamp and exact receipt are recorded in the PR body
