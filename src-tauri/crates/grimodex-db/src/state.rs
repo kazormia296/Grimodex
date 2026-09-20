@@ -236,17 +236,6 @@ pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveW
             });
         };
         if binding.authority_instance != ws.authority.identity() {
-            // Frozen Tauri restore/test owners may replace `inner` directly
-            // after their own protected open boundary. They do not publish a
-            // shared-core binding, but they also leave the compatibility
-            // switching flag down; keep that legacy owner usable. Electron
-            // lifecycle transitions set the flag/core Transition and remain
-            // fail-closed above.
-            if !ws_state.switching.load(std::sync::atomic::Ordering::Acquire) {
-                return Ok(ActiveWorkspaceSnapshot {
-                    authority: Arc::clone(&ws.authority),
-                });
-            }
             return Err(AppError::Anyhow(anyhow::anyhow!(
                 "NEX_WORKSPACE_BINDING_CHANGED: lifecycle Ready binding does not match the active authority"
             )));
@@ -444,12 +433,13 @@ mod tests {
             Some(ActiveWorkspace::new(replacement_authority));
 
         assert_eq!(snapshot.path(), original_path.as_path());
-        assert!(!Arc::ptr_eq(
-            &snapshot.authority,
-            &active_workspace_snapshot(&state)
-                .expect("replacement snapshot")
-                .authority,
-        ));
+        let error = match active_workspace_snapshot(&state) {
+            Ok(_) => panic!("a direct authority replacement must fail closed until activation"),
+            Err(error) => error,
+        };
+        assert!(error
+            .to_string()
+            .contains("NEX_WORKSPACE_BINDING_CHANGED"));
         // Pinned snapshot still holds the original shared lease.
         let exclusive = crate::workspace_lease::acquire_exclusive(
             &original_path,

@@ -516,6 +516,21 @@ pub struct DurableRunHandle {
     pub epoch: u64,
     pub sealed_spec: String,
     pub spec_digest: String,
+    /// Process-local creation lineage captured before the writer starts.  It
+    /// is optional for legacy/imported handles, which must fail closed when a
+    /// lost creation result needs to be resolved.
+    #[serde(default)]
+    pub project_created_at: Option<String>,
+    /// Canonical SQLite main-database path captured with the reservation.
+    /// Reopening the exact locator is allowed; resolving against another DB
+    /// with the same project id is not.
+    #[serde(default)]
+    pub database_path: Option<String>,
+    /// Set only by the shared core after the execution supervisor has
+    /// observed the worker Join.  A descriptor created before that boundary
+    /// must never be used as absence evidence.
+    #[serde(default)]
+    pub worker_joined: bool,
 }
 
 impl DurableRunHandle {
@@ -543,6 +558,9 @@ impl DurableRunHandle {
             epoch,
             sealed_spec: sealed_spec.into(),
             spec_digest: spec_digest.into(),
+            project_created_at: None,
+            database_path: None,
+            worker_joined: false,
         }
     }
 
@@ -560,6 +578,16 @@ impl DurableRunHandle {
         ]
         .iter()
         .all(|value| !value.trim().is_empty())
+    }
+
+    pub fn with_project_creation_lineage(mut self, created_at: impl Into<String>) -> Self {
+        self.project_created_at = Some(created_at.into());
+        self
+    }
+
+    pub fn with_database_path(mut self, path: impl Into<String>) -> Self {
+        self.database_path = Some(path.into());
+        self
     }
 }
 
@@ -1782,11 +1810,13 @@ impl WorkspaceLifecycleCore {
         // worker has joined, an unpromoted slot is a CreationUnknown proof
         // obligation, never something that may be silently dropped.
         if let Some(ownership) = run.as_mut() {
+            ownership.handle.worker_joined = true;
             if ownership.state == RunCreationState::Reserved {
                 ownership.state = RunCreationState::CreationUnknown;
             }
         }
         for ownership in &mut additional_runs {
+            ownership.handle.worker_joined = true;
             if ownership.state == RunCreationState::Reserved {
                 ownership.state = RunCreationState::CreationUnknown;
             }

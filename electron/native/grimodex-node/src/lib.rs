@@ -110,8 +110,9 @@ use grimodex_db::sample_seed;
 use grimodex_db::scene_body::{self, SaveSceneBodyBundlePayload};
 use grimodex_db::state::{
     active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
-    PinnedWorkspaceDb,
+    PinnedWorkspaceDb, WorkspaceAuthority,
 };
+use grimodex_db::workspace_lease::try_acquire_shared;
 #[cfg(test)]
 use grimodex_db::state::ActiveWorkspace;
 use grimodex_db::timelapse::{TimelapseBodySnapshotTarget, TimelapseGenesisBaselineKind};
@@ -1891,6 +1892,36 @@ fn publish_workspace_lifecycle_recovery_after_join(
     Ok(view)
 }
 
+fn open_descriptor_recovery_authority(
+    binding: &grimodex_db::LiveBinding,
+) -> std::result::Result<PinnedWorkspaceDb, AppError> {
+    let path = std::path::PathBuf::from(&binding.locator);
+    let metadata_path = path.join(".grimodex/workspace.json");
+    let metadata = std::fs::read_to_string(&metadata_path).map_err(anyhow::Error::from)?;
+    let workspace_id = serde_json::from_str::<serde_json::Value>(&metadata)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            AppError::Anyhow(anyhow::anyhow!(
+                "NEX_WORKSPACE_IDENTITY_INVALID: descriptor recovery metadata has no id"
+            ))
+        })?;
+    if workspace_id != binding.workspace_id {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "NEX_WORKSPACE_BINDING_CHANGED: descriptor locator metadata identity changed"
+        )));
+    }
+    let lease = try_acquire_shared(&path).map_err(|error| anyhow::anyhow!(error))?;
+    let database = Database::new(&path.join("grimodex.db"))?;
+    Ok(Arc::new(WorkspaceAuthority::new(database, path, lease)))
+}
+
 /// Resolve one exact maintenance recovery descriptor before ordinary cycle
 /// admission. The descriptor is the only source of Run identity; no WorkKey
 /// lookup or `active_database()` fallback is allowed while the core is in
@@ -1906,41 +1937,50 @@ fn reconcile_maintenance_recovery_descriptor(
         LifecycleState::Ready(_) => state.workspace_lifecycle.recovery_descriptor_ids()?,
         _ => return Ok(None),
     };
-    let authority = match state.workspace_lifecycle.recovery_authority(&state.ws)? {
-        Some(authority) => authority,
-        None => return Ok(None),
-    };
-    let metadata_path = authority.path().join(".grimodex/workspace.json");
-    let metadata = std::fs::read_to_string(&metadata_path).map_err(anyhow::Error::from)?;
-    let workspace_id = serde_json::from_str::<serde_json::Value>(&metadata)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-        })
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            AppError::Anyhow(anyhow::anyhow!(
-                "NEX_WORKSPACE_IDENTITY_INVALID: recovery authority metadata has no id"
-            ))
-        })?;
-    let locator = authority.path().to_string_lossy().into_owned();
-    let descriptor_id = descriptor_ids.into_iter().find(|descriptor_id| {
-        if *descriptor_id == grimodex_db::workspace_lifecycle::SAFE_MODE_RECOVERY_DESCRIPTOR_ID {
-            return false;
+    let active_authority = state.workspace_lifecycle.recovery_authority(&state.ws)?;
+    let mut selected: Option<(
+        grimodex_db::workspace_lifecycle::RecoveryDescriptorId,
+        PinnedWorkspaceDb,
+    )> = None;
+    for descriptor_id in descriptor_ids {
+        if descriptor_id
+            == grimodex_db::workspace_lifecycle::SAFE_MODE_RECOVERY_DESCRIPTOR_ID
+        {
+            continue;
         }
-        let Ok(descriptor) = state.workspace_lifecycle.recovery_descriptor(*descriptor_id) else {
-            return false;
+        let descriptor = state.workspace_lifecycle.recovery_descriptor(descriptor_id)?;
+        let Some(binding) = descriptor.expected_binding.as_ref() else {
+            continue;
         };
-        descriptor.expected_binding.as_ref().is_some_and(|binding| {
-            binding.locator == locator
-                && binding.workspace_id == workspace_id
+        if let Some(authority) = active_authority.as_ref() {
+            let metadata_path = authority.path().join(".grimodex/workspace.json");
+            let workspace_id = std::fs::read_to_string(&metadata_path)
+                .ok()
+                .and_then(|metadata| serde_json::from_str::<serde_json::Value>(&metadata).ok())
+                .and_then(|value| {
+                    value
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                });
+            if binding.locator == authority.path().to_string_lossy()
+                && workspace_id.as_deref() == Some(binding.workspace_id.as_str())
                 && binding.authority_instance == authority.identity()
-        })
-    });
-    let Some(descriptor_id) = descriptor_id else {
+            {
+                selected = Some((descriptor_id, Arc::clone(authority)));
+                break;
+            }
+        }
+        // A descriptor may outlive the authority that created it (for
+        // example W1 remains recoverable while W2 is Ready).  Reopen only the
+        // exact descriptor locator under a fresh shared lease; never fall back
+        // to the current active DB or a WorkKey lookup.
+        if let Ok(authority) = open_descriptor_recovery_authority(binding) {
+            selected = Some((descriptor_id, authority));
+            break;
+        }
+    }
+    let Some((descriptor_id, authority)) = selected else {
         return Ok(None);
     };
     let descriptor = state.workspace_lifecycle.recovery_descriptor(descriptor_id)?;
@@ -4181,7 +4221,7 @@ fn revalidate_narrative_workspace_after_cycle<'a>(
     }))
 }
 
-fn run_narrative_freshness_cycle_inner(
+fn run_narrative_freshness_cycle_body(
     state: &AppState,
     after_cycle: impl FnOnce(),
 ) -> std::result::Result<Option<String>, AppError> {
@@ -4217,15 +4257,6 @@ fn run_narrative_freshness_cycle_inner(
             }
         }
     }
-    let mut lifecycle_permit = match state.workspace_lifecycle.begin_maintenance()? {
-        PermitAdmission::Admitted(mut permit) => {
-            permit
-                .start()
-                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
-            permit
-        }
-        PermitAdmission::NotAdmitted { .. } => return Ok(None),
-    };
     // Liveness is minted only after the bounded cycle has returned
     // successfully. A failed graph evaluation, cursor reservation,
     // or publication therefore cannot attest a live scheduler or
@@ -4239,11 +4270,6 @@ fn run_narrative_freshness_cycle_inner(
                 .and_then(|config| config.freshness_hold_project_id.as_deref()),
             &mut lifecycle_control,
         );
-    let lifecycle_result = lifecycle_permit
-        .mark_joined()
-        .and_then(|_| lifecycle_permit.release().map(|_| ()))
-        .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")));
-    lifecycle_result?;
     let (cycle_outcome, successful_cycle) = cycle_result?;
     // A workspace swap may complete while the bounded cycle is
     // evaluating its pinned old authority. Re-resolve the active
@@ -4307,7 +4333,7 @@ fn run_narrative_freshness_cycle_inner(
         None
     };
 
-    match cycle_outcome {
+    let result = match cycle_outcome {
         narrative_extraction::IncrementalFreshnessCycleOutcome::Held(summary) => {
             require_held_cutover_not_ready(cutover_not_ready)?;
             let result = serde_json::json!({
@@ -4372,7 +4398,34 @@ fn run_narrative_freshness_cycle_inner(
             }
             Ok(Some(result.to_string()))
         }
-    }
+    };
+    // The permit remains live across revalidation, heartbeat, cutover, and
+    // quiescence publication.  Only after every DB write and the final
+    // serialized result has completed may the supervisor observe Join and
+    // release the logical membership.
+    result
+}
+
+#[cfg(test)]
+fn run_narrative_freshness_cycle_inner(
+    state: &AppState,
+    after_cycle: impl FnOnce(),
+) -> std::result::Result<Option<String>, AppError> {
+    let mut lifecycle_permit = match state.workspace_lifecycle.begin_maintenance()? {
+        PermitAdmission::Admitted(mut permit) => {
+            permit
+                .start()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+            permit
+        }
+        PermitAdmission::NotAdmitted { .. } => return Ok(None),
+    };
+    let result = run_narrative_freshness_cycle_body(state, after_cycle);
+    lifecycle_permit
+        .mark_joined()
+        .and_then(|_| lifecycle_permit.release().map(|_| ()))
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+    result
 }
 
 #[napi]
@@ -4816,7 +4869,29 @@ impl Backend {
     #[napi]
     pub async fn run_narrative_freshness_cycle(&self) -> Result<Option<String>> {
         let state = Arc::clone(&self.state);
-        run_blocking(move || run_narrative_freshness_cycle_inner(&state, || {})).await
+        let lifecycle_permit = match state
+            .workspace_lifecycle
+            .begin_maintenance()
+            .map_err(|error| Error::from_reason(error.to_string()))?
+        {
+            PermitAdmission::Admitted(mut permit) => {
+                permit
+                    .start()
+                    .map_err(|error| Error::from_reason(error.to_string()))?;
+                permit
+            }
+            PermitAdmission::NotAdmitted { .. } => return Ok(None),
+        };
+        let (result, mut lifecycle_permit) = run_blocking(move || {
+            let result = run_narrative_freshness_cycle_body(&state, || {});
+            Ok((result, lifecycle_permit))
+        })
+        .await?;
+        lifecycle_permit
+            .mark_joined()
+            .and_then(|_| lifecycle_permit.release().map(|_| ()))
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        result.map_err(app_err_to_napi)
     }
 
     /// Main-process-only enqueue snapshot for the serialized maintenance
@@ -5174,6 +5249,17 @@ impl Backend {
                     return Err(AppError::Anyhow(error));
                 }
             };
+            // Descriptor-bound recovery is capacity-independent.  Resolve an
+            // existing exact root before touching the normal H+1 delivery
+            // ledger so a full 256-record transport cannot deadlock the only
+            // operation capable of releasing a responsibility cell.
+            if let Some(reason) = reconcile_maintenance_recovery_descriptor(&state)? {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": reason,
+                })
+                .to_string());
+            }
             if let Some(sequence) = request.delivery_sequence {
                 let delivery_sequence = DeliverySequence::new(sequence);
                 let fingerprint = request
@@ -5221,18 +5307,6 @@ impl Backend {
                         .to_string());
                     }
                 }
-            }
-            // A previous maintenance execution may have transferred an
-            // exact Run owner to a descriptor while leaving the current
-            // authority usable for descriptor-bound recovery. Resolve that
-            // root before attempt/maintenance admission; RecoveryRequired
-            // deliberately rejects ordinary maintenance permits.
-            if let Some(reason) = reconcile_maintenance_recovery_descriptor(&state)? {
-                return Ok(serde_json::json!({
-                    "status": "workspace-unavailable",
-                    "reason": reason,
-                })
-                .to_string());
             }
             let mut attempt_guard = if let Some(attempt_id) = attempt_id {
                 request.workspace_binding.as_ref().ok_or_else(|| {
@@ -7487,12 +7561,15 @@ impl Backend {
         })
         .await;
 
-        let mut panic_outcome = false;
+        // Once the blocking opener has returned an error, the supervisor has
+        // no proof that the old authority remained untouched.  JoinError,
+        // panic, and an ordinary post-admission error all take the same
+        // fail-closed RecoveryRequired projection; error text is not a
+        // lifecycle classifier.
+        let needs_recovery;
         let result = match task {
             Ok((mut trace, result)) => {
-                panic_outcome = result.as_ref().err().is_some_and(|error| {
-                    error.to_string().contains("NEX_WORKSPACE_OPEN_PANIC")
-                });
+                needs_recovery = result.is_err();
                 let terminal = if result.is_ok() {
                     NativeWorkspaceOpenResult::Ready
                 } else {
@@ -7502,6 +7579,7 @@ impl Backend {
                 result.map_err(app_err_to_napi)
             }
             Err(error) => {
+                needs_recovery = true;
                 let mut trace =
                     NativeWorkspaceOpenTrace::with_start(trace_started_at, trace_enabled);
                 trace.emit_terminal(NativeWorkspaceOpenResult::Failed);
@@ -7513,7 +7591,7 @@ impl Backend {
         // actual published authority / Safe Mode state. An operation failure
         // is preserved even if the observer itself cannot emit after a
         // poisoned lock.
-        let lifecycle = if panic_outcome {
+        let lifecycle = if needs_recovery {
             publish_workspace_lifecycle_recovery_after_join(&self.state)
         } else {
             publish_workspace_lifecycle_from_workspace(&self.state)

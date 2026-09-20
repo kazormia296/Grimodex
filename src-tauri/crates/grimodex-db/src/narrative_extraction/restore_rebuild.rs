@@ -3948,6 +3948,26 @@ pub fn resolve_maintenance_run_creation_unknown(
     db: &Database,
     handle: &crate::workspace_lifecycle::DurableRunHandle,
 ) -> anyhow::Result<CreationResolution> {
+    anyhow::ensure!(
+        db.connection_reusable(),
+        "NEX_RUN_CREATION_UNKNOWN: source connection is quarantined"
+    );
+    let connection_retired = db.with_conn(|conn| {
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "NEX_RUN_CREATION_UNKNOWN: source worker connection still has an open transaction"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .is_ok();
+    anyhow::ensure!(
+        connection_retired,
+        "NEX_RUN_CREATION_UNKNOWN: connection retirement proof is unavailable"
+    );
+    anyhow::ensure!(
+        handle.worker_joined,
+        "NEX_RUN_CREATION_UNKNOWN: worker Join has not been observed"
+    );
     let reservation = RunCreationReservation {
         run_id: handle.run_id.clone(),
         task_id: handle.task_id.clone(),
@@ -3968,6 +3988,10 @@ pub fn resolve_maintenance_run_creation_unknown(
             }
             .to_string(),
             task_input: handle.sealed_spec.clone(),
+            project_created_at: handle
+                .project_created_at
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("NEX_RUN_CREATION_UNKNOWN: creation lineage is unavailable"))?,
         }),
     };
     let stop = Arc::new(AtomicBool::new(false));
@@ -3985,11 +4009,11 @@ pub fn resolve_maintenance_run_creation_unknown(
                     &reservation,
                     &handle.project_id,
                     CreationVerification {
-                        worker_joined: true,
-                        connection_retired: true,
-                        same_database_identity: true,
-                        lineage_continuous: true,
-                        no_destructive_boundary: true,
+                        worker_joined: handle.worker_joined,
+                        connection_retired,
+                        same_database_identity: verify_creation_database_identity(conn, handle)?,
+                        lineage_continuous: verify_creation_lineage(conn, handle)?,
+                        no_destructive_boundary: verify_creation_lineage(conn, handle)?,
                     },
                 )?;
                 graph.check(GraphWorkStage::ResultAssembly)?;
@@ -4003,6 +4027,36 @@ pub fn resolve_maintenance_run_creation_unknown(
         );
     };
     result.into_result()
+}
+
+fn verify_creation_database_identity(
+    conn: &Connection,
+    handle: &crate::workspace_lifecycle::DurableRunHandle,
+) -> anyhow::Result<bool> {
+    let path: String = conn.query_row(
+        "SELECT file FROM pragma_database_list WHERE name = 'main'",
+        [],
+        |row| row.get(0),
+    )?;
+    let canonical = std::fs::canonicalize(&path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(path))
+        .to_string_lossy()
+        .into_owned();
+    Ok(handle.database_path.as_deref() == Some(canonical.as_str()))
+}
+
+fn verify_creation_lineage(
+    conn: &Connection,
+    handle: &crate::workspace_lifecycle::DurableRunHandle,
+) -> anyhow::Result<bool> {
+    let current: Option<String> = conn
+        .query_row(
+            "SELECT created_at FROM projects WHERE id = ?1",
+            [&handle.project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(current.as_deref() == handle.project_created_at.as_deref())
 }
 
 pub(crate) fn run_maintenance_graph_phase_for_run<T, F>(
