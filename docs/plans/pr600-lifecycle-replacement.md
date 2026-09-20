@@ -219,6 +219,16 @@ descriptor remains independently owned.
   cases.
 - Recovery must not depend on allocating an ordinary delivery record.
 
+`maintenance-delivery-capacity` is a known Native pre-admission result, not a
+generic workspace-unavailable failure. Native leaves its `H+1` unchanged and
+creates no delivery record. Main therefore keeps the exact admitted
+sequence/fingerprint and payload in a capacity retry slot, skips
+`resolveOrFence` and ACK/retire, and retries that same request after an
+existing record ACK frees capacity. New work may queue behind that slot but
+cannot change its fingerprint or allocate `H+2`. A later binding mismatch or
+unknown failure exits this special path and uses the normal fence/error
+contract.
+
 Recovery responsibility has 256 cells: 255 general cells tagged to an exact
 Run or workspace operation, and one recovery-transition emergency cell.
 Reserve the relevant cell before the first side effect. An existing
@@ -484,12 +494,13 @@ the gate before the IPC envelope is returned to the renderer.  Only an exact
 `Unchanged` result whose Ready token matches the retained association, whose
 revision is newer than that Ready observation, and whose current lifecycle
 observation is not newer may restore the normal authorization binding.  The
-proof is held when the terminal Ready event arrives after the result and is
-applied immediately when the event was observed first.  A different
+proof is retained until that exact Ready revision is observed, including when
+a queued Transition event is delivered in between; it is applied immediately
+only when the exact terminal Ready snapshot was observed first.  A different
 workspace event, stale result, `NotAdmitted`, Safe Mode recovery target, or
 unknown result never restores the old caller binding.  The regression pair
-must cover both callback orders and verify Native-side workspace matching on
-the newly issued caller.
+must cover both callback orders, the delayed Transition-before-Ready order,
+and verify Native-side workspace matching on the newly issued caller.
 
 ## Candidate ledger
 

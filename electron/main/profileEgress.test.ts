@@ -862,6 +862,70 @@ describe("D2a profile egress gate", () => {
     );
   });
 
+  it("keeps an unchanged proof pending across a delayed Transition and Ready event", async () => {
+    const registerProfileEgressCaller = vi.fn((serialized: string) => {
+      const identity = JSON.parse(serialized) as {
+        workspaceId: string | null;
+      };
+      if (identity.workspaceId !== "/workspace-normal") {
+        throw new Error("Native normal binding mismatch");
+      }
+    });
+    const gate = await createProfileEgressGate({
+      ...backend(),
+      registerProfileEgressCaller,
+    });
+
+    gate.observeBackendEvent?.("workspace:opened", {
+      path: "/workspace-normal",
+      restoreOnly: false,
+    });
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 1,
+      status: "ready",
+      bindingToken: "bnd-normal-ready",
+      activation: "ready",
+    });
+    gate.issueCallerIdentity(11);
+
+    // Native's result callback can beat its nonblocking lifecycle events. The
+    // old Ready observation must not be treated as the terminal proof.
+    gate.observeWorkspaceLifecycleResult?.({
+      status: "unchanged",
+      operationOutcome: "failed",
+      contentEffect: "none",
+      lifecycle: {
+        schemaVersion: 1,
+        revision: 3,
+        status: "ready",
+        bindingToken: "bnd-normal-ready",
+        activation: "ready",
+      },
+    });
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 2,
+      status: "transition",
+      bindingToken: "bnd-restore-transition",
+      activation: "none",
+    });
+    expect(gate.issueCallerIdentity(11).workspaceId).toBeNull();
+
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 3,
+      status: "ready",
+      bindingToken: "bnd-normal-ready",
+      activation: "ready",
+    });
+    const restored = gate.issueCallerIdentity(11);
+    expect(restored.workspaceId).toBe("/workspace-normal");
+    expect(registerProfileEgressCaller).toHaveBeenLastCalledWith(
+      expect.stringContaining('"workspaceId":"/workspace-normal"'),
+    );
+  });
+
   it.each([
     ["send_chat_message", {}],
     ["send_inline_ai_stream", {}],

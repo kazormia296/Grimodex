@@ -74,6 +74,24 @@ interface PendingNarrativeMaintenanceWork extends NarrativeMaintenanceWork {
   workspaceBinding?: NarrativeMaintenanceWorkspaceBinding | null;
 }
 
+interface CapacityBlockedDelivery {
+  readonly sequence: number;
+  readonly fingerprint: string;
+  readonly work: readonly PendingNarrativeMaintenanceWork[];
+  readonly wakeEntries: readonly {
+    readonly wakeKey: string;
+    readonly projectId: string;
+    readonly workspaceBinding:
+      | NarrativeMaintenanceWorkspaceBinding
+      | null
+      | undefined;
+  }[];
+  readonly workspaceBinding:
+    | NarrativeMaintenanceWorkspaceBinding
+    | null
+    | undefined;
+}
+
 /**
  * Request delivered to the main-only NAPI maintenance cycle method. Empty `work`
  * is valid only when `wakeProjectIds` names the durable native backlog scope;
@@ -1204,6 +1222,11 @@ export function createNarrativeMaintenanceScheduler(
    * re-dispatching the batch or reusing its fingerprint for a new occurrence.
    */
   const pendingDeliveryAcks = new Map<number, { fingerprint: string; fenced?: boolean }>();
+  // Native capacity rejection does not advance its H+1. Keep the exact
+  // admitted main-side record and payload together so the next attempt cannot
+  // select a different batch, allocate H+2, or fence the still-retryable
+  // sequence. New queue entries remain pending behind this exact retry.
+  let capacityBlockedDelivery: CapacityBlockedDelivery | null = null;
   let deliveryAckRetryTimer: ReturnType<typeof setTimeout> | null = null;
   const sharedCoordinator = backend ? processCoordinator : null;
   // hasMore is a durable native backlog signal, so retain the project that
@@ -1319,6 +1342,9 @@ export function createNarrativeMaintenanceScheduler(
         !blockedProjects.has(entry.projectId),
     );
 
+  const hasCapacityBlockedDelivery = (): boolean =>
+    capacityBlockedDelivery !== null;
+
   const scheduleRunnableBacklogIfIdle = (): void => {
     if (
       disposed ||
@@ -1332,7 +1358,11 @@ export function createNarrativeMaintenanceScheduler(
     ) {
       return;
     }
-    if (hasRunnablePendingWork() || hasRunnableWake()) {
+    if (
+      hasCapacityBlockedDelivery() ||
+      hasRunnablePendingWork() ||
+      hasRunnableWake()
+    ) {
       schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
     }
   };
@@ -2027,7 +2057,12 @@ export function createNarrativeMaintenanceScheduler(
       return;
     }
 
-    if (pending.size === 0 && durableWakeProjects.size === 0) {
+    const capacityRetry = capacityBlockedDelivery;
+    if (
+      capacityRetry === null &&
+      pending.size === 0 &&
+      durableWakeProjects.size === 0
+    ) {
       // Freshness can create an exact recovery descriptor without leaving a
       // normal delivery record behind. Keep pumping that descriptor even
       // when this scheduler has no ordinary work to claim.
@@ -2089,9 +2124,12 @@ export function createNarrativeMaintenanceScheduler(
       return;
     }
 
-    const candidates = [...pending.values()].filter(
-      (work) => !deferredWorkKeys.has(scopedWorkKey(work)),
-    );
+    const candidates =
+      capacityRetry === null
+        ? [...pending.values()].filter(
+            (work) => !deferredWorkKeys.has(scopedWorkKey(work)),
+          )
+        : [];
     // Select one authority snapshot before claiming projects. This keeps
     // replacement-workspace identities out of one native cycle and bounds a
     // burst to the same 32-item limit enforced by shared Rust.
@@ -2104,9 +2142,12 @@ export function createNarrativeMaintenanceScheduler(
           workspaceBindingKey(work.workspaceBinding) === candidateBindingKey,
       )
       .slice(0, NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE);
-    const wakeCandidates = [...durableWakeProjects.entries()]
-      .map(([wakeKey, entry]) => ({ wakeKey, ...entry }))
-      .filter(({ wakeKey }) => !deferredWakeProjects.has(wakeKey));
+    const wakeCandidates =
+      capacityRetry === null
+        ? [...durableWakeProjects.entries()]
+            .map(([wakeKey, entry]) => ({ wakeKey, ...entry }))
+            .filter(({ wakeKey }) => !deferredWakeProjects.has(wakeKey))
+        : [];
     const wakeBindingKey = workspaceBindingKey(
       wakeCandidates.length > 0
         ? wakeCandidates[0]!.workspaceBinding
@@ -2121,12 +2162,19 @@ export function createNarrativeMaintenanceScheduler(
     // Process ordinary work first. A wake-only cycle is represented by an
     // empty batch, but only after its durable project has been claimed.
     const projectIds = [
-      ...new Set([
-        ...chunkCandidates.map((work) => work.projectId),
-        ...(chunkCandidates.length === 0
-          ? selectedWakeEntries.map((entry) => entry.projectId)
-          : []),
-      ]),
+      ...new Set(
+        capacityRetry !== null
+          ? [
+              ...capacityRetry.work.map((work) => work.projectId),
+              ...capacityRetry.wakeEntries.map((entry) => entry.projectId),
+            ]
+          : [
+              ...chunkCandidates.map((work) => work.projectId),
+              ...(chunkCandidates.length === 0
+                ? selectedWakeEntries.map((entry) => entry.projectId)
+                : []),
+            ],
+      ),
     ];
     const claimedProjects = sharedCoordinator
       ? sharedCoordinator.claimAvailable(projectIds)
@@ -2135,9 +2183,14 @@ export function createNarrativeMaintenanceScheduler(
     const blockedProjectIds = projectIds.filter(
       (projectId) => !claimedProjectSet.has(projectId),
     );
-    const batch = chunkCandidates.filter((work) =>
-      claimedProjectSet.has(work.projectId),
-    );
+    const batch =
+      capacityRetry !== null
+        ? blockedProjectIds.length === 0
+          ? [...capacityRetry.work]
+          : []
+        : chunkCandidates.filter((work) =>
+            claimedProjectSet.has(work.projectId),
+          );
     // Forward the complete validated batch. Verify and Rebuild are automatic
     // dispatch kinds, not JS-side parked work; Rust owns whether a cycle is
     // accepted/coalesced/deferred. Keeping all kinds in one bounded request
@@ -2146,15 +2199,20 @@ export function createNarrativeMaintenanceScheduler(
     // Ordinary work and a durable empty wake have separate ACK scopes. Keep
     // the wake pending when a work batch is available and issue it later.
     let sendingWakeEntries =
-      backendBatch.length === 0
-        ? selectedWakeEntries.filter((entry) =>
-            claimedProjectSet.has(entry.projectId),
-          )
-        : [];
+      capacityRetry !== null
+        ? blockedProjectIds.length === 0
+          ? [...capacityRetry.wakeEntries]
+          : []
+        : backendBatch.length === 0
+          ? selectedWakeEntries.filter((entry) =>
+              claimedProjectSet.has(entry.projectId),
+            )
+          : [];
     const sendingWakeProjects = [
       ...new Set(sendingWakeEntries.map((entry) => entry.projectId)),
     ];
     let cycleBinding =
+      capacityRetry?.workspaceBinding ??
       backendBatch[0]?.workspaceBinding ??
       (sendingWakeProjects.length > 0
         ? sendingWakeEntries[0]!.workspaceBinding
@@ -2173,11 +2231,13 @@ export function createNarrativeMaintenanceScheduler(
       releaseEarlyCycleClaim();
       return;
     }
-    let deliveryFingerprint = narrativeMaintenanceDeliveryFingerprint(
-      backendBatch,
-      sendingWakeProjects,
-      cycleBinding,
-    );
+    let deliveryFingerprint =
+      capacityRetry?.fingerprint ??
+      narrativeMaintenanceDeliveryFingerprint(
+        backendBatch,
+        sendingWakeProjects,
+        cycleBinding,
+      );
     // The real Native backend exposes the ACK/fence methods introduced with
     // the lifecycle delivery contract. Older in-process test doubles and
     // frozen compatibility adapters intentionally do not: keep their wire
@@ -2198,7 +2258,7 @@ export function createNarrativeMaintenanceScheduler(
       )?.[0];
       return pendingSequence ?? deliveryLedger.H + 1;
     };
-    let deliverySequence = resolveDeliverySequence();
+    let deliverySequence = capacityRetry?.sequence ?? resolveDeliverySequence();
     if (typeof reconcileRecovery === "function") {
       try {
         const raw = await reconcileRecovery.call(backend);
@@ -2284,6 +2344,7 @@ export function createNarrativeMaintenanceScheduler(
       // A full ordinary ledger is a typed non-admission. Keep the exact
       // queue claim and let the bounded retry wake run after an ACK; do not
       // start Native work or allocate another sequence while full.
+      for (const work of backendBatch) requeueWork(work);
       sharedCoordinator?.release(claimedProjects);
       warn(
         `[narrative-maintenance] delivery admission ${deliveryAdmission.admission}; retaining batch`,
@@ -2311,6 +2372,7 @@ export function createNarrativeMaintenanceScheduler(
     let nextDelayMs = NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS;
     let shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
     let workspaceUnavailable = false;
+    let deliveryCapacity = false;
     let notAdmitted = false;
     let workspaceMismatch = false;
     let deferredCycle = false;
@@ -2374,6 +2436,17 @@ export function createNarrativeMaintenanceScheduler(
       // the catch path requeues the exact batch and wake scope.
       const cycleResult = normalizeCycleResult(result);
       settledCycleResult = cycleResult;
+      if (
+        capacityRetry !== null &&
+        !(
+          cycleResult.status === "workspace-unavailable" &&
+          cycleResult.reason === "maintenance-delivery-capacity"
+        )
+      ) {
+        // The exact blocked request has received a non-capacity response. The
+        // normal terminal/error path now owns its requeue or retirement.
+        capacityBlockedDelivery = null;
+      }
       const terminalFaultHandled =
         cycleResult.status === "ci-terminal-fault-handled";
       interruptedCycle =
@@ -2432,7 +2505,9 @@ export function createNarrativeMaintenanceScheduler(
         }
       }
       if (cycleResult.status === "workspace-unavailable") {
-        if (
+        if (cycleResult.reason === "maintenance-delivery-capacity") {
+          deliveryCapacity = true;
+        } else if (
           cycleResult.reason === "maintenance-workspace-binding-mismatch" ||
           cycleResult.reason === "maintenance-workspace-binding-missing" ||
           cycleResult.reason === "maintenance-workspace-snapshot-changed"
@@ -2589,7 +2664,7 @@ export function createNarrativeMaintenanceScheduler(
       // not reach admission, the current H+1 can be sealed without creating a
       // second execution on the next retry.
       const resolveNative = backend?.resolveNarrativeMaintenanceDelivery;
-      if (typeof resolveNative === "function") {
+      if (!deliveryCapacity && typeof resolveNative === "function") {
         try {
           const fenceCommitted = deliveryFenceWasCommitted(
             await Promise.resolve(resolveNative.call(backend, deliverySequence)),
@@ -2623,6 +2698,16 @@ export function createNarrativeMaintenanceScheduler(
         } catch (fenceError) {
           warn("[narrative-maintenance] Native delivery fence failed:", fenceError);
         }
+      }
+      // A capacity response is a known pre-admission rejection. Native did
+      // not advance H and created no record, so fencing or retiring this
+      // sequence would make the exact H+1 request unretryable. Keep the exact
+      // payload as a scheduler-owned retry and leave the main record pending.
+      // Other work may accumulate in `pending`, but it cannot change this
+      // fingerprint until this request is admitted or a later binding/error
+      // path proves that a fence is required.
+      if (!deliveryCapacity) {
+        capacityBlockedDelivery = null;
       }
       if (!disposed) {
         const attemptSnapshotBeforeCleanup = cycleAttemptId
@@ -2695,7 +2780,26 @@ export function createNarrativeMaintenanceScheduler(
             attemptSnapshot.state === "stop-requested";
           settleAttempt(cycleAttemptId, "interrupted");
         }
-        if (nativeTerminalReceipt?.state === "succeeded") {
+        if (deliveryCapacity) {
+          capacityBlockedDelivery = {
+            sequence: deliverySequence,
+            fingerprint: deliveryFingerprint,
+            work: backendBatch.map((work) => ({
+              ...work,
+              reasons: [...work.reasons],
+            })),
+            wakeEntries: sendingWakeEntries.map((entry) => ({ ...entry })),
+            workspaceBinding: cycleBinding,
+          };
+          warn(
+            "[narrative-maintenance] Native delivery capacity is full; retaining the exact H+1 request for retry",
+          );
+          nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
+          // The exact blocked batch is held by capacityBlockedDelivery rather
+          // than requeued. This prevents a newly enqueued item from changing
+          // the fingerprint or causing an OutOfOrder H+2 submission.
+          shouldSchedule = true;
+        } else if (nativeTerminalReceipt?.state === "succeeded") {
           // Native already committed this cycle before the late cancellation
           // reached it. Do not requeue a claimed work item or wake that the
           // receipt has already completed.
@@ -3177,7 +3281,9 @@ export function createNarrativeMaintenanceScheduler(
           activeAttemptId === null &&
           pendingAttemptBegins.size === 0 &&
           timer === null &&
-          (hasRunnablePendingWork() || hasRunnableWake())
+          (hasCapacityBlockedDelivery() ||
+            hasRunnablePendingWork() ||
+            hasRunnableWake())
         ) {
           schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
         }
@@ -3306,6 +3412,7 @@ export function createNarrativeMaintenanceScheduler(
           !disposed &&
           !schedulerBusy &&
           timer === null &&
+          !hasCapacityBlockedDelivery() &&
           pending.size === 0 &&
           durableWakeProjects.size === 0 &&
           deferredWorkKeys.size === 0 &&
@@ -3362,7 +3469,9 @@ export function createNarrativeMaintenanceScheduler(
         terminalReceiptFailure === null &&
         started &&
         timer === null &&
-        (hasRunnablePendingWork() || hasRunnableWake())
+        (hasCapacityBlockedDelivery() ||
+          hasRunnablePendingWork() ||
+          hasRunnableWake())
       ) {
         schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
       }
@@ -3399,6 +3508,7 @@ export function createNarrativeMaintenanceScheduler(
         deliveryAckRetryTimer = null;
       }
       pending.clear();
+      capacityBlockedDelivery = null;
       durableWakeProjects.clear();
       durableWakeRetryCounts.clear();
       // The active attempt has returned a terminal Native receipt before the

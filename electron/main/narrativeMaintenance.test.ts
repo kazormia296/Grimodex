@@ -618,6 +618,51 @@ describe("narrative maintenance scheduler", () => {
     },
   );
 
+  it("retries the exact H+1 delivery after Native capacity frees", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "workspace-unavailable",
+        reason: "maintenance-delivery-capacity",
+      })
+      .mockResolvedValueOnce(acceptedCycle());
+    const ackNarrativeMaintenanceDelivery = vi
+      .fn()
+      .mockResolvedValue({ status: "retired" });
+    const resolveNarrativeMaintenanceDelivery = vi.fn();
+    const { scheduler, warn } = createScheduler({
+      runNarrativeMaintenanceCycle,
+      ackNarrativeMaintenanceDelivery,
+      resolveNarrativeMaintenanceDelivery,
+    });
+    const originalWork = work(
+      "project-capacity",
+      "backfill",
+      "backfill:v2",
+      "capacity-retry",
+    );
+
+    scheduler.request(originalWork);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    const firstRequest = runNarrativeMaintenanceCycle.mock.calls[0]?.[0];
+    expect(firstRequest?.deliverySequence).toBe(1);
+    expect(firstRequest?.deliveryFingerprint).toBeTypeOf("string");
+    expect(resolveNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("delivery capacity is full"),
+    );
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    const retryRequest = runNarrativeMaintenanceCycle.mock.calls[1]?.[0];
+    expect(retryRequest).toEqual(firstRequest);
+    expect(resolveNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledTimes(1);
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenLastCalledWith(1);
+  });
+
   it("keeps an unavailable-workspace trigger beyond the bounded error budget", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()

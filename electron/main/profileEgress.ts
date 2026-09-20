@@ -927,7 +927,12 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     if (
       this.lifecycleStatus === "ready" &&
       this.lifecycleBindingToken === proof.bindingToken &&
-      this.lifecycleRevision <= proof.revision
+      // Apply immediately only after the exact terminal Ready snapshot has
+      // already been observed.  A queued Transition/Ready pair may overtake
+      // this result callback; treating an older Ready observation as terminal
+      // would let that delayed Transition clear the restored binding and the
+      // delayed Ready would then have no proof left to apply.
+      this.lifecycleRevision === proof.revision
     ) {
       this.restoreNormalWorkspaceBinding(proof);
       return;
@@ -996,6 +1001,22 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       this.lifecycleBindingToken = token;
       this.lifecycleStatus = record.status;
       this.lifecycleActivation = record.activation;
+
+      // A result callback may arrive before the nonblocking lifecycle event
+      // for the same operation.  Apply the proof at the exact Ready revision
+      // even when the event is revision-only (same token/status); otherwise a
+      // delayed Transition can clear the binding and the final Ready event
+      // would be mistaken for an already-observed snapshot.
+      const pending = this.pendingUnchangedWorkspaceBinding;
+      const pendingReadyMatches =
+        pending !== null &&
+        record.status === "ready" &&
+        record.activation === "ready" &&
+        token === pending.bindingToken &&
+        revision === pending.revision;
+      if (pendingReadyMatches) {
+        this.restoreNormalWorkspaceBinding(pending);
+      }
       if (!changed) return;
       if (
         this.pendingUnchangedWorkspaceBinding !== null &&
@@ -1031,14 +1052,6 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       // descriptor-bound recovery/Open. All caller identities are
       // invalidated and must re-register against the retained target.
       if (record.status === "ready" && record.activation === "ready") {
-        const pending = this.pendingUnchangedWorkspaceBinding;
-        if (
-          pending !== null &&
-          token === pending.bindingToken &&
-          revision === pending.revision
-        ) {
-          this.restoreNormalWorkspaceBinding(pending);
-        }
         this.recoveryWorkspaceId = null;
         if (
           token !== null &&
