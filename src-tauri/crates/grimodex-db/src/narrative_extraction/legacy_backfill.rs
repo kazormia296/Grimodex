@@ -2348,6 +2348,7 @@ mod tests {
             work_completed: &no_work,
             work_noop_completed: &no_work,
             work_deferred: &no_work,
+            attach_run: None,
         };
         let cancellation = super::super::source_revision::validation_terminated(
             super::super::source_revision::ValidationTerminationReason::Cancelled,

@@ -5971,6 +5971,7 @@ mod tests {
             work_completed: &no_work,
             work_noop_completed: &no_work,
             work_deferred: &no_work,
+            attach_run: None,
         };
 
         {
@@ -6030,6 +6031,7 @@ mod tests {
             work_completed: &no_work,
             work_noop_completed: &no_work,
             work_deferred: &no_work,
+            attach_run: None,
         };
 
         let error = record_verify_failure_controlled(
@@ -6098,6 +6100,7 @@ mod tests {
             work_completed: &no_work,
             work_noop_completed: &no_work,
             work_deferred: &no_work,
+            attach_run: None,
         };
 
         let error = record_rebuild_failure_controlled(

@@ -31,7 +31,6 @@ use super::nir1_entity_relation::{
     NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_PROPOSAL_KIND,
     NIR1_ENTITY_RELATION_REVISION_ORIGIN, NIR1_ENTITY_RELATION_SET_KIND,
 };
-use super::nir1_entity_relation_index::NeverStopGraphWorkControl;
 use super::publish_runtime::publish_complete_runless_freshness_in_tx;
 use super::restore_rebuild::evaluate_edge_from_db;
 use super::semantic_epoch::get_current_epoch;
@@ -4696,7 +4695,7 @@ fn insert_proposal_seed(
             ensure_v2_proposal_evidence_binding(envelope, &seed.payload_json)?;
         }
         ensure_v2_proposal_payload_digest(envelope, &seed.payload_json)?;
-        let mut validation_owner = NeverStopGraphWorkControl;
+        let mut validation_owner = super::source_revision::ForegroundValidationControl;
         let mut validation = validation_context(conn, &mut validation_owner);
         validate_envelope_source_tokens_with_validation_context(
             &mut validation,
@@ -5197,7 +5196,7 @@ fn append_revision_on_conn(
             "NEX_NARRATIVE_V2_ACTIVATION_DISABLED: production revision append cannot activate Envelope V2"
         );
         ensure_v2_proposal_payload_digest(envelope, &payload.payload_json)?;
-        let mut validation_owner = NeverStopGraphWorkControl;
+        let mut validation_owner = super::source_revision::ForegroundValidationControl;
         let mut validation = validation_context(conn, &mut validation_owner);
         validate_envelope_source_tokens_with_validation_context(
             &mut validation,

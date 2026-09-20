@@ -110,6 +110,9 @@ export interface NarrativeMaintenanceDeliveryFailure {
  */
 export type NarrativeMaintenanceCycleResult =
   | { status: "accepted"; hasMore: boolean; preempted?: boolean }
+  /** The request never entered the Native execution owner.  This does not
+   * authorize reuse of the binding that was current before the request. */
+  | { status: "not-admitted"; reason?: string; stateRevision?: number }
   | { status: "workspace-unavailable"; reason?: string }
   /**
    * All items coalesced onto an already running/pending Run. This is a
@@ -825,6 +828,30 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
         status: "accepted",
         hasMore: value.hasMore,
         ...(value.preempted === true ? { preempted: true } : {}),
+      };
+    }
+    if (value.status === "not-admitted") {
+      if (
+        value.reason !== undefined &&
+        typeof value.reason !== "string"
+      ) {
+        throw new Error("native maintenance cycle returned invalid admission reason");
+      }
+      const stateRevision = value.stateRevision;
+      if (
+        stateRevision !== undefined &&
+        (typeof stateRevision !== "number" ||
+          !Number.isSafeInteger(stateRevision) ||
+          stateRevision < 0)
+      ) {
+        throw new Error("native maintenance cycle returned invalid lifecycle revision");
+      }
+      return {
+        status: "not-admitted",
+        ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+        ...(typeof stateRevision === "number"
+          ? { stateRevision }
+          : {}),
       };
     }
     if (value.status === "workspace-unavailable") {
@@ -1680,6 +1707,7 @@ export function createNarrativeMaintenanceScheduler(
     let nextDelayMs = NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS;
     let shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
     let workspaceUnavailable = false;
+    let notAdmitted = false;
     let workspaceMismatch = false;
     let deferredCycle = false;
     let haltForProcessInterruption = false;
@@ -1805,6 +1833,12 @@ export function createNarrativeMaintenanceScheduler(
         }
         throw new Error(
           "native maintenance cycle could not acquire an active workspace",
+        );
+      }
+      if (cycleResult.status === "not-admitted") {
+        notAdmitted = true;
+        throw new Error(
+          "native maintenance cycle was not admitted by the lifecycle owner",
         );
       }
       if (cycleResult.status === "deferred") {
@@ -2132,6 +2166,31 @@ export function createNarrativeMaintenanceScheduler(
             retireCurrentDelivery();
           }
           shouldSchedule = false;
+        } else if (notAdmitted) {
+          // NotAdmitted proves only that this request did not start. Keep the
+          // exact work/wake trigger for a later lifecycle snapshot and retire
+          // this transport record after Native has recorded its terminal
+          // response. No renderer or scheduler binding is resumed from this
+          // rejection.
+          for (const work of backendBatch) requeueWork(work);
+          for (const projectId of sendingWakeProjects) {
+            const wakeKey = scopedWakeKey(projectId, cycleBinding);
+            durableWakeProjects.set(wakeKey, {
+              projectId,
+              workspaceBinding: cycleBinding,
+            });
+          }
+          warn(
+            "[narrative-maintenance] lifecycle request was not admitted; retaining maintenance trigger",
+          );
+          if (
+            nativeTerminalReceipt === null &&
+            !nativeAttemptIds.has(cycleAttemptId ?? "")
+          ) {
+            retireCurrentDelivery();
+          }
+          nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
+          shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
         } else if (workspaceUnavailable) {
           // This is an expected, recoverable state while a workspace is
           // closed or switching.  It is not a failed delivery and must not

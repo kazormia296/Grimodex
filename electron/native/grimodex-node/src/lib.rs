@@ -119,7 +119,7 @@ use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{
     with_db_state, AdmissionKind, AdmissionOutcome, AdmissionRejection, AppError, BatchStatement,
     Database, DeliveryAdmissionOutcome, DeliverySequence, LifecycleSnapshot, LifecycleState,
-    PermitAdmission, RepairIntegrityPayload, TransitionStage,
+    MaintenancePermit, PermitAdmission, RepairIntegrityPayload, TransitionStage,
 };
 use grimodex_db::narrative_extraction::{
     validation_terminated, ValidationTerminationReason,
@@ -2007,6 +2007,7 @@ where
         work_completed: &no_work,
         work_noop_completed: &no_work,
         work_deferred: &no_work,
+        attach_run: None,
     };
 
     let operation_result = operation(authority.db(), &control, &canonical_work_key);
@@ -4842,6 +4843,11 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let mut admitted_delivery_sequence = None;
+            // The lifecycle permit outlives the operation body so the common
+            // finalizer can make an explicit Join decision even when the body
+            // returns early.  Drop is intentionally fail-closed.
+            let mut lifecycle_permit: Option<MaintenancePermit> = None;
+            let mut lifecycle_work_started = false;
             let operation_result = (|| -> std::result::Result<String, AppError> {
             let attempt_id = payload
                 .get("attemptId")
@@ -5010,7 +5016,7 @@ impl Backend {
             // work and owns the exact responsibility cell. A transition closes
             // this request at the same core boundary, and the permit's Drop
             // finalizer releases it on every terminal path.
-            let mut maintenance_permit = match state.workspace_lifecycle.begin_maintenance()? {
+            let maintenance_permit = match state.workspace_lifecycle.begin_maintenance()? {
                 PermitAdmission::Admitted(permit) => permit,
                 PermitAdmission::NotAdmitted { reason, snapshot } => {
                     if matches!(snapshot.state, LifecycleState::NoWorkspace) {
@@ -5028,10 +5034,13 @@ impl Backend {
                     .to_string());
                 }
             };
-            maintenance_permit
-                .start()
-                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
-            maintenance_permit.arm_scope_finalizer();
+            lifecycle_permit = Some(maintenance_permit);
+            if let Some(permit) = lifecycle_permit.as_mut() {
+                permit
+                    .start()
+                    .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+                permit.arm_scope_finalizer();
+            }
 
             // Every short ledger read performed by recovery, foreground
             // lookup, and post-cycle acknowledgement inherits the same
@@ -5341,6 +5350,13 @@ impl Backend {
                 })
                 .transpose()?;
             let should_stop = || -> anyhow::Result<()> {
+                if let Some(permit) = lifecycle_permit.as_ref() {
+                    if permit.stop_requested()? {
+                        anyhow::bail!(
+                            "NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED: transition is draining this execution"
+                        );
+                    }
+                }
                 if let Some(attempt_id) = attempt_id_for_control.as_deref() {
                     let signalled = stop_signal_for_control
                         .as_ref()
@@ -5423,20 +5439,27 @@ impl Backend {
                     }
                     Ok(())
                 };
-            let attempt_control = attempt_id_for_control.as_ref().map(|_| {
-                MaintenanceCycleControl {
-                    should_stop: &should_stop,
-                    stop_signal: stop_signal_for_control.clone(),
-                    finalization_granted_signal: finalization_granted_signal_for_control.clone(),
-                    defer_preempted_run: &defer_preempted_run,
-                    grant_finalize: &grant_finalize,
-                    register_work: &register_work,
-                    work_started: &work_started,
-                    work_completed: &work_completed,
-                    work_noop_completed: &work_noop_completed,
-                    work_deferred: &work_deferred,
-                }
-            });
+            let attach_run = |ownership: grimodex_db::workspace_lifecycle::RunOwnership| {
+                lifecycle_permit
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_LIFECYCLE_PERMIT_MISSING"))?
+                    .attach_run_ownership(ownership)
+                    .map_err(|error| anyhow::anyhow!("{error}"))
+            };
+            let attempt_control = MaintenanceCycleControl {
+                should_stop: &should_stop,
+                stop_signal: stop_signal_for_control.clone(),
+                finalization_granted_signal: finalization_granted_signal_for_control.clone(),
+                defer_preempted_run: &defer_preempted_run,
+                grant_finalize: &grant_finalize,
+                register_work: &register_work,
+                work_started: &work_started,
+                work_completed: &work_completed,
+                work_noop_completed: &work_noop_completed,
+                work_deferred: &work_deferred,
+                attach_run: Some(&attach_run),
+            };
+            lifecycle_work_started = true;
             let cycle_result = {
                 narrative_extraction::run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                     authority.db(),
@@ -5448,7 +5471,7 @@ impl Backend {
                     },
                     ci_config.as_ref(),
                     foreground_owner.as_ref(),
-                    attempt_control.as_ref(),
+                    Some(&attempt_control),
                 )
             };
             let result = match cycle_result {
@@ -5622,7 +5645,13 @@ impl Backend {
             }
             Ok(json)
             })();
-            let operation_result = match operation_result {
+            let lifecycle_finalize_allowed = operation_result.is_ok()
+                || !lifecycle_work_started
+                || operation_result
+                    .as_ref()
+                    .err()
+                    .is_some_and(is_narrative_maintenance_preemption);
+            let mut operation_result = match operation_result {
                 Err(error) if is_narrative_maintenance_preemption(&error) => {
                     Ok(serde_json::json!({
                         "status": "accepted",
@@ -5633,10 +5662,37 @@ impl Backend {
                 }
                 other => other,
             };
-            if let (Some(sequence), Ok(result)) = (admitted_delivery_sequence, &operation_result) {
+            if lifecycle_finalize_allowed {
+                if let Some(mut permit) = lifecycle_permit.take() {
+                    let finalization = permit
+                        .mark_joined()
+                        .and_then(|_| permit.release().map(|_| ()));
+                    if let Err(error) = finalization {
+                        if operation_result.is_ok() {
+                            operation_result = Err(AppError::Anyhow(anyhow::anyhow!(
+                                "NEX_MAINTENANCE_LIFECYCLE_FINALIZER_FAILED: {error}"
+                            )));
+                        }
+                    }
+                }
+            }
+            if let Some(sequence) = admitted_delivery_sequence {
+                let terminal_result = match &operation_result {
+                    Ok(result) => result.clone(),
+                    Err(_) => serde_json::json!({
+                        "status": "workspace-unavailable",
+                        "reason": "maintenance-native-error",
+                    })
+                    .to_string(),
+                };
+                // Every accepted delivery reaches a terminal transport
+                // record, including an operation error.  Main may requeue
+                // the durable work from this structured unavailable result;
+                // a replay-pending record must never consume a capacity cell
+                // forever just because the Native operation returned Err.
                 state
                     .workspace_lifecycle
-                    .mark_delivery_terminal_with_result(sequence, result.clone())?;
+                    .mark_delivery_terminal_with_result(sequence, terminal_result)?;
             }
             operation_result
         })

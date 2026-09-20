@@ -253,7 +253,6 @@ pub struct WorkspaceTransitionPermit {
 pub struct WorkspaceExclusive {
     core: WorkspaceLifecycleCore,
     operation_id: OperationId,
-    valid: bool,
 }
 
 /// Work-scoped publication marker. It prevents a broad transition permit from
@@ -283,6 +282,17 @@ impl MaintenancePermit {
         self.core.start_execution(self.execution_id)
     }
 
+    pub fn stop_requested(&self) -> Result<bool, LifecycleError> {
+        self.core.execution_stop_requested(self.execution_id)
+    }
+
+    /// Attach the exact durable Run/Task/Attempt tuple after the writer has
+    /// selected fresh versus reuse. The slot is immutable for this execution,
+    /// so a late or conflicting tuple cannot replace ownership.
+    pub fn attach_run_ownership(&self, run: RunOwnership) -> Result<(), LifecycleError> {
+        self.core.attach_run_ownership(self.execution_id, run)
+    }
+
     pub fn release(mut self) -> Result<bool, LifecycleError> {
         if !self.joined {
             return Err(LifecycleError::NotJoined(self.ticket.operation_id));
@@ -306,6 +316,9 @@ impl MaintenancePermit {
     /// scope.  The guard is used only after the worker has been admitted into
     /// that scope; a raw dropped permit remains fail-closed.
     pub fn arm_scope_finalizer(&mut self) {
+        // Arming only opts this permit into the Native common-finalizer
+        // protocol.  It is not a terminal proof and Drop must never invent a
+        // Join on behalf of a worker that may still be running.
         self.scope_finalizer = true;
     }
 }
@@ -318,17 +331,10 @@ impl Drop for MaintenancePermit {
             // supervisor or recovery descriptor can still account for it.
             // This intentionally leaks ownership until an explicit finalizer
             // proves Join and cleanup; it never fabricates a successful end.
-            // Native's synchronous common-finalizer may explicitly arm this
-            // scope after admission, in which case the scope boundary itself
-            // is the Join observation for that worker.
-            if self.scope_finalizer {
-                if self.core.mark_execution_joined(&self.ticket).is_ok() {
-                    let _ = self.core.complete_execution(self.execution_id);
-                    let _ = self.core.release_admission(&self.ticket);
-                    self.released = true;
-                    self.joined = true;
-                }
-            }
+            // `scope_finalizer` does not change this rule.  A synchronous
+            // owner must call `mark_joined` and `release` explicitly after it
+            // has observed the worker boundary; an error return or panic
+            // therefore leaves the reservation visible for recovery.
         }
     }
 }
@@ -346,12 +352,8 @@ impl WorkspaceTransitionPermit {
         self.core.mark_transition_joined(&self.ticket)
     }
 
-    pub fn physical_exclusive(&self) -> WorkspaceExclusive {
-        self.try_physical_exclusive().unwrap_or_else(|_| WorkspaceExclusive {
-            core: self.core.clone(),
-            operation_id: self.ticket.operation_id,
-            valid: false,
-        })
+    pub fn physical_exclusive(&self) -> Result<WorkspaceExclusive, LifecycleError> {
+        self.try_physical_exclusive()
     }
 
     /// Acquire the core-side physical-exclusion capability.  Native must hold
@@ -363,7 +365,6 @@ impl WorkspaceTransitionPermit {
         Ok(WorkspaceExclusive {
             core: self.core.clone(),
             operation_id: self.ticket.operation_id,
-            valid: true,
         })
     }
 
@@ -412,17 +413,11 @@ impl WorkspaceExclusive {
         self.operation_id
     }
 
-    pub fn is_valid(&self) -> bool {
-        self.valid
-    }
 }
 
 impl Drop for WorkspaceExclusive {
     fn drop(&mut self) {
-        if self.valid {
-            let _ = self.core.release_physical_exclusive(self.operation_id);
-            self.valid = false;
-        }
+        let _ = self.core.release_physical_exclusive(self.operation_id);
     }
 }
 
@@ -491,19 +486,15 @@ pub enum LifecycleResult {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DurableRunHandle {
-    #[serde(default)]
     pub project_id: String,
     pub run_id: String,
     pub task_id: String,
     pub attempt_id: String,
     pub kind: String,
-    #[serde(default)]
     pub semantic_epoch_id: String,
-    #[serde(default)]
     pub work_key: String,
     pub epoch: u64,
     pub sealed_spec: String,
-    #[serde(default)]
     pub spec_digest: String,
 }
 
@@ -533,6 +524,22 @@ impl DurableRunHandle {
             sealed_spec: sealed_spec.into(),
             spec_digest: spec_digest.into(),
         }
+    }
+
+    fn is_exact(&self) -> bool {
+        [
+            &self.project_id,
+            &self.run_id,
+            &self.task_id,
+            &self.attempt_id,
+            &self.kind,
+            &self.semantic_epoch_id,
+            &self.work_key,
+            &self.sealed_spec,
+            &self.spec_digest,
+        ]
+        .iter()
+        .all(|value| !value.trim().is_empty())
     }
 }
 
@@ -565,6 +572,8 @@ pub struct ExecutionMembership {
     pub operation_id: OperationId,
     pub phase: ExecutionPhase,
     pub binding_revision: StateRevision,
+    pub run: Option<RunOwnership>,
+    pub stop_requested: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -599,6 +608,10 @@ pub struct RecoveryDescriptor {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ControlRequest {
+    /// The caller's view of the descriptor control generation.  A request
+    /// from an older generation must never be accepted as a new request after
+    /// a retry advances the slot.
+    pub generation: ControlGeneration,
     pub fingerprint: String,
     pub payload: String,
 }
@@ -1243,12 +1256,6 @@ impl WorkspaceLifecycleCore {
                 if state.admissions.values().any(|ticket| {
                     matches!(ticket.kind, AdmissionKind::Maintenance)
                 }) => Some(AdmissionRejection::ActiveOperation),
-            // The transition permit is the exclusive logical owner. A live
-            // maintenance admission must finish or transfer its exact
-            // responsibility before Open/Restore can close normal admission.
-            (_, kind) if kind.is_transition() && state.admissions.values().any(|ticket| {
-                !ticket.kind.is_transition() && !ticket.kind.is_capacity_independent()
-            }) => Some(AdmissionRejection::ActiveOperation),
             (LifecycleState::Transition { .. }, kind) if !kind.is_capacity_independent() => {
                 Some(AdmissionRejection::Transition)
             }
@@ -1350,6 +1357,27 @@ impl WorkspaceLifecycleCore {
         let mut state = self.lock_state()?;
         let outcome = self.admit_locked(&mut state, kind, None)?;
         if let AdmissionOutcome::Admitted(ticket) = &outcome {
+            let draining_operations = state
+                .admissions
+                .values()
+                .filter(|admission| {
+                    admission.operation_id != ticket.operation_id
+                        && !admission.kind.is_transition()
+                        && !admission.kind.is_capacity_independent()
+                })
+                .map(|admission| admission.operation_id)
+                .collect::<BTreeSet<_>>();
+            for execution in state.executions.values_mut() {
+                if draining_operations.contains(&execution.operation_id)
+                    && matches!(
+                        execution.phase,
+                        ExecutionPhase::Reserved | ExecutionPhase::Started
+                    )
+                {
+                    execution.phase = ExecutionPhase::StopRequested;
+                    execution.stop_requested = true;
+                }
+            }
             state.state = LifecycleState::Transition {
                 operation_id: ticket.operation_id,
                 stage: TransitionStage::Draining,
@@ -1469,19 +1497,57 @@ impl WorkspaceLifecycleCore {
             operation_id,
             phase: ExecutionPhase::Reserved,
             binding_revision: ticket.admitted_revision,
+            run: None,
+            stop_requested: false,
         };
         state.executions.insert(execution_id, membership.clone());
         Ok(membership)
     }
 
+    pub fn attach_run_ownership(
+        &self,
+        execution_id: ExecutionId,
+        run: RunOwnership,
+    ) -> Result<(), LifecycleError> {
+        let mut state = self.lock_state()?;
+        if !run.handle.is_exact() {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        }
+        let execution = state
+            .executions
+            .get_mut(&execution_id)
+            .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+        if execution.phase == ExecutionPhase::Completed {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        }
+        if let Some(existing) = &execution.run {
+            if existing != &run {
+                return Err(LifecycleError::InvalidExecutionTransition);
+            }
+        } else {
+            execution.run = Some(run);
+        }
+        Ok(())
+    }
+
     pub fn start_execution(&self, execution_id: ExecutionId) -> Result<(), LifecycleError> {
         let mut state = self.lock_state()?;
+        let shutdown_requested = state.shutdown_requested;
         let execution = state
             .executions
             .get_mut(&execution_id)
             .ok_or(LifecycleError::UnknownExecution(execution_id))?;
         if execution.phase != ExecutionPhase::Reserved {
             return Err(LifecycleError::InvalidExecutionTransition);
+        }
+        if shutdown_requested {
+            // A pending-start owner remains visible to the supervisor, but
+            // its body must not begin after shutdown has closed admission.
+            // Marking the stop request before returning lets the common
+            // finalizer observe Join and retire the reservation explicitly.
+            execution.phase = ExecutionPhase::StopRequested;
+            execution.stop_requested = true;
+            return Err(LifecycleError::Closed);
         }
         execution.phase = ExecutionPhase::Started;
         Ok(())
@@ -1499,6 +1565,7 @@ impl WorkspaceLifecycleCore {
         match execution.phase {
             ExecutionPhase::Reserved | ExecutionPhase::Started => {
                 execution.phase = ExecutionPhase::StopRequested;
+                execution.stop_requested = true;
                 Ok(())
             }
             ExecutionPhase::StopRequested
@@ -1507,6 +1574,22 @@ impl WorkspaceLifecycleCore {
             | ExecutionPhase::Completed
             | ExecutionPhase::RecoveryRequired => Ok(()),
         }
+    }
+
+    pub fn execution_stop_requested(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<bool, LifecycleError> {
+        let state = self.lock_state()?;
+        let execution = state
+            .executions
+            .get(&execution_id)
+            .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+        Ok(execution.stop_requested
+            || matches!(
+                execution.phase,
+                ExecutionPhase::StopRequested | ExecutionPhase::Joined | ExecutionPhase::CleanupPending
+            ))
     }
 
     pub fn mark_execution_cleanup_pending(
@@ -1518,7 +1601,10 @@ impl WorkspaceLifecycleCore {
             .executions
             .get_mut(&execution_id)
             .ok_or(LifecycleError::UnknownExecution(execution_id))?;
-        if !matches!(execution.phase, ExecutionPhase::Joined | ExecutionPhase::StopRequested) {
+        // A stop request is only a request.  Cleanup may begin after the
+        // supervisor has observed the worker Join; otherwise a timeout or a
+        // cancellation could fabricate an execution terminal proof.
+        if execution.phase != ExecutionPhase::Joined {
             return Err(LifecycleError::InvalidExecutionTransition);
         }
         execution.phase = ExecutionPhase::CleanupPending;
@@ -1527,6 +1613,16 @@ impl WorkspaceLifecycleCore {
 
     pub fn complete_execution(&self, execution_id: ExecutionId) -> Result<(), LifecycleError> {
         let mut state = self.lock_state()?;
+        if state
+            .work_executions
+            .values()
+            .any(|work| work.execution_id == execution_id && work.phase != ExecutionPhase::Completed)
+        {
+            // A parent cannot be released while a child membership is still
+            // reserved or running.  Releasing it first would let that child
+            // start after the parent admission had already been retired.
+            return Err(LifecycleError::InvalidExecutionTransition);
+        }
         let execution = state
             .executions
             .get_mut(&execution_id)
@@ -1576,10 +1672,7 @@ impl WorkspaceLifecycleCore {
             .ok_or(LifecycleError::UnknownExecution(execution_id))?;
         if !matches!(
             execution.phase,
-            ExecutionPhase::Reserved
-                | ExecutionPhase::Started
-                | ExecutionPhase::Joined
-                | ExecutionPhase::CleanupPending
+            ExecutionPhase::Reserved | ExecutionPhase::Started
         ) {
             return Err(LifecycleError::InvalidExecutionTransition);
         }
@@ -1617,6 +1710,22 @@ impl WorkspaceLifecycleCore {
         work_execution_id: WorkExecutionId,
     ) -> Result<(), LifecycleError> {
         let mut state = self.lock_state()?;
+        let execution_id = state
+            .work_executions
+            .get(&work_execution_id)
+            .ok_or(LifecycleError::UnknownWorkExecution(work_execution_id))?
+            .execution_id;
+        let parent = state
+            .executions
+            .get(&execution_id)
+            .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+        if !matches!(
+            parent.phase,
+            ExecutionPhase::Started
+        ) || state.shutdown_requested
+        {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        }
         let work = state
             .work_executions
             .get_mut(&work_execution_id)
@@ -1633,17 +1742,59 @@ impl WorkspaceLifecycleCore {
         work_execution_id: WorkExecutionId,
     ) -> Result<(), LifecycleError> {
         let mut state = self.lock_state()?;
+        let execution_id = state
+            .work_executions
+            .get(&work_execution_id)
+            .ok_or(LifecycleError::UnknownWorkExecution(work_execution_id))?
+            .execution_id;
+        let execution = state
+            .executions
+            .get(&execution_id)
+            .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+        if execution.stop_requested || state.shutdown_requested {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        }
         let work = state
             .work_executions
             .get_mut(&work_execution_id)
             .ok_or(LifecycleError::UnknownWorkExecution(work_execution_id))?;
         if !matches!(
             work.phase,
-            ExecutionPhase::Reserved
-                | ExecutionPhase::Started
+            ExecutionPhase::Started
                 | ExecutionPhase::Joined
                 | ExecutionPhase::CleanupPending
         ) {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        }
+        work.phase = ExecutionPhase::Completed;
+        Ok(())
+    }
+
+    /// Retire a child that never entered its body.  This is a separate
+    /// operation from normal completion so a pending-start cancellation cannot
+    /// be mistaken for a joined worker or a committed work result.
+    pub fn cancel_reserved_work_execution(
+        &self,
+        work_execution_id: WorkExecutionId,
+    ) -> Result<(), LifecycleError> {
+        let mut state = self.lock_state()?;
+        let execution_id = state
+            .work_executions
+            .get(&work_execution_id)
+            .ok_or(LifecycleError::UnknownWorkExecution(work_execution_id))?
+            .execution_id;
+        let execution = state
+            .executions
+            .get(&execution_id)
+            .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+        if !execution.stop_requested && !state.shutdown_requested {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        }
+        let work = state
+            .work_executions
+            .get_mut(&work_execution_id)
+            .ok_or(LifecycleError::UnknownWorkExecution(work_execution_id))?;
+        if work.phase != ExecutionPhase::Reserved {
             return Err(LifecycleError::InvalidExecutionTransition);
         }
         work.phase = ExecutionPhase::Completed;
@@ -1699,7 +1850,6 @@ impl WorkspaceLifecycleCore {
         Ok(WorkspaceExclusive {
             core: self.clone(),
             operation_id: ticket.operation_id,
-            valid: true,
         })
     }
 
@@ -1732,10 +1882,22 @@ impl WorkspaceLifecycleCore {
                 LifecycleState::Transition { operation_id, .. }
                     if operation_id == ticket.operation_id && joined
             );
-        if !exact {
+        if state.shutdown_requested || !exact {
             return Err(LifecycleError::BindingChanged {
                 operation_id: ticket.operation_id,
             });
+        }
+        if state.admissions.values().any(|admission| {
+            admission.operation_id != ticket.operation_id
+                && !admission.kind.is_capacity_independent()
+        }) || state.executions.values().any(|execution| {
+            execution.operation_id != ticket.operation_id
+                && execution.phase != ExecutionPhase::Completed
+        }) || state
+            .physical_exclusive_operations
+            .contains(&ticket.operation_id)
+        {
+            return Err(LifecycleError::ActiveOperations);
         }
         state.state = LifecycleState::Ready(binding.clone());
         state.admissions.remove(&ticket.operation_id);
@@ -1768,6 +1930,9 @@ impl WorkspaceLifecycleCore {
         if matches!(state.state, LifecycleState::Closed) {
             return Err(LifecycleError::Closed);
         }
+        if state.shutdown_requested {
+            return Err(LifecycleError::Closed);
+        }
         if !matches!(
             state.state,
             LifecycleState::Transition { operation_id, .. }
@@ -1779,6 +1944,18 @@ impl WorkspaceLifecycleCore {
         }
         if !state.joined_operations.contains(&ticket.operation_id) {
             return Err(LifecycleError::NotJoined(ticket.operation_id));
+        }
+        if state.admissions.values().any(|admission| {
+            admission.operation_id != ticket.operation_id
+                && !admission.kind.is_capacity_independent()
+        }) || state.executions.values().any(|execution| {
+            execution.operation_id != ticket.operation_id
+                && execution.phase != ExecutionPhase::Completed
+        }) || state
+            .physical_exclusive_operations
+            .contains(&ticket.operation_id)
+        {
+            return Err(LifecycleError::ActiveOperations);
         }
         state.state = LifecycleState::Ready(binding.clone());
         state.admissions.remove(&ticket.operation_id);
@@ -1915,6 +2092,12 @@ impl WorkspaceLifecycleCore {
         if slot.retired {
             return Ok(ControlSlotOutcome::Retired);
         }
+        if request.generation != slot.generation {
+            return Err(LifecycleError::ControlGenerationMismatch {
+                descriptor: descriptor_id,
+                generation: request.generation,
+            });
+        }
         if slot.fingerprint.is_empty() {
             slot.fingerprint = request.fingerprint.clone();
             slot.payload = request.payload.clone();
@@ -1982,6 +2165,13 @@ impl WorkspaceLifecycleCore {
             .control_slots
             .get_mut(&descriptor_id)
             .ok_or(LifecycleError::UnknownDescriptor(descriptor_id))?;
+        // A result is part of the observable control generation until its
+        // transport ACK is received.  Advancing the generation while it is
+        // unACKed would overwrite the only replayable result and could let an
+        // old callback be mistaken for a fresh recovery request.
+        if !slot.acked || !slot.retired {
+            return Err(LifecycleError::ControlResultPending(descriptor_id));
+        }
         let previous_result = slot
             .result
             .take()
@@ -2042,12 +2232,7 @@ impl WorkspaceLifecycleCore {
                 generation,
             });
         }
-        if slot.result.is_none()
-            || !state
-                .descriptors
-                .get(&descriptor_id)
-                .is_some_and(|descriptor| descriptor.resolved)
-        {
+        if slot.result.is_none() {
             return Err(LifecycleError::ControlResultPending(descriptor_id));
         }
         let slot = state
@@ -2580,19 +2765,24 @@ mod tests {
             .expect("reserve execution");
         core.start_execution(ExecutionId::new(1))
             .expect("start execution");
+        let publication = transition
+            .publication_permit(WorkExecutionId::new(9))
+            .expect("publication permit");
+        assert_eq!(publication.work_execution_id(), WorkExecutionId::new(9));
+        core.start_work_execution(WorkExecutionId::new(9))
+            .expect("publication worker start");
+        publication.complete().expect("publication complete");
         core.mark_execution_joined(transition.ticket())
             .expect("execution Join");
         core.mark_execution_cleanup_pending(ExecutionId::new(1))
             .expect("cleanup pending");
         assert_eq!(
-            transition.physical_exclusive().operation_id(),
+            transition
+                .physical_exclusive()
+                .expect("physical exclusion")
+                .operation_id(),
             transition.operation_id()
         );
-        let publication = transition
-            .publication_permit(WorkExecutionId::new(9))
-            .expect("publication permit");
-        assert_eq!(publication.work_execution_id(), WorkExecutionId::new(9));
-        publication.complete().expect("publication complete");
         transition
             .activate(binding(2), ContentEffect::Retained)
             .expect("activation after Join");
@@ -2617,37 +2807,34 @@ mod tests {
             PermitAdmission::Admitted(permit) => permit,
             PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
         };
-        assert!(matches!(
-            core.begin_transition(AdmissionKind::Open)
-                .expect("transition admission"),
-            AdmissionOutcome::NotAdmitted {
-                reason: AdmissionRejection::ActiveOperation,
-                ..
-            }
-        ));
+        let transition = match core
+            .begin_transition(AdmissionKind::Open)
+            .expect("transition admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("transition must drain maintenance"),
+        };
         let ticket = maintenance.ticket().clone();
         // Dropping an unjoined permit retains the owner and responsibility;
         // an explicit supervisor Join/finalizer is required to release it.
         drop(maintenance);
         assert!(matches!(
-            core.begin_transition(AdmissionKind::Open)
-                .expect("transition admission after dropped permit"),
+            core.begin_transition(AdmissionKind::Restore)
+                .expect("second transition must wait"),
             AdmissionOutcome::NotAdmitted {
-                reason: AdmissionRejection::ActiveOperation,
+                reason: AdmissionRejection::Transition,
                 ..
             }
         ));
         core.mark_execution_joined(&ticket).expect("Join");
+        let maintenance_execution = ExecutionId::new(ticket.operation_id.get());
+        core.mark_execution_cleanup_pending(maintenance_execution)
+            .expect("cleanup pending after Join");
+        core.complete_execution(maintenance_execution)
+            .expect("maintenance execution complete");
         core.release_admission(&ticket).expect("release");
-        let ticket = match core
-            .begin_transition(AdmissionKind::Open)
-            .expect("transition after maintenance release")
-        {
-            AdmissionOutcome::Admitted(ticket) => ticket,
-            AdmissionOutcome::NotAdmitted { .. } => panic!("transition must be admitted"),
-        };
-        core.mark_transition_joined(&ticket).expect("Join");
-        core.complete_unchanged(&ticket, binding(1))
+        core.mark_transition_joined(&transition).expect("Join");
+        core.complete_unchanged(&transition, binding(1))
             .expect("restore original binding");
     }
 
@@ -2672,6 +2859,28 @@ mod tests {
         assert_eq!(execution_id, ExecutionId::new(operation_id.get()));
         core.start_execution(execution_id)
             .expect("execution start");
+        permit
+            .attach_run_ownership(RunOwnership {
+                state: RunCreationState::Reserved,
+                handle: DurableRunHandle::new(
+                    "project-1",
+                    "run-1",
+                    "task-1",
+                    "attempt-1",
+                    "backfill",
+                    "epoch-1",
+                    "work-1",
+                    1,
+                    "{}",
+                    "sha256:spec",
+                ),
+            })
+            .expect("attach exact run ownership");
+        assert!(core
+            .execution_membership(execution_id)
+            .expect("execution membership")
+            .run
+            .is_some());
         core.reserve_work_execution(execution_id, WorkExecutionId::new(45))
             .expect("work reservation");
         core.start_work_execution(WorkExecutionId::new(45))
@@ -2719,6 +2928,96 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn shutdown_stops_reserved_execution_before_body_start() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let mut permit = match core.admit_maintenance_permit().expect("maintenance") {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
+        };
+        core.request_shutdown().expect("shutdown request");
+        assert_eq!(permit.start().expect_err("shutdown blocks pending start"), LifecycleError::Closed);
+        assert_eq!(
+            core.execution_membership(permit.execution_id()).expect("membership").phase,
+            ExecutionPhase::StopRequested
+        );
+        permit.mark_joined().expect("scope Join");
+        permit.release().expect("release stopped reservation");
+        assert!(matches!(core.close().expect("close"), LifecycleSnapshot { state: LifecycleState::Closed, .. }));
+    }
+
+    #[test]
+    fn execution_cleanup_and_parent_release_require_join_and_child_completion() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let mut permit = match core.admit_maintenance_permit().expect("maintenance") {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
+        };
+        permit.start().expect("start");
+        let execution_id = permit.execution_id();
+        core.reserve_work_execution(execution_id, WorkExecutionId::new(77))
+            .expect("reserve child");
+        core.reserve_work_execution(execution_id, WorkExecutionId::new(78))
+            .expect("reserve started child");
+        core.start_work_execution(WorkExecutionId::new(78))
+            .expect("started child");
+        core.complete_work_execution(WorkExecutionId::new(78))
+            .expect("completed child before stop");
+        core.request_execution_stop(execution_id).expect("stop request");
+        assert_eq!(
+            core.mark_execution_cleanup_pending(execution_id)
+                .expect_err("stop is not Join"),
+            LifecycleError::InvalidExecutionTransition
+        );
+        permit.mark_joined().expect("parent Join");
+        assert_eq!(
+            core.complete_execution(execution_id)
+                .expect_err("child keeps parent owned"),
+            LifecycleError::InvalidExecutionTransition
+        );
+        assert_eq!(
+            core.complete_work_execution(WorkExecutionId::new(77))
+                .expect_err("reserved child cannot fabricate completion"),
+            LifecycleError::InvalidExecutionTransition
+        );
+        core.cancel_reserved_work_execution(WorkExecutionId::new(77))
+            .expect("stopped pending child can be retired explicitly");
+        core.start_work_execution(WorkExecutionId::new(77))
+            .expect_err("retired pending child cannot start");
+        core.mark_execution_cleanup_pending(execution_id)
+            .expect("cleanup after Join");
+        permit.release().expect("parent release");
+    }
+
+    #[test]
+    fn dropping_armed_permit_does_not_fabricate_join_or_release_cell() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let mut permit = match core.admit_maintenance_permit().expect("maintenance") {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
+        };
+        permit.start().expect("start");
+        let ticket = permit.ticket().clone();
+        permit.arm_scope_finalizer();
+        drop(permit);
+        assert!(matches!(
+            core.admit_maintenance_permit().expect("second admission"),
+            PermitAdmission::NotAdmitted {
+                reason: AdmissionRejection::ActiveOperation,
+                ..
+            }
+        ));
+        core.mark_execution_joined(&ticket).expect("supervisor Join");
+        core.mark_execution_cleanup_pending(ExecutionId::new(ticket.operation_id.get()))
+            .expect("cleanup pending");
+        core.complete_execution(ExecutionId::new(ticket.operation_id.get()))
+            .expect("execution complete");
+        core.release_admission(&ticket).expect("explicit release");
     }
 
     #[test]
@@ -2854,6 +3153,7 @@ mod tests {
             .expect("recovery descriptor");
         assert_eq!(core.responsibility_counts().expect("transferred count").0, 1);
         let request = ControlRequest {
+            generation: ControlGeneration::new(1),
             fingerprint: "root-1".into(),
             payload: "recover".into(),
         };
@@ -3033,6 +3333,7 @@ mod tests {
             .require_recovery(&ticket, Some(binding(1)), None)
             .expect("descriptor");
         let request = ControlRequest {
+            generation: ControlGeneration::new(1),
             fingerprint: "recover-1".into(),
             payload: "open".into(),
         };
@@ -3049,6 +3350,7 @@ mod tests {
             ControlSlotOutcome::Replay { .. }
         ));
         let conflicting_payload = ControlRequest {
+            generation: request.generation,
             fingerprint: request.fingerprint.clone(),
             payload: "different".into(),
         };
@@ -3084,6 +3386,63 @@ mod tests {
     }
 
     #[test]
+    fn control_retry_requires_ack_and_rejects_old_generation_requests() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let ticket = match core
+            .begin_transition(AdmissionKind::Restore)
+            .expect("transition")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("admitted"),
+        };
+        core.mark_transition_joined(&ticket).expect("join");
+        let (descriptor_id, _) = core
+            .require_recovery(&ticket, Some(binding(1)), None)
+            .expect("descriptor");
+        let first = ControlRequest {
+            generation: ControlGeneration::new(1),
+            fingerprint: "retry-root".into(),
+            payload: "recover".into(),
+        };
+        let generation = match core.control_request(descriptor_id, &first).expect("accept") {
+            ControlSlotOutcome::Accepted { generation } => generation,
+            other => panic!("expected accepted, got {other:?}"),
+        };
+        core.complete_control(descriptor_id, generation, "retryable-error")
+            .expect("failed result");
+        assert_eq!(
+            core.retry_control(descriptor_id)
+                .expect_err("unACKed result cannot be overwritten"),
+            LifecycleError::ControlResultPending(descriptor_id)
+        );
+        // A failed result may be transport-ACKed while its descriptor remains
+        // unresolved; the responsibility cell is released only by a later
+        // successful generation.
+        core.ack_control(descriptor_id, generation)
+            .expect("ACK failed result");
+        let next_generation = core.retry_control(descriptor_id).expect("next generation");
+        assert_ne!(next_generation, generation);
+        assert_eq!(
+            core.control_request(descriptor_id, &first)
+                .expect_err("old generation must not be accepted"),
+            LifecycleError::ControlGenerationMismatch {
+                descriptor: descriptor_id,
+                generation,
+            }
+        );
+        let retry = ControlRequest {
+            generation: next_generation,
+            fingerprint: first.fingerprint,
+            payload: first.payload,
+        };
+        assert!(matches!(
+            core.control_request(descriptor_id, &retry).expect("retry accept"),
+            ControlSlotOutcome::Accepted { generation } if generation == next_generation
+        ));
+    }
+
+    #[test]
     fn close_waits_for_control_ack_and_descriptor_responsibility_release() {
         let core = WorkspaceLifecycleCore::new();
         core.set_ready(binding(1)).expect("ready");
@@ -3099,6 +3458,7 @@ mod tests {
             .require_recovery(&ticket, Some(binding(1)), None)
             .expect("descriptor");
         let request = ControlRequest {
+            generation: ControlGeneration::new(1),
             fingerprint: "close-1".into(),
             payload: "recover".into(),
         };

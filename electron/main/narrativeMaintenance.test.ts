@@ -583,6 +583,10 @@ describe("narrative maintenance scheduler", () => {
   it.each([
     ["legacy null", null],
     ["explicit unavailable status", { status: "workspace-unavailable" }],
+    [
+      "explicit not-admitted status",
+      { status: "not-admitted", reason: "active-operation", stateRevision: 7 },
+    ],
   ])(
     "%s requeues the claimed batch until the backend accepts it",
     async (_label, unavailableResponse) => {

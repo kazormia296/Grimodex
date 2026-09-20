@@ -125,6 +125,7 @@ pub(crate) struct MaintenanceRunHandle {
     pub(crate) run_id: String,
     pub(crate) run_kind: String,
     pub(crate) semantic_epoch_id: String,
+    pub(crate) epoch: u64,
     pub(crate) work_key: String,
     pub(crate) spec_json: String,
     pub(crate) spec_digest: String,
@@ -139,6 +140,32 @@ pub(crate) struct MaintenanceRunHandle {
 }
 
 impl MaintenanceRunHandle {
+    pub(crate) fn core_ownership(&self) -> crate::workspace_lifecycle::RunOwnership {
+        use crate::workspace_lifecycle::{DurableRunHandle, RunCreationState as CoreCreationState};
+        let state = match self.creation_state {
+            RunCreationState::Reserved => CoreCreationState::Reserved,
+            RunCreationState::CreationNotCommitted => CoreCreationState::CreationNotCommitted,
+            RunCreationState::CreationUnknown => CoreCreationState::CreationUnknown,
+            RunCreationState::Created => CoreCreationState::Created,
+            RunCreationState::Reused => CoreCreationState::Reused,
+        };
+        crate::workspace_lifecycle::RunOwnership {
+            state,
+            handle: DurableRunHandle::new(
+                self.project_id.clone(),
+                self.run_id.clone(),
+                self.task_id.clone(),
+                self.attempt_id.clone(),
+                self.run_kind.clone(),
+                self.semantic_epoch_id.clone(),
+                self.work_key.clone(),
+                self.epoch,
+                self.spec_json.clone(),
+                self.spec_digest.clone(),
+            ),
+        }
+    }
+
     /// The writer is called inside an outer transaction, so a fresh tuple is
     /// not durably `Created` until that transaction returns successfully.  A
     /// caller may promote the process-local slot only at that post-COMMIT
@@ -168,6 +195,21 @@ pub(crate) struct RunCreationReservation {
     pub(crate) run_id: String,
     pub(crate) task_id: String,
     pub(crate) attempt_id: String,
+    /// Captured before the writer starts.  A reservation without this
+    /// identity may prove complete absence, but it may never turn an
+    /// arbitrary existing tuple into `Created`.
+    pub(crate) expected: Option<CreationIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CreationIdentity {
+    pub(crate) project_id: String,
+    pub(crate) run_kind: String,
+    pub(crate) semantic_epoch_id: String,
+    pub(crate) work_key: String,
+    pub(crate) spec_digest: String,
+    pub(crate) task_kind: String,
+    pub(crate) task_input: String,
 }
 
 impl RunCreationReservation {
@@ -176,8 +218,59 @@ impl RunCreationReservation {
             run_id: Uuid::new_v4().to_string(),
             task_id: Uuid::new_v4().to_string(),
             attempt_id: Uuid::new_v4().to_string(),
+            expected: None,
         }
     }
+
+    fn for_work(
+        project_id: &str,
+        run_kind: &str,
+        semantic_epoch_id: &str,
+        work_key: &str,
+        spec_digest: &str,
+        task_kind: &str,
+        task_input: &str,
+    ) -> Self {
+        let mut reservation = Self::new();
+        reservation.expected = Some(CreationIdentity {
+            project_id: project_id.to_owned(),
+            run_kind: run_kind.to_owned(),
+            semantic_epoch_id: semantic_epoch_id.to_owned(),
+            work_key: work_key.to_owned(),
+            spec_digest: spec_digest.to_owned(),
+            task_kind: task_kind.to_owned(),
+            task_input: task_input.to_owned(),
+        });
+        reservation
+    }
+}
+
+fn reservation_matches_created_tuple(
+    reservation: &RunCreationReservation,
+    actual_run: &(String, Option<String>, Option<String>, Option<String>, String),
+    actual_task: &(String, String, String, String),
+    actual_attempt: &(String, i64, String),
+    project_id: &str,
+) -> bool {
+    let Some(expected) = reservation.expected.as_ref() else {
+        return false;
+    };
+    let (actual_project, actual_run_kind, actual_epoch, actual_work_key, actual_spec_digest) =
+        actual_run;
+    let (actual_run_id, task_kind, _task_status, task_input) = actual_task;
+    let (actual_task_id, attempt_number, _attempt_status) = actual_attempt;
+    actual_project == project_id
+        && actual_project == &expected.project_id
+        && actual_run_id == &reservation.run_id
+        && actual_run_kind.as_deref() == Some(expected.run_kind.as_str())
+        && actual_epoch.as_deref() == Some(expected.semantic_epoch_id.as_str())
+        && actual_work_key.as_deref() == Some(expected.work_key.as_str())
+        && actual_spec_digest == &expected.spec_digest
+        && task_kind == &expected.task_kind
+        && task_input == &expected.task_input
+        && actual_task_id == &reservation.task_id
+        && *attempt_number == 1
+        && !reservation.attempt_id.is_empty()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,11 +318,21 @@ pub(crate) fn resolve_creation_unknown_in_tx(
         "NEX_RUN_CREATION_UNKNOWN: durable absence evidence is incomplete"
     );
 
-    let run: Option<(String, String)> = conn
+    let run: Option<(String, Option<String>, Option<String>, Option<String>, String)> = conn
         .query_row(
-            "SELECT project_id, status FROM narrative_extraction_runs WHERE id=?1",
+            "SELECT project_id, run_kind, semantic_epoch_id, work_key, spec_digest
+               FROM narrative_extraction_runs
+              WHERE id=?1",
             params![&reservation.run_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .optional()?;
     // Fetch each child by its own exact ID first.  Filtering through the
@@ -259,18 +362,16 @@ pub(crate) fn resolve_creation_unknown_in_tx(
             // without writing a synthetic cancelled Run.
             Ok(CreationResolution::NotCommitted)
         }
-        (
-            Some((actual_project, _)),
-            Some((actual_run_id, _task_kind, _task_status, _input_json)),
-            Some((actual_task_id, _attempt_number, _attempt_status)),
-        ) if actual_project == project_id
-            && actual_run_id == reservation.run_id
-            && actual_task_id == reservation.task_id =>
-        {
-            Ok(CreationResolution::Created)
-        }
+        (Some(actual_run), Some(actual_task), Some(actual_attempt))
+            if reservation_matches_created_tuple(
+                reservation,
+                &actual_run,
+                &actual_task,
+                &actual_attempt,
+                project_id,
+            ) => Ok(CreationResolution::Created),
         (Some(_), _, _) | (_, Some(_), _) | (_, _, Some(_)) => Err(ownership_error(
-            "Run creation tuple is partial, cross-project, or references a different child",
+            "Run creation tuple is partial, cross-project, or does not match the reserved kind/epoch/work/spec identity",
         )),
     }
 }
@@ -404,6 +505,30 @@ fn ownership_error(message: impl Into<String>) -> anyhow::Error {
     )
 }
 
+/// Resolve the numeric epoch captured by the durable Run.  The semantic epoch
+/// id remains the authoritative identity; the numeric value is carried only
+/// for the shared lifecycle tuple and is therefore treated as unavailable
+/// (zero) for legacy fixtures that predate the epoch table.
+fn semantic_epoch_number_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<u64> {
+    let number = conn
+        .query_row(
+            "SELECT epoch_number
+               FROM narrative_semantic_epochs
+              WHERE id = ?1 AND project_id = ?2",
+            params![semantic_epoch_id, project_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let Some(number) = number else {
+        return Ok(0);
+    };
+    u64::try_from(number).map_err(|_| ownership_error("semantic epoch number is negative"))
+}
+
 fn recovery_lifecycle_counts_in_tx(conn: &Connection, run_id: &str) -> anyhow::Result<(i64, i64)> {
     let task_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = ?1",
@@ -462,7 +587,6 @@ pub(crate) fn create_maintenance_run_in_tx(
     // Reserve the complete identity tuple before touching the Run writer.
     // Reuse is still checked first by the writer; unused reservation IDs are
     // never evidence that a reused tuple was not selected.
-    let reservation = RunCreationReservation::new();
     let full_spec = spec_with_active_system_work_marker(spec_json)?;
     let requested_full_spec_json = serde_json::to_string(&full_spec)?;
     let requested_marker_present = full_spec.get("systemWork").is_some();
@@ -483,6 +607,15 @@ pub(crate) fn create_maintenance_run_in_tx(
     anyhow::ensure!(
         spec_digest == expected_digest,
         "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: requested maintenance spec digest does not match the canonical phase spec digest"
+    );
+    let reservation = RunCreationReservation::for_work(
+        project_id,
+        run_kind,
+        semantic_epoch_id,
+        work_key,
+        spec_digest,
+        task_kind,
+        &requested_full_spec_json,
     );
     let run = create_system_run_in_tx_with_reserved_id(
         conn,
@@ -568,12 +701,14 @@ pub(crate) fn create_maintenance_run_in_tx(
          VALUES (?1, ?2, 1, 'running', ?3)",
         params![&attempt_id, &task_id, &run_started_at],
     )?;
+    let epoch = semantic_epoch_number_in_tx(conn, project_id, semantic_epoch_id)?;
 
     let handle = MaintenanceRunHandle {
         project_id: project_id.to_owned(),
         run_id,
         run_kind: run_kind.to_owned(),
         semantic_epoch_id: semantic_epoch_id.to_owned(),
+        epoch,
         work_key: work_key.to_owned(),
         spec_json: persisted_spec_json,
         spec_digest: spec_digest.to_owned(),
@@ -693,12 +828,14 @@ pub(crate) fn synthesize_recovery_lifecycle_in_tx(
          VALUES (?1, ?2, 1, 'running', ?3)",
         params![&attempt_id, &task_id, &lifecycle_at],
     )?;
+    let epoch = semantic_epoch_number_in_tx(conn, &project_id, &semantic_epoch_id)?;
 
     let handle = MaintenanceRunHandle {
         project_id,
         run_id: run_id.to_owned(),
         run_kind,
         semantic_epoch_id,
+        epoch,
         work_key,
         spec_json,
         spec_digest,
@@ -744,6 +881,7 @@ pub(crate) fn load_maintenance_run_in_tx(
     let work_key = work_key.ok_or_else(|| ownership_error("sealed work key is missing"))?;
     let task_kind =
         maintenance_task_kind(&run_kind).map_err(|error| ownership_error(error.to_string()))?;
+    let epoch = semantic_epoch_number_in_tx(conn, &project_id, &semantic_epoch_id)?;
     validate_canonical_phase_spec(
         &spec_json,
         &spec_digest,
@@ -824,6 +962,7 @@ pub(crate) fn load_maintenance_run_in_tx(
         run_id: run_id.to_owned(),
         run_kind,
         semantic_epoch_id,
+        epoch,
         work_key,
         spec_json,
         spec_digest,
@@ -834,6 +973,28 @@ pub(crate) fn load_maintenance_run_in_tx(
     };
     validate_handle_in_tx(conn, &handle)?;
     Ok(handle)
+}
+
+/// Load the exact lifecycle tuple only while the durable Run is still live.
+/// A completed or already-terminal occurrence has no workspace responsibility
+/// to attach to the Native execution; treating that normal no-op as an
+/// ownership error would make the foreground release path fail after the
+/// writer has already finalized the Run.
+pub(crate) fn try_load_running_maintenance_run_in_tx(
+    conn: &Connection,
+    run_id: &str,
+) -> anyhow::Result<Option<MaintenanceRunHandle>> {
+    let status = conn
+        .query_row(
+            "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if status.as_deref() != Some("running") {
+        return Ok(None);
+    }
+    load_maintenance_run_in_tx(conn, run_id).map(Some)
 }
 
 /// Load the exact completed lifecycle pair for an idempotent foreground
@@ -959,12 +1120,14 @@ pub(crate) fn load_completed_maintenance_run_in_tx(
             && task_completed_at == attempt_completed_at,
         "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: completed lifecycle rows do not share one terminal instant"
     );
+    let epoch = semantic_epoch_number_in_tx(conn, &project_id, &semantic_epoch_id)?;
 
     let handle = MaintenanceRunHandle {
         project_id,
         run_id: run_id.to_owned(),
         run_kind,
         semantic_epoch_id,
+        epoch,
         work_key,
         spec_json,
         spec_digest,

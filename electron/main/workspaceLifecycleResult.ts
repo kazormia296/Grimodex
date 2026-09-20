@@ -337,6 +337,32 @@ function staleAgainst(
   );
 }
 
+function validateOutcomeAxes(
+  status: WorkspaceLifecycleStatus,
+  activation: WorkspaceLifecycleActivation | undefined,
+  operationOutcome: WorkspaceLifecycleOperationOutcome,
+  contentEffect: WorkspaceLifecycleContentEffect,
+): void {
+  // An unchanged result proves that the exact original authority survived;
+  // replacing the authority is therefore never an unchanged content effect.
+  if (status === "unchanged" && contentEffect === "replaced") {
+    fail("$.contentEffect", "replaced content must be reported as activated");
+  }
+  if (activation === "requires-open" && status === "activated") {
+    fail("$.activation", "requires-open is a restored Safe Mode projection");
+  }
+  // A failed/cancelled/unknown Open may retain content only after it has been
+  // reopened under a new authority, which is the explicit Activated result.
+  if (
+    status === "unchanged" &&
+    operationOutcome !== "succeeded" &&
+    contentEffect !== "none" &&
+    contentEffect !== "retained"
+  ) {
+    fail("$.contentEffect", "unchanged failure may only report no effect or retained content");
+  }
+}
+
 function parseResult(value: unknown): {
   status: WorkspaceLifecycleStatus;
   reasonCode?: string;
@@ -384,6 +410,7 @@ function parseResult(value: unknown): {
         CONTENT_EFFECTS,
         "$.contentEffect",
       );
+      validateOutcomeAxes(status, undefined, operationOutcome, contentEffect);
       if (
         snapshot.state !== "ready" ||
         !sameBinding(snapshot.binding, binding)
@@ -422,6 +449,7 @@ function parseResult(value: unknown): {
         CONTENT_EFFECTS,
         "$.contentEffect",
       );
+      validateOutcomeAxes(status, activation, operationOutcome, contentEffect);
       const binding =
         record.binding === undefined
           ? undefined

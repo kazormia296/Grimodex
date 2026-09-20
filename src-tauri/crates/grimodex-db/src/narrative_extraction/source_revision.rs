@@ -18,15 +18,38 @@ use super::project_scope_authority::load_live_project_scope_authority;
 /// accidentally resolve a long roster on a different connection or silently
 /// re-admit a nested maintenance operation.  The owner is never retained by a
 /// Source result.
-pub(crate) struct ValidationContext<'conn, 'owner> {
+pub(crate) struct ValidationConnectionScope<'conn> {
     connection: &'conn Connection,
+}
+
+pub(crate) struct ValidationContext<'conn, 'owner> {
+    scope: ValidationConnectionScope<'conn>,
     owner: &'owner mut dyn super::nir1_entity_relation_index::GraphWorkControl,
+}
+
+/// Explicit foreground writer owner for compatibility entry points that run
+/// inside the caller's transaction.  It is intentionally scoped to that
+/// transaction and has no authority outside it; maintenance and Native
+/// commands provide their cancelling owner instead.
+pub(crate) struct ForegroundValidationControl;
+
+impl super::nir1_entity_relation_index::GraphWorkControl for ForegroundValidationControl {
+    fn check(
+        &mut self,
+        _stage: super::nir1_entity_relation_index::GraphWorkStage,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
 }
 
 impl<'conn, 'owner> ValidationContext<'conn, 'owner> {
     pub(crate) fn ensure_connection(&self, candidate: &Connection) -> anyhow::Result<()> {
         anyhow::ensure!(
-            std::ptr::eq(self.connection, candidate),
+            std::ptr::eq(self.scope.connection, candidate),
             "NEX_VALIDATION_CONTEXT_CONNECTION_MISMATCH: validation context must borrow the enclosing transaction"
         );
         Ok(())
@@ -37,7 +60,7 @@ impl<'conn, 'owner> ValidationContext<'conn, 'owner> {
     }
 
     pub(crate) fn connection(&self) -> &'conn Connection {
-        self.connection
+        self.scope.connection
     }
 }
 
@@ -45,7 +68,10 @@ pub(crate) fn validation_context<'conn, 'owner>(
     connection: &'conn Connection,
     owner: &'owner mut dyn super::nir1_entity_relation_index::GraphWorkControl,
 ) -> ValidationContext<'conn, 'owner> {
-    ValidationContext { connection, owner }
+    ValidationContext {
+        scope: ValidationConnectionScope { connection },
+        owner,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +231,12 @@ pub(crate) fn resolve_source_revision_with_control(
 ) -> anyhow::Result<CurrentSourceRevision> {
     control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
     if source_kind == super::nir1_entity_relation_index::SOURCE_KIND {
+        if !control.allows_full_eligibility() {
+            return Err(validation_terminated(
+                ValidationTerminationReason::ContextUnavailable,
+                "Entity/Relation eligibility requires a caller-owned validation context",
+            ));
+        }
         anyhow::ensure!(
             source_key == super::nir1_entity_relation_index::source_key(project_id),
             "NEX_SOURCE_KEY_INVALID: Entity/Relation eligibility Source must belong to the exact project"
@@ -222,6 +254,12 @@ pub(crate) fn resolve_source_revision_with_control(
         return ensure_non_empty_token(source.digest);
     }
     if source_kind == super::nir1_chronicle_index::SOURCE_KIND {
+        if !control.allows_full_eligibility() {
+            return Err(validation_terminated(
+                ValidationTerminationReason::ContextUnavailable,
+                "Chronicle eligibility requires a caller-owned validation context",
+            ));
+        }
         anyhow::ensure!(
             source_key == super::nir1_chronicle_index::source::source_key(project_id),
             "NEX_SOURCE_KEY_INVALID: eligibility Source must belong to the exact project"
@@ -266,7 +304,7 @@ pub(crate) fn resolve_source_revision_with_validation_context(
     source_kind: &str,
     source_key: &str,
 ) -> anyhow::Result<CurrentSourceRevision> {
-    let conn = context.connection;
+    let conn = context.scope.connection;
     resolve_source_revision_with_control(
         conn,
         project_id,
