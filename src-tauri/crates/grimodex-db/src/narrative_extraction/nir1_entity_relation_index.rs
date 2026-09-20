@@ -40,6 +40,7 @@ use super::nir1_entity_relation::{
 };
 use super::publish_runtime::publish_complete_runless_graph_freshness_in_tx;
 use super::semantic_epoch::get_current_epoch;
+use super::source_revision::ForegroundValidationControl;
 use grimodex_core::narrative_nir1::{
     self, ENTITY_RELATION_INDEX_KEY, ENTITY_RELATION_PRODUCER, ENTITY_RELATION_SOURCE_KIND,
 };
@@ -590,7 +591,10 @@ pub(crate) fn read_eligibility_source(
     conn: &Connection,
     project: &str,
 ) -> Result<GraphEligibilitySource> {
-    let mut control = NeverStopGraphWorkControl;
+    // This compatibility entry point represents the foreground Graph owner.
+    // It supplies an explicit validation owner instead of silently entering
+    // the no-context whole-eligibility path.
+    let mut control = ForegroundValidationControl;
     read_eligibility_source_with_control(conn, project, &mut control)
 }
 
@@ -1509,7 +1513,7 @@ pub(crate) fn is_registered_with_control(
 /// Check whether the exact Graph binding is completely registered and live
 /// across the whole project.
 pub fn is_complete_registered(conn: &Connection, project: &str, key: &str) -> Result<bool> {
-    let mut control = NeverStopGraphWorkControl;
+    let mut control = ForegroundValidationControl;
     is_complete_registered_with_control(conn, project, key, &mut control)
 }
 
@@ -1690,7 +1694,9 @@ pub fn prepare_graph_index_build(
     runtime: &NirChronicleIndexRuntime,
     project: &str,
 ) -> Result<GraphIndexBuildSnapshot> {
-    let mut control = NeverStopGraphWorkControl;
+    // Native maintenance uses the controlled variant and supplies its
+    // lifecycle owner directly; this adapter is the foreground owner.
+    let mut control = ForegroundValidationControl;
     prepare_graph_index_build_with_control(conn, runtime, project, &mut control)
 }
 
@@ -1850,7 +1856,7 @@ pub fn publish_nir1_entity_relation_index_in_tx(
     runtime: &NirChronicleIndexRuntime,
     snapshot: GraphIndexBuildSnapshot,
 ) -> Result<StoredBinding> {
-    let mut control = NeverStopGraphWorkControl;
+    let mut control = ForegroundValidationControl;
     with_graph_no_wait(conn, || {
         publish_nir1_entity_relation_index_in_tx_inner(conn, runtime, snapshot, &mut control)
     })

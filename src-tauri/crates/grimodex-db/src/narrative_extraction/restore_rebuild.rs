@@ -4989,7 +4989,10 @@ pub fn verify_narrative_dependency_graph_for_project(
     conn: &Connection,
     project_id: &str,
 ) -> anyhow::Result<DependencyGraphVerifyReport> {
-    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    // The compatibility entry point is a foreground verification owner.
+    // Maintenance callers use the controlled variant with their lifecycle
+    // owner, so whole-project eligibility never runs without a context.
+    let mut control = super::source_revision::ForegroundValidationControl;
     verify_narrative_dependency_graph_for_project_with_control(conn, project_id, &mut control)
 }
 
