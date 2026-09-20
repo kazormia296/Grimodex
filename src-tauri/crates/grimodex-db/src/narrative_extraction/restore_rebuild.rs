@@ -77,7 +77,7 @@ use super::repository::create_system_run_in_tx;
 use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::source_revision::{
-    is_validation_terminated, resolve_current_source_state,
+    is_validation_terminated, resolve_current_source_state, ForegroundValidationControl,
     resolve_current_source_state_with_control, CurrentSourceState,
 };
 use super::task_leases::with_immediate_transaction;
@@ -1108,7 +1108,7 @@ pub fn rebuild_narrative_derived_state_for_project(
     db: &Database,
     project_id: &str,
 ) -> anyhow::Result<RebuildDerivedStateOutcome> {
-    let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    let mut control = ForegroundValidationControl;
     rebuild_narrative_derived_state_for_project_with_graph_control(db, project_id, &mut control)
 }
 
@@ -1128,7 +1128,7 @@ pub fn rebuild_narrative_derived_state_for_project_with_control(
         None => rebuild_narrative_derived_state_for_project_with_graph_control(
             db,
             project_id,
-            &mut super::nir1_entity_relation_index::NeverStopGraphWorkControl,
+            &mut ForegroundValidationControl,
         ),
     }
 }
