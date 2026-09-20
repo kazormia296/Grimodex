@@ -5,7 +5,7 @@ Parent branch: `codex/nir1-b-capacity-implementation`
 Base SHA: `8df6be62b2652a5c3e7bca1ffb0e874937313d43`
 Child branch: `codex/pr600-lifecycle-replacement`
 Contract: `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`
-Implementation checkpoint: `4e5ade99`
+Implementation checkpoint: `6b7407e7`
 Worktree: `/home/grimodex/.codex/worktrees/pr600-lifecycle-replacement`
 
 This record separates focused implementation evidence from independent final
@@ -14,18 +14,27 @@ adds the five C0 contract corrections: result/effect separation, exact Run
 creation evidence, independent descriptor recovery capacity, positive context
 supply, and I7-P/I7-L resource ordering.
 
-## Evidence completed
+## Focused implementation evidence
 
-- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle` — 24 passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle` — 26 passed.
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::maintenance_lifecycle` — 20 passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::task_leases` — 2 passed (confirmed and ambiguous creation outcomes).
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_maintenance_connection` — 19 passed (open-transaction retirement and close-baton retry).
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib state::tests::active_workspace_snapshot_pins_authority_including_lease` — passed.
 - `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib` — 146 passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib
+  narrative_maintenance_connection::tests::retirement_receipt_can_be_emitted_after_cleanup_quarantine` — 1 passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib
+  narrative_extraction::repository::unit_tests::project_creation_reservations_count_and_release_without_run_id_leaks` — 1 passed.
 - `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib narrative_freshness_restore_lock_tests` — 4 passed.
 - `pnpm exec tsc -p electron/tsconfig.json --noEmit` — passed.
-- `pnpm test:electron --run electron/main/narrativeMaintenance.reacceptance.test.ts electron/main/narrativeMaintenanceDelivery.test.ts electron/main/narrativeMaintenance.test.ts` — 83 passed.
+- `pnpm exec vitest --config vitest.electron.config.ts --run electron/main/narrativeMaintenance.reacceptance.test.ts electron/main/narrativeMaintenanceDelivery.test.ts electron/main/narrativeMaintenance.test.ts` — 85 passed.
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::nir1_entity_relation::tests::` — 75 passed, including Graph cold-reopen and foreground-context paths.
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features nir1-material-diagnostics --test nir1_capacity_binary` — 3 passed, including Restore/Freshness recovery through the validation owner.
 - `git diff --check` — passed on the implementation checkpoint.
+- `cargo check --target x86_64-pc-windows-gnu ...` — environment blocked before
+  project compilation because `x86_64-w64-mingw32-gcc` is unavailable; this is
+  recorded as a limitation, not a pass.
 
 The focused tests cover the new W1-descriptor/W2-open transition, Native
 descriptor control replay, creation reservation/recovery classification,
@@ -37,8 +46,8 @@ and ACK-only retry without a second Native cycle dispatch.
 | Gate | Status | Evidence rule |
 | --- | --- | --- |
 | C0 independent contract review | accepted in `pr600-lifecycle-replacement-c0-acceptance.md` | Must remain separate from implementation claims. |
-| C1 independent core review | accepted in `pr600-lifecycle-replacement-c1-acceptance.md` | 24 core tests and Layer B Native tests are recorded. |
-| C5 Astra High review | required for the exact clean final HEAD | Reviewer must be read-only and check the prior P1 findings again. |
+| C1 independent core review | accepted in `pr600-lifecycle-replacement-c1-acceptance.md` | 26 core tests and Layer B Native tests are recorded. |
+| C5 Sol max review | required for the exact clean final HEAD | Reviewer must be read-only and check the prior P1 findings again. |
 | local Quick + immediate verify | required on the frozen final HEAD | Base and head must be the same exact pair in both commands. |
 
 The dedicated `test-lifecycle` feature/binary, a full real Electron
@@ -57,8 +66,8 @@ base_sha=8df6be62b2652a5c3e7bca1ffb0e874937313d43
 child_branch=codex/pr600-lifecycle-replacement
 worktree=/home/grimodex/.codex/worktrees/pr600-lifecycle-replacement
 implementer=Luna max
-independent_reviewer=Astra High (C5; read-only)
+independent_reviewer=Sol max (C5; read-only)
 gate_status_c0=accepted
 gate_status_c1=accepted
-gate_status_c5=pending exact-head Astra High plus Quick/verify
+gate_status_c5=pending exact-head Sol max plus Quick/verify
 ```

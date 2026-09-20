@@ -1,6 +1,6 @@
 # PR #600 lifecycle replacement: C0 acceptance record
 
-Candidate under review: `4e5ade99` (built from parent
+Candidate under review: `6b7407e7` (built from parent
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`). Contract:
 `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`.
 
@@ -28,6 +28,18 @@ acceptance.
 - A Native descriptor supervisor can resolve exact maintenance Runs from the
   control slot before ordinary maintenance admission; a failed main ACK is
   retried by sequence without redispatching the batch.
+- Main preflight reconciles an exact recovery descriptor before delivery
+  admission. A `reconciled` or unavailable result releases the claim and
+  retries after binding rediscovery, so a stale binding cannot enter the
+  delivery ledger.
+- `CreationUnknown` resolution uses the original worker Join and explicit
+  connection-retirement receipt, stable database file identity, captured
+  project/semantic-epoch lineage, and a single all-ID absence check. A
+  cleanup-quarantined authority cannot be reused as the resolver.
+- Project creation reservations are counted by project, so Fresh-to-Reused
+  selection cannot leak a generated reservation or race project deletion.
+- Maintenance and Freshness permits remain under the outer Native supervisor;
+  JoinError/panic returns the permit to the supervisor-owned recovery slot.
 - The frozen Tauri compatibility owner may use a directly installed verified
   authority when the shared core has not yet published a binding; explicit
   Electron Transition/RecoveryRequired/Closed states remain fail-closed.
@@ -35,7 +47,7 @@ acceptance.
 ## Evidence inspected
 
 - `docs/plans/pr600-lifecycle-replacement.md` and the implementation diff at
-  candidate `4e5ade99`.
+  candidate `6b7407e7`.
 - Layer A shared-core tests: `cargo test --manifest-path
   src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle` (24 tests,
   including independent W2 Open with an unresolved W1 descriptor).
@@ -58,6 +70,8 @@ acceptance.
 
 The dedicated `test-lifecycle` failpoint feature/binary and a full real
 Electron IPC → N-API → SQLite → renderer Layer C evidence run are not part of
-this candidate. T01–T36 are not represented as all-green by this C0 record;
+this candidate. The Windows GNU target check is also environment-blocked by a
+missing `x86_64-w64-mingw32-gcc` toolchain. T01–T36 are not represented as
+all-green by this C0 record;
 their execution and the independent C5 review remain required before the PR
 is considered accepted.

@@ -6,13 +6,14 @@ Parent base: `codex/nir1-b-capacity-implementation` at
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`
 Child branch: `codex/pr600-lifecycle-replacement`
 
-Latest implementation checkpoint: `4e5ade99`. The checkpoint closes the
-descriptor product-caller path, exact Run creation/recovery evidence, Native
-Freshness lifecycle membership, frozen Tauri compatibility access, main
-delivery ACK retry, foreground Graph/Verify validation context supply, and
-restore/capacity diagnostic validation ownership.
-C5 still requires an independent Astra High review and a clean
-candidate-specific Quick/verify receipt.
+Latest implementation checkpoint: `6b7407e7`. The checkpoint closes the
+descriptor product-caller path before normal delivery admission, records
+explicit connection-retirement evidence, captures stable database file
+identity and semantic epoch lineage at Run reservation, protects project
+creation reservations, preserves the exact recovery root across retries, and
+keeps maintenance/Freshness permits under the outer supervisor through Join.
+C5 still requires an independent Sol max review and clean candidate-specific
+Quick/verify receipts.
 
 This document is the C0 contract and impact ledger for the single stacked PR
 that replaces the workspace maintenance control path. It is normative for the
@@ -325,7 +326,7 @@ evidence remain explicit at this boundary.
 | Entry | Admission/start and owner | Binding/lock/DB scope | Stop, retry, and terminal evidence |
 | --- | --- | --- | --- |
 | `WorkspaceLifecycleViewAdapter::begin_transition_kind` → `open_workspace` / `restore_recovery_candidate` | `WorkspaceLifecycleCore::begin_transition`; `WorkspaceTransitionPermit` and Native supervisor slot are created before `spawn_blocking` | `WorkspaceState.inner` binding is captured before `open_lock`; protected worker owns `WorkspaceExclusive` and the verified file lease | `AppState::request_workspace_shutdown`/participant stop, Join from the blocking owner, `complete_transition_from_workspace`; JoinError/panic maps to descriptor, never Ready |
-| `State::run_narrative_maintenance_cycle` → `maintenance_runtime::run_*` | `WorkspaceLifecycleViewAdapter::begin_maintenance`; `MaintenancePermit` reserves an exact Run responsibility before DB work; `arm_scope_finalizer` is the common synchronous boundary | `narrative_maintenance_no_wait` on the pinned authority; existing transaction and file lease; no path-based second connection | attempt stop signal and `GraphWorkControl::check`; requeue/failure recorder; terminal delivery result is marked before main ACK, and scope finalizer releases only after the cycle returns |
+  | `State::run_narrative_maintenance_cycle` → `maintenance_runtime::run_*` | `WorkspaceLifecycleViewAdapter::begin_maintenance`; `MaintenancePermit` reserves an exact Run responsibility before DB work; the outer Native supervisor owns the permit through Join | `narrative_maintenance_no_wait` on the pinned authority; existing transaction and file lease; no path-based second connection | attempt stop signal and `GraphWorkControl::check`; requeue/failure recorder; terminal delivery result is marked only after the supervisor observes Join and completes release or descriptor transfer |
 | Native discovery `narrative_maintenance::discover_projects` | Same maintenance owner, no renderer identity accepted | Pinned authority, keyset pages, Source ID lookup; no `active_database()` reacquisition | page completion or typed lifecycle rejection; wake remains durable until ACK |
 | `narrative_extraction_prepare_commit_with_control` / `...apply_commit_with_control` | Native `agent_write_cmd` supplies the registered foreground `GraphWorkControl` before `with_immediate_transaction` | Borrowed `ValidationContext` uses the same write connection/transaction; Apply retains its existing busy timeout | stop returns `ValidationTerminated` before Source normalization; rollback preserves Prepared; successful commit is recorded separately from cleanup |
 | `repository::save_proposal_set_in_tx`, `append_revision_in_tx`, `revise_and_decide` | Bound foreground writer owns the outer transaction and supplies the same validation scope | exact extraction binding, outer transaction, existing writer authorization | caller retries the exact request/revision; commit evidence and connection cleanup are separate |
