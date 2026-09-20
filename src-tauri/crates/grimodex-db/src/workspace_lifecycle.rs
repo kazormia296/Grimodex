@@ -1286,6 +1286,7 @@ impl WorkspaceLifecycleCore {
                 .values()
                 .any(|slot| !slot.retired || !slot.acked)
             || !state.delivery.records.is_empty()
+            || !state.delivery.fenced.is_empty()
             || !state.responsibilities.general.is_empty()
             || state.responsibilities.emergency.is_some()
         {
@@ -5150,6 +5151,24 @@ mod tests {
         assert!(core
             .ack_delivery(DeliverySequence::new(1))
             .expect("idempotent fence ACK"));
+    }
+
+    #[test]
+    fn close_waits_for_unacked_recordless_fence() {
+        let core = WorkspaceLifecycleCore::new();
+        core.resolve_or_fence(DeliverySequence::new(1))
+            .expect("recordless fence");
+        assert_eq!(
+            core.close().expect_err("unacked fence must block close"),
+            LifecycleError::ActiveOperations
+        );
+        assert!(core
+            .ack_delivery(DeliverySequence::new(1))
+            .expect("fence ACK"));
+        assert!(matches!(
+            core.close().expect("close after fence ACK").state,
+            LifecycleState::Closed
+        ));
     }
 
     #[test]
