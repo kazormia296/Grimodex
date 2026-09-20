@@ -112,6 +112,8 @@ use grimodex_db::state::{
     active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
     PinnedWorkspaceDb,
 };
+#[cfg(test)]
+use grimodex_db::state::ActiveWorkspace;
 use grimodex_db::timelapse::{TimelapseBodySnapshotTarget, TimelapseGenesisBaselineKind};
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload, TrashBinRestorePayload};
 use grimodex_db::web_editor_handoff;
@@ -132,6 +134,28 @@ use workspace_lifecycle_view::{
     WorkspaceLifecycleView, WorkspaceLifecycleViewAdapter, WORKSPACE_LIFECYCLE_EVENT,
 };
 use uuid::Uuid;
+
+#[cfg(test)]
+fn install_test_workspace(state: &AppState, authority: PinnedWorkspaceDb) {
+    let authority_id = narrative_authority_id(&authority);
+    let generation = state
+        .narrative_maintenance_recovery_gate
+        .binding_for_authority(&authority_id)
+        .generation;
+    let binding = grimodex_db::LiveBinding::new(
+        authority.path().to_string_lossy(),
+        authority_id,
+        authority.identity(),
+        generation,
+    );
+    *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
+    state
+        .ws
+        .switching
+        .core()
+        .set_ready(binding)
+        .expect("test workspace lifecycle ready");
+}
 
 const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
 const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT: &str = "narrative-maintenance:epoch-rotated";
@@ -464,8 +488,7 @@ mod narrative_extraction_workspace_binding_tests {
         let (authority_a, path_a) = workspace_authority(&root, "workspace-a", "clone-id");
         let state = AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
             .expect("app state");
-        *state.ws.inner.lock().expect("workspace lock") =
-            Some(ActiveWorkspace::new(Arc::clone(&authority_a)));
+        install_test_workspace(&state, Arc::clone(&authority_a));
         let backend = Backend {
             state: Arc::new(state),
         };
@@ -508,8 +531,7 @@ mod narrative_extraction_workspace_binding_tests {
         let (authority_b, _) = workspace_authority(&root, "workspace-b", "clone-id");
         // Model the narrow production handoff: the new DB authority is already
         // published, while the recovery generation has not rotated yet.
-        *backend.state.ws.inner.lock().expect("workspace lock") =
-            Some(ActiveWorkspace::new(Arc::clone(&authority_b)));
+        install_test_workspace(&backend.state, Arc::clone(&authority_b));
 
         let stale_create = backend
             .narrative_extraction_create_run(
@@ -633,7 +655,7 @@ mod narrative_freshness_restore_lock_tests {
             AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
                 .expect("app state"),
         );
-        *state.ws.inner.lock().expect("workspace state") = Some(ActiveWorkspace::new(authority));
+        install_test_workspace(&state, authority);
 
         let (cycle_completed_tx, cycle_completed_rx) = mpsc::channel();
         let (release_cycle_tx, release_cycle_rx) = mpsc::channel();
@@ -689,6 +711,16 @@ mod narrative_freshness_restore_lock_tests {
         // wait_for_sole_owner() owns the bounded pin-drain failure; keep
         // unrelated restore I/O latency out of this ordering contract.
         restore_result.expect("restore must not time out waiting for freshness authority");
+        let restored_for_core = state
+            .ws
+            .inner
+            .lock()
+            .expect("workspace state")
+            .as_ref()
+            .expect("restored workspace")
+            .authority
+            .clone();
+        install_test_workspace(&state, restored_for_core);
         assert!(
             cycle_result
                 .expect("workspace replacement is a fail-soft scheduler outcome")
@@ -755,7 +787,7 @@ mod narrative_freshness_restore_lock_tests {
                 .expect("app state"),
         );
         let expected_binding = narrative_maintenance_binding_for_authority(&state, &authority);
-        *state.ws.inner.lock().expect("workspace state") = Some(ActiveWorkspace::new(authority));
+        install_test_workspace(&state, authority);
         let completed_authority = active_database(&state.ws).expect("cycle authority");
         let validation_snapshot =
             active_workspace_snapshot(&state.ws).expect("cycle validation snapshot");
@@ -817,6 +849,16 @@ mod narrative_freshness_restore_lock_tests {
         // wait_for_sole_owner() owns the bounded pin-drain failure; keep
         // unrelated restore I/O latency out of this ordering contract.
         restore_result.expect("restore must not time out waiting for maintenance authorities");
+        let restored_for_core = state
+            .ws
+            .inner
+            .lock()
+            .expect("workspace state")
+            .as_ref()
+            .expect("restored workspace")
+            .authority
+            .clone();
+        install_test_workspace(&state, restored_for_core);
         assert!(
             !revalidation_result.expect("maintenance revalidation"),
             "replacement authority must reject the completed old cycle"
@@ -862,7 +904,7 @@ mod narrative_freshness_restore_lock_tests {
             AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
                 .expect("app state"),
         );
-        *state.ws.inner.lock().expect("workspace state") = Some(ActiveWorkspace::new(authority));
+        install_test_workspace(&state, authority);
 
         let result = run_narrative_freshness_cycle_inner(&state, || {})
             .expect("not-ready cutover is an expected scheduler outcome");
@@ -921,7 +963,7 @@ mod narrative_freshness_restore_lock_tests {
             AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
                 .expect("app state"),
         );
-        *state.ws.inner.lock().expect("workspace state") = Some(ActiveWorkspace::new(authority));
+        install_test_workspace(&state, authority);
 
         let error = run_narrative_freshness_cycle_inner(&state, || {})
             .expect_err("scheduler must surface an unexpected marker/schema error");
@@ -1108,27 +1150,16 @@ fn reopen_narrative_maintenance_admission(
 fn recover_workspace_open_lock_after_panic(
     state: &Arc<AppState>,
 ) -> std::result::Result<(), AppError> {
-    if state
-        .ws
-        .switching
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        return Err(AppError::Anyhow(anyhow::anyhow!(
-            "NEX_WORKSPACE_OPEN_PANIC_UNRECOVERABLE: workspace switch is still active"
-        )));
-    }
+    // The shared lifecycle core intentionally remains in Transition until the
+    // blocking worker has joined.  A panic is therefore allowed to leave the
+    // legacy compatibility flag raised at this point; the outer supervisor
+    // converts the joined operation to RecoveryRequired.  Rejecting a raised
+    // flag here would strand the transition before that supervisor can emit a
+    // terminal recovery projection.
     state
         .narrative_maintenance_recovery_gate
         .assert_no_active_attempts()
         .map_err(AppError::Anyhow)?;
-    if state
-        .narrative_maintenance_recovery_gate
-        .maintenance_admission_is_closed()
-    {
-        return Err(AppError::Anyhow(anyhow::anyhow!(
-            "NEX_WORKSPACE_OPEN_PANIC_UNRECOVERABLE: maintenance admission remains closed"
-        )));
-    }
     // A caught panic can unwind while the shared opener still owns the
     // workspace mutexes. Clear their poison markers only after the lifecycle
     // gate and switching flag have been restored; future operations then
@@ -1820,10 +1851,14 @@ fn begin_workspace_lifecycle_recovery(state: &AppState) -> std::result::Result<(
     state
         .workspace_lifecycle
         .mark_safe_mode_recovery_required()?;
+    let descriptor_id = match state.workspace_lifecycle.lifecycle_snapshot()?.state {
+        LifecycleState::RecoveryRequired { descriptor_id } => descriptor_id,
+        _ => grimodex_db::workspace_lifecycle::SAFE_MODE_RECOVERY_DESCRIPTOR_ID,
+    };
     let (view, changed) = state
         .workspace_lifecycle
         .begin_recovery_transition(
-            grimodex_db::workspace_lifecycle::SAFE_MODE_RECOVERY_DESCRIPTOR_ID,
+            descriptor_id,
         )?;
     if changed {
         emit_workspace_lifecycle_view(state, &view);
@@ -1837,6 +1872,19 @@ fn publish_workspace_lifecycle_from_workspace(
     let view = state
         .workspace_lifecycle
         .complete_transition_from_workspace(&state.ws)?;
+    emit_workspace_lifecycle_view(state, &view);
+    Ok(view)
+}
+
+/// Publish a panic/poison outcome only after the blocking worker has joined.
+/// The candidate authority remains hidden behind RecoveryRequired even when a
+/// pre-swap hook had already installed it; a panic is never an activation proof.
+fn publish_workspace_lifecycle_recovery_after_join(
+    state: &AppState,
+) -> std::result::Result<WorkspaceLifecycleView, AppError> {
+    let view = state
+        .workspace_lifecycle
+        .publish_recovery_required(&state.ws)?;
     emit_workspace_lifecycle_view(state, &view);
     Ok(view)
 }
@@ -2821,6 +2869,60 @@ where
         // but this write can only complete against the DB that passed the CAS.
         serde_json::to_string(&f(workspace.authority.db(), dto)?)
             .map_err(|error| AppError::Anyhow(error.into()))
+    })
+    .await
+}
+
+/// Bound foreground mutation variant.  Proposal writes must use the exact
+/// captured workspace authority while also borrowing the lifecycle-owned
+/// validation stop scope for every eligibility read in their transaction.
+async fn narrative_extraction_bound_foreground_write_cmd<T, F>(
+    state: Arc<AppState>,
+    label: &'static str,
+    payload: serde_json::Value,
+    workspace_binding: serde_json::Value,
+    f: F,
+) -> Result<String>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+    F: FnOnce(
+            &grimodex_db::Database,
+            T,
+            &mut dyn GraphWorkControl,
+        ) -> anyhow::Result<serde_json::Value>
+        + Send
+        + 'static,
+{
+    run_blocking(move || {
+        let _workspace_operation = state
+            .begin_workspace_operation()
+            .map_err(AppError::Anyhow)?;
+        let requested_binding: NarrativeExtractionWorkspaceBinding =
+            from_wire("workspaceBinding", workspace_binding)?;
+        requested_binding.validate().map_err(AppError::Anyhow)?;
+        let dto: T = from_wire(label, payload)?;
+        let workspace = active_workspace_snapshot(&state.ws)?;
+        let current_binding =
+            narrative_extraction_binding_for_authority(&state, &workspace.authority);
+        if current_binding != requested_binding {
+            return Err(AppError::Anyhow(anyhow::anyhow!(
+                "NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED: extraction mutation was bound to authority {} generation {} instance {}, active authority is {} generation {} instance {}",
+                requested_binding.authority_id,
+                requested_binding.generation,
+                requested_binding.authority_instance_id,
+                current_binding.authority_id,
+                current_binding.generation,
+                current_binding.authority_instance_id,
+            )));
+        }
+        let mut validation_control = ForegroundValidationControl::new(Arc::clone(&state));
+        validation_control.check(GraphWorkStage::Source)?;
+        let result = f(
+            workspace.authority.db(),
+            dto,
+            &mut validation_control,
+        )?;
+        serde_json::to_string(&result).map_err(|error| AppError::Anyhow(error.into()))
     })
     .await
 }
@@ -3880,6 +3982,18 @@ fn revalidate_narrative_workspace_after_cycle<'a>(
         Err(AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive) => {
             return Ok(None)
         }
+        Err(error)
+            if error
+                .to_string()
+                .contains("NEX_WORKSPACE_BINDING_CHANGED") =>
+        {
+            // A restore helper may have published the replacement authority
+            // before the lifecycle supervisor has emitted its post-Join
+            // projection.  Treat that boundary as unavailable until the
+            // supervisor can reconcile the exact binding; never surface the
+            // stale cycle as a successful freshness result.
+            return Ok(None)
+        }
         Err(error) => return Err(error),
     };
     let current_binding = narrative_maintenance_binding_for_authority(state, &current_authority);
@@ -4848,7 +4962,8 @@ impl Backend {
             // returns early.  Drop is intentionally fail-closed.
             let mut lifecycle_permit: Option<MaintenancePermit> = None;
             let mut lifecycle_work_started = false;
-            let operation_result = (|| -> std::result::Result<String, AppError> {
+            let operation_result = match catch_unwind(AssertUnwindSafe(|| {
+                (|| -> std::result::Result<String, AppError> {
             let attempt_id = payload
                 .get("attemptId")
                 .and_then(serde_json::Value::as_str)
@@ -5644,13 +5759,13 @@ impl Backend {
                 }
             }
             Ok(json)
-            })();
-            let lifecycle_finalize_allowed = operation_result.is_ok()
-                || !lifecycle_work_started
-                || operation_result
-                    .as_ref()
-                    .err()
-                    .is_some_and(is_narrative_maintenance_preemption);
+                })()
+            })) {
+                Ok(result) => result,
+                Err(_) => Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_PANIC: maintenance worker panicked"
+                ))),
+            };
             let mut operation_result = match operation_result {
                 Err(error) if is_narrative_maintenance_preemption(&error) => {
                     Ok(serde_json::json!({
@@ -5662,17 +5777,43 @@ impl Backend {
                 }
                 other => other,
             };
-            if lifecycle_finalize_allowed {
-                if let Some(mut permit) = lifecycle_permit.take() {
+            if let Some(mut permit) = lifecycle_permit.take() {
+                if operation_result.is_err() && lifecycle_work_started {
+                    if let Err(error) = &operation_result {
+                        tracing::error!(
+                            target: "narrative.maintenance",
+                            %error,
+                            "maintenance body failed after lifecycle work started; transferring ownership to recovery"
+                        );
+                    }
+                    // An ordinary body/cleanup error is not evidence that the
+                    // execution has no owner. Transfer its exact ticket/run
+                    // responsibility to a descriptor before this worker
+                    // returns; releasing the permit here would strand a live
+                    // durable Run behind an apparently idle core.
+                    match permit.transfer_to_recovery() {
+                        Ok(descriptor_id) => {
+                            operation_result = Ok(serde_json::json!({
+                                "status": "workspace-unavailable",
+                                "reason": "maintenance-recovery-required",
+                                "descriptorId": descriptor_id,
+                            })
+                            .to_string());
+                        }
+                        Err(error) => {
+                            operation_result = Err(AppError::Anyhow(anyhow::anyhow!(
+                                "NEX_MAINTENANCE_LIFECYCLE_RECOVERY_TRANSFER_FAILED: {error}"
+                            )));
+                        }
+                    }
+                } else {
                     let finalization = permit
                         .mark_joined()
                         .and_then(|_| permit.release().map(|_| ()));
                     if let Err(error) = finalization {
-                        if operation_result.is_ok() {
-                            operation_result = Err(AppError::Anyhow(anyhow::anyhow!(
-                                "NEX_MAINTENANCE_LIFECYCLE_FINALIZER_FAILED: {error}"
-                            )));
-                        }
+                        operation_result = Err(AppError::Anyhow(anyhow::anyhow!(
+                            "NEX_MAINTENANCE_LIFECYCLE_FINALIZER_FAILED: {error}"
+                        )));
                     }
                 }
             }
@@ -7116,26 +7257,16 @@ impl Backend {
                     let reopen_result = admission_guard.complete_admission_handoff();
                     match reopen_result {
                         Ok(()) => {
-                            // `SwitchingGuard` deliberately refuses to clear
-                            // the compatibility projection while the shared
-                            // lifecycle ticket is still in Transition. The
-                            // caught panic is nevertheless a completed Join
-                            // of this worker, so publish that terminal
-                            // outcome before clearing the poisoned open lock.
-                            drop(_physical_exclusive);
-                            let lifecycle_result = state
-                                .workspace_lifecycle
-                                .complete_transition_from_workspace(&state.ws);
-                            match lifecycle_result {
-                                Ok(_) => match recover_workspace_open_lock_after_panic(&state) {
-                                    Ok(()) => Err(AppError::Anyhow(anyhow::anyhow!(
-                                        "NEX_WORKSPACE_OPEN_PANIC: workspace open panicked"
-                                    ))),
-                                    Err(error) => Err(error),
-                                },
-                                Err(error) => Err(AppError::Anyhow(anyhow::anyhow!(
-                                    "NEX_WORKSPACE_OPEN_PANIC_LIFECYCLE_UNAVAILABLE: {error}"
+                            // Return the panic as a worker outcome. The outer
+                            // supervisor publishes RecoveryRequired only after
+                            // this blocking closure has joined; this branch
+                            // must never fabricate Join/activation from inside
+                            // the still-running worker.
+                            match recover_workspace_open_lock_after_panic(&state) {
+                                Ok(()) => Err(AppError::Anyhow(anyhow::anyhow!(
+                                    "NEX_WORKSPACE_OPEN_PANIC: workspace open panicked"
                                 ))),
+                                Err(error) => Err(error),
                             }
                         }
                         Err(error) => Err(AppError::Anyhow(anyhow::anyhow!(
@@ -7148,8 +7279,12 @@ impl Backend {
         })
         .await;
 
+        let mut panic_outcome = false;
         let result = match task {
             Ok((mut trace, result)) => {
+                panic_outcome = result.as_ref().err().is_some_and(|error| {
+                    error.to_string().contains("NEX_WORKSPACE_OPEN_PANIC")
+                });
                 let terminal = if result.is_ok() {
                     NativeWorkspaceOpenResult::Ready
                 } else {
@@ -7170,7 +7305,11 @@ impl Backend {
         // actual published authority / Safe Mode state. An operation failure
         // is preserved even if the observer itself cannot emit after a
         // poisoned lock.
-        let lifecycle = publish_workspace_lifecycle_from_workspace(&self.state);
+        let lifecycle = if panic_outcome {
+            publish_workspace_lifecycle_recovery_after_join(&self.state)
+        } else {
+            publish_workspace_lifecycle_from_workspace(&self.state)
+        };
         if result.is_err() {
             let _ = lifecycle;
             result
@@ -10528,12 +10667,12 @@ impl Backend {
         payload: serde_json::Value,
         workspace_binding: serde_json::Value,
     ) -> Result<String> {
-        narrative_extraction_bound_write_cmd(
+        narrative_extraction_bound_foreground_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
             workspace_binding,
-            narrative_extraction::narrative_extraction_finish_task,
+            narrative_extraction::narrative_extraction_finish_task_with_control,
         )
         .await
     }
@@ -10560,12 +10699,12 @@ impl Backend {
         payload: serde_json::Value,
         workspace_binding: serde_json::Value,
     ) -> Result<String> {
-        narrative_extraction_bound_write_cmd(
+        narrative_extraction_bound_foreground_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
             workspace_binding,
-            narrative_extraction::narrative_extraction_save_proposal_set,
+            narrative_extraction::narrative_extraction_save_proposal_set_with_control,
         )
         .await
     }
@@ -10614,11 +10753,11 @@ impl Backend {
         &self,
         payload: serde_json::Value,
     ) -> Result<String> {
-        agent_write_cmd(
+        foreground_commit_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            narrative_extraction::narrative_extraction_append_revision,
+            narrative_extraction::narrative_extraction_append_revision_with_control,
         )
         .await
     }
@@ -10658,11 +10797,15 @@ impl Backend {
         &self,
         payload: serde_json::Value,
     ) -> Result<String> {
-        agent_write_cmd(
+        foreground_commit_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            narrative_extraction::narrative_extraction_revise_and_decide,
+            |db, payload, control| {
+                narrative_extraction::narrative_extraction_revise_and_decide_with_control(
+                    db, payload, control,
+                )
+            },
         )
         .await
     }
@@ -10672,11 +10815,15 @@ impl Backend {
         &self,
         payload: serde_json::Value,
     ) -> Result<String> {
-        agent_write_cmd(
+        foreground_commit_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            narrative_extraction::narrative_extraction_revise_and_decide_as_human,
+            |db, payload, control| {
+                narrative_extraction::narrative_extraction_revise_and_decide_as_human_with_control(
+                    db, payload, control,
+                )
+            },
         )
         .await
     }
@@ -12762,7 +12909,7 @@ mod ime_workspace_tests {
         let authority =
             grimodex_db::WorkspaceAuthority::from_database_for_test(db, workspace_path.clone())
                 .expect("authority");
-        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
+        install_test_workspace(&state, authority);
         let options = ImeExportOptions {
             mode: ImeIntegrationMode::On,
             exclude_hidden: false,
@@ -12806,7 +12953,7 @@ mod ime_workspace_tests {
         let authority =
             grimodex_db::WorkspaceAuthority::from_database_for_test(db, workspace_path.clone())
                 .expect("authority");
-        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
+        install_test_workspace(&state, authority);
         let snapshot = active_workspace_snapshot(&state.ws).expect("workspace snapshot");
         let equivalent_but_noncanonical = nested.join("..");
 
@@ -12859,7 +13006,7 @@ mod timelapse_genesis_baseline_tests {
         let resources = root.join("resources");
         let state = AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
             .expect("app state");
-        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
+        install_test_workspace(&state, authority);
         (
             Backend {
                 state: Arc::new(state),
@@ -13103,7 +13250,7 @@ mod semantic_reranker_lane_tests {
         let authority =
             grimodex_db::WorkspaceAuthority::from_database_for_test(database, workspace_path)
                 .expect("authority");
-        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
+        install_test_workspace(&state, authority);
         let backend = Backend {
             state: Arc::new(state),
         };
@@ -13264,7 +13411,7 @@ mod narrative_maintenance_admission_unwind_tests {
         state
             .narrative_maintenance_recovery_gate
             .mark_workspace_swapped();
-        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
+        install_test_workspace(&state, authority);
         (
             Backend {
                 state: Arc::new(state),
@@ -13956,15 +14103,8 @@ mod narrative_maintenance_admission_unwind_tests {
     }
 
     #[tokio::test]
-    async fn production_open_panic_after_close_reopens_binding_and_switching() {
+    async fn production_open_panic_after_close_publishes_recovery_after_join() {
         let (backend, root) = backend_with_active_workspace("open-panic");
-        let before = backend
-            .get_narrative_maintenance_workspace_binding()
-            .expect("read binding before open")
-            .expect("active binding before open");
-        let before_identity = active_database(&backend.state.ws)
-            .expect("active authority before open")
-            .identity();
         backend
             .state
             .narrative_maintenance_recovery_gate
@@ -13986,33 +14126,15 @@ mod narrative_maintenance_admission_unwind_tests {
                 .maintenance_admission_is_closed(),
             "open panic must reopen production admission"
         );
-        let after_authority = active_database(&backend.state.ws).expect("surviving authority");
-        assert_eq!(after_authority.identity(), before_identity);
-        drop(after_authority);
-        let after = backend
-            .get_narrative_maintenance_workspace_binding()
-            .expect("read binding after open panic")
-            .expect("active binding after open panic");
-        assert_eq!(after, before);
-        let binding: serde_json::Value = serde_json::from_str(&after).expect("binding");
-        begin_and_cancel_after_panic(&backend, "post-open-panic-begin", binding).await;
-
-        // The caught panic must also leave the shared open lock reusable by a
-        // real subsequent workspace swap, not only by the begin call above.
-        backend
-            .open_workspace(root.join("replacement").to_string_lossy().into_owned())
-            .await
-            .expect("subsequent workspace open after caught panic");
-        let replacement_binding = backend
-            .get_narrative_maintenance_workspace_binding()
-            .expect("read replacement binding")
-            .expect("replacement binding");
-        begin_and_cancel_after_panic(
-            &backend,
-            "post-open-panic-replacement-begin",
-            serde_json::from_str(&replacement_binding).expect("replacement binding JSON"),
+        let lifecycle: serde_json::Value = serde_json::from_str(
+            &backend
+                .get_workspace_lifecycle_view()
+                .await
+                .expect("read post-panic lifecycle view"),
         )
-        .await;
+        .expect("lifecycle view JSON");
+        assert_eq!(lifecycle["status"], "recovery-required", "lifecycle={lifecycle}");
+        assert!(active_database(&backend.state.ws).is_err());
 
         drop(backend);
         let _ = std::fs::remove_dir_all(root);
@@ -14350,8 +14472,7 @@ mod narrative_maintenance_fault_red_tests {
         state
             .narrative_maintenance_recovery_gate
             .mark_workspace_swapped();
-        *state.ws.inner.lock().expect("workspace lock") =
-            Some(ActiveWorkspace::new(Arc::clone(&authority)));
+        install_test_workspace(&state, Arc::clone(&authority));
         (
             cleanup,
             Backend {
@@ -14604,8 +14725,7 @@ mod narrative_maintenance_foreground_release_tests {
         state
             .narrative_maintenance_recovery_gate
             .mark_workspace_swapped();
-        *state.ws.inner.lock().expect("workspace lock") =
-            Some(ActiveWorkspace::new(Arc::clone(&authority)));
+        install_test_workspace(&state, Arc::clone(&authority));
         (
             Backend {
                 state: Arc::new(state),
@@ -14949,7 +15069,7 @@ mod narrative_maintenance_foreground_release_tests {
         state
             .narrative_maintenance_recovery_gate
             .mark_workspace_swapped();
-        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
+        install_test_workspace(&state, authority);
         Backend {
             state: Arc::new(state),
         }
@@ -15530,17 +15650,20 @@ mod narrative_maintenance_foreground_release_tests {
         duplicate_running_foreground_run(&authority, &run_a, "run-duplicate");
 
         let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
-        let error = backend
+        let result: Value = serde_json::from_str(
+            &backend
             .run_narrative_maintenance_cycle(serde_json::json!({
                 "work": [],
                 "wakeProjectIds": ["project-1"],
                 "workspaceBinding": binding,
             }))
             .await
-            .expect_err("duplicate exact markers must fail closed");
-        assert!(error
-            .to_string()
-            .contains("NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_NOT_UNIQUE"));
+            .expect("duplicate exact markers must transfer responsibility")
+        )
+        .expect("recovery transfer JSON");
+        assert_eq!(result["status"], "workspace-unavailable");
+        assert_eq!(result["reason"], "maintenance-recovery-required");
+        assert!(result["descriptorId"].is_number());
         assert_eq!(run_status(&authority, &run_a), "completed");
         assert_eq!(run_status(&authority, "run-duplicate"), "running");
         let _ = std::fs::remove_dir_all(root);
@@ -15560,8 +15683,7 @@ mod narrative_maintenance_foreground_release_tests {
             .state
             .narrative_maintenance_recovery_gate
             .mark_workspace_swapped();
-        *backend.state.ws.inner.lock().expect("workspace lock") =
-            Some(ActiveWorkspace::new(new_authority));
+        install_test_workspace(&backend.state, new_authority);
 
         let ignored = backend
             .release_narrative_maintenance_foreground_barrier(

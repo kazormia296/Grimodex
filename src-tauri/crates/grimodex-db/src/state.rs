@@ -208,6 +208,25 @@ pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveW
             return Err(AppError::SafeModeActive);
         }
         let ws = inner.as_ref().ok_or(AppError::NoWorkspace)?;
+        let LifecycleState::Ready(binding) = lifecycle_state else {
+            // Closed, RecoveryRequired, and an uninitialized NoWorkspace
+            // projection must never leak an already-held authority to a
+            // normal DB command.  Only the exact Ready binding may be pinned.
+            return Err(match lifecycle_state {
+                LifecycleState::NoWorkspace => AppError::NoWorkspace,
+                LifecycleState::Closed | LifecycleState::RecoveryRequired { .. } => {
+                    AppError::WorkspaceSwitching
+                }
+                LifecycleState::Transition { .. } | LifecycleState::Ready(_) => {
+                    AppError::WorkspaceSwitching
+                }
+            });
+        };
+        if binding.authority_instance != ws.authority.identity() {
+            return Err(AppError::Anyhow(anyhow::anyhow!(
+                "NEX_WORKSPACE_BINDING_CHANGED: lifecycle Ready binding does not match the active authority"
+            )));
+        }
         Ok(ActiveWorkspaceSnapshot {
             authority: Arc::clone(&ws.authority),
         })
@@ -243,6 +262,7 @@ pub fn with_db_state<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace_lifecycle::LiveBinding;
     use std::path::Path;
 
     fn workspace_state_with_db() -> WorkspaceState {
@@ -251,12 +271,31 @@ mod tests {
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
         let authority =
             WorkspaceAuthority::from_database_for_test(db, path).expect("test authority");
-        WorkspaceState {
+        let state = WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
-        }
+        };
+        let authority = state
+            .inner
+            .lock()
+            .expect("workspace lock")
+            .as_ref()
+            .expect("test authority")
+            .authority
+            .clone();
+        state
+            .switching
+            .core()
+            .set_ready(LiveBinding::new(
+                authority.path().to_string_lossy(),
+                format!("test-workspace:{}", authority.identity()),
+                authority.identity(),
+                0,
+            ))
+            .expect("test lifecycle ready");
+        state
     }
 
     #[test]

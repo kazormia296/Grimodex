@@ -923,6 +923,24 @@ function deliveryFailureReceiptAccepted(raw: unknown): boolean {
   );
 }
 
+function deliveryAckRetired(raw: unknown): boolean {
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw) as unknown;
+    } catch {
+      throw new Error("native maintenance delivery ACK returned malformed JSON");
+    }
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("native maintenance delivery ACK returned invalid status");
+  }
+  const status = (value as Record<string, unknown>).status;
+  if (status === "retired") return true;
+  if (status === "pending") return false;
+  throw new Error("native maintenance delivery ACK returned invalid status");
+}
+
 const NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE =
   "NEX_MAINTENANCE_TRANSIENT";
 const NARRATIVE_VERIFY_GRAPH_STATE_CHANGED_FAILURE_CODE =
@@ -1301,26 +1319,39 @@ export function createNarrativeMaintenanceScheduler(
     }
   };
 
-  const retireDelivery = (fingerprint: string, sequence: number): void => {
+  const retireDelivery = async (
+    fingerprint: string,
+    sequence: number,
+  ): Promise<boolean> => {
     try {
       deliveryLedger.markTerminal(sequence);
-      if (!deliveryLedger.ack(sequence)) {
-        throw new Error(
-          "delivery ACK arrived before terminal result application",
-        );
-      }
-      deliverySequences.delete(fingerprint);
       const ack = backend?.ackNarrativeMaintenanceDelivery;
       if (typeof ack === "function") {
-        void Promise.resolve(ack.call(backend, sequence)).catch((error: unknown) => {
-          warn("[narrative-maintenance] Native delivery ACK failed:", error);
-        });
+        // Keep both ledgers until Native confirms retirement. A rejected or
+        // pending ACK must replay the exact sequence/fingerprint on the next
+        // wake; deleting the main correlation first permanently strands the
+        // Native record at the 256-cell limit.
+        const retired = deliveryAckRetired(
+          await Promise.resolve(ack.call(backend, sequence)),
+        );
+        if (!retired) {
+          warn(
+            "[narrative-maintenance] Native delivery ACK is still pending; retaining delivery",
+          );
+          return false;
+        }
       }
+      if (!deliveryLedger.ack(sequence)) {
+        throw new Error("delivery ACK arrived before terminal result application");
+      }
+      deliverySequences.delete(fingerprint);
+      return true;
     } catch (error) {
       // Keep the sequence mapped when retirement cannot be proven. A later
       // retry must replay this exact delivery instead of allocating a new
       // sequence and potentially duplicating a Native side effect.
       warn("[narrative-maintenance] delivery retirement not proven:", error);
+      return false;
     }
   };
 
@@ -1729,10 +1760,16 @@ export function createNarrativeMaintenanceScheduler(
       ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>
     > | null = null;
     let deliveryRetired = false;
-    const retireCurrentDelivery = (): void => {
+    let deliveryRetirement: Promise<boolean> | null = null;
+    const retireCurrentDelivery = async (): Promise<void> => {
       if (deliveryRetired) return;
-      deliveryRetired = true;
-      retireDelivery(deliveryFingerprint, deliverySequence);
+      deliveryRetirement ??= retireDelivery(deliveryFingerprint, deliverySequence);
+      if (await deliveryRetirement) {
+        deliveryRetired = true;
+      } else {
+        // Permit a later retry to issue the same idempotent ACK again.
+        deliveryRetirement = null;
+      }
     };
     try {
       if (cycleAttemptId && cycleBinding) {
@@ -1970,7 +2007,7 @@ export function createNarrativeMaintenanceScheduler(
         // The result has been structurally validated and applied to the
         // scheduler/attempt owner. Only now may the transport record retire;
         // unfinished Run responsibility, if any, remains Native-owned.
-        retireCurrentDelivery();
+        await retireCurrentDelivery();
       }
     } catch (error) {
       // A lost/failed N-API admission must converge through the Native
@@ -2058,7 +2095,7 @@ export function createNarrativeMaintenanceScheduler(
           // Native already committed this cycle before the late cancellation
           // reached it. Do not requeue a claimed work item or wake that the
           // receipt has already completed.
-          retireCurrentDelivery();
+          await retireCurrentDelivery();
           for (const entry of sendingWakeEntries) {
             durableWakeRetryCounts.delete(
               scopedWakeKey(entry.projectId, entry.workspaceBinding),
@@ -2090,7 +2127,7 @@ export function createNarrativeMaintenanceScheduler(
             nativeTerminalReceipt === null &&
             !nativeAttemptIds.has(cycleAttemptId ?? "")
           ) {
-            retireCurrentDelivery();
+            await retireCurrentDelivery();
           }
           shouldSchedule = false;
         } else if (interruptedCycle) {
@@ -2122,7 +2159,7 @@ export function createNarrativeMaintenanceScheduler(
             nativeTerminalReceipt !== null ||
             !nativeAttemptIds.has(cycleAttemptId ?? "")
           ) {
-            retireCurrentDelivery();
+            await retireCurrentDelivery();
           }
           shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
         } else if (workspaceMismatch) {
@@ -2163,7 +2200,7 @@ export function createNarrativeMaintenanceScheduler(
             nativeTerminalReceipt === null &&
             !nativeAttemptIds.has(cycleAttemptId ?? "")
           ) {
-            retireCurrentDelivery();
+            await retireCurrentDelivery();
           }
           shouldSchedule = false;
         } else if (notAdmitted) {
@@ -2187,7 +2224,7 @@ export function createNarrativeMaintenanceScheduler(
             nativeTerminalReceipt === null &&
             !nativeAttemptIds.has(cycleAttemptId ?? "")
           ) {
-            retireCurrentDelivery();
+            await retireCurrentDelivery();
           }
           nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
           shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
@@ -2215,7 +2252,7 @@ export function createNarrativeMaintenanceScheduler(
             // not start work. Requeued work gets a fresh sequence after the
             // lifecycle state changes; retaining this pending record would
             // otherwise consume capacity across repeated closed periods.
-            retireCurrentDelivery();
+            await retireCurrentDelivery();
           }
           nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
           shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
@@ -2316,7 +2353,7 @@ export function createNarrativeMaintenanceScheduler(
             // delivery failure or there was no item left to retry. The
             // transport record can retire; any Native recovery descriptor is
             // independent and remains owned by its root.
-            retireCurrentDelivery();
+            await retireCurrentDelivery();
           }
           if (haltForProcessInterruption) {
             // The authorized CI seam has already durably acknowledged the

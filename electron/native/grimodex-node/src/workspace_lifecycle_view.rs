@@ -88,6 +88,13 @@ impl WorkspaceLifecycleViewAdapter {
         }
     }
 
+    /// Return the current core snapshot for Native-only recovery decisions.
+    /// The snapshot is not serialized to the renderer; callers still go
+    /// through the adapter when publishing the opaque lifecycle view.
+    pub(crate) fn lifecycle_snapshot(&self) -> AppResult<grimodex_db::LifecycleSnapshot> {
+        Ok(self.core.snapshot()?)
+    }
+
     /// Mark the beginning of an admitted Open/Restore/Shutdown transition.
     /// A second operation is rejected by the core; it never receives an
     /// `Unchanged` result that could revive the previous renderer binding.
@@ -351,8 +358,7 @@ impl WorkspaceLifecycleViewAdapter {
                 return self.projected_view();
             }
             if workspace.safe_mode.is_active()
-                || (!has_authority
-                    && requested_status == Some(WorkspaceLifecycleStatus::RecoveryRequired))
+                || requested_status == Some(WorkspaceLifecycleStatus::RecoveryRequired)
             {
                 self.core
                     .require_recovery(&ticket, ticket.original_binding.clone(), None)?;

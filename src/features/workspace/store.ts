@@ -126,6 +126,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     let targetSettings: GlobalSettings | null = null;
     let projectLoadLease: WorkspaceProjectLoadLease | null = null;
     let quiescenceLease: QuiescenceLease | null = null;
+    let nativeOpenRequested = false;
     try {
       quiescenceLease = await acquireQuiescenceLeaseAfterTimelapseGenesis(
         "workspace-open",
@@ -196,6 +197,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         performance.mark("grimodex.workspaceOpen.start");
         const compositionReady = startRuntimeCompositionTrace(trace);
         void compositionReady.catch(() => undefined);
+        nativeOpenRequested = true;
         const nativeOpenOutcome = applyNativeOpenOutcome(
           await runWorkspaceOpenTraceStep(trace, "native-ipc", () =>
             invoke<NativeWorkspaceOpenResult>("open_workspace", { path }),
@@ -341,16 +343,30 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
           workspaceHydrated: false,
           recoveryShell: null,
         });
+      } else if (nativeOpenRequested) {
+        // The request crossed the Native lifecycle boundary, but no terminal
+        // outcome was received. Treat the old binding as untrusted: an
+        // admitted open may already have retired it or entered recovery. The
+        // lifecycle projection/explicit retry is the only rebind authority.
+        set({
+          view: "launcher",
+          activeWorkspacePath: path,
+          activeWorkspaceId: null,
+          activeWorkspaceName: null,
+          error,
+          workspaceHydrated: false,
+          recoveryShell: null,
+        });
       } else {
-        // Native open rejected before swap: the previous DB/UI binding remains
-        // valid, so restore its semantic-ready state.
+        // Failure before the Native lifecycle boundary leaves the previous
+        // binding valid, so restore its semantic-ready state.
         set({
           error,
           workspaceHydrated: previousWorkspaceHydrated,
           ...(get().view === "loading" ? { view: "launcher" as const } : {}),
         });
       }
-      if (!swapDone && previousWorkspaceHydrated) {
+      if (!swapDone && !nativeOpenRequested && previousWorkspaceHydrated) {
         setCurrentImeWorkspaceIdentity(previousImeWorkspaceIdentity);
       }
       return "failed";

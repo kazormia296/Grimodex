@@ -1140,11 +1140,11 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
     (control.should_stop)()?;
     let now = grimodex_core::now_rfc3339_millis();
 
-    let (mut created, semantic_epoch_id) = run_maintenance_graph_phase(
+    let (created, semantic_epoch_id) = run_maintenance_graph_phase(
         db,
         control,
         |conn, graph| {
-            with_immediate_transaction(conn, |conn| {
+            let mut created = with_immediate_transaction(conn, |conn| {
                 graph.check(GraphWorkStage::Restore)?;
                 let epoch_id = get_current_epoch(conn, project_id)?.ok_or_else(|| {
                     anyhow::anyhow!(
@@ -1164,17 +1164,21 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
                     SystemRunWorkKeyReuse::RunningOnly,
                 )?;
                 Ok((handle, epoch_id))
-            })
+            })?;
+            // Attach ownership while the creation phase still owns its
+            // controlled connection. A later cleanup failure must not erase
+            // the only process-local proof of the committed exact tuple.
+            if !created.0.reused {
+                created.0.mark_creation_committed();
+                if let Some(attach_run) = control.attach_run {
+                    attach_run(created.0.core_ownership())?;
+                }
+            }
+            Ok(created)
         },
     )?;
     let run_id = created.run_id.clone();
     let already_running = created.reused;
-    if !already_running {
-        // The surrounding phase transaction has committed successfully.
-        // Only now may the execution-owned slot claim Created; cleanup and
-        // finalization continue to use the same exact handle.
-        created.mark_creation_committed();
-    }
     if already_running {
         return Ok(RebuildDerivedStateOutcome::AlreadyRunning { run_id });
     }
@@ -4073,8 +4077,8 @@ fn run_dependency_verify_for_project_with_coordinates_controlled(
 
     let spec = json!({ "verifyContractVersion": VERIFY_CONTRACT_VERSION });
     let spec_digest = format!("sha256:{}", digest_plan(&spec));
-    let mut created = run_maintenance_graph_phase(db, control, |conn, graph| {
-        with_immediate_transaction(conn, |conn| {
+    let created = run_maintenance_graph_phase(db, control, |conn, graph| {
+        let mut created = with_immediate_transaction(conn, |conn| {
             graph.check(GraphWorkStage::Restore)?;
             create_maintenance_run_in_tx(
                 conn,
@@ -4086,11 +4090,15 @@ fn run_dependency_verify_for_project_with_coordinates_controlled(
                 &spec_digest,
                 SystemRunWorkKeyReuse::RunningOnly,
             )
-        })
+        })?;
+        if !created.reused {
+            created.mark_creation_committed();
+            if let Some(attach_run) = control.attach_run {
+                attach_run(created.core_ownership())?;
+            }
+        }
+        Ok(created)
     })?;
-    if !created.reused {
-        created.mark_creation_committed();
-    }
     let run_id = created.run_id.clone();
     if created.reused {
         anyhow::bail!(

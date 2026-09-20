@@ -670,11 +670,11 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
     let spec = json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
     let spec_digest = format!("sha256:{}", digest_plan(&spec));
 
-    let (run_id, semantic_epoch_id, reused) = run_maintenance_graph_phase(
+    let (created, semantic_epoch_id, completed_marker) = run_maintenance_graph_phase(
         db,
         control,
         |conn, graph| {
-            with_immediate_transaction(conn, |conn| {
+            let mut created = with_immediate_transaction(conn, |conn| {
                 graph.check(GraphWorkStage::Restore)?;
                 require_current_c2zb_marker(conn)?;
                 let epoch_id = match get_current_epoch(conn, project_id)? {
@@ -684,7 +684,8 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
                 if let Some(run_id) =
                     find_valid_completed_backfill_run_id_with_control(conn, project_id, graph)?
                 {
-                    return Ok((run_id, epoch_id, true));
+                    let handle = load_maintenance_run_in_tx(conn, &run_id)?;
+                    return Ok((handle, epoch_id, true));
                 }
                 let handle = create_maintenance_run_in_tx(
                     conn,
@@ -696,15 +697,23 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
                     &spec_digest,
                     SystemRunWorkKeyReuse::RunningOnly,
                 )?;
-                Ok((handle.run_id, epoch_id, handle.reused))
-            })
+                Ok((handle, epoch_id, false))
+            })?;
+            if !created.0.reused && !created.2 {
+                created.0.mark_creation_committed();
+                if let Some(attach_run) = control.attach_run {
+                    attach_run(created.0.core_ownership())?;
+                }
+            }
+            Ok(created)
         },
     )?;
+    let run_id = created.run_id.clone();
+    let reused = created.reused || completed_marker;
 
     if reused {
         return Ok(LegacyBackfillBootstrapOutcome::AlreadyRun { run_id });
     }
-
     let transform_result = run_maintenance_graph_phase_for_run(
         db,
         control,

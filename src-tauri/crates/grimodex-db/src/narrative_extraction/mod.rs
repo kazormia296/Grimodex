@@ -549,6 +549,14 @@ pub fn narrative_extraction_finish_task(
     repository::finish_task(db, payload)
 }
 
+pub fn narrative_extraction_finish_task_with_control(
+    db: &Database,
+    payload: FinishTaskPayload,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    repository::finish_task_with_control(db, payload, control)
+}
+
 pub fn narrative_extraction_fail_task(
     db: &Database,
     payload: FailTaskPayload,
@@ -561,6 +569,14 @@ pub fn narrative_extraction_save_proposal_set(
     payload: SaveProposalSetPayload,
 ) -> anyhow::Result<Value> {
     repository::save_proposal_set(db, payload)
+}
+
+pub fn narrative_extraction_save_proposal_set_with_control(
+    db: &Database,
+    payload: SaveProposalSetPayload,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    repository::save_proposal_set_with_control(db, payload, control)
 }
 
 pub fn narrative_extraction_create_nir1_entity_relation_revision(
@@ -591,6 +607,14 @@ pub fn narrative_extraction_append_revision(
     repository::append_revision(db, payload)
 }
 
+pub fn narrative_extraction_append_revision_with_control(
+    db: &Database,
+    payload: AppendRevisionPayload,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    repository::append_revision_with_control(db, payload, control)
+}
+
 pub fn narrative_extraction_append_decision(
     db: &Database,
     payload: AppendDecisionPayload,
@@ -615,11 +639,27 @@ pub fn narrative_extraction_revise_and_decide(
     repository::revise_and_decide(db, payload)
 }
 
+pub fn narrative_extraction_revise_and_decide_with_control(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+    control: &mut dyn nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<Value> {
+    repository::revise_and_decide_with_control(db, payload, control)
+}
+
 pub fn narrative_extraction_revise_and_decide_as_human(
     db: &Database,
     payload: ReviseAndDecidePayload,
 ) -> anyhow::Result<Value> {
     repository::revise_and_decide_as_human(db, payload)
+}
+
+pub fn narrative_extraction_revise_and_decide_as_human_with_control(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+    control: &mut dyn nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<Value> {
+    repository::revise_and_decide_as_human_with_control(db, payload, control)
 }
 
 pub fn narrative_extraction_prepare_commit(

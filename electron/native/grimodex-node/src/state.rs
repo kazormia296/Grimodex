@@ -2551,10 +2551,14 @@ impl AppState {
 
     pub async fn wait_workspace_operations(&self) {
         loop {
+            // Register the waiter before the count check. Otherwise the last
+            // guard can decrement to zero and notify between the read and
+            // `notified()`, leaving shutdown asleep until its outer deadline.
+            let notified = self.workspace_operation_notify.notified();
             if self.workspace_operation_active.load(Ordering::Acquire) == 0 {
                 return;
             }
-            self.workspace_operation_notify.notified().await;
+            notified.await;
         }
     }
 }

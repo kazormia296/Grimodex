@@ -31,6 +31,7 @@ use super::nir1_entity_relation::{
     NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_PROPOSAL_KIND,
     NIR1_ENTITY_RELATION_REVISION_ORIGIN, NIR1_ENTITY_RELATION_SET_KIND,
 };
+use super::nir1_entity_relation_index::GraphWorkControl;
 use super::publish_runtime::publish_complete_runless_freshness_in_tx;
 use super::restore_rebuild::evaluate_edge_from_db;
 use super::semantic_epoch::get_current_epoch;
@@ -3592,6 +3593,7 @@ fn save_chronicle_plan_proposal_set_in_tx(
     conn: &Connection,
     payload: &FinishTaskPayload,
     finish: &ChroniclePlanProposalSetFinish,
+    validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
     // Match the generic ProposalSet writer's policy boundary.  A Run may have
     // begun while extraction was allowed, but its terminal review ledger must
@@ -3605,7 +3607,7 @@ fn save_chronicle_plan_proposal_set_in_tx(
         .ok_or_else(|| {
             anyhow::anyhow!("NEX_CHRONICLE_PLAN_PROPOSAL_SET_ID_INVALID: proposalSetId is required")
         })?;
-    let saved = save_proposal_set_in_tx(conn, &finish.proposal_set)?;
+    let saved = save_proposal_set_in_tx(conn, &finish.proposal_set, validation_owner)?;
     let proposal_set_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM narrative_proposal_sets WHERE run_id = ?1 AND project_id = ?2",
         params![payload.run_id, payload.project_id],
@@ -3892,6 +3894,15 @@ fn validate_chronicle_plan_proposal_set_binding_for_resume(
 }
 
 pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<Value> {
+    let mut compatibility_owner = super::source_revision::ForegroundValidationControl;
+    finish_task_with_control(db, payload, &mut compatibility_owner)
+}
+
+pub fn finish_task_with_control(
+    db: &Database,
+    payload: FinishTaskPayload,
+    validation_owner: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
     let output_value = payload
         .output_json
         .clone()
@@ -3900,6 +3911,7 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            validation_owner.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
             ensure_generic_task_api_allowed(conn, &payload.run_id)?;
             verify_task_lease(
@@ -3984,7 +3996,14 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
             let proposal_set = payload
                 .chronicle_plan_proposal_set
                 .as_ref()
-                .map(|finish| save_chronicle_plan_proposal_set_in_tx(conn, &payload, finish))
+                .map(|finish| {
+                    save_chronicle_plan_proposal_set_in_tx(
+                        conn,
+                        &payload,
+                        finish,
+                        validation_owner,
+                    )
+                })
                 .transpose()?;
 
             maybe_complete_run(conn, &payload.run_id)?;
@@ -4566,26 +4585,44 @@ fn validate_chronicle_resume_artifacts(
 }
 
 pub fn save_proposal_set(db: &Database, payload: SaveProposalSetPayload) -> anyhow::Result<Value> {
-    save_proposal_set_atomic(db, payload)
+    save_proposal_set_atomic(db, payload, None)
+}
+
+/// Foreground Native entry point. The caller owns the lifecycle stop scope;
+/// envelope eligibility is evaluated through that same transaction rather
+/// than a compatibility `NeverStop` owner.
+pub fn save_proposal_set_with_control(
+    db: &Database,
+    payload: SaveProposalSetPayload,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    save_proposal_set_atomic(db, payload, Some(control))
 }
 
 fn save_proposal_set_atomic(
     db: &Database,
     payload: SaveProposalSetPayload,
+    control: Option<&mut dyn GraphWorkControl>,
 ) -> anyhow::Result<Value> {
     anyhow::ensure!(
         payload.set_kind != NIR1_ENTITY_RELATION_SET_KIND,
         "NIR1_ENTITY_RELATION_TYPED_ADAPTER_REQUIRED: use the Native typed Entity/Relation adapter"
     );
+    let mut compatibility_owner = super::source_revision::ForegroundValidationControl;
+    let validation_owner: &mut dyn GraphWorkControl = match control {
+        Some(control) => control,
+        None => &mut compatibility_owner,
+    };
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            validation_owner.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
             require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
             anyhow::ensure!(
                 !current_chronicle_run_spec_for_run(conn, &payload.project_id, &payload.run_id)?,
                 "NEX_CHRONICLE_PLAN_PROPOSAL_SET_TYPED_FINISH_REQUIRED: current Chronicle Runs may persist ProposalSets only through chronicle.plan-proposals@1 FinishTask"
             );
-            save_proposal_set_in_tx(conn, &payload)
+            save_proposal_set_in_tx(conn, &payload, validation_owner)
         })
     })
 }
@@ -4596,6 +4633,7 @@ fn save_proposal_set_atomic(
 fn save_proposal_set_in_tx(
     conn: &Connection,
     payload: &SaveProposalSetPayload,
+    validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
     anyhow::ensure!(
         payload.set_kind != NIR1_ENTITY_RELATION_SET_KIND,
@@ -4636,6 +4674,7 @@ fn save_proposal_set_in_tx(
             &payload.run_id,
             &payload.project_id,
             proposal,
+            validation_owner,
         )?);
     }
 
@@ -4651,6 +4690,7 @@ fn insert_proposal_seed(
     run_id: &str,
     project_id: &str,
     seed: &ProposalSeed,
+    validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
     let proposal_id = seed
         .proposal_id
@@ -4695,8 +4735,7 @@ fn insert_proposal_seed(
             ensure_v2_proposal_evidence_binding(envelope, &seed.payload_json)?;
         }
         ensure_v2_proposal_payload_digest(envelope, &seed.payload_json)?;
-        let mut validation_owner = super::source_revision::ForegroundValidationControl;
-        let mut validation = validation_context(conn, &mut validation_owner);
+        let mut validation = validation_context(conn, validation_owner);
         validate_envelope_source_tokens_with_validation_context(
             &mut validation,
             project_id,
@@ -5061,10 +5100,20 @@ pub(super) fn record_revision_dependency_edges_in_tx(
 }
 
 pub fn append_revision(db: &Database, payload: AppendRevisionPayload) -> anyhow::Result<Value> {
+    let mut compatibility_owner = super::source_revision::ForegroundValidationControl;
+    append_revision_with_control(db, payload, &mut compatibility_owner)
+}
+
+pub fn append_revision_with_control(
+    db: &Database,
+    payload: AppendRevisionPayload,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
-            append_revision_on_conn(conn, &payload)
+            control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+            append_revision_on_conn(conn, &payload, control)
         })
     })
 }
@@ -5075,6 +5124,7 @@ pub fn append_revision(db: &Database, payload: AppendRevisionPayload) -> anyhow:
 fn append_revision_on_conn(
     conn: &Connection,
     payload: &AppendRevisionPayload,
+    validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
     ensure_proposal_not_applied(conn, &payload.proposal_id)?;
     ensure_current_chronicle_proposal_set_unconsumed(conn, &payload.proposal_id)?;
@@ -5196,8 +5246,7 @@ fn append_revision_on_conn(
             "NEX_NARRATIVE_V2_ACTIVATION_DISABLED: production revision append cannot activate Envelope V2"
         );
         ensure_v2_proposal_payload_digest(envelope, &payload.payload_json)?;
-        let mut validation_owner = super::source_revision::ForegroundValidationControl;
-        let mut validation = validation_context(conn, &mut validation_owner);
+        let mut validation = validation_context(conn, validation_owner);
         validate_envelope_source_tokens_with_validation_context(
             &mut validation,
             &payload.project_id,
@@ -5602,6 +5651,25 @@ pub fn revise_and_decide(db: &Database, payload: ReviseAndDecidePayload) -> anyh
         TrustedDecisionActor::Automated {
             actor_id: "electron:automated-review".to_string(),
         },
+        &mut super::source_revision::ForegroundValidationControl,
+    )
+}
+
+/// Native foreground variant. The revision and decision stay in one
+/// transaction, while every eligibility Source read borrows the same
+/// lifecycle-owned validation control as the caller.
+pub fn revise_and_decide_with_control(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+    validation_owner: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    revise_and_decide_with_actor(
+        db,
+        payload,
+        TrustedDecisionActor::Automated {
+            actor_id: "electron:automated-review".to_string(),
+        },
+        validation_owner,
     )
 }
 
@@ -5615,6 +5683,22 @@ pub fn revise_and_decide_as_human(
         TrustedDecisionActor::Human {
             actor_id: "electron:human-review".to_string(),
         },
+        &mut super::source_revision::ForegroundValidationControl,
+    )
+}
+
+pub fn revise_and_decide_as_human_with_control(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+    validation_owner: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    revise_and_decide_with_actor(
+        db,
+        payload,
+        TrustedDecisionActor::Human {
+            actor_id: "electron:human-review".to_string(),
+        },
+        validation_owner,
     )
 }
 
@@ -5622,10 +5706,12 @@ fn revise_and_decide_with_actor(
     db: &Database,
     payload: ReviseAndDecidePayload,
     actor: TrustedDecisionActor,
+    validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
+            validation_owner.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
             let revision_payload = AppendRevisionPayload {
                 run_id: payload.run_id.clone(),
                 project_id: payload.project_id.clone(),
@@ -5636,7 +5722,7 @@ fn revise_and_decide_with_actor(
                 reconciliation_envelope: payload.reconciliation_envelope.clone(),
                 inherit_reconciliation_envelope: payload.inherit_reconciliation_envelope.clone(),
             };
-            let revision = append_revision_on_conn(conn, &revision_payload)?;
+            let revision = append_revision_on_conn(conn, &revision_payload, validation_owner)?;
             let revision_id = revision["revisionId"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("revise_and_decide: missing revisionId"))?

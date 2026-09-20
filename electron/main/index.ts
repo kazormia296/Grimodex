@@ -546,18 +546,25 @@ if (!gotSingleInstanceLock) {
         // cannot produce its terminal receipt; otherwise an independent
         // scheduler failure could strand an active workspace worker outside
         // the shutdown observation budget.
-        let schedulerError: unknown;
-        try {
-          await narrativeMaintenance?.dispose();
-        } catch (error) {
-          schedulerError = error;
-        }
-        let nativeError: unknown;
-        try {
-          await backend?.shutdownWorkspaceLifecycle?.();
-        } catch (error) {
-          nativeError = error;
-        }
+        // Start both owners in the same turn. Scheduler disposal stops new
+        // producers, while Native shutdown must not wait behind a scheduler
+        // that is already stuck on an in-flight delivery.
+        const schedulerResult = Promise.resolve()
+          .then(() => narrativeMaintenance?.dispose())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
+        const nativeResult = Promise.resolve()
+          .then(() => backend?.shutdownWorkspaceLifecycle?.())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
+        const [schedulerError, nativeError] = await Promise.all([
+          schedulerResult,
+          nativeResult,
+        ]);
         if (schedulerError !== undefined || nativeError !== undefined) {
           const failures = [schedulerError, nativeError].filter(
             (error): error is unknown => error !== undefined,

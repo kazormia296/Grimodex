@@ -297,10 +297,30 @@ impl MaintenancePermit {
         if !self.joined {
             return Err(LifecycleError::NotJoined(self.ticket.operation_id));
         }
-        self.core.complete_execution(self.execution_id)?;
+        if let Err(error) = self.core.complete_execution(self.execution_id) {
+            return Err(error);
+        }
         let result = self.core.release_admission(&self.ticket);
         self.released = true;
         result
+    }
+
+    /// Consume the Native permit by moving its exact execution/run
+    /// responsibility to a shared recovery descriptor. This is used only
+    /// after the worker has joined and cleanup cannot prove a normal release.
+    pub fn transfer_to_recovery(mut self) -> Result<RecoveryDescriptorId, LifecycleError> {
+        if !self.joined {
+            self.mark_joined()?;
+        }
+        let descriptor = match self
+            .core
+            .transfer_execution_to_recovery(&self.ticket, self.execution_id)
+        {
+            Ok(descriptor) => descriptor,
+            Err(error) => return Err(error),
+        };
+        self.released = true;
+        Ok(descriptor)
     }
 
     /// Record the supervisor's Join observation.  Dropping a permit before
@@ -573,6 +593,10 @@ pub struct ExecutionMembership {
     pub phase: ExecutionPhase,
     pub binding_revision: StateRevision,
     pub run: Option<RunOwnership>,
+    /// One Native execution may process several canonical work items. Keep
+    /// every additional exact tuple so a recovery handoff cannot drop a
+    /// later work item.
+    pub additional_runs: Vec<RunOwnership>,
     pub stop_requested: bool,
 }
 
@@ -595,6 +619,7 @@ pub struct RecoveryDescriptor {
     pub root_operation_id: OperationId,
     pub expected_binding: Option<LiveBinding>,
     pub run: Option<RunOwnership>,
+    pub additional_runs: Vec<RunOwnership>,
     /// Responsibility transferred from the admitted operation. It remains
     /// live independently of delivery-record ACK until the descriptor root is
     /// explicitly resolved.
@@ -754,6 +779,10 @@ struct DeliveryLedger {
     high_water: DeliverySequence,
     records: BTreeMap<DeliverySequence, DeliveryRecord>,
     fenced: BTreeSet<DeliverySequence>,
+    /// ACK retirement is idempotent across a lost Native reply.  Keep the
+    /// monotonic receipt identity after the record leaves `records` so a
+    /// replayed ACK can converge instead of becoming a permanent `pending`.
+    retired: BTreeSet<DeliverySequence>,
 }
 
 #[derive(Clone, Debug)]
@@ -1053,6 +1082,20 @@ impl WorkspaceLifecycleCore {
             return Err(LifecycleError::Closed);
         }
         if !state.admissions.is_empty() || !state.joined_operations.is_empty() {
+            return Err(LifecycleError::ActiveOperations);
+        }
+        // Preserve an exact descriptor owned by a previous transition. Safe
+        // Mode is a durable projection of the same blocked workspace; it must
+        // not replace that root with descriptor zero and lose its Run/lineage
+        // responsibility.
+        if let LifecycleState::RecoveryRequired { descriptor_id } = state.state.clone() {
+            if descriptor_id != SAFE_MODE_RECOVERY_DESCRIPTOR_ID {
+                return Ok(LifecycleSnapshot::new(state.state.clone(), state.revision));
+            }
+        }
+        if state.descriptors.values().any(|descriptor| {
+            !descriptor.resolved && descriptor.descriptor_id != SAFE_MODE_RECOVERY_DESCRIPTOR_ID
+        }) {
             return Err(LifecycleError::ActiveOperations);
         }
         if matches!(
@@ -1498,6 +1541,7 @@ impl WorkspaceLifecycleCore {
             phase: ExecutionPhase::Reserved,
             binding_revision: ticket.admitted_revision,
             run: None,
+            additional_runs: Vec::new(),
             stop_requested: false,
         };
         state.executions.insert(execution_id, membership.clone());
@@ -1521,9 +1565,23 @@ impl WorkspaceLifecycleCore {
             return Err(LifecycleError::InvalidExecutionTransition);
         }
         if let Some(existing) = &execution.run {
-            if existing != &run {
-                return Err(LifecycleError::InvalidExecutionTransition);
+            // The durable tuple is the ownership identity. A later reader
+            // may classify the same live tuple as Reused after the writer
+            // first observed it as Created; that evidence transition is
+            // idempotent. A cycle can also process several distinct work
+            // items under this one Native execution, so retain additional
+            // exact handles instead of overwriting the first one.
+            if existing.handle == run.handle {
+                return Ok(());
             }
+            if execution
+                .additional_runs
+                .iter()
+                .any(|owned| owned.handle == run.handle)
+            {
+                return Ok(());
+            }
+            execution.additional_runs.push(run);
         } else {
             execution.run = Some(run);
         }
@@ -1658,6 +1716,75 @@ impl WorkspaceLifecycleCore {
         }
         execution.phase = ExecutionPhase::RecoveryRequired;
         Ok(())
+    }
+
+    /// Transfer a joined maintenance execution into an exact recovery root.
+    /// A worker that returned after creating a durable Run, or after losing
+    /// connection-cleanup proof, must retain a descriptor instead of releasing
+    /// its admission merely because the Rust closure returned `Err`.
+    pub fn transfer_execution_to_recovery(
+        &self,
+        ticket: &AdmissionTicket,
+        execution_id: ExecutionId,
+    ) -> Result<RecoveryDescriptorId, LifecycleError> {
+        let mut state = self.lock_state()?;
+        self.require_ticket_locked(&state, ticket)?;
+        let (run, additional_runs) = {
+            let execution = state
+                .executions
+                .get(&execution_id)
+                .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+            if execution.operation_id != ticket.operation_id
+                || !matches!(
+                    execution.phase,
+                    ExecutionPhase::Joined | ExecutionPhase::CleanupPending
+                )
+            {
+                return Err(LifecycleError::InvalidExecutionTransition);
+            }
+            (execution.run.clone(), execution.additional_runs.clone())
+        };
+        let descriptor_id = state.next_descriptor;
+        state.next_descriptor = RecoveryDescriptorId::new(descriptor_id.get().saturating_add(1));
+        let generation = state.next_generation;
+        state.next_generation = ControlGeneration::new(generation.get().saturating_add(1));
+        state.descriptors.insert(
+            descriptor_id,
+            RecoveryDescriptor {
+                descriptor_id,
+                root_operation_id: ticket.operation_id,
+                expected_binding: ticket.original_binding.clone(),
+                run,
+                additional_runs,
+                responsibility: ticket.responsibility.clone(),
+                control_generation: generation,
+                resolved: false,
+                delivery_sequences: BTreeSet::new(),
+            },
+        );
+        state.control_slots.insert(
+            descriptor_id,
+            ControlSlot {
+                generation,
+                fingerprint: String::new(),
+                payload: String::new(),
+                result: None,
+                acked: false,
+                retired: false,
+                completed_history: BTreeMap::new(),
+            },
+        );
+        if let Some(execution) = state.executions.get_mut(&execution_id) {
+            execution.phase = ExecutionPhase::RecoveryRequired;
+        }
+        state.state = LifecycleState::RecoveryRequired { descriptor_id };
+        state.admissions.remove(&ticket.operation_id);
+        state.joined_operations.remove(&ticket.operation_id);
+        state.revision = state.revision.saturating_add(1);
+        self.inner
+            .compatibility_switching
+            .store(false, Ordering::SeqCst);
+        Ok(descriptor_id)
     }
 
     pub fn reserve_work_execution(
@@ -2004,6 +2131,34 @@ impl WorkspaceLifecycleCore {
         // second descriptor here would strand the first cell and make the
         // next retry look like an unrelated recovery.
         if let Some(existing_id) = ticket.recovery_descriptor_id {
+            if existing_id == SAFE_MODE_RECOVERY_DESCRIPTOR_ID
+                && !state.descriptors.contains_key(&existing_id)
+            {
+                // Safe Mode's root is durable outside this process and has no
+                // ordinary descriptor/control slot. Completing the admitted
+                // recovery publishes that root directly instead of failing
+                // with UnknownDescriptor after the worker has joined.
+                state.state = LifecycleState::RecoveryRequired {
+                    descriptor_id: existing_id,
+                };
+                state.admissions.remove(&ticket.operation_id);
+                state.joined_operations.remove(&ticket.operation_id);
+                if let Some(reservation) = &ticket.responsibility {
+                    Self::release_responsibility_locked(&mut state, reservation);
+                }
+                state.revision = state.revision.saturating_add(1);
+                self.inner
+                    .compatibility_switching
+                    .store(false, Ordering::SeqCst);
+                return Ok((
+                    existing_id,
+                    LifecycleResult::RecoveryRequired {
+                        operation_id: ticket.operation_id,
+                        descriptor_id: existing_id,
+                        state_revision: state.revision,
+                    },
+                ));
+            }
             let descriptor = state
                 .descriptors
                 .get_mut(&existing_id)
@@ -2044,6 +2199,7 @@ impl WorkspaceLifecycleCore {
             root_operation_id: ticket.operation_id,
             expected_binding,
             run,
+            additional_runs: Vec::new(),
             responsibility: ticket.responsibility.clone(),
             control_generation: generation,
             resolved: false,
@@ -2308,12 +2464,25 @@ impl WorkspaceLifecycleCore {
         {
             return Err(LifecycleError::ActiveOperations);
         }
+        let root_operation_id = descriptor.root_operation_id;
         let reservation = state
             .descriptors
             .get_mut(&descriptor_id)
             .ok_or(LifecycleError::UnknownDescriptor(descriptor_id))?
             .responsibility
             .take();
+        // A maintenance execution transferred to this descriptor remains in
+        // the execution ledger as RecoveryRequired until the exact root is
+        // resolved. Retiring the descriptor is the corresponding terminal
+        // proof for that execution; otherwise shutdown would retain a phantom
+        // owner forever.
+        for execution in state.executions.values_mut() {
+            if execution.operation_id == root_operation_id
+                && execution.phase == ExecutionPhase::RecoveryRequired
+            {
+                execution.phase = ExecutionPhase::Completed;
+            }
+        }
         Ok(reservation
             .as_ref()
             .map(|value| Self::release_responsibility_locked(&mut state, value))
@@ -2451,13 +2620,14 @@ impl WorkspaceLifecycleCore {
     pub fn ack_delivery(&self, sequence: DeliverySequence) -> Result<bool, LifecycleError> {
         let mut state = self.lock_state()?;
         let Some(record) = state.delivery.records.get_mut(&sequence) else {
-            return Ok(false);
+            return Ok(state.delivery.retired.contains(&sequence));
         };
         if !record.terminal {
             return Ok(false);
         }
         record.acked = true;
         state.delivery.records.remove(&sequence);
+        state.delivery.retired.insert(sequence);
         Ok(true)
     }
 
