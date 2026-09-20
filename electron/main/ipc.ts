@@ -2216,6 +2216,14 @@ export function registerIpcRouter(
         } catch (error) {
           envelope = { ok: false, error: toErrorString(error) };
         }
+        if (cmd === "restore_backup" && envelope.ok) {
+          // The renderer also consumes this operation-scoped result, but the
+          // main profile gate must see the trusted Native proof first.  A
+          // failed Restore may return `unchanged` without another
+          // `workspace:opened`; feed that proof into the same authorization
+          // owner before the next renderer invoke can mint a caller.
+          profileEgress?.observeWorkspaceLifecycleResult?.(envelope.value);
+        }
         if (
           manualMaintenanceAttemptId !== null &&
           typeof narrativeMaintenance?.cancelNarrativeMaintenanceAttempt ===

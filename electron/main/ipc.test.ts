@@ -2494,6 +2494,59 @@ describe("NIR-1 router sender binding", () => {
     expect(saveAiSettings).toHaveBeenCalledWith({});
   });
 
+  it("hands a trusted unchanged restore proof to the main profile gate", async () => {
+    const outcome = {
+      status: "unchanged",
+      operationOutcome: "failed",
+      contentEffect: "none",
+      lifecycle: {
+        schemaVersion: 1,
+        revision: 3,
+        status: "ready",
+        bindingToken: "bnd-normal-ready",
+        activation: "ready",
+      },
+    } as const;
+    const restoreBackup = vi.fn(async () => JSON.stringify(outcome));
+    const observeWorkspaceLifecycleResult = vi.fn();
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => ({
+        profileId: "profile-1",
+        callerId: "main-caller-1",
+        callerEpoch: 2,
+        senderId: 42,
+        workspaceId: "/workspace-normal",
+        sessionId: "session-1",
+      })),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication: vi.fn(),
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+      observeWorkspaceLifecycleResult,
+    };
+    registerIpcRouter(
+      { restoreBackup } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "restore_backup",
+      { fileName: "grimodex-test.db" },
+    );
+
+    expect(envelope).toEqual({ ok: true, value: outcome });
+    expect(observeWorkspaceLifecycleResult).toHaveBeenCalledOnce();
+    expect(observeWorkspaceLifecycleResult).toHaveBeenCalledWith(outcome);
+  });
+
   it("runs the dedicated typed cold reader through D2a at entry and return", async () => {
     const identity = {
       profileId: "profile-1",

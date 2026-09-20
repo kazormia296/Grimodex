@@ -474,6 +474,23 @@ T23, T28, T30, T33, and T36 are blocking regressions for the five review
 findings. A negative safety result without the paired positive progress result
 does not satisfy acceptance.
 
+### Normal Restore `Unchanged` authorization handoff
+
+The main profile gate retains the last **verified normal Ready** association
+between the opaque lifecycle binding token, workspace identity, and revision.
+It clears the active `workspaceId` while an admitted Restore is in Transition,
+but does not discard that evidence.  A Native `restore_backup` result is fed to
+the gate before the IPC envelope is returned to the renderer.  Only an exact
+`Unchanged` result whose Ready token matches the retained association, whose
+revision is newer than that Ready observation, and whose current lifecycle
+observation is not newer may restore the normal authorization binding.  The
+proof is held when the terminal Ready event arrives after the result and is
+applied immediately when the event was observed first.  A different
+workspace event, stale result, `NotAdmitted`, Safe Mode recovery target, or
+unknown result never restores the old caller binding.  The regression pair
+must cover both callback orders and verify Native-side workspace matching on
+the newly issued caller.
+
 ## Candidate ledger
 
 The C0/C1/C5 record must contain one row per candidate and these exact fields:

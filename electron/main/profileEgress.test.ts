@@ -671,6 +671,197 @@ describe("D2a profile egress gate", () => {
     expect(registerProfileEgressCaller).toHaveBeenCalledTimes(4);
   });
 
+  it("restores the normal Ready authorization only from an exact Unchanged proof", async () => {
+    const registerProfileEgressCaller = vi.fn((serialized: string) => {
+      const identity = JSON.parse(serialized) as {
+        workspaceId: string | null;
+      };
+      if (identity.workspaceId !== "/workspace-normal") {
+        throw new Error("Native normal binding mismatch");
+      }
+    });
+    const gate = await createProfileEgressGate({
+      ...backend(),
+      registerProfileEgressCaller,
+    });
+
+    gate.observeBackendEvent?.("workspace:opened", {
+      path: "/workspace-normal",
+      restoreOnly: false,
+    });
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 1,
+      status: "ready",
+      bindingToken: "bnd-normal-ready",
+      activation: "ready",
+    });
+    const beforeRestore = gate.issueCallerIdentity(11);
+    expect(beforeRestore.workspaceId).toBe("/workspace-normal");
+    expect(() =>
+      gate.assertInvoke("save_global_settings", {
+        callerIdentity: beforeRestore,
+      }),
+    ).not.toThrow();
+
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 2,
+      status: "transition",
+      bindingToken: "bnd-restore-transition",
+      activation: "none",
+    });
+    const unchanged = {
+      status: "unchanged",
+      operationOutcome: "failed",
+      contentEffect: "none",
+      lifecycle: {
+        schemaVersion: 1,
+        revision: 3,
+        status: "ready",
+        bindingToken: "bnd-normal-ready",
+        activation: "ready",
+      },
+    } as const;
+    gate.observeWorkspaceLifecycleResult?.(unchanged);
+
+    // The proof may arrive before the terminal lifecycle event.  It must be
+    // held until Native publishes the exact old token at the proof revision.
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 3,
+      status: "ready",
+      bindingToken: "bnd-normal-ready",
+      activation: "ready",
+    });
+    const afterRestore = gate.issueCallerIdentity(11);
+    expect(afterRestore.workspaceId).toBe("/workspace-normal");
+    expect(() =>
+      gate.assertInvoke("save_global_settings", {
+        callerIdentity: afterRestore,
+      }),
+    ).not.toThrow();
+    expect(registerProfileEgressCaller).toHaveBeenLastCalledWith(
+      expect.stringContaining('"workspaceId":"/workspace-normal"'),
+    );
+  });
+
+  it("does not restore the normal authorization from a NotAdmitted result", async () => {
+    const registerProfileEgressCaller = vi.fn((serialized: string) => {
+      const identity = JSON.parse(serialized) as {
+        workspaceId: string | null;
+      };
+      if (identity.workspaceId !== "/workspace-normal") {
+        throw new Error("Native normal binding mismatch");
+      }
+    });
+    const gate = await createProfileEgressGate({
+      ...backend(),
+      registerProfileEgressCaller,
+    });
+
+    gate.observeBackendEvent?.("workspace:opened", {
+      path: "/workspace-normal",
+      restoreOnly: false,
+    });
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 1,
+      status: "ready",
+      bindingToken: "bnd-normal-ready",
+      activation: "ready",
+    });
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 2,
+      status: "transition",
+      bindingToken: "bnd-restore-transition",
+      activation: "none",
+    });
+    gate.observeWorkspaceLifecycleResult?.({
+      status: "not-admitted",
+      operationOutcome: "unknown",
+      contentEffect: "none",
+      lifecycle: {
+        schemaVersion: 1,
+        revision: 2,
+        status: "transition",
+        bindingToken: "bnd-restore-transition",
+        activation: "none",
+      },
+      reasonCode: "workspace-operation-busy",
+    });
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 3,
+      status: "ready",
+      bindingToken: "bnd-normal-ready",
+      activation: "ready",
+    });
+
+    const identity = gate.issueCallerIdentity(11);
+    expect(identity.workspaceId).toBeNull();
+    expect(() =>
+      gate.assertInvoke("save_global_settings", { callerIdentity: identity }),
+    ).toThrow(new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`));
+  });
+
+  it("applies an unchanged proof when the terminal Ready event arrives first", async () => {
+    const registerProfileEgressCaller = vi.fn((serialized: string) => {
+      const identity = JSON.parse(serialized) as {
+        workspaceId: string | null;
+      };
+      if (identity.workspaceId !== "/workspace-normal") {
+        throw new Error("Native normal binding mismatch");
+      }
+    });
+    const gate = await createProfileEgressGate({
+      ...backend(),
+      registerProfileEgressCaller,
+    });
+    gate.observeBackendEvent?.("workspace:opened", {
+      path: "/workspace-normal",
+      restoreOnly: false,
+    });
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 1,
+      status: "ready",
+      bindingToken: "bnd-normal-ready",
+      activation: "ready",
+    });
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 2,
+      status: "transition",
+      bindingToken: "bnd-restore-transition",
+      activation: "none",
+    });
+    gate.observeBackendEvent?.("workspace:lifecycle-state", {
+      schemaVersion: 1,
+      revision: 3,
+      status: "ready",
+      bindingToken: "bnd-normal-ready",
+      activation: "ready",
+    });
+
+    gate.observeWorkspaceLifecycleResult?.({
+      status: "unchanged",
+      operationOutcome: "unknown",
+      contentEffect: "none",
+      lifecycle: {
+        schemaVersion: 1,
+        revision: 3,
+        status: "ready",
+        bindingToken: "bnd-normal-ready",
+        activation: "ready",
+      },
+    });
+    expect(gate.issueCallerIdentity(11).workspaceId).toBe(
+      "/workspace-normal",
+    );
+  });
+
   it.each([
     ["send_chat_message", {}],
     ["send_inline_ai_stream", {}],
