@@ -102,7 +102,7 @@ journey or T01–T36 case has been executed.
 | Sol max C5 review | approved/bounded for implementation checkpoint | `a076389526654206fe712ae7f4bacd7ce4b42731` was reviewed read-only with `gpt-5.6-sol`, max reasoning; P1: 0 and P2: 0. The review verified the fresh capacity-retry owner, exact H+1 retention, quiescence cancellation, partial-claim release, and the prior Restore `Unchanged` proof. The docs-only acceptance-record commit adds no code. |
 | Layer C IPC journey | pending | A full Electron IPC → N-API → SQLite → renderer run has not been claimed. |
 | T01–T36 matrix | pending | Focused tests cover representative cases; absence of a complete matrix is not a pass. |
-| Quick + immediate verify | passed for implementation checkpoint; final docs-only receipt in PR body | The recorded commands below are bound to implementation checkpoint `1a87684b`; each later docs-only freeze is verified separately and reported with its exact HEAD in the PR body. |
+| Quick + immediate verify | passed for implementation checkpoint; final docs-only receipt in PR body | The recorded commands below are bound to implementation checkpoint `a0763895`; each later docs-only freeze is verified separately and reported with its exact HEAD in the PR body. |
 
 The Windows GNU target check remains environment-blocked when the
 `x86_64-w64-mingw32-gcc` toolchain is unavailable. No hosted-check, merge, or
