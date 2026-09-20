@@ -822,13 +822,14 @@ pub use recovery::{
 pub use workspace_lifecycle::{
     AdmissionKind, AdmissionOutcome, AdmissionRejection, AdmissionTicket, ActivationState,
     ContentEffect, ControlGeneration, ControlRequest, ControlSlotOutcome, DeliveryAdmissionOutcome,
-    DeliverySequence, DurableRunHandle, ExecutionId, FenceOutcome, LifecycleError,
+    DeliverySequence, DurableRunHandle, ExecutionId, ExecutionMembership, ExecutionPhase,
+    FenceOutcome, LifecycleError,
     LifecycleResult, LifecycleSnapshot, LifecycleState, LiveBinding, MaintenancePermit,
     OperationId, PermitAdmission, PublicationPermit,
     RecoveryDescriptor, RecoveryDescriptorId, ResponsibilityError, ResponsibilityKind,
     ResponsibilityReservation, RunCreationState, RunOwnership, StateRevision, TransitionStage,
     WorkspaceExclusive, WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore,
-    WorkspaceTransitionPermit, WorkExecutionId,
+    WorkspaceTransitionPermit, WorkExecutionId, WorkExecutionMembership,
     DELIVERY_CAPACITY, EMERGENCY_RESPONSIBILITY_CAPACITY, GENERAL_RESPONSIBILITY_CAPACITY,
 };
 pub use state::{

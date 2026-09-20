@@ -5010,7 +5010,7 @@ impl Backend {
             // work and owns the exact responsibility cell. A transition closes
             // this request at the same core boundary, and the permit's Drop
             // finalizer releases it on every terminal path.
-            let _maintenance_permit = match state.workspace_lifecycle.begin_maintenance()? {
+            let mut maintenance_permit = match state.workspace_lifecycle.begin_maintenance()? {
                 PermitAdmission::Admitted(permit) => permit,
                 PermitAdmission::NotAdmitted { reason, snapshot } => {
                     if matches!(snapshot.state, LifecycleState::NoWorkspace) {
@@ -5028,6 +5028,10 @@ impl Backend {
                     .to_string());
                 }
             };
+            maintenance_permit
+                .start()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+            maintenance_permit.arm_scope_finalizer();
 
             // Every short ledger read performed by recovery, foreground
             // lookup, and post-cycle acknowledgement inherits the same
@@ -6969,6 +6973,17 @@ impl Backend {
         let mut trace = NativeWorkspaceOpenTrace::with_start(trace_started_at, trace_enabled);
         let blocking_pool_span = trace.begin_span(NativeWorkspaceOpenSpanName::BlockingPoolWait);
         let task = napi::tokio::task::spawn_blocking(move || {
+            // The real workspace `open_lock` is acquired by the shared open
+            // worker below.  Keep the core-side physical marker for the same
+            // worker interval so no lifecycle path can publish/claim a
+            // competing protected operation before this worker returns.
+            let _physical_exclusive = match state
+                .workspace_lifecycle
+                .acquire_transition_physical_exclusive()
+            {
+                Ok(exclusive) => exclusive,
+                Err(error) => return (trace, Err(error)),
+            };
             trace.finish_span(blocking_pool_span);
             let state_for_hook = Arc::clone(&state);
             let workspace_binding = path.clone();
@@ -7051,6 +7066,7 @@ impl Backend {
                             // caught panic is nevertheless a completed Join
                             // of this worker, so publish that terminal
                             // outcome before clearing the poisoned open lock.
+                            drop(_physical_exclusive);
                             let lifecycle_result = state
                                 .workspace_lifecycle
                                 .complete_transition_from_workspace(&state.ws);
@@ -7130,6 +7146,10 @@ impl Backend {
     /// or an interrupted worker cannot be mistaken for terminal proof.
     #[napi]
     pub async fn shutdown_workspace_lifecycle(&self) -> Result<String> {
+        // The shared core closes new lifecycle admission before the Native
+        // observation wait.  The AppState flag below remains the fast
+        // foreground guard, while `publish_closed` is the terminal proof.
+        let _ = self.state.workspace_lifecycle.request_shutdown();
         self.state.request_workspace_shutdown();
         self.state.wait_workspace_operations().await;
         let state = Arc::clone(&self.state);
@@ -7297,6 +7317,9 @@ impl Backend {
             .map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
         let result = run_blocking(move || {
+            let _physical_exclusive = state
+                .workspace_lifecycle
+                .acquire_transition_physical_exclusive()?;
             if state
                 .narrative_maintenance_recovery_gate
                 .maintenance_admission_is_closed()
@@ -7449,8 +7472,13 @@ impl Backend {
         begin_workspace_lifecycle_recovery(&self.state)
             .map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
-        let result =
-            run_blocking(move || restore_safe_mode_candidate(&state.ws, &candidate_id)).await;
+        let result = run_blocking(move || {
+            let _physical_exclusive = state
+                .workspace_lifecycle
+                .acquire_transition_physical_exclusive()?;
+            restore_safe_mode_candidate(&state.ws, &candidate_id)
+        })
+        .await;
         let lifecycle = publish_workspace_lifecycle_from_workspace(&self.state);
         if result.is_err() {
             let _ = lifecycle;

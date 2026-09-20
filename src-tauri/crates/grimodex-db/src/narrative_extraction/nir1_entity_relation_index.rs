@@ -89,6 +89,14 @@ pub enum GraphWorkStage {
 /// transaction.
 pub trait GraphWorkControl {
     fn check(&mut self, stage: GraphWorkStage) -> Result<()>;
+
+    /// A whole-project eligibility read must be backed by an owner that is
+    /// registered for the enclosing foreground or maintenance operation.
+    /// Short bounded readers may still use a no-op control, but that control
+    /// must not silently become an authority for the full roster producer.
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
 }
 
 pub(crate) struct NeverStopGraphWorkControl;
@@ -96,6 +104,10 @@ pub(crate) struct NeverStopGraphWorkControl;
 impl GraphWorkControl for NeverStopGraphWorkControl {
     fn check(&mut self, _stage: GraphWorkStage) -> Result<()> {
         Ok(())
+    }
+
+    fn allows_full_eligibility(&self) -> bool {
+        false
     }
 }
 

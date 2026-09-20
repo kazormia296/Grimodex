@@ -22,10 +22,11 @@ describe("NarrativeMaintenanceDeliveryLedger", () => {
     expect(ledger.descriptorsSnapshot()[0]?.generation).toBe(
       descriptor.generation + 1,
     );
-    expect(ledger.submit(257, "after-recovery").admission).toBe("not-admitted");
+    expect(ledger.submit(257, "after-recovery").admission).toBe("sealed-absent");
     expect(ledger.markTerminal(1).state).toBe("terminal");
     expect(ledger.ack(1)).toBe(true);
-    expect(ledger.submit(257, "after-ack").admission).toBe("admitted");
+    expect(ledger.submit(257, "after-ack").admission).toBe("sealed-absent");
+    expect(ledger.submit(258, "after-ack-next").admission).toBe("admitted");
   });
 
   it("retires delivery records independently of unresolved descriptors", () => {

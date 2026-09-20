@@ -83,7 +83,7 @@ use super::semantic_bindings::{
 use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage, NeverStopGraphWorkControl};
 use super::source_revision::{
     is_validation_terminated, resolve_source_revision_with_validation_context,
-    validation_context,
+    validation_context, validation_terminated, ValidationTerminationReason,
 };
 use super::task_leases::with_immediate_transaction;
 use super::temporal_constraints::{
@@ -115,6 +115,17 @@ const STATUS_UNDONE: &str = "undone";
 const STATUS_REDONE: &str = "redone";
 const STATUS_FAILED: &str = "failed";
 const STATUS_INVALIDATED: &str = "invalidated";
+
+/// Explicit owner for the frozen standalone DB/legacy adapter.  Native's
+/// production path supplies `ForegroundValidationControl`; this adapter is
+/// only used when the caller already owns the Database transaction boundary.
+struct StandaloneForegroundValidationControl;
+
+impl GraphWorkControl for StandaloneForegroundValidationControl {
+    fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
 
 struct CommitPlanValidationContext<'a> {
     expected_calendar_version: Option<i64>,
@@ -155,7 +166,16 @@ pub fn narrative_extraction_prepare_commit(
     db: &Database,
     payload: PrepareCommitPayload,
 ) -> anyhow::Result<Value> {
-    narrative_extraction_prepare_commit_with_control(db, payload, None)
+    // The standalone DB API is the frozen compatibility adapter used by the
+    // legacy shell and file-backed tests.  It owns the enclosing transaction
+    // for the duration of this call, so it supplies an explicit command
+    // context instead of silently falling back to `NeverStop`.
+    let mut compatibility_owner = StandaloneForegroundValidationControl;
+    narrative_extraction_prepare_commit_with_control(
+        db,
+        payload,
+        Some(&mut compatibility_owner),
+    )
 }
 
 /// Foreground lifecycle owner variant.  The borrowed control is threaded only
@@ -461,6 +481,12 @@ fn build_source_contract(
     applications: &[(String, String)],
     owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<SealedSourceContract> {
+    if !owner.allows_full_eligibility() {
+        return Err(validation_terminated(
+            ValidationTerminationReason::ContextUnavailable,
+            "whole-project eligibility requires a caller-owned validation context",
+        ));
+    }
     let mut validation = validation_context(conn, owner);
     validation.ensure_connection(conn)?;
     let mut revision_rows = Vec::with_capacity(applications.len());
@@ -885,7 +911,12 @@ pub fn narrative_extraction_apply_commit(
     db: &Database,
     payload: ApplyCommitPayload,
 ) -> anyhow::Result<Value> {
-    narrative_extraction_apply_commit_with_control(db, payload, None)
+    let mut compatibility_owner = StandaloneForegroundValidationControl;
+    narrative_extraction_apply_commit_with_control(
+        db,
+        payload,
+        Some(&mut compatibility_owner),
+    )
 }
 
 /// Apply counterpart of [`narrative_extraction_prepare_commit_with_control`].
@@ -1623,6 +1654,12 @@ pub fn narrative_extraction_apply_commit_with_control(
                         } else {
                             &mut fallback_owner
                         };
+                    if !owner.allows_full_eligibility() {
+                        return Err(validation_terminated(
+                            ValidationTerminationReason::ContextUnavailable,
+                            "V2 apply source validation requires a caller-owned validation context",
+                        ));
+                    }
                     let mut validation = validation_context(conn, owner);
                     validation.ensure_connection(conn)?;
                     super::v2_apply_sources::load_v2_apply_sources_with_validation_context(

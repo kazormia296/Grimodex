@@ -117,6 +117,11 @@ export class NarrativeMaintenanceDeliveryLedger {
       return { admission: "out-of-order", sequence };
     }
     if (this.records.size >= NORMAL_CAPACITY) {
+      // Capacity rejection is itself a high-water decision.  Seal H+1 while
+      // the ledger is full so a delayed retry cannot execute after an ACK
+      // frees an unrelated record.
+      this.sealedAbsent.add(sequence);
+      this.highWaterMark = sequence;
       return { admission: "not-admitted", sequence };
     }
     const record: DeliveryRecord = {

@@ -23,6 +23,14 @@ export type WorkspaceLifecycleTransitionPhase =
 
 export type WorkspaceLifecycleActivation = "ready" | "requires-open";
 
+export type WorkspaceLifecycleOperationOutcome =
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "unknown";
+
+export type WorkspaceLifecycleContentEffect = "none" | "retained" | "replaced";
+
 export type WorkspaceLifecycleStatus =
   | "not-admitted"
   | "pending"
@@ -79,6 +87,8 @@ export interface WorkspaceLifecyclePendingResult {
 export interface WorkspaceLifecycleUnchangedResult {
   readonly status: "unchanged";
   readonly binding: WorkspaceLifecycleBinding;
+  readonly operationOutcome: WorkspaceLifecycleOperationOutcome;
+  readonly contentEffect: WorkspaceLifecycleContentEffect;
   readonly snapshot: WorkspaceLifecycleSnapshot;
   /** A stale result is retained for diagnostics but cannot resume a binding. */
   readonly resume: "blocked" | "same-binding";
@@ -87,6 +97,8 @@ export interface WorkspaceLifecycleUnchangedResult {
 export interface WorkspaceLifecycleActivatedResult {
   readonly status: "activated";
   readonly activation: WorkspaceLifecycleActivation;
+  readonly operationOutcome: WorkspaceLifecycleOperationOutcome;
+  readonly contentEffect: WorkspaceLifecycleContentEffect;
   readonly binding?: WorkspaceLifecycleBinding;
   readonly snapshot: WorkspaceLifecycleSnapshot;
   readonly resume: "blocked" | "activated" | "requires-open";
@@ -95,6 +107,8 @@ export interface WorkspaceLifecycleActivatedResult {
 export interface WorkspaceLifecycleRestoredResult {
   readonly status: "restored";
   readonly activation: WorkspaceLifecycleActivation;
+  readonly operationOutcome: WorkspaceLifecycleOperationOutcome;
+  readonly contentEffect: WorkspaceLifecycleContentEffect;
   readonly binding?: WorkspaceLifecycleBinding;
   readonly snapshot: WorkspaceLifecycleSnapshot;
   readonly resume: "blocked" | "activated" | "requires-open";
@@ -142,6 +156,19 @@ const TRANSITION_PHASES: readonly WorkspaceLifecycleTransitionPhase[] = [
 const ACTIVATIONS: readonly WorkspaceLifecycleActivation[] = [
   "ready",
   "requires-open",
+];
+
+const OPERATION_OUTCOMES: readonly WorkspaceLifecycleOperationOutcome[] = [
+  "succeeded",
+  "failed",
+  "cancelled",
+  "unknown",
+];
+
+const CONTENT_EFFECTS: readonly WorkspaceLifecycleContentEffect[] = [
+  "none",
+  "retained",
+  "replaced",
 ];
 
 const STATUSES: readonly WorkspaceLifecycleStatus[] = [
@@ -314,6 +341,8 @@ function parseResult(value: unknown): {
   status: WorkspaceLifecycleStatus;
   reasonCode?: string;
   activation?: WorkspaceLifecycleActivation;
+  operationOutcome?: WorkspaceLifecycleOperationOutcome;
+  contentEffect?: WorkspaceLifecycleContentEffect;
   binding?: WorkspaceLifecycleBinding;
   snapshot: WorkspaceLifecycleSnapshot;
 } {
@@ -338,25 +367,60 @@ function parseResult(value: unknown): {
       return { status, snapshot: parseSnapshot(record.snapshot) };
     }
     case "unchanged": {
-      exactKeys(record, ["status", "binding", "snapshot"], "$");
+      exactKeys(
+        record,
+        ["status", "binding", "operationOutcome", "contentEffect", "snapshot"],
+        "$",
+      );
       const snapshot = parseSnapshot(record.snapshot);
       const binding = parseBinding(record.binding, "$.binding");
+      const operationOutcome = requireEnum(
+        record.operationOutcome,
+        OPERATION_OUTCOMES,
+        "$.operationOutcome",
+      );
+      const contentEffect = requireEnum(
+        record.contentEffect,
+        CONTENT_EFFECTS,
+        "$.contentEffect",
+      );
       if (
         snapshot.state !== "ready" ||
         !sameBinding(snapshot.binding, binding)
       ) {
         fail("$.binding", "must match a ready snapshot binding");
       }
-      return { status, binding, snapshot };
+      return { status, binding, operationOutcome, contentEffect, snapshot };
     }
     case "activated":
     case "restored": {
-      exactKeys(record, ["status", "activation", "binding", "snapshot"], "$");
+      exactKeys(
+        record,
+        [
+          "status",
+          "activation",
+          "operationOutcome",
+          "contentEffect",
+          "binding",
+          "snapshot",
+        ],
+        "$",
+      );
       const snapshot = parseSnapshot(record.snapshot);
       const activation = requireEnum(
         record.activation,
         ACTIVATIONS,
         "$.activation",
+      );
+      const operationOutcome = requireEnum(
+        record.operationOutcome,
+        OPERATION_OUTCOMES,
+        "$.operationOutcome",
+      );
+      const contentEffect = requireEnum(
+        record.contentEffect,
+        CONTENT_EFFECTS,
+        "$.contentEffect",
       );
       const binding =
         record.binding === undefined
@@ -391,6 +455,8 @@ function parseResult(value: unknown): {
       return {
         status,
         activation,
+        operationOutcome,
+        contentEffect,
         ...(binding === undefined ? {} : { binding }),
         snapshot,
       };
@@ -447,6 +513,9 @@ export function normalizeWorkspaceLifecycleResult(
       return {
         status: parsed.status,
         binding: parsed.binding as WorkspaceLifecycleBinding,
+        operationOutcome:
+          parsed.operationOutcome as WorkspaceLifecycleOperationOutcome,
+        contentEffect: parsed.contentEffect as WorkspaceLifecycleContentEffect,
         snapshot: parsed.snapshot,
         resume: stale ? "blocked" : "same-binding",
       };
@@ -461,6 +530,8 @@ export function normalizeWorkspaceLifecycleResult(
       return {
         status: parsed.status,
         activation,
+        operationOutcome: parsed.operationOutcome as WorkspaceLifecycleOperationOutcome,
+        contentEffect: parsed.contentEffect as WorkspaceLifecycleContentEffect,
         ...(parsed.binding === undefined ? {} : { binding: parsed.binding }),
         snapshot: parsed.snapshot,
         resume,

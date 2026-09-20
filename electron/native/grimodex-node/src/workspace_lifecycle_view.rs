@@ -13,7 +13,7 @@ use grimodex_db::state::WorkspaceState;
 use grimodex_db::{
     AdmissionKind, AdmissionOutcome, AdmissionTicket, ContentEffect,
     LifecycleResult, LifecycleState, LiveBinding, MaintenancePermit, PermitAdmission,
-    RecoveryDescriptorId, StateRevision, WorkspaceLifecycleCore,
+    RecoveryDescriptorId, StateRevision, WorkspaceExclusive, WorkspaceLifecycleCore,
     DeliveryAdmissionOutcome, DeliverySequence, FenceOutcome,
 };
 use grimodex_db::AppResult;
@@ -132,13 +132,28 @@ impl WorkspaceLifecycleViewAdapter {
     }
 
     /// Reserve a maintenance execution in the same shared core as Open and
-    /// Restore. The permit owns the exact responsibility cell and releases it
-    /// on every return path (including panic unwinding) through its Drop
-    /// finalizer; no second Native admission registry is created here.
+    /// Restore. The Native cycle arms the explicit synchronous-scope
+    /// finalizer after admission; a raw dropped permit remains fail-closed and
+    /// is retained for supervisor recovery.
     pub(crate) fn begin_maintenance(
         &self,
     ) -> AppResult<PermitAdmission<MaintenancePermit>> {
         Ok(self.core.admit_maintenance_permit()?)
+    }
+
+    /// Pair the shared core's physical exclusion marker with the real Native
+    /// `open_lock`/file-lease interval held by the blocking supervisor.  The
+    /// marker is released when the worker leaves the protected I/O boundary,
+    /// before the supervisor publishes Join/activation.
+    pub(crate) fn acquire_transition_physical_exclusive(
+        &self,
+    ) -> AppResult<WorkspaceExclusive> {
+        let ticket = self
+            .lock_projection()?
+            .transition_ticket
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("NEX_LIFECYCLE_TRANSITION_TICKET_MISSING"))?;
+        Ok(self.core.physical_exclusive_for_ticket(&ticket)?)
     }
 
     /// Begin recovery for an already-owned descriptor root.  Safe Mode uses
@@ -226,12 +241,21 @@ impl WorkspaceLifecycleViewAdapter {
     /// is intentionally not an N-API command; the eventual shutdown owner must
     /// call it only after its terminal proof.
     pub(crate) fn publish_closed(&self) -> AppResult<WorkspaceLifecycleView> {
+        // Close admission in the shared core before observing Native worker
+        // termination.  `close` below remains the proof boundary and will
+        // refuse to fabricate Closed while an owner is still live.
+        self.core.request_shutdown()?;
         self.core.close()?;
         let mut projection = self.lock_projection()?;
         projection.transition_ticket = None;
         projection.binding_token = None;
         projection.token_revision = None;
         self.projected_view_with_projection(&mut projection)
+    }
+
+    pub(crate) fn request_shutdown(&self) -> AppResult<WorkspaceLifecycleView> {
+        self.core.request_shutdown()?;
+        self.projected_view()
     }
 
     /// Read the old WorkspaceState only at a short boundary.  This keeps the
@@ -321,6 +345,11 @@ impl WorkspaceLifecycleViewAdapter {
             // worker at this boundary. Mark that Join observation before the
             // core can publish Ready, Unchanged, or a recovery descriptor.
             self.core.mark_transition_joined(&ticket)?;
+            if self.core.shutdown_requested()? {
+                self.core.abandon_transition_for_shutdown(&ticket)?;
+                self.lock_projection()?.transition_ticket = None;
+                return self.projected_view();
+            }
             if workspace.safe_mode.is_active()
                 || (!has_authority
                     && requested_status == Some(WorkspaceLifecycleStatus::RecoveryRequired))

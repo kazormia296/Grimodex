@@ -61,10 +61,12 @@ describe("workspace lifecycle result contract", () => {
     };
 
     const result = normalizeWorkspaceLifecycleResult(
-      {
-        status: "unchanged",
-        binding: bindingA,
-        snapshot: readySnapshot(12),
+        {
+          status: "unchanged",
+          binding: bindingA,
+          operationOutcome: "succeeded",
+          contentEffect: "none",
+          snapshot: readySnapshot(12),
       },
       observed,
     );
@@ -77,10 +79,12 @@ describe("workspace lifecycle result contract", () => {
 
   it("accepts an Unchanged response only for the exact binding at the current revision", () => {
     const result = normalizeWorkspaceLifecycleResult(
-      {
-        status: "unchanged",
-        binding: bindingA,
-        snapshot: readySnapshot(12),
+        {
+          status: "unchanged",
+          binding: bindingA,
+          operationOutcome: "succeeded",
+          contentEffect: "none",
+          snapshot: readySnapshot(12),
       },
       {
         state: "ready",
@@ -98,6 +102,8 @@ describe("workspace lifecycle result contract", () => {
         {
           status: "unchanged",
           binding: bindingA,
+          operationOutcome: "succeeded",
+          contentEffect: "none",
           snapshot: readySnapshot(12, bindingB),
         },
         {
@@ -113,6 +119,8 @@ describe("workspace lifecycle result contract", () => {
     const restored = normalizeWorkspaceLifecycleResult({
       status: "restored",
       activation: "requires-open",
+      operationOutcome: "succeeded",
+      contentEffect: "retained",
       snapshot: {
         state: "recovery-required",
         revision: 22,
@@ -122,6 +130,8 @@ describe("workspace lifecycle result contract", () => {
     expect(restored).toEqual({
       status: "restored",
       activation: "requires-open",
+      operationOutcome: "succeeded",
+      contentEffect: "retained",
       snapshot: {
         state: "recovery-required",
         revision: 22,
@@ -133,6 +143,8 @@ describe("workspace lifecycle result contract", () => {
     const activated = normalizeWorkspaceLifecycleResult({
       status: "activated",
       activation: "ready",
+      operationOutcome: "failed",
+      contentEffect: "retained",
       binding: bindingB,
       snapshot: readySnapshot(23, bindingB),
     });
@@ -140,6 +152,8 @@ describe("workspace lifecycle result contract", () => {
     expect(activated).toMatchObject({
       status: "activated",
       activation: "ready",
+      operationOutcome: "failed",
+      contentEffect: "retained",
       binding: bindingB,
       resume: "activated",
     });
@@ -163,6 +177,8 @@ describe("workspace lifecycle result contract", () => {
       value: {
         status: "restored",
         activation: "requires-open",
+        operationOutcome: "succeeded",
+        contentEffect: "retained",
         binding: bindingA,
         snapshot: { state: "recovery-required", revision: 1 },
       },

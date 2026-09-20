@@ -303,6 +303,35 @@ owner token, exact binding capture, lock order, cleanup owner, and durable
 evidence. The matrix is an impact ledger, not a promise that every path is
 rewritten if a read-only reachability proof excludes it.
 
+### Concrete C0 callsite ledger
+
+The following is the completed symbol-level ledger used by C1/C2/C3.  A row
+may delegate its worker to an existing helper, but the owner and terminal
+evidence remain explicit at this boundary.
+
+| Entry | Admission/start and owner | Binding/lock/DB scope | Stop, retry, and terminal evidence |
+| --- | --- | --- | --- |
+| `WorkspaceLifecycleViewAdapter::begin_transition_kind` → `open_workspace` / `restore_recovery_candidate` | `WorkspaceLifecycleCore::begin_transition`; `WorkspaceTransitionPermit` and Native supervisor slot are created before `spawn_blocking` | `WorkspaceState.inner` binding is captured before `open_lock`; protected worker owns `WorkspaceExclusive` and the verified file lease | `AppState::request_workspace_shutdown`/participant stop, Join from the blocking owner, `complete_transition_from_workspace`; JoinError/panic maps to descriptor, never Ready |
+| `State::run_narrative_maintenance_cycle` → `maintenance_runtime::run_*` | `WorkspaceLifecycleViewAdapter::begin_maintenance`; `MaintenancePermit` reserves an exact Run responsibility before DB work; `arm_scope_finalizer` is the common synchronous boundary | `narrative_maintenance_no_wait` on the pinned authority; existing transaction and file lease; no path-based second connection | attempt stop signal and `GraphWorkControl::check`; requeue/failure recorder; terminal delivery result is marked before main ACK, and scope finalizer releases only after the cycle returns |
+| Native discovery `narrative_maintenance::discover_projects` | Same maintenance owner, no renderer identity accepted | Pinned authority, keyset pages, Source ID lookup; no `active_database()` reacquisition | page completion or typed lifecycle rejection; wake remains durable until ACK |
+| `narrative_extraction_prepare_commit_with_control` / `...apply_commit_with_control` | Native `agent_write_cmd` supplies the registered foreground `GraphWorkControl` before `with_immediate_transaction` | Borrowed `ValidationContext` uses the same write connection/transaction; Apply retains its existing busy timeout | stop returns `ValidationTerminated` before Source normalization; rollback preserves Prepared; successful commit is recorded separately from cleanup |
+| `repository::save_proposal_set_in_tx`, `append_revision_in_tx`, `revise_and_decide` | Bound foreground writer owns the outer transaction and supplies the same validation scope | exact extraction binding, outer transaction, existing writer authorization | caller retries the exact request/revision; commit evidence and connection cleanup are separate |
+| `repository::finish_task` / `human_materialization::*` | Existing Task/Chronicle or Human writer participant; no nested maintenance admission | Existing terminal transaction with borrowed context | terminal commit or typed retry; child revision, Decision, D1, and Freshness remain atomic |
+| `incremental_freshness::{reserve,evaluate,publish}` | One cycle participant registered for the whole cycle; a fresh borrowed scope is created for each DB acquisition | Reservation/evaluation/publish release the DB mutex between phases; publish revalidates the same Source in its transaction | stop is requeued with exact Task/Attempt ownership; no Source-missing or success heartbeat conversion |
+| `revision_eligibility::{read_revision_canonical_freshness,read_with_validation_context}` | Caller propagates its foreground, Chronicle, or maintenance context | Same caller snapshot/transaction; nested reader cannot acquire a second mutex/transaction | `ContextUnavailable` is returned before roster SQL; caller owns retry and failure classification |
+| Chronicle `nir1_chronicle_index::{build,canonical,source}` and `restore_rebuild::owned_edges` | Existing Chronicle runtime owner or `MaintenanceExecution`; controlled reader is nested, never re-admitted | Caller snapshot/publish transaction, complete roster and canonical bytes/digest retained | generation/stop check at page and serialize checkpoints; publish commit or exact recovery descriptor |
+| Verify/Rebuild/discovery/Graph coverage | `MaintenanceExecution` registration and work membership | Controlled connection scope and existing file lease | common finalizer records Run/Task/Attempt outcome; no `NeverStop` fallback for reachable eligibility |
+| `domain_writes::project_delete` and project recreation | Project destructive permit reserved before DB acquisition | Project-scoped permit plus lineage/birth evidence; process-local only | reject while Reserved/Unknown/live Run or descriptor exists; commit plus durable lineage receipt |
+| `WorkspaceLifecycleCore::{admit_delivery_at,resolve_or_fence,ack_delivery}` and main `NarrativeMaintenanceDeliveryLedger` | Main owns at most one unresolved H+1; Native atomically reserves record/cells/execution | Sequence/fingerprint and descriptor control slot; ACK is transport-only | Full seals H+1; `SealedAbsent` is not retried; ACK retires record while descriptor responsibility remains |
+| Renderer `events.ts` / `workspaceLifecycleProjection.ts` | Main `workspace:lifecycle-state` subscription followed by `get_workspace_lifecycle_view` snapshot | Opaque UI binding token and monotonic revision only; no locator/Run/descriptor | RecoveryRequired stores dirty drafts before unmount; explicit Open → hydration is the only resume path |
+| `shutdown_workspace_lifecycle` / `AppState::wait_workspace_operations` | Core `request_shutdown` closes admission before Native observation; independent cleanup starts in main | Native worker/permit count is process-local; 30s is monotonic observation budget | only observed Native terminal plus independent cleanup yields graceful success; timeout keeps Transition/owners |
+| standalone MCP and frozen compatibility adapters | Existing verified workspace/lease owner supplies the same context or typed rejection | Existing connection/file lease; no permanent `NeverStop` authority | same terminal receipt/cleanup contract; unknown wire result is re-queried and never resumes an old binding |
+
+The C0 reviewers must trace every symbol above to its caller and record the
+resolved base/head in the candidate ledger.  A new callsite that reaches full
+eligibility, project destruction, Open/Restore, or Run creation is a C0 change
+and cannot be hidden under a family row.
+
 ## C0-C5 gates
 
 ### C0 — contract and inventory

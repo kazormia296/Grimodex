@@ -16,7 +16,8 @@ use super::super::restore_rebuild::{
     evaluate_edge_from_db, evaluate_edge_from_db_with_control,
 };
 use super::super::source_revision::{
-    is_validation_terminated, ValidationContext,
+    is_validation_terminated, validation_terminated, ValidationContext,
+    ValidationTerminationReason,
 };
 use super::super::nir1_entity_relation_index::GraphWorkControl;
 use super::super::semantic_epoch::get_current_epoch;
@@ -96,6 +97,23 @@ fn read_impl(
     let edges = find_edges_by_consumer(conn, project, "proposal-revision", revision)?;
     if edges.is_empty() || edges.len() != membership.material_basis.source_basis.len() {
         return Ok(unavailable(Reason::EdgeStateUnavailable));
+    }
+    let needs_eligibility_context = edges.iter().any(|edge| {
+        edge.source_object_identity
+            .starts_with("project:nir1-chronicle-eligibility:")
+            || edge
+                .source_object_identity
+                .starts_with("project:nir1-entity-relation-eligibility:")
+    });
+    if needs_eligibility_context
+        && !control
+            .as_deref()
+            .is_some_and(|owner| owner.allows_full_eligibility())
+    {
+        return Err(validation_terminated(
+            ValidationTerminationReason::ContextUnavailable,
+            "revision Freshness eligibility requires a caller-owned validation context",
+        ));
     }
     let expected_digest =
         consumer_dependency_set_digest(conn, project, "proposal-revision", revision)?;
