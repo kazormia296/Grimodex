@@ -3,7 +3,10 @@
 use chrono::{Duration, Utc};
 use grimodex_core::canonical_json_digest;
 use rusqlite::{params, Connection, OptionalExtension};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use uuid::Uuid;
+
+use crate::workspace_lifecycle::RunCreationTransactionOutcome;
 
 use super::execution_state::next_run_lifecycle_timestamp_in_tx;
 use super::models::{ArtifactInput, ClaimTaskPayload};
@@ -511,5 +514,120 @@ pub(crate) fn with_immediate_transaction<T>(
             let _ = conn.execute_batch("ROLLBACK");
             Err(error)
         }
+    }
+}
+
+/// Transaction wrapper for the controlled maintenance Run-creation boundary.
+/// It reports confirmed rollback separately from an ambiguous commit/cleanup
+/// failure so the lifecycle core can retain the exact reservation correctly.
+pub(crate) fn with_immediate_transaction_with_creation_outcome<T>(
+    conn: &Connection,
+    operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
+    outcome: impl FnOnce(RunCreationTransactionOutcome) -> anyhow::Result<()>,
+) -> anyhow::Result<T> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let operation_result = catch_unwind(AssertUnwindSafe(|| operation(conn)));
+    match operation_result {
+        Ok(Ok(value)) => match conn.execute_batch("COMMIT") {
+            Ok(()) => Ok(value),
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                if let Err(outcome_error) = outcome(RunCreationTransactionOutcome::Unknown) {
+                    return Err(anyhow::Error::new(error).context(outcome_error.to_string()));
+                }
+                Err(error.into())
+            }
+        },
+        Ok(Err(error)) => {
+            let rollback = conn.execute_batch("ROLLBACK");
+            let transaction_outcome = if rollback.is_ok() && conn.is_autocommit() {
+                RunCreationTransactionOutcome::ConfirmedRollback
+            } else {
+                RunCreationTransactionOutcome::Unknown
+            };
+            if let Err(outcome_error) = outcome(transaction_outcome) {
+                return Err(error.context(outcome_error.to_string()));
+            }
+            Err(error)
+        }
+        Err(panic) => {
+            let rollback = conn.execute_batch("ROLLBACK");
+            let transaction_outcome = if rollback.is_ok() && conn.is_autocommit() {
+                RunCreationTransactionOutcome::ConfirmedRollback
+            } else {
+                RunCreationTransactionOutcome::Unknown
+            };
+            if let Err(outcome_error) = outcome(transaction_outcome) {
+                resume_unwind(Box::new(format!(
+                    "maintenance creation outcome callback failed while unwinding: {outcome_error}"
+                )));
+            }
+            resume_unwind(panic);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn creation_outcome_reports_confirmed_rollback_after_partial_dml() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let mut observed = None;
+        let error = with_immediate_transaction_with_creation_outcome(
+            &conn,
+            |conn| {
+                conn.execute_batch(
+                    "CREATE TABLE creation_probe (id INTEGER PRIMARY KEY);\n                     INSERT INTO creation_probe (id) VALUES (1);",
+                )?;
+                Err::<(), _>(anyhow::anyhow!("synthetic creation failure"))
+            },
+            |outcome| {
+                observed = Some(outcome);
+                Ok(())
+            },
+        )
+        .expect_err("the synthetic creation failure must be returned");
+
+        assert!(error.to_string().contains("synthetic creation failure"));
+        assert_eq!(
+            observed,
+            Some(RunCreationTransactionOutcome::ConfirmedRollback)
+        );
+        assert!(conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'creation_probe'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .expect("sqlite query")
+            .is_none());
+    }
+
+    #[test]
+    fn creation_outcome_is_unknown_when_rollback_cannot_be_confirmed() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let mut observed = None;
+        let error = with_immediate_transaction_with_creation_outcome(
+            &conn,
+            |conn| {
+                conn.execute_batch(
+                    "CREATE TABLE creation_probe (id INTEGER PRIMARY KEY);\n                     INSERT INTO creation_probe (id) VALUES (1);\n                     ROLLBACK;",
+                )?;
+                Err::<(), _>(anyhow::anyhow!("synthetic ambiguous failure"))
+            },
+            |outcome| {
+                observed = Some(outcome);
+                Ok(())
+            },
+        )
+        .expect_err("the synthetic ambiguous failure must be returned");
+
+        assert!(error.to_string().contains("synthetic ambiguous failure"));
+        assert_eq!(observed, Some(RunCreationTransactionOutcome::Unknown));
+        assert!(conn.is_autocommit());
     }
 }

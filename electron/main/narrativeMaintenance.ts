@@ -1305,6 +1305,59 @@ export function createNarrativeMaintenanceScheduler(
     if (typeof getter !== "function") return undefined;
     return normalizeWorkspaceBinding(getter.call(backend));
   };
+  const refreshClaimedWorkspaceBinding = (
+    projectIds: readonly string[],
+  ): NarrativeMaintenanceWorkspaceBinding | null | undefined => {
+    const refreshed = captureWorkspaceBinding();
+    if (refreshed === undefined) return undefined;
+    const claimed = new Set(projectIds);
+    let changed = false;
+    for (const [key, work] of [...pending.entries()]) {
+      if (!claimed.has(work.projectId)) continue;
+      if (workspaceBindingKey(work.workspaceBinding) === workspaceBindingKey(refreshed)) {
+        continue;
+      }
+      const rebound = { ...work, workspaceBinding: refreshed };
+      pending.delete(key);
+      const reboundKey = scopedWorkKey(rebound);
+      const existing = pending.get(reboundKey);
+      if (existing) {
+        pending.set(reboundKey, {
+          ...existing,
+          reasons: [
+            ...existing.reasons,
+            ...rebound.reasons.filter((reason) => !existing.reasons.includes(reason)),
+          ],
+        });
+      } else {
+        pending.set(reboundKey, rebound);
+      }
+      changed = true;
+    }
+    for (const [wakeKey, entry] of [...durableWakeProjects.entries()]) {
+      if (!claimed.has(entry.projectId)) continue;
+      if (workspaceBindingKey(entry.workspaceBinding) === workspaceBindingKey(refreshed)) {
+        continue;
+      }
+      const reboundKey = scopedWakeKey(entry.projectId, refreshed);
+      durableWakeProjects.delete(wakeKey);
+      durableWakeProjects.set(reboundKey, {
+        ...entry,
+        workspaceBinding: refreshed,
+      });
+      const retryCount = durableWakeRetryCounts.get(wakeKey);
+      durableWakeRetryCounts.delete(wakeKey);
+      if (retryCount !== undefined) {
+        durableWakeRetryCounts.set(reboundKey, retryCount);
+      }
+      if (deferredWakeProjects.delete(wakeKey)) {
+        deferredWakeProjects.add(reboundKey);
+      }
+      changed = true;
+    }
+    if (changed) noteMutation();
+    return refreshed;
+  };
   const persistDeliveryFailure = async (
     failure: NarrativeMaintenanceDeliveryFailure,
   ): Promise<boolean> => {
@@ -1712,10 +1765,10 @@ export function createNarrativeMaintenanceScheduler(
     // dispatch kinds, not JS-side parked work; Rust owns whether a cycle is
     // accepted/coalesced/deferred. Keeping all kinds in one bounded request
     // also prevents mixed batches from permanently parking Verify/Rebuild.
-    const backendBatch = batch;
+    let backendBatch = batch;
     // Ordinary work and a durable empty wake have separate ACK scopes. Keep
     // the wake pending when a work batch is available and issue it later.
-    const sendingWakeEntries =
+    let sendingWakeEntries =
       backendBatch.length === 0
         ? selectedWakeEntries.filter((entry) =>
             claimedProjectSet.has(entry.projectId),
@@ -1724,12 +1777,12 @@ export function createNarrativeMaintenanceScheduler(
     const sendingWakeProjects = [
       ...new Set(sendingWakeEntries.map((entry) => entry.projectId)),
     ];
-    const cycleBinding =
+    let cycleBinding =
       backendBatch[0]?.workspaceBinding ??
       (sendingWakeProjects.length > 0
         ? sendingWakeEntries[0]!.workspaceBinding
         : undefined);
-    const wireBatch: NarrativeMaintenanceWork[] = backendBatch.map((work) => ({
+    let wireBatch: NarrativeMaintenanceWork[] = backendBatch.map((work) => ({
       projectId: work.projectId,
       runKind: work.runKind,
       workKey: work.workKey,
@@ -1742,7 +1795,7 @@ export function createNarrativeMaintenanceScheduler(
       waitForProjectRelease(projectIds);
       return;
     }
-    const deliveryFingerprint = narrativeMaintenanceDeliveryFingerprint(
+    let deliveryFingerprint = narrativeMaintenanceDeliveryFingerprint(
       backendBatch,
       sendingWakeProjects,
       cycleBinding,
@@ -1754,13 +1807,16 @@ export function createNarrativeMaintenanceScheduler(
     const nativeDeliveryMethodsAvailable =
       typeof backend?.ackNarrativeMaintenanceDelivery === "function" ||
       typeof backend?.resolveNarrativeMaintenanceDelivery === "function";
-    const mappedDeliverySequence = deliverySequences.get(deliveryFingerprint);
-    const existingDeliverySequence =
-      mappedDeliverySequence !== undefined &&
-      !pendingDeliveryAcks.has(mappedDeliverySequence)
-        ? mappedDeliverySequence
-        : undefined;
-    const deliverySequence = existingDeliverySequence ?? deliveryLedger.H + 1;
+    const resolveDeliverySequence = (): number => {
+      const mappedDeliverySequence = deliverySequences.get(deliveryFingerprint);
+      const existingDeliverySequence =
+        mappedDeliverySequence !== undefined &&
+        !pendingDeliveryAcks.has(mappedDeliverySequence)
+          ? mappedDeliverySequence
+          : undefined;
+      return existingDeliverySequence ?? deliveryLedger.H + 1;
+    };
+    let deliverySequence = resolveDeliverySequence();
     const reconcileRecovery = backend?.reconcileNarrativeMaintenanceRecovery;
     if (typeof reconcileRecovery === "function") {
       try {
@@ -1776,6 +1832,7 @@ export function createNarrativeMaintenanceScheduler(
           // Recovery may have installed a new authority or advanced the
           // lifecycle revision. The pre-recovery binding captured above is
           // stale by definition; rediscover it before issuing any delivery.
+          refreshClaimedWorkspaceBinding(claimedProjects);
           sharedCoordinator?.release(claimedProjects);
           schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
           return;
@@ -1789,6 +1846,48 @@ export function createNarrativeMaintenanceScheduler(
         schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
         return;
       }
+    }
+    // The recovery preflight may have completed between scheduler ticks (or
+    // another owner may have published a new Ready binding). Refresh the
+    // claimed work once more immediately before delivery admission so a
+    // retained queue item cannot be sent with the authority it observed on a
+    // previous tick.
+    const refreshedBinding =
+      typeof reconcileRecovery === "function"
+        ? refreshClaimedWorkspaceBinding(claimedProjects)
+        : undefined;
+    if (refreshedBinding !== undefined) {
+      // The binding may change while recovery is being reconciled. Rebuild
+      // every delivery-derived value from the same snapshot so the record,
+      // Native wire request, fingerprint, and lifecycle attempt cannot mix
+      // the old and new authority identities.
+      backendBatch = backendBatch.map((work) => ({
+        ...work,
+        workspaceBinding: refreshedBinding,
+      }));
+      sendingWakeEntries = sendingWakeEntries.map((entry) => ({
+        ...entry,
+        wakeKey: scopedWakeKey(entry.projectId, refreshedBinding),
+        workspaceBinding: refreshedBinding,
+      }));
+      cycleBinding =
+        backendBatch[0]?.workspaceBinding ??
+        (sendingWakeEntries.length > 0
+          ? sendingWakeEntries[0]!.workspaceBinding
+          : undefined);
+      wireBatch = backendBatch.map((work) => ({
+        projectId: work.projectId,
+        runKind: work.runKind,
+        workKey: work.workKey,
+        semanticEpochId: work.semanticEpochId,
+        reasons: work.reasons,
+      }));
+      deliveryFingerprint = narrativeMaintenanceDeliveryFingerprint(
+        backendBatch,
+        sendingWakeProjects,
+        cycleBinding,
+      );
+      deliverySequence = resolveDeliverySequence();
     }
     const deliveryAdmission = deliveryLedger.submit(
       deliverySequence,

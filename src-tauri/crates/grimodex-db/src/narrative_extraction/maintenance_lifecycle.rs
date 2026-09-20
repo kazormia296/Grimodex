@@ -19,6 +19,7 @@ use super::maintenance_runtime::{
 };
 use super::repository::{create_system_run_in_tx_with_reserved_id, SystemRunWorkKeyReuse};
 use super::restore_rebuild::VERIFY_CONTRACT_VERSION;
+use crate::Database;
 
 const FAILURE_POLICY_VERSION: &str = "v1";
 const BACKFILL_RUN_KIND: &str = "backfill";
@@ -786,6 +787,9 @@ pub(crate) fn create_maintenance_run_in_tx_with_control(
             .with_database_file_identity(database_file_identity.clone()),
         };
         reserve_run(ownership)?;
+        if let Some(mark_started) = control.and_then(|control| control.mark_run_creation_started) {
+            mark_started(&reservation.run_id)?;
+        }
     }
     let run = create_system_run_in_tx_with_reserved_id(
         conn,
@@ -807,6 +811,24 @@ pub(crate) fn create_maintenance_run_in_tx_with_control(
     let reused = run.get("reused").and_then(Value::as_bool).unwrap_or(false);
 
     if reused {
+        if let Some(mark_selection_unknown) =
+            control.and_then(|control| control.mark_run_reuse_selection_unknown)
+        {
+            // The reuse decision is durable, but loading and validating the
+            // selected tuple still has fallible steps. Keep the reservation
+            // out of the NotCommitted/absence path until the exact existing
+            // tuple is attached below.
+            mark_selection_unknown(&reservation.run_id, &run_id)?;
+        }
+        // Attach the selected durable tuple before the strict loader performs
+        // any further validation. If a later validation step or the outer
+        // COMMIT result is lost, the descriptor still names the existing
+        // Run/Task/Attempt rather than treating the unused reservation IDs as
+        // proof of non-creation.
+        let selected = load_selected_reuse_identity_in_tx(conn, &run_id)?;
+        if let Some(attach_run) = control.and_then(|control| control.attach_run) {
+            attach_run(selected.core_ownership())?;
+        }
         let mut handle = load_maintenance_run_in_tx(conn, &run_id)?;
         let persisted_base = persisted_spec_base(
             &handle.spec_json,
@@ -908,6 +930,105 @@ pub(crate) fn create_maintenance_run_in_tx_with_control(
         attach_run(handle.core_ownership())?;
     }
     Ok(handle)
+}
+
+/// Load only the exact identity tuple selected by the reuse query. This is
+/// intentionally lighter than `load_maintenance_run_in_tx`: it exists so the
+/// Native owner can attach the durable tuple before later spec/ownership
+/// validation introduces another fallible boundary.
+fn load_selected_reuse_identity_in_tx(
+    conn: &Connection,
+    run_id: &str,
+) -> anyhow::Result<MaintenanceRunHandle> {
+    let (
+        project_id,
+        run_kind,
+        semantic_epoch_id,
+        work_key,
+        spec_json,
+        spec_digest,
+    ): (String, Option<String>, Option<String>, Option<String>, String, String) = conn
+        .query_row(
+            "SELECT project_id, run_kind, semantic_epoch_id, work_key,
+                    spec_json, spec_digest
+               FROM narrative_extraction_runs
+              WHERE id = ?1 AND status = 'running'",
+            params![run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| ownership_error(format!("running maintenance Run '{run_id}' not found")))?;
+    let project_created_at: String = conn.query_row(
+        "SELECT created_at FROM projects WHERE id = ?1",
+        params![&project_id],
+        |row| row.get(0),
+    )?;
+    let database_path = sqlite_database_path_in_tx(conn)?;
+    let database_file_identity = sqlite_database_file_identity_in_tx(conn)?;
+    let run_kind = run_kind.ok_or_else(|| ownership_error("semantic Run kind is missing"))?;
+    let semantic_epoch_id =
+        semantic_epoch_id.ok_or_else(|| ownership_error("semantic epoch is missing"))?;
+    let work_key = work_key.ok_or_else(|| ownership_error("sealed work key is missing"))?;
+    let task_kind = maintenance_task_kind(&run_kind).map_err(|error| ownership_error(error.to_string()))?;
+    let epoch = semantic_epoch_number_in_tx(conn, &project_id, &semantic_epoch_id)?;
+    let (task_id, task_kind_stored, task_status, task_input, attempt_count):
+        (String, String, String, String, i64) = conn.query_row(
+        "SELECT id, task_kind, status, input_json, attempt_count
+           FROM narrative_extraction_tasks
+          WHERE run_id = ?1",
+        params![run_id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
+    )?;
+    let (attempt_id, attempt_number, attempt_status): (String, i64, String) = conn.query_row(
+        "SELECT id, attempt_number, status
+           FROM narrative_extraction_attempts
+          WHERE task_id = ?1",
+        params![&task_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    anyhow::ensure!(
+        task_kind_stored == task_kind
+            && task_status == "running"
+            && task_input == spec_json
+            && attempt_count == 1
+            && attempt_number == 1
+            && attempt_status == "running",
+        "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: selected Run does not expose one exact running Task/Attempt tuple"
+    );
+    Ok(MaintenanceRunHandle {
+        project_id,
+        run_id: run_id.to_owned(),
+        run_kind,
+        semantic_epoch_id,
+        epoch,
+        work_key,
+        spec_json,
+        spec_digest,
+        task_id,
+        attempt_id,
+        reused: true,
+        creation_state: RunCreationState::Reused,
+        project_created_at,
+        database_path,
+        database_file_identity,
+    })
 }
 
 /// Recover a legacy/imported automatic maintenance Run that was persisted
@@ -1180,6 +1301,16 @@ pub(crate) fn load_maintenance_run_in_tx(
     };
     validate_handle_in_tx(conn, &handle)?;
     Ok(handle)
+}
+
+/// Re-resolve a reuse selection by its exact durable Run ID after the Native
+/// worker lost its result. The resolver never searches by WorkKey; it loads
+/// the one validated Run/Task/Attempt tuple or leaves the descriptor live.
+pub fn resolve_reused_maintenance_run(
+    db: &Database,
+    run_id: &str,
+) -> anyhow::Result<crate::workspace_lifecycle::DurableRunHandle> {
+    db.with_conn(|conn| Ok(load_maintenance_run_in_tx(conn, run_id)?.core_ownership().handle))
 }
 
 /// Load the exact lifecycle tuple only while the durable Run is still live.

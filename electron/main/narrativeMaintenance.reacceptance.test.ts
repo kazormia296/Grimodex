@@ -112,6 +112,61 @@ describe("narrative maintenance reacceptance boundaries", () => {
     },
   );
 
+  it("runs descriptor recovery preflight before begin or delivery admission", async () => {
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "reconciled" })
+      .mockResolvedValue({ status: "none" });
+    const beginNarrativeMaintenanceAttempt = vi.fn();
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue(accepted());
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery,
+      beginNarrativeMaintenanceAttempt,
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(backfill("recovery-preflight", "first"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
+    expect(beginNarrativeMaintenanceAttempt).not.toHaveBeenCalled();
+    expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledTimes(2);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    scheduler.dispose();
+  });
+
+  it("rediscovers the binding after descriptor reconciliation before retrying work", async () => {
+    let currentBinding = binding("authority-before-recovery", 1);
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "reconciled" })
+      .mockResolvedValue({ status: "none" });
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue(accepted());
+    const scheduler = createNarrativeMaintenanceScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+      reconcileNarrativeMaintenanceRecovery,
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(backfill("recovery-binding", "same-key"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    currentBinding = binding("authority-after-recovery", 2);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0]).toMatchObject({
+      workspaceBinding: currentBinding,
+    });
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    scheduler.dispose();
+  });
+
   it("keeps deferred work parked while an enabled item continues forward", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()

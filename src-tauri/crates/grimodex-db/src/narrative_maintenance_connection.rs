@@ -844,30 +844,98 @@ impl Database {
     /// Retire the connection from the normal owner before a recovery
     /// descriptor is handed to a replacement authority. The SQLite handle is
     /// kept only as quarantined storage until its owning authority is dropped;
-    /// no later recovery path may reuse it. A transaction still open at this
-    /// boundary is not a retirement proof. The health transition is part of
-    /// this primitive, so a successful receipt always makes this authority
+    /// no later recovery path may reuse it. An open transaction is retired by
+    /// consuming the connection: SQLite rolls it back as part of `close`, so
+    /// a later commit cannot occur. The health transition is part of this
+    /// primitive, so a successful receipt always makes this authority
     /// ineligible for normal access and resolver selection.
     pub fn retire_connection_for_recovery(&self) -> anyhow::Result<()> {
         // This primitive is intentionally allowed to inspect a connection
         // that was already quarantined by cleanup. `with_conn` first checks
         // the reusable flag and would make the cleanup-failure -> recovery
         // path permanently unable to emit its retirement receipt.
-        let conn = self
+        let replacement = Connection::open_in_memory().map_err(|error| {
+            anyhow!(
+                "NEX_MAINTENANCE_CONNECTION_RETIREMENT_REPLACEMENT_OPEN_FAILED: {error}"
+            )
+        })?;
+        let mut conn = self
             .conn
             .lock()
             .map_err(|error| anyhow!("NEX_MAINTENANCE_CONNECTION_RETIREMENT_LOCKED: {error}"))?;
-        anyhow::ensure!(
-            conn.is_autocommit(),
-            "NEX_MAINTENANCE_CONNECTION_RETIREMENT_UNPROVEN: transaction is still active"
-        );
         self.connection_health
             .mark_unusable("retired for exact lifecycle recovery");
         // Publish the unusable state while the connection mutex is still
         // held. A waiter that already passed its first health check must not
         // acquire this guard in the gap between the autocommit proof and the
         // retirement receipt.
+        let retired = std::mem::replace(&mut *conn, replacement);
         drop(conn);
+        if let Err((retired, error)) = retired.close() {
+            self.retired_connections
+                .lock()
+                .map_err(|lock_error| {
+                    anyhow!(
+                        "NEX_MAINTENANCE_CONNECTION_RETIREMENT_BATON_LOCKED: {lock_error}; close error: {error}"
+                    )
+                })?
+                .push(retired);
+            return Err(anyhow!(
+                "NEX_MAINTENANCE_CONNECTION_RETIREMENT_CLOSE_FAILED: {error}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether a retired connection still needs an explicit close retry.
+    /// Pending handles remain quarantined and are never returned by the normal
+    /// connection accessor.
+    pub fn retirement_close_pending(&self) -> bool {
+        self.retired_connections
+            .lock()
+            .map(|connections| !connections.is_empty())
+            .unwrap_or(true)
+    }
+
+    /// Retry close for a quarantined connection. A successful return is the
+    /// only point at which the caller may publish `connection_retired` proof.
+    pub fn retry_retirement_close(&self) -> anyhow::Result<()> {
+        let pending = {
+            let mut connections = self.retired_connections.lock().map_err(|error| {
+                anyhow!(
+                    "NEX_MAINTENANCE_CONNECTION_RETIREMENT_BATON_LOCKED: {error}"
+                )
+            })?;
+            std::mem::take(&mut *connections)
+        };
+        let mut remaining = Vec::new();
+        let mut first_error = None;
+        for connection in pending {
+            match connection.close() {
+                Ok(()) => {}
+                Err((connection, error)) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                    remaining.push(connection);
+                }
+            }
+        }
+        if !remaining.is_empty() {
+            self.retired_connections
+                .lock()
+                .map_err(|error| {
+                    anyhow!(
+                        "NEX_MAINTENANCE_CONNECTION_RETIREMENT_BATON_LOCKED: {error}"
+                    )
+                })?
+                .extend(remaining);
+        }
+        if let Some(error) = first_error {
+            return Err(anyhow!(
+                "NEX_MAINTENANCE_CONNECTION_RETIREMENT_CLOSE_RETRY_FAILED: {error}"
+            ));
+        }
         Ok(())
     }
 
@@ -1310,6 +1378,42 @@ mod tests {
         assert!(db
             .with_conn(|_| Ok::<_, anyhow::Error>(()))
             .is_err());
+    }
+
+    #[test]
+    fn retirement_consumes_connection_with_open_transaction() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute_batch("BEGIN")?;
+            assert!(!conn.is_autocommit());
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("leave an active transaction for retirement");
+
+        db.retire_connection_for_recovery()
+            .expect("close must retire and roll back the active transaction");
+        assert!(!db.connection_reusable());
+        assert!(!db.retirement_close_pending());
+        assert!(db
+            .with_conn(|_| Ok::<_, anyhow::Error>(()))
+            .is_err());
+    }
+
+    #[test]
+    fn retirement_close_baton_retries_and_clears_before_receipt() {
+        let db = test_db();
+        db.quarantine_connection("retirement close test");
+        let quarantined = Connection::open_in_memory().expect("quarantined sqlite");
+        db.retired_connections
+            .lock()
+            .expect("retirement baton lock")
+            .push(quarantined);
+        assert!(db.retirement_close_pending());
+
+        db.retry_retirement_close()
+            .expect("explicit close retry succeeds");
+        assert!(!db.retirement_close_pending());
+        assert!(!db.connection_reusable());
     }
 
     #[test]

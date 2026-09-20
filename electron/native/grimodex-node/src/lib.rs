@@ -964,13 +964,22 @@ mod narrative_freshness_restore_lock_tests {
         );
         install_test_workspace(&state, authority);
 
-        let error = run_narrative_freshness_cycle_inner(&state, || {})
-            .expect_err("scheduler must surface an unexpected marker/schema error");
+        let result = run_narrative_freshness_cycle_inner(&state, || {})
+            .expect("unexpected marker/schema failure must transfer recovery ownership")
+            .expect("recovery transfer result");
+        let result: serde_json::Value =
+            serde_json::from_str(&result).expect("recovery result JSON");
+        assert_eq!(result["status"], "workspace-unavailable");
+        assert_eq!(result["reason"], "freshness-recovery-required");
+        assert!(result["descriptorId"].is_number());
         assert!(
-            error
-                .to_string()
-                .contains("NEX_C2ZC_CUTOVER_MARKER_UNSUPPORTED"),
-            "unexpected scheduler error: {error}"
+            state
+                .ws
+                .inner
+                .lock()
+                .expect("workspace state")
+                .is_none(),
+            "the failed authority must be detached before descriptor retry"
         );
 
         let active = state.ws.inner.lock().expect("workspace state").take();
@@ -1915,6 +1924,127 @@ fn open_descriptor_recovery_authority(
     Ok(Arc::new(WorkspaceAuthority::new(database, path, lease)))
 }
 
+/// Drop the retired authority from the active workspace slot before a
+/// descriptor-bound resolver opens its replacement. The identity check keeps
+/// a concurrent workspace switch from detaching a newer authority.
+fn detach_retired_maintenance_authority(
+    state: &AppState,
+    retired_identity: u64,
+) -> std::result::Result<(), AppError> {
+    let mut inner = state
+        .ws
+        .inner
+        .lock()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+    if inner
+        .as_ref()
+        .is_some_and(|active| active.authority.identity() == retired_identity)
+    {
+        // Dropping the ActiveWorkspace releases the shared file lease. The
+        // replacement recovery owner therefore acquires its lease after the
+        // old authority and its SQLite handle have been retired.
+        *inner = None;
+    }
+    Ok(())
+}
+
+fn recovery_baton_key(path: &std::path::Path, authority_instance: u64) -> String {
+    format!("{}#{authority_instance}", path.to_string_lossy())
+}
+
+fn retry_recovery_baton_close(
+    state: &AppState,
+    descriptor_id: grimodex_db::workspace_lifecycle::RecoveryDescriptorId,
+    binding: &grimodex_db::LiveBinding,
+) -> std::result::Result<bool, AppError> {
+    let key = recovery_baton_key(std::path::Path::new(&binding.locator), binding.authority_instance);
+    let baton = state
+        .narrative_maintenance_recovery_batons
+        .lock()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error.to_string())))?
+        .get(&key)
+        .cloned();
+    let Some(baton) = baton else {
+        return Ok(true);
+    };
+    if !baton.db().retirement_close_pending() {
+        return Ok(true);
+    }
+    if let Err(error) = baton.db().retry_retirement_close() {
+        tracing::warn!(
+            target: "narrative.maintenance",
+            %error,
+            descriptor_id = descriptor_id.get(),
+            "maintenance recovery close retry remains pending"
+        );
+        return Ok(false);
+    }
+    state
+        .workspace_lifecycle
+        .mark_descriptor_connection_retired(descriptor_id)?;
+    Ok(true)
+}
+
+/// Retire a supervisor-pinned authority before transferring a failed
+/// execution to its descriptor. The connection health transition and the
+/// active-slot detach happen before the local Arc is dropped, so the next
+/// descriptor resolver must open a distinct authority and lease.
+fn retire_authority_for_recovery(
+    state: &AppState,
+    authority: Option<PinnedWorkspaceDb>,
+) -> bool {
+    let Some(authority) = authority else {
+        return false;
+    };
+    let retirement_result = match authority.db().retire_connection_for_recovery() {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            tracing::error!(
+                target: "narrative.maintenance",
+                %error,
+                "maintenance recovery could not retire old connection"
+            );
+            Err(error)
+        }
+    };
+    let receipt_ready = retirement_result.is_ok();
+    // A close failure leaves the returned Connection in the DB's quarantine
+    // baton. Keep the authority/lease alive and detach it from the active
+    // slot, but do not report retirement proof until an explicit retry closes
+    // that handle successfully.
+    let baton_required = receipt_ready || authority.db().retirement_close_pending();
+    if baton_required {
+        let baton_stored = match state.narrative_maintenance_recovery_batons.lock() {
+            Ok(mut batons) => {
+                let key = recovery_baton_key(authority.path(), authority.identity());
+                batons.insert(key, Arc::clone(&authority));
+                true
+            }
+            Err(error) => {
+                tracing::error!(
+                    target: "narrative.maintenance",
+                    %error,
+                    "maintenance recovery could not retain lease-only baton"
+                );
+                false
+            }
+        };
+        if baton_stored {
+            if let Err(error) = detach_retired_maintenance_authority(state, authority.identity()) {
+                tracing::error!(
+                    target: "narrative.maintenance",
+                    %error,
+                    "maintenance recovery could not detach retired authority"
+                );
+            }
+        }
+    }
+    // The active slot, when it still pointed at this identity, was detached
+    // above. Dropping this final worker/supervisor Arc releases its lease.
+    drop(authority);
+    receipt_ready
+}
+
 /// Resolve one exact maintenance recovery descriptor before ordinary cycle
 /// admission. The descriptor is the only source of Run identity; no WorkKey
 /// lookup or `active_database()` fallback is allowed while the core is in
@@ -1945,6 +2075,16 @@ fn reconcile_maintenance_recovery_descriptor(
         let Some(binding) = descriptor.expected_binding.as_ref() else {
             continue;
         };
+        // A failed close leaves the old SQLite handle and its shared lease in
+        // a recovery baton.  Finish that close before opening or selecting
+        // any authority for this descriptor.  In particular, do not let
+        // `Database::new` below create a same-path connection while the old
+        // handle is still alive.
+        if !retry_recovery_baton_close(state, descriptor_id, binding)? {
+            return Ok(Some(
+                "maintenance-recovery-connection-close-pending".to_owned(),
+            ));
+        }
         if let Some(authority) = active_authority.as_ref() {
             let metadata_path = authority.path().join(".grimodex/workspace.json");
             let workspace_id = std::fs::read_to_string(&metadata_path)
@@ -1990,22 +2130,26 @@ fn reconcile_maintenance_recovery_descriptor(
     // Install a replacement only after the shared recovery transition owns
     // the logical boundary; W2 remains untouched because its path is
     // different from the descriptor root.
-    if let Some(old_authority) = active_authority.as_ref() {
-        if !old_authority.db().connection_reusable()
+    if active_authority.as_ref().is_some_and(|old_authority| {
+        !old_authority.db().connection_reusable()
             && old_authority.path() == authority.path()
             && old_authority.identity() != authority.identity()
-        {
-            let mut inner = state
-                .ws
-                .inner
-                .lock()
-                .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error.to_string())))?;
-            if inner
-                .as_ref()
-                .is_some_and(|active| active.authority.identity() == old_authority.identity())
-            {
-                *inner = Some(ActiveWorkspace::new(Arc::clone(&authority)));
+    }) || active_authority.is_none()
+    {
+        let mut inner = state
+            .ws
+            .inner
+            .lock()
+            .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+        let can_install = match (active_authority.as_ref(), inner.as_ref()) {
+            (None, None) => true,
+            (Some(old_authority), Some(active)) => {
+                active.authority.identity() == old_authority.identity()
             }
+            _ => false,
+        };
+        if can_install {
+            *inner = Some(ActiveWorkspace::new(Arc::clone(&authority)));
         }
     }
 
@@ -2019,6 +2163,38 @@ fn reconcile_maintenance_recovery_descriptor(
             match ownership.state {
                 grimodex_db::RunCreationState::Reserved
                 | grimodex_db::RunCreationState::CreationNotCommitted => {}
+                grimodex_db::RunCreationState::ReuseSelectionUnknown => {
+                    let selected_run_id = ownership
+                        .handle
+                        .selected_reuse_run_id
+                        .as_deref()
+                        .ok_or_else(|| {
+                            AppError::Anyhow(anyhow::anyhow!(
+                                "NEX_RUN_REUSE_SELECTION_UNKNOWN: selected Run ID is missing"
+                            ))
+                        })?;
+                    let selected_handle =
+                        narrative_extraction::resolve_reused_maintenance_run(
+                            authority.db(),
+                            selected_run_id,
+                        )
+                        .map_err(AppError::Anyhow)?;
+                    state
+                        .workspace_lifecycle
+                        .attach_reuse_selection_to_descriptor(
+                            descriptor_id,
+                            grimodex_db::RunOwnership {
+                                state: grimodex_db::RunCreationState::Reused,
+                                handle: selected_handle.clone(),
+                            },
+                        )?;
+                    narrative_extraction::recover_maintenance_run_exact(
+                        authority.db(),
+                        &selected_handle,
+                        "NEX_MAINTENANCE_RECOVERY_DESCRIPTOR",
+                    )
+                    .map_err(AppError::Anyhow)?;
+                }
                 grimodex_db::RunCreationState::CreationUnknown => {
                     match narrative_extraction::resolve_maintenance_run_creation_unknown(
                         authority.db(),
@@ -2108,6 +2284,19 @@ fn reconcile_maintenance_recovery_descriptor(
                 return Err(AppError::Anyhow(anyhow::anyhow!(
                     "NEX_MAINTENANCE_RECOVERY_ACTIVATION_INCOMPLETE"
                 )));
+            }
+            // Keep the old lease-only baton until replacement installation,
+            // exact Run reconciliation, control completion, and Ready
+            // publication have all succeeded. The local replacement Arc is
+            // still alive here, so removing the baton cannot create a gap.
+            if let Some(binding) = descriptor.expected_binding.as_ref() {
+                let key = recovery_baton_key(
+                    std::path::Path::new(&binding.locator),
+                    binding.authority_instance,
+                );
+                if let Ok(mut batons) = state.narrative_maintenance_recovery_batons.lock() {
+                    batons.remove(&key);
+                }
             }
             Ok(result)
         }
@@ -2285,6 +2474,10 @@ where
         work_deferred: &no_work,
         attach_run: None,
         reserve_run: None,
+        mark_run_creation_started: None,
+        mark_run_reuse_selection_unknown: None,
+        mark_run_creation_outcome: None,
+        reset_run_creation_tracking: None,
     };
 
     let operation_result = operation(authority.db(), &control, &canonical_work_key);
@@ -4434,12 +4627,43 @@ fn run_narrative_freshness_cycle_inner(
         }
         PermitAdmission::NotAdmitted { .. } => return Ok(None),
     };
+    let recovery_authority = active_database(&state.ws).ok();
     let result = run_narrative_freshness_cycle_body(state, after_cycle);
     lifecycle_permit
         .mark_joined()
-        .and_then(|_| lifecycle_permit.release().map(|_| ()))
         .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
-    result
+    match result {
+        Ok(result) => {
+            lifecycle_permit
+                .release()
+                .map(|_| result)
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))
+        }
+        Err(error) => {
+            if retire_authority_for_recovery(state, recovery_authority) {
+                lifecycle_permit
+                    .mark_connection_retired()
+                    .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+            }
+            let descriptor_id = lifecycle_permit
+                .transfer_to_recovery()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+            tracing::error!(
+                target: "narrative.maintenance",
+                %error,
+                descriptor_id = descriptor_id.get(),
+                "freshness cycle failed after Join; responsibility transferred to recovery"
+            );
+            Ok(Some(
+                serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "freshness-recovery-required",
+                    "descriptorId": descriptor_id,
+                })
+                .to_string(),
+            ))
+        }
+    }
 }
 
 #[napi]
@@ -4955,25 +5179,66 @@ impl Backend {
             }
             PermitAdmission::NotAdmitted { .. } => return Ok(None),
         };
+        let recovery_authority = active_database(&state.ws).ok();
         // Keep the permit in the async supervisor. A cancelled blocking task
         // therefore cannot consume it before JoinError is observed.
+        let worker_state = Arc::clone(&state);
         let worker_join = napi::tokio::task::spawn_blocking(move || {
             catch_unwind(AssertUnwindSafe(|| {
-                run_narrative_freshness_cycle_body(&state, || {})
+                run_narrative_freshness_cycle_body(&worker_state, || {})
             }))
         });
         match worker_join.await {
             Ok(Ok(result)) => {
-        lifecycle_permit
-            .mark_joined()
-            .and_then(|_| lifecycle_permit.release().map(|_| ()))
-            .map_err(|error| Error::from_reason(error.to_string()))?;
-        result.map_err(app_err_to_napi)
-    }
-            Ok(Err(_)) | Err(_) => {
                 lifecycle_permit
                     .mark_joined()
                     .map_err(|error| Error::from_reason(error.to_string()))?;
+                match result {
+                    Ok(result) => {
+                        lifecycle_permit
+                            .release()
+                            .map_err(|error| Error::from_reason(error.to_string()))?;
+                        Ok(result)
+                    }
+                    Err(error) => {
+                        let connection_retired =
+                            retire_authority_for_recovery(&state, recovery_authority);
+                        if connection_retired {
+                            lifecycle_permit
+                                .mark_connection_retired()
+                                .map_err(|error| Error::from_reason(error.to_string()))?;
+                        }
+                        let descriptor_id = lifecycle_permit
+                            .transfer_to_recovery()
+                            .map_err(|error| Error::from_reason(error.to_string()))?;
+                        tracing::error!(
+                            target: "narrative.maintenance",
+                            %error,
+                            descriptor_id = descriptor_id.get(),
+                            "freshness cycle failed after Join; responsibility transferred to recovery"
+                        );
+                        Ok(Some(
+                            serde_json::json!({
+                                "status": "workspace-unavailable",
+                                "reason": "freshness-recovery-required",
+                                "descriptorId": descriptor_id,
+                            })
+                            .to_string(),
+                        ))
+                    }
+                }
+            }
+            Ok(Err(_)) | Err(_) => {
+                let connection_retired =
+                    retire_authority_for_recovery(&state, recovery_authority);
+                lifecycle_permit
+                    .mark_joined()
+                    .map_err(|error| Error::from_reason(error.to_string()))?;
+                if connection_retired {
+                    lifecycle_permit
+                        .mark_connection_retired()
+                        .map_err(|error| Error::from_reason(error.to_string()))?;
+                }
                 let descriptor_id = lifecycle_permit
                     .transfer_to_recovery()
                     .map_err(|error| Error::from_reason(error.to_string()))?;
@@ -5568,6 +5833,11 @@ impl Backend {
                 permit
                     .start()
                     .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+                // Admission/start is the ownership boundary. Any DB work
+                // after this point (preempted-run cleanup, fault setup, or
+                // planning) is supervised and must transfer the permit on
+                // error instead of taking the clean-release path.
+                lifecycle_work_started = true;
                 permit.arm_scope_finalizer();
             }
 
@@ -5862,6 +6132,10 @@ impl Backend {
             let attempt_id_for_control =
                 attempt_guard.as_ref().map(|guard| guard.attempt_id.clone());
             let state_for_control = Arc::clone(&state);
+            let creation_run_id = Arc::new(Mutex::new(None::<String>));
+            let creation_run_id_for_start = Arc::clone(&creation_run_id);
+            let creation_run_id_for_outcome = Arc::clone(&creation_run_id);
+            let creation_run_id_for_reset = Arc::clone(&creation_run_id);
             let stop_signal_for_control = attempt_id_for_control
                 .as_deref()
                 .map(|attempt_id| {
@@ -5978,6 +6252,54 @@ impl Backend {
                     .attach_run_ownership(ownership)
                     .map_err(|error| anyhow::anyhow!("{error}"))
             };
+            let mark_run_creation_started =
+                |run_id: &str| -> anyhow::Result<()> {
+                    *creation_run_id_for_start
+                        .lock()
+                        .map_err(|error| anyhow::anyhow!("creation tracking lock poisoned: {error}"))? =
+                        Some(run_id.to_owned());
+                    lifecycle_permit
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_LIFECYCLE_PERMIT_MISSING"))?
+                        .mark_run_creation_started(run_id)
+                        .map_err(|error| anyhow::anyhow!("{error}"))
+                };
+            let mark_run_reuse_selection_unknown =
+                |reservation_run_id: &str, selected_run_id: &str| -> anyhow::Result<()> {
+                    *creation_run_id_for_start
+                        .lock()
+                        .map_err(|error| anyhow::anyhow!("creation tracking lock poisoned: {error}"))? =
+                        Some(reservation_run_id.to_owned());
+                    lifecycle_permit
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_LIFECYCLE_PERMIT_MISSING"))?
+                        .mark_run_reuse_selection_unknown(reservation_run_id, selected_run_id)
+                        .map_err(|error| anyhow::anyhow!("{error}"))
+                };
+            let mark_run_creation_outcome =
+                |outcome: grimodex_db::workspace_lifecycle::RunCreationTransactionOutcome| {
+                    let run_id = creation_run_id_for_outcome
+                        .lock()
+                        .map_err(|error| anyhow::anyhow!("creation tracking lock poisoned: {error}"))?
+                        .clone();
+                    if let Some(run_id) = run_id {
+                        lifecycle_permit
+                            .as_ref()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("NEX_MAINTENANCE_LIFECYCLE_PERMIT_MISSING")
+                            })?
+                            .mark_run_creation_outcome(&run_id, outcome)
+                            .map_err(|error| anyhow::anyhow!("{error}"))?;
+                    }
+                    Ok(())
+                };
+            let reset_run_creation_tracking = || -> anyhow::Result<()> {
+                *creation_run_id_for_reset
+                    .lock()
+                    .map_err(|error| anyhow::anyhow!("creation tracking lock poisoned: {error}"))? =
+                    None;
+                Ok(())
+            };
                     let reserve_run =
                         |ownership: grimodex_db::workspace_lifecycle::RunOwnership| {
                             let project_id = ownership.handle.project_id.clone();
@@ -6011,8 +6333,11 @@ impl Backend {
                 work_deferred: &work_deferred,
                 attach_run: Some(&attach_run),
                 reserve_run: Some(&reserve_run),
+                mark_run_creation_started: Some(&mark_run_creation_started),
+                mark_run_reuse_selection_unknown: Some(&mark_run_reuse_selection_unknown),
+                mark_run_creation_outcome: Some(&mark_run_creation_outcome),
+                reset_run_creation_tracking: Some(&reset_run_creation_tracking),
             };
-            lifecycle_work_started = true;
             let cycle_result = {
                 narrative_extraction::run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                     authority.db(),
@@ -6259,7 +6584,7 @@ impl Backend {
                 return Err(join_err_to_napi(join_error));
             }
         };
-        let worker = worker;
+        let mut worker = worker;
         (|| {
             let mut operation_result = worker.result;
             if let Some(mut permit) = worker.lifecycle_permit {
@@ -6274,20 +6599,8 @@ impl Backend {
                     permit
                         .mark_joined()
                         .map_err(|error| Error::from_reason(error.to_string()))?;
-                    let connection_retired = match worker.authority.as_ref() {
-                        Some(authority) => match authority.db().retire_connection_for_recovery() {
-                            Ok(()) => true,
-                            Err(retire_error) => {
-                                tracing::error!(
-                                    target: "narrative.maintenance",
-                                    %retire_error,
-                                    "maintenance recovery could not retire old connection"
-                                );
-                                false
-                            }
-                        },
-                        None => false,
-                    };
+                    let connection_retired =
+                        retire_authority_for_recovery(&state, worker.authority.take());
                     if connection_retired {
                         permit
                             .mark_connection_retired()
@@ -16163,8 +16476,25 @@ mod narrative_maintenance_foreground_release_tests {
         assert_eq!(result["status"], "workspace-unavailable");
         assert_eq!(result["reason"], "maintenance-recovery-required");
         assert!(result["descriptorId"].is_number());
-        assert_eq!(run_status(&authority, &run_a), "completed");
-        assert_eq!(run_status(&authority, "run-duplicate"), "running");
+        assert!(
+            authority
+                .db()
+                .with_conn(|_| Ok::<_, anyhow::Error>(()))
+                .is_err(),
+            "the original authority must be quarantined before recovery handoff"
+        );
+        let replacement_db = Database::new(&root.join("workspace/grimodex.db"))
+            .expect("replacement authority database");
+        let replacement_authority = WorkspaceAuthority::from_database_for_test(
+            replacement_db,
+            root.join("workspace"),
+        )
+        .expect("replacement authority");
+        assert_eq!(run_status(&replacement_authority, &run_a), "completed");
+        assert_eq!(
+            run_status(&replacement_authority, "run-duplicate"),
+            "running"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -293,6 +293,40 @@ impl MaintenancePermit {
         self.core.attach_run_ownership(self.execution_id, run)
     }
 
+    /// Mark the exact reserved tuple as having entered its creation DML. The
+    /// outer transaction has already begun, so a later rollback cannot be
+    /// treated as a pre-transaction reservation.
+    pub fn mark_run_creation_started(&self, run_id: &str) -> Result<(), LifecycleError> {
+        self.core
+            .mark_run_creation_started(self.execution_id, run_id)
+    }
+
+    /// Keep a reuse selection as an explicit unresolved obligation until the
+    /// existing durable tuple has been attached. A missing reservation ID is
+    /// never evidence that the selected reusable Run did not exist.
+    pub fn mark_run_reuse_selection_unknown(
+        &self,
+        reservation_run_id: &str,
+        selected_run_id: &str,
+    ) -> Result<(), LifecycleError> {
+        self.core.mark_run_reuse_selection_unknown(
+            self.execution_id,
+            reservation_run_id,
+            selected_run_id,
+        )
+    }
+
+    /// Record the outer transaction's rollback/commit boundary for one exact
+    /// reserved tuple.
+    pub fn mark_run_creation_outcome(
+        &self,
+        run_id: &str,
+        outcome: RunCreationTransactionOutcome,
+    ) -> Result<(), LifecycleError> {
+        self.core
+            .mark_run_creation_outcome(self.execution_id, run_id, outcome)
+    }
+
     /// Record the supervisor-owned retirement receipt for every exact Run
     /// tuple attached to this execution. Join proves execution termination;
     /// this separate receipt proves the old connection cannot later commit.
@@ -549,6 +583,11 @@ pub struct DurableRunHandle {
     /// evidence that the old worker can no longer commit.
     #[serde(default)]
     pub connection_retired: bool,
+    /// When reuse was selected but the exact existing tuple could not yet be
+    /// attached, retain the selected durable Run ID. It is diagnostic and
+    /// recovery input only; WorkKey lookup must never replace this identity.
+    #[serde(default)]
+    pub selected_reuse_run_id: Option<String>,
 }
 
 impl DurableRunHandle {
@@ -581,6 +620,7 @@ impl DurableRunHandle {
             database_file_identity: None,
             worker_joined: false,
             connection_retired: false,
+            selected_reuse_run_id: None,
         }
     }
 
@@ -621,8 +661,21 @@ pub enum RunCreationState {
     Reserved,
     CreationNotCommitted,
     CreationUnknown,
+    /// The writer selected a reusable durable tuple, but the exact existing
+    /// tuple could not yet be attached to this execution. This state must not
+    /// be resolved as absence of the reservation IDs.
+    ReuseSelectionUnknown,
     Created,
     Reused,
+}
+
+/// Outcome observed by the outer transaction supervisor for a reserved Run
+/// tuple. A confirmed rollback proves that no durable creation survived;
+/// every other failure path remains an exact `CreationUnknown` obligation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum RunCreationTransactionOutcome {
+    ConfirmedRollback,
+    Unknown,
 }
 
 /// Shared-core membership is the lifecycle source of truth for Native
@@ -664,6 +717,16 @@ pub struct WorkExecutionMembership {
 pub struct RunOwnership {
     pub state: RunCreationState,
     pub handle: DurableRunHandle,
+}
+
+fn same_run_work_identity(left: &DurableRunHandle, right: &DurableRunHandle) -> bool {
+    left.project_id == right.project_id
+        && left.kind == right.kind
+        && left.semantic_epoch_id == right.semantic_epoch_id
+        && left.work_key == right.work_key
+        && left.epoch == right.epoch
+        && left.sealed_spec == right.sealed_spec
+        && left.spec_digest == right.spec_digest
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1645,9 +1708,39 @@ impl WorkspaceLifecycleCore {
                 existing.state = run.state;
                 return Ok(());
             }
-            if existing.state == RunCreationState::Reserved {
+            if existing.state == RunCreationState::Reserved
+                || (matches!(
+                    existing.state,
+                    RunCreationState::CreationUnknown
+                        | RunCreationState::ReuseSelectionUnknown
+                )
+                    && run.state == RunCreationState::Reused
+                    && same_run_work_identity(&existing.handle, &run.handle))
+            {
                 *existing = run;
                 return Ok(());
+            }
+            if existing.state == RunCreationState::ReuseSelectionUnknown
+                && run.state == RunCreationState::Reused
+            {
+                // A reuse result for another epoch/spec is a protocol
+                // violation, never an additional occurrence to append.
+                return Err(LifecycleError::InvalidExecutionTransition);
+            }
+            if let Some(selected) = execution
+                .additional_runs
+                .iter_mut()
+                .find(|owned| owned.state == RunCreationState::ReuseSelectionUnknown)
+            {
+                if run.state == RunCreationState::Reused
+                    && same_run_work_identity(&selected.handle, &run.handle)
+                {
+                    *selected = run;
+                    return Ok(());
+                }
+                if run.state == RunCreationState::Reused {
+                    return Err(LifecycleError::InvalidExecutionTransition);
+                }
             }
             if let Some(reserved) = execution
                 .additional_runs
@@ -1667,6 +1760,101 @@ impl WorkspaceLifecycleCore {
             execution.additional_runs.push(run);
         } else {
             execution.run = Some(run);
+        }
+        Ok(())
+    }
+
+    pub fn mark_run_creation_started(
+        &self,
+        execution_id: ExecutionId,
+        run_id: &str,
+    ) -> Result<(), LifecycleError> {
+        let mut state = self.lock_state()?;
+        let execution = state
+            .executions
+            .get_mut(&execution_id)
+            .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+        let Some(ownership) = execution
+            .run
+            .iter_mut()
+            .chain(execution.additional_runs.iter_mut())
+            .find(|ownership| ownership.handle.run_id == run_id)
+        else {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        };
+        if ownership.state == RunCreationState::Reserved {
+            ownership.state = RunCreationState::CreationUnknown;
+        }
+        Ok(())
+    }
+
+    pub fn mark_run_reuse_selection_unknown(
+        &self,
+        execution_id: ExecutionId,
+        reservation_run_id: &str,
+        selected_run_id: &str,
+    ) -> Result<(), LifecycleError> {
+        let mut state = self.lock_state()?;
+        let execution = state
+            .executions
+            .get_mut(&execution_id)
+            .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+        let Some(ownership) = execution
+            .run
+            .iter_mut()
+            .chain(execution.additional_runs.iter_mut())
+            .find(|ownership| ownership.handle.run_id == reservation_run_id)
+        else {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        };
+        if matches!(
+            ownership.state,
+            RunCreationState::Reserved | RunCreationState::CreationUnknown
+        ) {
+            ownership.state = RunCreationState::ReuseSelectionUnknown;
+            ownership.handle.selected_reuse_run_id = Some(selected_run_id.to_owned());
+        }
+        Ok(())
+    }
+
+    pub fn mark_run_creation_outcome(
+        &self,
+        execution_id: ExecutionId,
+        run_id: &str,
+        outcome: RunCreationTransactionOutcome,
+    ) -> Result<(), LifecycleError> {
+        let mut state = self.lock_state()?;
+        let execution = state
+            .executions
+            .get_mut(&execution_id)
+            .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+        let Some(ownership) = execution
+            .run
+            .iter_mut()
+            .chain(execution.additional_runs.iter_mut())
+            .find(|ownership| ownership.handle.run_id == run_id)
+        else {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        };
+        match outcome {
+            RunCreationTransactionOutcome::ConfirmedRollback => {
+                if matches!(
+                    ownership.state,
+                    RunCreationState::Reserved | RunCreationState::CreationUnknown
+                ) {
+                    ownership.state = RunCreationState::CreationNotCommitted;
+                }
+            }
+            RunCreationTransactionOutcome::Unknown => {
+                if matches!(
+                    ownership.state,
+                    RunCreationState::Reserved
+                        | RunCreationState::CreationNotCommitted
+                        | RunCreationState::CreationUnknown
+                ) {
+                    ownership.state = RunCreationState::CreationUnknown;
+                }
+            }
         }
         Ok(())
     }
@@ -2546,6 +2734,78 @@ impl WorkspaceLifecycleCore {
             .ok_or(LifecycleError::UnknownDescriptor(descriptor_id))
     }
 
+    /// Replace a reuse-selection placeholder with the exact durable tuple
+    /// recovered by its selected Run ID. WorkKey matching is deliberately not
+    /// accepted here because another occurrence may share that key.
+    pub fn attach_reuse_selection_to_descriptor(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+        run: RunOwnership,
+    ) -> Result<(), LifecycleError> {
+        if run.state != RunCreationState::Reused {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        }
+        let mut state = self.lock_state()?;
+        let descriptor = state
+            .descriptors
+            .get_mut(&descriptor_id)
+            .ok_or(LifecycleError::UnknownDescriptor(descriptor_id))?;
+        let mut matched = false;
+        if let Some(existing) = descriptor
+            .run
+            .as_mut()
+            .filter(|existing| existing.state == RunCreationState::ReuseSelectionUnknown)
+        {
+            if existing.handle.selected_reuse_run_id.as_deref()
+                == Some(run.handle.run_id.as_str())
+                && same_run_work_identity(&existing.handle, &run.handle)
+            {
+                *existing = run.clone();
+                matched = true;
+            }
+        }
+        if !matched {
+            for existing in &mut descriptor.additional_runs {
+                if existing.state == RunCreationState::ReuseSelectionUnknown
+                    && existing.handle.selected_reuse_run_id.as_deref()
+                        == Some(run.handle.run_id.as_str())
+                    && same_run_work_identity(&existing.handle, &run.handle)
+                {
+                    *existing = run.clone();
+                    if matched {
+                        return Err(LifecycleError::InvalidExecutionTransition);
+                    }
+                    matched = true;
+                }
+            }
+        }
+        if !matched {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        }
+        Ok(())
+    }
+
+    /// Publish a connection-retirement receipt after a quarantined close
+    /// retry succeeds. The descriptor root remains live until this proof is
+    /// present, so absence resolution cannot race an old worker connection.
+    pub fn mark_descriptor_connection_retired(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+    ) -> Result<(), LifecycleError> {
+        let mut state = self.lock_state()?;
+        let descriptor = state
+            .descriptors
+            .get_mut(&descriptor_id)
+            .ok_or(LifecycleError::UnknownDescriptor(descriptor_id))?;
+        if let Some(run) = descriptor.run.as_mut() {
+            run.handle.connection_retired = true;
+        }
+        for run in &mut descriptor.additional_runs {
+            run.handle.connection_retired = true;
+        }
+        Ok(())
+    }
+
     /// Return unresolved descriptor roots for the Native recovery supervisor.
     /// The values are copied under the core lock; no authority or transport
     /// state is exposed through this helper.
@@ -2972,6 +3232,21 @@ mod tests {
 
     fn binding(instance: u64) -> LiveBinding {
         LiveBinding::new("/tmp/workspace", "workspace-1", instance, 1)
+    }
+
+    fn run_handle(run_id: &str, work_key: &str) -> DurableRunHandle {
+        DurableRunHandle::new(
+            "project-1",
+            run_id,
+            format!("{run_id}-task"),
+            format!("{run_id}-attempt"),
+            "backfill",
+            "epoch-1",
+            work_key,
+            1,
+            "{}",
+            "sha256:test",
+        )
     }
 
     #[test]
@@ -3885,5 +4160,111 @@ mod tests {
         core.release_descriptor_responsibility(descriptor_id)
             .expect("release responsibility");
         core.close().expect("closed after descriptor ACK");
+    }
+
+    #[test]
+    fn creation_outcomes_distinguish_confirmed_rollback_from_unknown() {
+        for (outcome, expected) in [
+            (
+                RunCreationTransactionOutcome::ConfirmedRollback,
+                RunCreationState::CreationNotCommitted,
+            ),
+            (
+                RunCreationTransactionOutcome::Unknown,
+                RunCreationState::CreationUnknown,
+            ),
+        ] {
+            let core = WorkspaceLifecycleCore::new();
+            core.set_ready(binding(1)).expect("ready");
+            let mut permit = match core.admit_maintenance_permit().expect("maintenance") {
+                PermitAdmission::Admitted(permit) => permit,
+                PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
+            };
+            permit
+                .attach_run_ownership(RunOwnership {
+                    state: RunCreationState::Reserved,
+                    handle: run_handle("reserved-run", "work-a"),
+                })
+                .expect("reserve exact run tuple");
+            permit
+                .mark_run_creation_started("reserved-run")
+                .expect("creation started");
+            permit
+                .mark_run_creation_outcome("reserved-run", outcome)
+                .expect("record creation outcome");
+            permit.mark_joined().expect("worker joined");
+            let descriptor_id = permit.transfer_to_recovery().expect("recovery descriptor");
+            let descriptor = core.descriptor(descriptor_id).expect("descriptor snapshot");
+            assert_eq!(descriptor.run.expect("run ownership").state, expected);
+        }
+    }
+
+    #[test]
+    fn reuse_selection_recovery_replaces_primary_and_additional_by_exact_run_id() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let mut permit = match core.admit_maintenance_permit().expect("maintenance") {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
+        };
+        permit
+            .attach_run_ownership(RunOwnership {
+                state: RunCreationState::Reserved,
+                handle: run_handle("reserved-primary", "work-primary"),
+            })
+            .expect("reserve primary");
+        permit
+            .mark_run_creation_started("reserved-primary")
+            .expect("primary creation started");
+        permit
+            .mark_run_reuse_selection_unknown("reserved-primary", "selected-primary")
+            .expect("primary reuse selection is unresolved");
+
+        permit
+            .attach_run_ownership(RunOwnership {
+                state: RunCreationState::Reserved,
+                handle: run_handle("reserved-additional", "work-additional"),
+            })
+            .expect("reserve additional");
+        permit
+            .mark_run_creation_started("reserved-additional")
+            .expect("additional creation started");
+        permit
+            .mark_run_reuse_selection_unknown("reserved-additional", "selected-additional")
+            .expect("additional reuse selection is unresolved");
+
+        permit.mark_joined().expect("worker joined");
+        let descriptor_id = permit.transfer_to_recovery().expect("recovery descriptor");
+        core.attach_reuse_selection_to_descriptor(
+            descriptor_id,
+            RunOwnership {
+                state: RunCreationState::Reused,
+                handle: run_handle("selected-primary", "work-primary"),
+            },
+        )
+        .expect("attach selected primary tuple");
+        core.attach_reuse_selection_to_descriptor(
+            descriptor_id,
+            RunOwnership {
+                state: RunCreationState::Reused,
+                handle: run_handle("selected-additional", "work-additional"),
+            },
+        )
+        .expect("attach selected additional tuple");
+
+        let descriptor = core.descriptor(descriptor_id).expect("descriptor snapshot");
+        assert_eq!(
+            descriptor.run.expect("primary tuple").handle.run_id,
+            "selected-primary"
+        );
+        assert_eq!(
+            descriptor
+                .additional_runs
+                .first()
+                .expect("additional tuple")
+                .handle
+                .run_id,
+            "selected-additional"
+        );
     }
 }
