@@ -1,6 +1,6 @@
 # PR #600 lifecycle replacement: C1 acceptance record
 
-Candidate under review: `5fed7588` (built from parent
+Candidate under review: `4e5ade99` (built from parent
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`). Contract:
 `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`.
 

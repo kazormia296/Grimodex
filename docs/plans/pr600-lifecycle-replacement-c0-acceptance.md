@@ -1,6 +1,6 @@
 # PR #600 lifecycle replacement: C0 acceptance record
 
-Candidate under review: `5fed7588` (built from parent
+Candidate under review: `4e5ade99` (built from parent
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`). Contract:
 `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`.
 
@@ -35,7 +35,7 @@ acceptance.
 ## Evidence inspected
 
 - `docs/plans/pr600-lifecycle-replacement.md` and the implementation diff at
-  candidate `5fed7588`.
+  candidate `4e5ade99`.
 - Layer A shared-core tests: `cargo test --manifest-path
   src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle` (24 tests,
   including independent W2 Open with an unresolved W1 descriptor).
