@@ -34,6 +34,11 @@ type AppliedNativeOpenOutcome =
       kind: "recovery";
       status: RecoveryWorkspaceOpenStatus;
       state: RecoveryWorkspaceStatePatch;
+    }
+  | {
+      kind: "not-admitted";
+      reasonCode: string;
+      revision: number;
     };
 
 export function applyNativeOpenOutcome(
@@ -41,6 +46,14 @@ export function applyNativeOpenOutcome(
   workspacePath: string,
 ): AppliedNativeOpenOutcome {
   const outcome = normalizeNativeWorkspaceOpenOutcome(value);
+
+  if (outcome.status === "not-admitted") {
+    return {
+      kind: "not-admitted",
+      reasonCode: outcome.reasonCode,
+      revision: outcome.snapshot.revision,
+    };
+  }
 
   if (
     outcome.status === "safe-mode" ||

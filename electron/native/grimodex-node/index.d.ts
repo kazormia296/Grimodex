@@ -141,6 +141,8 @@ export declare class Backend {
    * successful drain.
    */
   runNarrativeMaintenanceCycle(payload: any): Promise<string>
+  ackNarrativeMaintenanceDelivery(sequence: number): Promise<string>
+  resolveNarrativeMaintenanceDelivery(sequence: number): Promise<string>
   /**
    * Persist a scheduler delivery failure before Electron drops its
    * process-local identity. The receipt is append-only and workspace-scoped
@@ -293,6 +295,8 @@ export declare class Backend {
    * activation marker; it never contains workspace paths or native IDs.
    */
   getWorkspaceLifecycleView(): Promise<string>
+  /** Main-only idempotent lifecycle shutdown; publishes Closed only on proof. */
+  shutdownWorkspaceLifecycle(): Promise<string>
   /**
    * 既存 workspace 判定 (commands/workspace.rs の同名コマンドと同一実装)。
    * 軽量 stat のみなので設計どおり同期のまま (§4.2「純関数の validate 除く」)。

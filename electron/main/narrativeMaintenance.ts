@@ -84,6 +84,8 @@ export interface NarrativeMaintenanceCycleRequest {
   workspaceBinding?: NarrativeMaintenanceWorkspaceBinding;
   /** Session-scoped delivery sequence paired with the main ledger. */
   deliverySequence?: number;
+  /** Exact fingerprint paired with the Native lifecycle delivery record. */
+  deliveryFingerprint?: string;
   /** Process-local lifecycle identity; Native does not persist this field. */
   attemptId?: string;
 }
@@ -150,6 +152,11 @@ export interface NarrativeMaintenanceBackendLike {
   runNarrativeMaintenanceCycle?(
     request: NarrativeMaintenanceCycleRequest,
   ): Promise<unknown>;
+  ackNarrativeMaintenanceDelivery?(sequence: number): Promise<unknown> | unknown;
+  resolveNarrativeMaintenanceDelivery?(sequence: number):
+    | Promise<unknown>
+    | unknown;
+  shutdownWorkspaceLifecycle?(): Promise<unknown> | unknown;
   /** Main-only attempt lifecycle. These are intentionally absent from IPC. */
   beginNarrativeMaintenanceAttempt?(
     attemptId: string,
@@ -1276,6 +1283,12 @@ export function createNarrativeMaintenanceScheduler(
         );
       }
       deliverySequences.delete(fingerprint);
+      const ack = backend?.ackNarrativeMaintenanceDelivery;
+      if (typeof ack === "function") {
+        void Promise.resolve(ack.call(backend, sequence)).catch((error: unknown) => {
+          warn("[narrative-maintenance] Native delivery ACK failed:", error);
+        });
+      }
     } catch (error) {
       // Keep the sequence mapped when retirement cannot be proven. A later
       // retry must replay this exact delivery instead of allocating a new
@@ -1619,6 +1632,13 @@ export function createNarrativeMaintenanceScheduler(
       sendingWakeProjects,
       cycleBinding,
     );
+    // The real Native backend exposes the ACK/fence methods introduced with
+    // the lifecycle delivery contract. Older in-process test doubles and
+    // frozen compatibility adapters intentionally do not: keep their wire
+    // shape unchanged while retaining the scheduler's local retry ledger.
+    const nativeDeliveryMethodsAvailable =
+      typeof backend?.ackNarrativeMaintenanceDelivery === "function" ||
+      typeof backend?.resolveNarrativeMaintenanceDelivery === "function";
     const existingDeliverySequence = deliverySequences.get(deliveryFingerprint);
     const deliverySequence = existingDeliverySequence ?? deliveryLedger.H + 1;
     const deliveryAdmission = deliveryLedger.submit(
@@ -1639,7 +1659,14 @@ export function createNarrativeMaintenanceScheduler(
       schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
       return;
     }
-    deliverySequences.set(deliveryFingerprint, deliverySequence);
+    const replayingDelivery = deliveryAdmission.admission === "duplicate";
+    // A duplicate is a read of the same Native sequence/fingerprint. Native
+    // admission is idempotent and returns the retained terminal wire result;
+    // it never starts a second worker. This path is required after a lost
+    // response, when the original delivery remains pending in both ledgers.
+    if (!replayingDelivery) {
+      deliverySequences.set(deliveryFingerprint, deliverySequence);
+    }
     clearCoordinatorWait();
     for (const entry of sendingWakeEntries) {
       durableWakeProjects.delete(entry.wakeKey);
@@ -1659,6 +1686,7 @@ export function createNarrativeMaintenanceScheduler(
     let interruptedCycle = false;
     let settledCycleResult: NarrativeMaintenanceCycleResult | null = null;
     const lifecycleEnabled =
+      !replayingDelivery &&
       cycleBinding !== undefined &&
       cycleBinding !== null &&
       typeof backend?.beginNarrativeMaintenanceAttempt === "function" &&
@@ -1688,15 +1716,18 @@ export function createNarrativeMaintenanceScheduler(
       }
       // N-API class methods must be invoked through backend to preserve self.
       nativeCallStarted = true;
-      const result = await method.call(backend, {
+      const nativeRequest: NarrativeMaintenanceCycleRequest = {
         work: wireBatch,
         wakeProjectIds: sendingWakeProjects,
-        deliverySequence,
         ...(cycleBinding !== undefined && cycleBinding !== null
           ? { workspaceBinding: cycleBinding }
           : {}),
         ...(cycleAttemptId ? { attemptId: cycleAttemptId } : {}),
-      });
+        ...(nativeDeliveryMethodsAvailable
+          ? { deliverySequence, deliveryFingerprint }
+          : {}),
+      };
+      const result = await method.call(backend, nativeRequest);
       // Validate the response before clearing retry state.  A malformed
       // native response is a failed cycle and consumes the same bounded retry
       // budget as a rejected backend call.  Workspace-unavailable is handled
@@ -1908,6 +1939,19 @@ export function createNarrativeMaintenanceScheduler(
         retireCurrentDelivery();
       }
     } catch (error) {
+      // A lost/failed N-API admission must converge through the Native
+      // high-water fence. If a record was already accepted, the shared core
+      // returns OutOfOrder/Replay and leaves that owner intact; if Native did
+      // not reach admission, the current H+1 can be sealed without creating a
+      // second execution on the next retry.
+      const resolveNative = backend?.resolveNarrativeMaintenanceDelivery;
+      if (typeof resolveNative === "function") {
+        void Promise.resolve(resolveNative.call(backend, deliverySequence)).catch(
+          (fenceError: unknown) => {
+            warn("[narrative-maintenance] Native delivery fence failed:", fenceError);
+          },
+        );
+      }
       if (!disposed) {
         const attemptSnapshotBeforeCleanup = cycleAttemptId
           ? activeAttemptController.snapshot(cycleAttemptId)
@@ -2034,6 +2078,17 @@ export function createNarrativeMaintenanceScheduler(
               projectId,
               workspaceBinding: cycleBinding,
             });
+          }
+          // The terminal interruption receipt has been consumed and its
+          // unfinished work is now represented by fresh queue entries. Retire
+          // this delivery record before the next occurrence; otherwise the
+          // same fingerprint is mistaken for a lost-response replay and the
+          // requeued work never receives a new supervised attempt.
+          if (
+            nativeTerminalReceipt !== null ||
+            !nativeAttemptIds.has(cycleAttemptId ?? "")
+          ) {
+            retireCurrentDelivery();
           }
           shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
         } else if (workspaceMismatch) {

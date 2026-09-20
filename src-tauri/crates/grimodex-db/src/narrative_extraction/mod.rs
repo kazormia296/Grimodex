@@ -157,9 +157,8 @@ mod semantic_index_diagnostics;
 mod source_revision;
 #[allow(unused_imports)]
 pub(crate) use source_revision::{
-    is_validation_terminated, resolve_current_source_state_with_control,
-    resolve_source_revision_with_control, validation_terminated, ValidationTerminated,
-    ValidationTerminationReason,
+    resolve_current_source_state_with_control,
+    resolve_source_revision_with_control,
 };
 mod stage_provenance;
 mod task_leases;
@@ -275,6 +274,11 @@ pub use incremental_freshness::{
     NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
 };
 pub use incremental_freshness::FreshnessLifecycleControl;
+pub use nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
+pub use source_revision::{
+    is_validation_terminated, validation_terminated, ValidationTerminated,
+    ValidationTerminationReason,
+};
 pub use maintenance_route_registry::{
     route_descriptor_by_id, route_descriptor_for_run_kind, route_descriptors,
     route_id_for_run_kind, MaintenanceRouteDescriptor,
@@ -625,11 +629,27 @@ pub fn narrative_extraction_prepare_commit(
     commit::narrative_extraction_prepare_commit(db, payload)
 }
 
+pub fn narrative_extraction_prepare_commit_with_control(
+    db: &Database,
+    payload: PrepareCommitPayload,
+    control: &mut dyn nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<Value> {
+    commit::narrative_extraction_prepare_commit_with_control(db, payload, Some(control))
+}
+
 pub fn narrative_extraction_apply_commit(
     db: &Database,
     payload: ApplyCommitPayload,
 ) -> anyhow::Result<Value> {
     commit::narrative_extraction_apply_commit(db, payload)
+}
+
+pub fn narrative_extraction_apply_commit_with_control(
+    db: &Database,
+    payload: ApplyCommitPayload,
+    control: &mut dyn nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<Value> {
+    commit::narrative_extraction_apply_commit_with_control(db, payload, Some(control))
 }
 
 pub fn narrative_extraction_get_commit_status(

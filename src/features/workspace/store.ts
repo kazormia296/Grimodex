@@ -202,6 +202,19 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
           ),
           path,
         );
+        if (nativeOpenOutcome.kind === "not-admitted") {
+          // NotAdmitted proves only that this request did not start.  The
+          // concurrent owner may still be draining/replacing the workspace,
+          // so never restore hydration, IME, recorder, or the old binding.
+          swapDone = true;
+          set({
+            view: "launcher",
+            workspaceSwitchInProgress: false,
+            workspaceHydrated: false,
+            error: `Workspace transition was not admitted (${nativeOpenOutcome.reasonCode})`,
+          });
+          return "blocked";
+        }
         if (nativeOpenOutcome.kind === "recovery") {
           swapDone = true;
           set(nativeOpenOutcome.state);

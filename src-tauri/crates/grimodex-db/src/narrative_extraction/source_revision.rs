@@ -60,7 +60,7 @@ pub(crate) struct CurrentSourceRevision {
 /// it into an ordinary domain result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-pub(crate) enum ValidationTerminationReason {
+pub enum ValidationTerminationReason {
     ContextUnavailable,
     Cancelled,
     TimedOut,
@@ -90,14 +90,14 @@ impl ValidationTerminationReason {
 /// interruption into `missing`, `stale`, `Unknown`, or a successful result.
 #[derive(Debug)]
 #[allow(dead_code)]
-pub(crate) struct ValidationTerminated {
-    pub(crate) reason: ValidationTerminationReason,
+pub struct ValidationTerminated {
+    pub reason: ValidationTerminationReason,
     message: String,
 }
 
 impl ValidationTerminated {
     #[allow(dead_code)]
-    pub(crate) fn new(reason: ValidationTerminationReason, message: impl Into<String>) -> Self {
+    pub fn new(reason: ValidationTerminationReason, message: impl Into<String>) -> Self {
         Self {
             reason,
             message: message.into(),
@@ -119,7 +119,7 @@ impl fmt::Display for ValidationTerminated {
 impl std::error::Error for ValidationTerminated {}
 
 #[allow(dead_code)]
-pub(crate) fn validation_terminated(
+pub fn validation_terminated(
     reason: ValidationTerminationReason,
     message: impl Into<String>,
 ) -> anyhow::Error {
@@ -129,7 +129,7 @@ pub(crate) fn validation_terminated(
 /// `anyhow` preserves this marker when callers add context.  Keep the check
 /// in one place so every reader makes the same distinction from routine
 /// Source absence/staleness.
-pub(crate) fn is_validation_terminated(error: &anyhow::Error) -> bool {
+pub fn is_validation_terminated(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ValidationTerminated>().is_some()
 }
 

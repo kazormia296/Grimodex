@@ -403,6 +403,7 @@ mod tests {
             work: vec![work],
             wake_project_ids: Vec::new(),
             delivery_sequence: None,
+            delivery_fingerprint: None,
             workspace_binding: None,
         };
         let cycle = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)

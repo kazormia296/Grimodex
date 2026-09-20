@@ -138,6 +138,19 @@ pub(crate) struct MaintenanceRunHandle {
     pub(crate) creation_state: RunCreationState,
 }
 
+impl MaintenanceRunHandle {
+    /// The writer is called inside an outer transaction, so a fresh tuple is
+    /// not durably `Created` until that transaction returns successfully.  A
+    /// caller may promote the process-local slot only at that post-COMMIT
+    /// boundary; until then it remains `CreationUnknown` and absence cannot
+    /// be mistaken for a reuse miss.
+    pub(crate) fn mark_creation_committed(&mut self) {
+        if !self.reused && matches!(self.creation_state, RunCreationState::CreationUnknown) {
+            self.creation_state = RunCreationState::Created;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) enum RunCreationState {
@@ -219,32 +232,45 @@ pub(crate) fn resolve_creation_unknown_in_tx(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    let task_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE id=?1 AND run_id=?2",
-        params![&reservation.task_id, &reservation.run_id],
-        |row| row.get(0),
-    )?;
-    let attempt_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM narrative_extraction_attempts a
-          JOIN narrative_extraction_tasks t ON t.id=a.task_id
-         WHERE a.id=?1 AND a.task_id=?2 AND t.run_id=?3",
-        params![&reservation.attempt_id, &reservation.task_id, &reservation.run_id],
-        |row| row.get(0),
-    )?;
-    match (run, task_count, attempt_count) {
-        (None, 0, 0) => {
+    // Fetch each child by its own exact ID first.  Filtering through the
+    // expected parent would turn a foreign-linked child into a false zero-row
+    // result and incorrectly resolve CreationUnknown as NotCommitted.
+    let task: Option<(String, String, String, String)> = conn
+        .query_row(
+            "SELECT run_id, task_kind, status, input_json
+               FROM narrative_extraction_tasks
+              WHERE id=?1",
+            params![&reservation.task_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let attempt: Option<(String, i64, String)> = conn
+        .query_row(
+            "SELECT task_id, attempt_number, status
+               FROM narrative_extraction_attempts
+              WHERE id=?1",
+            params![&reservation.attempt_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    match (run, task, attempt) {
+        (None, None, None) => {
             // The caller may now release the process-local ownership slot
             // without writing a synthetic cancelled Run.
             Ok(CreationResolution::NotCommitted)
         }
-        (Some((actual_project, _)), 1, 1) if actual_project == project_id => {
+        (
+            Some((actual_project, _)),
+            Some((actual_run_id, _task_kind, _task_status, _input_json)),
+            Some((actual_task_id, _attempt_number, _attempt_status)),
+        ) if actual_project == project_id
+            && actual_run_id == reservation.run_id
+            && actual_task_id == reservation.task_id =>
+        {
             Ok(CreationResolution::Created)
         }
-        (Some(_), _, _) | (_, 1, _) | (_, _, 1) => Err(ownership_error(
+        (Some(_), _, _) | (_, Some(_), _) | (_, _, Some(_)) => Err(ownership_error(
             "Run creation tuple is partial, cross-project, or references a different child",
-        )),
-        _ => Err(ownership_error(
-            "Run creation tuple does not match the reserved identity",
         )),
     }
 }
@@ -554,7 +580,9 @@ pub(crate) fn create_maintenance_run_in_tx(
         task_id,
         attempt_id,
         reused: false,
-        creation_state: RunCreationState::Created,
+        // This function runs inside the caller's transaction.  Do not claim
+        // COMMIT success before the transaction boundary has returned.
+        creation_state: RunCreationState::CreationUnknown,
     };
     validate_handle_in_tx(conn, &handle)?;
     Ok(handle)

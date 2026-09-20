@@ -685,13 +685,11 @@ fn is_system_directory(path: &Path) -> bool {
 pub struct SwitchingGuard<'a>(pub &'a WorkspaceLifecycleCompatibilityView);
 
 /// Same-path reopen quiesce: wait for sole authority owner, drop the old
-/// authority (releasing its shared lease), hold the maintenance exclusive claim
-/// through open, and on pre-replace failure best-effort republish a
-/// current-schema authority via DDL-free reopen (never re-run the full
-/// Migration Supervisor).
-struct QuiescedSamePath<'a> {
-    ws_state: &'a WorkspaceState,
-    ws_path: PathBuf,
+/// authority (releasing its shared lease), and hold the maintenance exclusive
+/// claim through the explicit replacement operation.  A failed operation is
+/// left for the lifecycle supervisor to classify as RecoveryRequired; Drop
+/// never starts a new reopen or publishes an authority behind that supervisor.
+struct QuiescedSamePath {
     did_quiesce: bool,
     /// When true, Drop must not republish (Safe Mode / RecoveryRequired /
     /// successful replacement).
@@ -699,11 +697,9 @@ struct QuiescedSamePath<'a> {
     _maintenance: Option<WorkspaceMaintenanceClaim>,
 }
 
-impl<'a> QuiescedSamePath<'a> {
-    fn begin(ws_state: &'a WorkspaceState, ws_path: &Path) -> Result<Self, AppError> {
+impl QuiescedSamePath {
+    fn begin(ws_state: &WorkspaceState, ws_path: &Path) -> Result<Self, AppError> {
         let mut guard = Self {
-            ws_state,
-            ws_path: ws_path.to_path_buf(),
             did_quiesce: false,
             abandon_restore: false,
             _maintenance: None,
@@ -758,32 +754,18 @@ impl<'a> QuiescedSamePath<'a> {
     }
 }
 
-impl Drop for QuiescedSamePath<'_> {
+impl Drop for QuiescedSamePath {
     fn drop(&mut self) {
         if !self.did_quiesce || self.abandon_restore {
             return;
         }
-        // Release in-process maintenance exclusive before acquiring shared lease.
+        // Release only the in-process claim.  Starting a new DB open from Drop
+        // would bypass the lifecycle Join/activation boundary and could revive
+        // an authority while the replacement worker is still unobserved.
         self._maintenance = None;
-        match crate::migration_supervisor::reopen_existing_current_authority(&self.ws_path) {
-            Ok(opened) => {
-                let authority = Arc::new(WorkspaceAuthority::new(
-                    opened.database,
-                    self.ws_path.clone(),
-                    opened.lease,
-                ));
-                if let Ok(mut inner) = self.ws_state.inner.lock() {
-                    if inner.is_none() {
-                        *inner = Some(ActiveWorkspace::new(authority));
-                    }
-                }
-            }
-            Err(error) => {
-                tracing::error!(
-                    "WORKSPACE_REACTIVATION_FAILED during same-path pre-replace recovery: {error}"
-                );
-            }
-        }
+        tracing::warn!(
+            "workspace replacement failed after quiesce; lifecycle supervisor must own recovery"
+        );
     }
 }
 

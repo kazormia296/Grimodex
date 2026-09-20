@@ -541,7 +541,32 @@ if (!gotSingleInstanceLock) {
     }
     const quitFinalizer = createNarrativeMaintenanceQuitFinalizer({
       dispose: async () => {
-        await narrativeMaintenance?.dispose();
+        // Native shutdown observes Open/Restore through the shared lifecycle
+        // owner. Always issue that idempotent request even when the scheduler
+        // cannot produce its terminal receipt; otherwise an independent
+        // scheduler failure could strand an active workspace worker outside
+        // the shutdown observation budget.
+        let schedulerError: unknown;
+        try {
+          await narrativeMaintenance?.dispose();
+        } catch (error) {
+          schedulerError = error;
+        }
+        let nativeError: unknown;
+        try {
+          await backend?.shutdownWorkspaceLifecycle?.();
+        } catch (error) {
+          nativeError = error;
+        }
+        if (schedulerError !== undefined || nativeError !== undefined) {
+          const failures = [schedulerError, nativeError].filter(
+            (error): error is unknown => error !== undefined,
+          );
+          throw new AggregateError(
+            failures,
+            "workspace lifecycle shutdown did not reach a terminal receipt",
+          );
+        }
       },
       error: (error) => {
         console.error(

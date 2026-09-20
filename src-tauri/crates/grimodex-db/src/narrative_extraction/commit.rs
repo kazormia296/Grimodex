@@ -80,10 +80,10 @@ use super::semantic_bindings::{
     apply_semantic_binding_upsert_in_tx, parse_semantic_binding_upsert_payload,
     OP_KIND_SEMANTIC_BINDING_UPSERT,
 };
-use super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage, NeverStopGraphWorkControl};
 use super::source_revision::{
     is_validation_terminated, resolve_source_revision_with_validation_context,
-    validation_context, ValidationContext,
+    validation_context,
 };
 use super::task_leases::with_immediate_transaction;
 use super::temporal_constraints::{
@@ -155,8 +155,23 @@ pub fn narrative_extraction_prepare_commit(
     db: &Database,
     payload: PrepareCommitPayload,
 ) -> anyhow::Result<Value> {
+    narrative_extraction_prepare_commit_with_control(db, payload, None)
+}
+
+/// Foreground lifecycle owner variant.  The borrowed control is threaded only
+/// through the whole-eligibility Source contract; it does not grant any
+/// semantic Apply authority or create a nested maintenance admission.
+pub fn narrative_extraction_prepare_commit_with_control(
+    db: &Database,
+    payload: PrepareCommitPayload,
+    control: Option<&mut dyn GraphWorkControl>,
+) -> anyhow::Result<Value> {
+    let mut lifecycle_control = control;
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            if let Some(control) = lifecycle_control.as_deref_mut() {
+                control.check(GraphWorkStage::Source)?;
+            }
             require_narrative_apply_allowed(conn)?;
             let mut sealed_plan = sealed_plan_json(&payload)?;
             let plan_digest = digest_plan(&json!({
@@ -234,16 +249,24 @@ pub fn narrative_extraction_prepare_commit(
                 // The foreground command owns this borrowed validation
                 // capability for the duration of the same write transaction.
                 // It is intentionally not a maintenance re-admission.
-                let mut owner = NeverStopGraphWorkControl;
-                let mut validation = validation_context(conn, &mut owner);
+                let mut fallback_owner = NeverStopGraphWorkControl;
+                let owner: &mut dyn GraphWorkControl =
+                    if let Some(control) = lifecycle_control.as_deref_mut() {
+                        control
+                    } else {
+                        &mut fallback_owner
+                    };
                 build_source_contract(
                     conn,
                     &payload.project_id,
                     &payload.run_id,
                     &applications,
-                    &mut validation,
+                    owner,
                 )?
             };
+            if let Some(control) = lifecycle_control.as_deref_mut() {
+                control.check(GraphWorkStage::Source)?;
+            }
             validate_retraction_targets(
                 conn,
                 &payload.project_id,
@@ -436,8 +459,9 @@ fn build_source_contract(
     project_id: &str,
     run_id: &str,
     applications: &[(String, String)],
-    validation: &mut ValidationContext<'_, '_>,
+    owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<SealedSourceContract> {
+    let mut validation = validation_context(conn, owner);
     validation.ensure_connection(conn)?;
     let mut revision_rows = Vec::with_capacity(applications.len());
     let mut source_rows = Vec::new();
@@ -488,7 +512,7 @@ fn build_source_contract(
 
         for source in &persisted_source_basis {
             let current = resolve_source_revision_with_validation_context(
-                validation,
+                &mut validation,
                 project_id,
                 run_id,
                 &source.source_kind,
@@ -513,7 +537,7 @@ fn build_source_contract(
 
         if envelope_schema_version(&envelope) == Some(2) {
             for row in super::v2_apply_sources::load_v2_apply_sources_with_validation_context(
-                validation,
+                &mut validation,
                 project_id,
                 run_id,
                 revision_id,
@@ -549,7 +573,7 @@ fn build_source_contract(
                 .map(Ok)
                 .unwrap_or_else(|| source_kind_for_read_set(kind))?;
             let current = resolve_source_revision_with_validation_context(
-                validation,
+                &mut validation,
                 project_id,
                 run_id,
                 source_kind,
@@ -861,10 +885,23 @@ pub fn narrative_extraction_apply_commit(
     db: &Database,
     payload: ApplyCommitPayload,
 ) -> anyhow::Result<Value> {
+    narrative_extraction_apply_commit_with_control(db, payload, None)
+}
+
+/// Apply counterpart of [`narrative_extraction_prepare_commit_with_control`].
+pub fn narrative_extraction_apply_commit_with_control(
+    db: &Database,
+    payload: ApplyCommitPayload,
+    control: Option<&mut dyn GraphWorkControl>,
+) -> anyhow::Result<Value> {
+    let mut lifecycle_control = control;
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let timestamp = Utc::now().timestamp_millis();
 
     let apply_result = db.with_conn(|conn| {
+        if let Some(control) = lifecycle_control.as_deref_mut() {
+            control.check(GraphWorkStage::Source)?;
+        }
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         with_immediate_transaction(conn, |conn| {
             let existing =
@@ -969,20 +1006,28 @@ pub fn narrative_extraction_apply_commit(
                 existing.prepared_policy_version == Some(current_policy_version),
                 "NEX_PREPARED_POLICY_CHANGED: prepared policy version no longer matches"
             );
-            let mut validation_owner = NeverStopGraphWorkControl;
             let current_source_contract = {
                 // Apply revalidates the sealed contract on the same
                 // transaction and borrowed owner as its DML.  A separate
                 // connection or nested maintenance admission is forbidden.
-                let mut validation = validation_context(conn, &mut validation_owner);
+                let mut fallback_owner = NeverStopGraphWorkControl;
+                let owner: &mut dyn GraphWorkControl =
+                    if let Some(control) = lifecycle_control.as_deref_mut() {
+                        control
+                    } else {
+                        &mut fallback_owner
+                    };
                 build_source_contract(
                     conn,
                     &sealed_plan.project_id,
                     &sealed_plan.run_id,
                     &applications,
-                    &mut validation,
+                    owner,
                 )?
             };
+            if let Some(control) = lifecycle_control.as_deref_mut() {
+                control.check(GraphWorkStage::Source)?;
+            }
             anyhow::ensure!(
                 current_source_contract.revision_envelope_digest
                     == sealed_source_contract.revision_envelope_digest,
@@ -1571,7 +1616,14 @@ pub fn narrative_extraction_apply_commit(
                 )?;
                 let envelope: Value = serde_json::from_str(&envelope_json)?;
                 let read_set = if envelope_schema_version(&envelope) == Some(2) {
-                    let mut validation = validation_context(conn, &mut validation_owner);
+                    let mut fallback_owner = NeverStopGraphWorkControl;
+                    let owner: &mut dyn GraphWorkControl =
+                        if let Some(control) = lifecycle_control.as_deref_mut() {
+                            control
+                        } else {
+                            &mut fallback_owner
+                        };
+                    let mut validation = validation_context(conn, owner);
                     validation.ensure_connection(conn)?;
                     super::v2_apply_sources::load_v2_apply_sources_with_validation_context(
                         &mut validation,

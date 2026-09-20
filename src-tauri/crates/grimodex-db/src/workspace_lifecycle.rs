@@ -463,6 +463,7 @@ pub enum DeliveryAdmissionOutcome {
     },
     Replay {
         sequence: DeliverySequence,
+        result: Option<String>,
     },
     Full {
         next_sequence: DeliverySequence,
@@ -560,6 +561,9 @@ struct DeliveryRecord {
     fingerprint: String,
     terminal: bool,
     acked: bool,
+    /// Retain the exact terminal wire result until transport ACK. A lost
+    /// response must be replayable without executing the work again.
+    result: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -801,11 +805,13 @@ impl WorkspaceLifecycleCore {
         descriptor_id: RecoveryDescriptorId,
     ) -> Result<AdmissionOutcome, LifecycleError> {
         let mut state = self.lock_state()?;
+        let is_safe_mode_root = descriptor_id == SAFE_MODE_RECOVERY_DESCRIPTOR_ID;
+        let has_descriptor_root = state.descriptors.contains_key(&descriptor_id);
         if !matches!(
             state.state,
             LifecycleState::RecoveryRequired { descriptor_id: current }
                 if current == descriptor_id
-        ) || !state.descriptors.contains_key(&descriptor_id)
+        ) || (!has_descriptor_root && !is_safe_mode_root)
         {
             return Ok(AdmissionOutcome::NotAdmitted {
                 reason: AdmissionRejection::RecoveryPrerequisite,
@@ -815,14 +821,16 @@ impl WorkspaceLifecycleCore {
                 ),
             });
         }
-        if state
-            .descriptors
-            .get(&descriptor_id)
-            .is_some_and(|descriptor| descriptor.resolved)
-            || state
-                .control_slots
+        if (!is_safe_mode_root
+            && state
+                .descriptors
                 .get(&descriptor_id)
-                .is_some_and(|slot| slot.retired)
+                .is_some_and(|descriptor| descriptor.resolved))
+            || (!is_safe_mode_root
+                && state
+                    .control_slots
+                    .get(&descriptor_id)
+                    .is_some_and(|slot| slot.retired))
         {
             return Ok(AdmissionOutcome::NotAdmitted {
                 reason: AdmissionRejection::Retired,
@@ -1413,7 +1421,10 @@ impl WorkspaceLifecycleCore {
         if sequence.get() <= state.delivery.high_water.get() {
             if let Some(record) = state.delivery.records.get(&sequence) {
                 return Ok(if record.fingerprint == fingerprint {
-                    DeliveryAdmissionOutcome::Replay { sequence }
+                    DeliveryAdmissionOutcome::Replay {
+                        sequence,
+                        result: record.result.clone(),
+                    }
                 } else {
                     DeliveryAdmissionOutcome::Conflict { sequence }
                 });
@@ -1438,6 +1449,7 @@ impl WorkspaceLifecycleCore {
                 fingerprint,
                 terminal: false,
                 acked: false,
+                result: None,
             },
         );
         Ok(DeliveryAdmissionOutcome::Accepted { sequence })
@@ -1450,11 +1462,23 @@ impl WorkspaceLifecycleCore {
         &self,
         sequence: DeliverySequence,
     ) -> Result<bool, LifecycleError> {
+        self.mark_delivery_terminal_with_result(sequence, None)
+    }
+
+    /// Publish the exact terminal result before main may ACK the delivery.
+    /// Keeping this in the shared core makes a lost N-API response replayable
+    /// while the record remains unacknowledged, without re-running the work.
+    pub fn mark_delivery_terminal_with_result(
+        &self,
+        sequence: DeliverySequence,
+        result: Option<String>,
+    ) -> Result<bool, LifecycleError> {
         let mut state = self.lock_state()?;
         let Some(record) = state.delivery.records.get_mut(&sequence) else {
             return Ok(false);
         };
         record.terminal = true;
+        record.result = result;
         Ok(true)
     }
 
@@ -1649,6 +1673,29 @@ impl WorkspaceLifecycleCompatibilityView {
     }
 
     pub fn store(&self, value: bool, order: Ordering) {
+        // The legacy opener still drops a `SwitchingGuard` independently of
+        // the shared lifecycle supervisor.  It may clear the compatibility
+        // projection while a real transition ticket is still waiting for Join;
+        // never let that legacy write reopen the normal DB boundary.  The
+        // authoritative state remains in `CoreState` until activate/recovery
+        // completion.
+        if !value {
+            if let Ok(state) = self.inner.state.lock() {
+                if matches!(state.state, LifecycleState::Transition { .. })
+                    || !state.joined_operations.is_empty()
+                    || state
+                        .admissions
+                        .values()
+                        .any(|ticket| ticket.kind.is_transition())
+                {
+                    return;
+                }
+            } else {
+                // Fail closed on a poisoned state lock.  The next normal
+                // lifecycle operation will surface the poison explicitly.
+                return;
+            }
+        }
         self.inner.compatibility_switching.store(value, order);
     }
 }
@@ -1979,6 +2026,36 @@ mod tests {
         assert!(core
             .release_responsibility(&reservation)
             .expect("release responsibility"));
+    }
+
+    #[test]
+    fn duplicate_delivery_replays_terminal_result_until_ack() {
+        let core = WorkspaceLifecycleCore::new();
+        let sequence = DeliverySequence::new(1);
+        assert!(matches!(
+            core.admit_delivery_at(sequence, "same-fingerprint")
+                .expect("initial admission"),
+            DeliveryAdmissionOutcome::Accepted { .. }
+        ));
+        core.mark_delivery_terminal_with_result(
+            sequence,
+            Some(r#"{"status":"accepted","hasMore":false}"#.to_owned()),
+        )
+        .expect("terminal result");
+        assert!(matches!(
+            core.admit_delivery_at(sequence, "same-fingerprint")
+                .expect("replay admission"),
+            DeliveryAdmissionOutcome::Replay {
+                result: Some(result),
+                ..
+            } if result == r#"{"status":"accepted","hasMore":false}"#
+        ));
+        assert!(core.ack_delivery(sequence).expect("ack"));
+        assert!(matches!(
+            core.admit_delivery_at(sequence, "same-fingerprint")
+                .expect("retired lookup"),
+            DeliveryAdmissionOutcome::SealedAbsent { .. }
+        ));
     }
 
     #[test]

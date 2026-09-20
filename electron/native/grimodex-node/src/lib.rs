@@ -84,7 +84,7 @@ use grimodex_db::narrative_extraction::{
     RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
     RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
     VerifyNarrativeDependencyGraphPayload,
-    FreshnessLifecycleControl,
+    FreshnessLifecycleControl, GraphWorkControl, GraphWorkStage,
 };
 use grimodex_db::open::{
     open_workspace_sync_traced_with_pre_swap, NativeWorkspaceOpenResult,
@@ -117,8 +117,12 @@ use grimodex_db::trash_bin::{self, TrashBinCreatePayload, TrashBinRestorePayload
 use grimodex_db::web_editor_handoff;
 use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{
-    with_db_state, AdmissionKind, AppError, BatchStatement, Database, LifecycleState,
-    PermitAdmission, RepairIntegrityPayload,
+    with_db_state, AdmissionKind, AdmissionOutcome, AdmissionRejection, AppError, BatchStatement,
+    Database, DeliveryAdmissionOutcome, DeliverySequence, LifecycleSnapshot, LifecycleState,
+    PermitAdmission, RepairIntegrityPayload, TransitionStage,
+};
+use grimodex_db::narrative_extraction::{
+    validation_terminated, ValidationTerminationReason,
 };
 
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
@@ -1044,19 +1048,21 @@ fn narrative_maintenance_binding_for_authority(
 /// it.  Callers outside that callback retain the normal fail-closed lookup.
 fn workspace_swap_owner_authority(
     state: &AppState,
-    allow_switching_owner: bool,
+    owner_can_observe_transition: bool,
 ) -> std::result::Result<PinnedWorkspaceDb, AppError> {
-    if allow_switching_owner
-        && state
-            .ws
-            .switching
-            .load(std::sync::atomic::Ordering::Acquire)
-    {
-        let inner = state
-            .ws
-            .inner
-            .lock()
-            .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+    if owner_can_observe_transition {
+        let inner = match state.ws.inner.lock() {
+            Ok(inner) => inner,
+            Err(poisoned) => {
+                // A caught panic in the shared opener may poison the mutex
+                // after the old authority is still the only published one.
+                // The lifecycle owner is the sole recovery boundary here;
+                // consume that guard, clear the marker, and continue to
+                // inspect the exact authority rather than strand recovery.
+                state.ws.inner.clear_poison();
+                poisoned.into_inner()
+            }
+        };
         return inner
             .as_ref()
             .map(|workspace| Arc::clone(&workspace.authority))
@@ -1123,6 +1129,12 @@ fn recover_workspace_open_lock_after_panic(
             "NEX_WORKSPACE_OPEN_PANIC_UNRECOVERABLE: maintenance admission remains closed"
         )));
     }
+    // A caught panic can unwind while the shared opener still owns the
+    // workspace mutexes. Clear their poison markers only after the lifecycle
+    // gate and switching flag have been restored; future operations then
+    // re-read the exact surviving authority instead of failing closed on a
+    // recoverable panic.
+    state.ws.inner.clear_poison();
     state.ws.open_lock.clear_poison();
     Ok(())
 }
@@ -1385,7 +1397,13 @@ fn close_narrative_maintenance_for_workspace_swap(
 fn drain_preempted_maintenance_runs_after_workspace_swap(
     state: &AppState,
 ) -> std::result::Result<(), AppError> {
-    let authority = active_database(&state.ws)?;
+    // The supervisor still owns the logical transition permit and the
+    // compatibility switching projection while it performs this protected
+    // handoff. Resolve the exact newly published authority through that owner
+    // boundary instead of treating the in-flight transition as a normal DB
+    // command and failing with WORKSPACE_SWITCHING.
+    let authority = workspace_swap_owner_authority(state, true)
+        .or_else(|_| active_database(&state.ws))?;
     let authority_id = narrative_authority_id(&authority);
     let pending = state
         .narrative_maintenance_preempted_runs
@@ -1457,10 +1475,10 @@ impl NarrativeMaintenanceAdmissionReopenGuard {
         result
     }
 
-    /// Reopen only when this guard owns the close. Restore-only outcomes keep
+    /// Complete the compatibility handoff only when this guard owns the close. Restore-only outcomes keep
     /// admission closed until a later valid open succeeds; an error during
     /// that recovery attempt must not reopen the gate accidentally.
-    fn reopen_if_armed(&mut self) -> std::result::Result<(), AppError> {
+    fn complete_admission_handoff(&mut self) -> std::result::Result<(), AppError> {
         if !self.armed {
             return Ok(());
         }
@@ -1719,7 +1737,94 @@ fn begin_workspace_lifecycle_transition(
     state: &AppState,
     kind: AdmissionKind,
 ) -> std::result::Result<(), AppError> {
-    let (view, changed) = state.workspace_lifecycle.begin_transition_kind(kind)?;
+    if begin_workspace_lifecycle_transition_wire(state, kind)?.is_some() {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "NEX_MAINTENANCE_ADMISSION_CLOSED: workspace transition is already owned"
+        )));
+    }
+    Ok(())
+}
+
+fn begin_workspace_lifecycle_transition_wire(
+    state: &AppState,
+    kind: AdmissionKind,
+) -> std::result::Result<Option<String>, AppError> {
+    match state
+        .workspace_lifecycle
+        .try_begin_transition_kind(kind)?
+    {
+        AdmissionOutcome::Admitted(_) => {
+            let view = state.workspace_lifecycle.snapshot_for_workspace(&state.ws)?;
+            emit_workspace_lifecycle_view(state, &view);
+            Ok(None)
+        }
+        AdmissionOutcome::NotAdmitted { reason, snapshot } => Ok(Some(
+            serde_json::json!({
+                "status": "not-admitted",
+                "reasonCode": admission_rejection_code(&reason),
+                "snapshot": lifecycle_snapshot_wire(&snapshot),
+            })
+            .to_string(),
+        )),
+    }
+}
+
+fn admission_rejection_code(reason: &AdmissionRejection) -> &'static str {
+    match reason {
+        AdmissionRejection::NoWorkspace => "no-workspace",
+        AdmissionRejection::ActiveOperation => "active-operation",
+        AdmissionRejection::Transition => "transition",
+        AdmissionRejection::RecoveryRequired => "recovery-required",
+        AdmissionRejection::Closed => "closed",
+        AdmissionRejection::Capacity => "capacity",
+        AdmissionRejection::RecoveryPrerequisite => "recovery-prerequisite",
+        AdmissionRejection::OutOfOrder => "out-of-order",
+        AdmissionRejection::Conflict => "conflict",
+        AdmissionRejection::Retired => "retired",
+    }
+}
+
+fn lifecycle_snapshot_wire(snapshot: &LifecycleSnapshot) -> serde_json::Value {
+    let state = match &snapshot.state {
+        LifecycleState::NoWorkspace => serde_json::json!({ "state": "no-workspace" }),
+        // A rejected request never authorizes binding reuse, so ready snapshots
+        // intentionally omit the authority identity at this boundary.
+        LifecycleState::Ready(_) => serde_json::json!({ "state": "ready" }),
+        LifecycleState::Transition { stage, .. } => serde_json::json!({
+            "state": "transition",
+            "phase": match stage {
+                TransitionStage::Draining => "draining",
+                TransitionStage::Replacing => "replacing",
+                TransitionStage::Recovering => "recovering",
+                TransitionStage::Finishing => "finishing",
+            }
+        }),
+        LifecycleState::RecoveryRequired { .. } => {
+            serde_json::json!({ "state": "recovery-required" })
+        }
+        LifecycleState::Closed => serde_json::json!({ "state": "closed" }),
+    };
+    let mut object = serde_json::Map::new();
+    object.insert("revision".to_string(), serde_json::json!(snapshot.revision));
+    if let Some(values) = state.as_object() {
+        object.extend(values.clone());
+    }
+    serde_json::Value::Object(object)
+}
+
+fn begin_workspace_lifecycle_recovery(state: &AppState) -> std::result::Result<(), AppError> {
+    // Safe Mode is a durable, process-independent recovery root represented
+    // by descriptor zero.  Materialize that state before admitting the
+    // candidate-bound transition; ordinary descriptors go through the same
+    // core API once their exact id is known.
+    state
+        .workspace_lifecycle
+        .mark_safe_mode_recovery_required()?;
+    let (view, changed) = state
+        .workspace_lifecycle
+        .begin_recovery_transition(
+            grimodex_db::workspace_lifecycle::SAFE_MODE_RECOVERY_DESCRIPTOR_ID,
+        )?;
     if changed {
         emit_workspace_lifecycle_view(state, &view);
     }
@@ -1731,7 +1836,7 @@ fn publish_workspace_lifecycle_from_workspace(
 ) -> std::result::Result<WorkspaceLifecycleView, AppError> {
     let view = state
         .workspace_lifecycle
-        .snapshot_for_workspace(&state.ws)?;
+        .complete_transition_from_workspace(&state.ws)?;
     emit_workspace_lifecycle_view(state, &view);
     Ok(view)
 }
@@ -2574,6 +2679,101 @@ where
                     })?
                 }
                 None => f(db, dto)?,
+            };
+            Ok(serde_json::to_string(&result)?)
+        })
+    })
+    .await
+}
+
+/// Foreground Apply/Prepare owner.  Eligibility reads borrow this control
+/// through the same SQLite transaction as their DML, and a concurrent
+/// lifecycle transition turns into a typed validation termination instead of
+/// being normalized as Source missing or a failed Prepared commit.
+struct ForegroundValidationControl {
+    state: Arc<AppState>,
+}
+
+impl ForegroundValidationControl {
+    fn new(state: Arc<AppState>) -> Self {
+        Self { state }
+    }
+}
+
+impl GraphWorkControl for ForegroundValidationControl {
+    fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
+        if self
+            .state
+            .workspace_shutdown_requested
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(validation_terminated(
+                ValidationTerminationReason::Closed,
+                "foreground validation stopped by Native shutdown",
+            ));
+        }
+        let snapshot = self
+            .state
+            .ws
+            .switching
+            .core()
+            .snapshot()
+            .map_err(|error| anyhow::anyhow!("workspace lifecycle state unavailable: {error}"))?;
+        if matches!(snapshot.state, LifecycleState::Transition { .. }) {
+            return Err(validation_terminated(
+                ValidationTerminationReason::WorkspaceGenerationChanged,
+                "foreground validation stopped while workspace lifecycle was transitioning",
+            ));
+        }
+        if matches!(snapshot.state, LifecycleState::Closed | LifecycleState::RecoveryRequired { .. }) {
+            return Err(validation_terminated(
+                ValidationTerminationReason::Closed,
+                "foreground validation has no usable workspace authority",
+            ));
+        }
+        Ok(())
+    }
+}
+
+async fn foreground_commit_cmd<T, F>(
+    state: Arc<AppState>,
+    label: &'static str,
+    payload: serde_json::Value,
+    f: F,
+) -> Result<String>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+    F: FnOnce(
+            &grimodex_db::Database,
+            T,
+            &mut dyn GraphWorkControl,
+        ) -> anyhow::Result<serde_json::Value>
+        + Send
+        + 'static,
+{
+    run_blocking(move || {
+        let _workspace_operation = state
+            .begin_workspace_operation()
+            .map_err(AppError::Anyhow)?;
+        let authority_context = if payload.get("authorityRoute").is_some() {
+            let context: grimodex_db::agent_writes::RendererCanonicalWriteContext =
+                from_wire(label, payload.clone())?;
+            agent_writes::validate_renderer_authority_context(&context)?;
+            Some(serde_json::to_value(context).map_err(|error| AppError::Anyhow(error.into()))?)
+        } else {
+            None
+        };
+        let dto: T = from_wire(label, payload)?;
+        let mut validation_control = ForegroundValidationControl::new(Arc::clone(&state));
+        validation_control.check(GraphWorkStage::Source)?;
+        with_db_state(&state.ws, |db| {
+            let result = match authority_context {
+                Some(context) => {
+                    grimodex_db::change_events::with_renderer_authority_context(context, || {
+                        f(db, dto, &mut validation_control)
+                    })?
+                }
+                None => f(db, dto, &mut validation_control)?,
             };
             Ok(serde_json::to_string(&result)?)
         })
@@ -4518,8 +4718,16 @@ impl Backend {
                 .ws
                 .open_lock
                 .lock()
-                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
-            let authority = active_database(&state.ws)?;
+                .map_err(|error| {
+                    AppError::Anyhow(anyhow::anyhow!(
+                        "NEX_MAINTENANCE_OPEN_LOCK_UNAVAILABLE: {error}"
+                    ))
+                })?;
+            let authority = active_database(&state.ws).map_err(|error| {
+                AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_AUTHORITY_UNAVAILABLE: {error}"
+                ))
+            })?;
             let authority_id = narrative_authority_id(&authority);
             let current_binding = state
                 .narrative_maintenance_recovery_gate
@@ -4633,6 +4841,7 @@ impl Backend {
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let mut admitted_delivery_sequence = None;
             let operation_result = (|| -> std::result::Result<String, AppError> {
             let attempt_id = payload
                 .get("attemptId")
@@ -4656,6 +4865,54 @@ impl Backend {
                     return Err(AppError::Anyhow(error));
                 }
             };
+            if let Some(sequence) = request.delivery_sequence {
+                let delivery_sequence = DeliverySequence::new(sequence);
+                let fingerprint = request
+                    .delivery_fingerprint
+                    .clone()
+                    .ok_or_else(|| {
+                        AppError::Anyhow(anyhow::anyhow!(
+                            "NEX_MAINTENANCE_DELIVERY_FINGERPRINT_INVALID: fingerprint is required"
+                        ))
+                    })?;
+                match state
+                    .workspace_lifecycle
+                    .admit_delivery_at(delivery_sequence, fingerprint)?
+                {
+                    DeliveryAdmissionOutcome::Accepted { sequence } => {
+                        admitted_delivery_sequence = Some(sequence);
+                    }
+                    DeliveryAdmissionOutcome::Replay { result, .. } => {
+                        // A duplicate sequence is a read of the existing
+                        // Native delivery owner. Replaying a terminal result
+                        // is safe; a still-pending owner remains unavailable
+                        // until its supervisor publishes a terminal result.
+                        return Ok(result.unwrap_or_else(|| {
+                            serde_json::json!({
+                                "status": "workspace-unavailable",
+                                "reason": "maintenance-delivery-replay-pending",
+                            })
+                            .to_string()
+                        }));
+                    }
+                    DeliveryAdmissionOutcome::Full { .. } => {
+                        return Ok(serde_json::json!({
+                            "status": "workspace-unavailable",
+                            "reason": "maintenance-delivery-capacity",
+                        })
+                        .to_string());
+                    }
+                    DeliveryAdmissionOutcome::SealedAbsent { .. }
+                    | DeliveryAdmissionOutcome::OutOfOrder { .. }
+                    | DeliveryAdmissionOutcome::Conflict { .. } => {
+                        return Ok(serde_json::json!({
+                            "status": "workspace-unavailable",
+                            "reason": "maintenance-delivery-sequence-invalid",
+                        })
+                        .to_string());
+                    }
+                }
+            }
             let mut attempt_guard = if let Some(attempt_id) = attempt_id {
                 request.workspace_binding.as_ref().ok_or_else(|| {
                     AppError::Anyhow(anyhow::anyhow!(
@@ -4748,7 +5005,7 @@ impl Backend {
             // its durable metadata.
             state
                 .workspace_lifecycle
-                .snapshot_for_workspace(&state.ws)?;
+                .ensure_authority_ready(&state.ws)?;
             // Common lifecycle admission now precedes the maintenance DB
             // work and owns the exact responsibility cell. A transition closes
             // this request at the same core boundary, and the permit's Drop
@@ -5361,7 +5618,7 @@ impl Backend {
             }
             Ok(json)
             })();
-            match operation_result {
+            let operation_result = match operation_result {
                 Err(error) if is_narrative_maintenance_preemption(&error) => {
                     Ok(serde_json::json!({
                         "status": "accepted",
@@ -5371,7 +5628,47 @@ impl Backend {
                     .to_string())
                 }
                 other => other,
+            };
+            if let (Some(sequence), Ok(result)) = (admitted_delivery_sequence, &operation_result) {
+                state
+                    .workspace_lifecycle
+                    .mark_delivery_terminal_with_result(sequence, result.clone())?;
             }
+            operation_result
+        })
+        .await
+    }
+
+    /// ACK only the Native delivery record after main has applied the
+    /// structurally validated terminal result.  This retires transport state;
+    /// it does not settle an unfinished Run or recovery descriptor.
+    #[napi]
+    pub async fn ack_narrative_maintenance_delivery(&self, sequence: u32) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let retired = state
+                .workspace_lifecycle
+                .ack_delivery(DeliverySequence::new(u64::from(sequence)))?;
+            Ok(serde_json::json!({
+                "status": if retired { "retired" } else { "pending" },
+                "sequence": sequence,
+            })
+            .to_string())
+        })
+        .await
+    }
+
+    /// Resolve a lost admission reply without allocating another delivery
+    /// record.  Main may fence only the current H+1 sequence.
+    #[napi]
+    pub async fn resolve_narrative_maintenance_delivery(&self, sequence: u32) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let result = state
+                .workspace_lifecycle
+                .resolve_or_fence(DeliverySequence::new(u64::from(sequence)))?;
+            Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?
+                .to_string())
         })
         .await
     }
@@ -6656,8 +6953,16 @@ impl Backend {
     /// (`ready`/`migrated`/`recovery-required`/`safe-mode`)。
     #[napi]
     pub async fn open_workspace(&self, path: String) -> Result<String> {
-        begin_workspace_lifecycle_transition(&self.state, AdmissionKind::Open)
-            .map_err(app_err_to_napi)?;
+        let _workspace_operation = self
+            .state
+            .begin_workspace_operation()
+            .map_err(|error| app_err_to_napi(AppError::Anyhow(error)))?;
+        if let Some(not_admitted) =
+            begin_workspace_lifecycle_transition_wire(&self.state, AdmissionKind::Open)
+                .map_err(app_err_to_napi)?
+        {
+            return Ok(not_admitted);
+        }
         let state = Arc::clone(&self.state);
         let trace_enabled = native_workspace_open_trace_enabled();
         let trace_started_at = Instant::now();
@@ -6731,21 +7036,39 @@ impl Backend {
                     // authority publication. Reopen against whichever old
                     // binding is still active so a failed open cannot strand
                     // all future maintenance begins behind a closed gate.
-                    match admission_guard.reopen_if_armed() {
+                    match admission_guard.complete_admission_handoff() {
                         Ok(()) => Err(error),
                         Err(reopen_error) => Err(reopen_error),
                     }
                 }
                 Err(_) => {
-                    let reopen_result = admission_guard.reopen_if_armed();
+                    let reopen_result = admission_guard.complete_admission_handoff();
                     match reopen_result {
-                        Ok(()) => match recover_workspace_open_lock_after_panic(&state) {
-                            Ok(()) => Err(AppError::Anyhow(anyhow::anyhow!(
-                                "NEX_WORKSPACE_OPEN_PANIC: workspace open panicked"
-                            ))),
-                            Err(error) => Err(error),
-                        },
-                        Err(error) => Err(error),
+                        Ok(()) => {
+                            // `SwitchingGuard` deliberately refuses to clear
+                            // the compatibility projection while the shared
+                            // lifecycle ticket is still in Transition. The
+                            // caught panic is nevertheless a completed Join
+                            // of this worker, so publish that terminal
+                            // outcome before clearing the poisoned open lock.
+                            let lifecycle_result = state
+                                .workspace_lifecycle
+                                .complete_transition_from_workspace(&state.ws);
+                            match lifecycle_result {
+                                Ok(_) => match recover_workspace_open_lock_after_panic(&state) {
+                                    Ok(()) => Err(AppError::Anyhow(anyhow::anyhow!(
+                                        "NEX_WORKSPACE_OPEN_PANIC: workspace open panicked"
+                                    ))),
+                                    Err(error) => Err(error),
+                                },
+                                Err(error) => Err(AppError::Anyhow(anyhow::anyhow!(
+                                    "NEX_WORKSPACE_OPEN_PANIC_LIFECYCLE_UNAVAILABLE: {error}"
+                                ))),
+                            }
+                        }
+                        Err(error) => Err(AppError::Anyhow(anyhow::anyhow!(
+                            "NEX_WORKSPACE_OPEN_PANIC_REOPEN_FAILED: {error}"
+                        ))),
                     }
                 }
             };
@@ -6795,6 +7118,24 @@ impl Backend {
             let view = state
                 .workspace_lifecycle
                 .snapshot_for_workspace(&state.ws)?;
+            WorkspaceLifecycleViewAdapter::serialize(&view)
+        })
+        .await
+    }
+
+    /// Request the idempotent Native lifecycle shutdown and publish `Closed`
+    /// only after every admitted Open/Restore worker has returned.  The core
+    /// still refuses the terminal transition while delivery records,
+    /// descriptors, or maintenance permits remain unresolved, so a timeout
+    /// or an interrupted worker cannot be mistaken for terminal proof.
+    #[napi]
+    pub async fn shutdown_workspace_lifecycle(&self) -> Result<String> {
+        self.state.request_workspace_shutdown();
+        self.state.wait_workspace_operations().await;
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let view = publish_workspace_lifecycle_closed(&state)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             WorkspaceLifecycleViewAdapter::serialize(&view)
         })
         .await
@@ -6948,6 +7289,10 @@ impl Backend {
     /// rotateして復元前DBへのlate writeを不可視にする。
     #[napi]
     pub async fn restore_backup(&self, file_name: String) -> Result<()> {
+        let _workspace_operation = self
+            .state
+            .begin_workspace_operation()
+            .map_err(|error| app_err_to_napi(AppError::Anyhow(error)))?;
         begin_workspace_lifecycle_transition(&self.state, AdmissionKind::Restore)
             .map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
@@ -7008,7 +7353,7 @@ impl Backend {
             let restore_result = match restore_result {
                 Ok(result) => result,
                 Err(_) => {
-                    admission_guard.reopen_if_armed()?;
+                    admission_guard.complete_admission_handoff()?;
                     recover_workspace_open_lock_after_panic(&state)?;
                     return Err(AppError::Anyhow(anyhow::anyhow!(
                         "NEX_WORKSPACE_RESTORE_PANIC: workspace restore panicked"
@@ -7046,8 +7391,15 @@ impl Backend {
                     ))),
                 };
             }
-            admission_guard.reopen_if_armed()?;
-            let path = active_workspace_path(&state.ws)?;
+            admission_guard.complete_admission_handoff()?;
+            // The logical transition is still held until the outer Native
+            // supervisor observes this blocking worker's Join. Read the path
+            // through that owner boundary instead of the ordinary DB entry,
+            // which correctly rejects Transition for unrelated callers.
+            let path = workspace_swap_owner_authority(&state, true)?
+                .path()
+                .to_string_lossy()
+                .into_owned();
             state.events.emit(
                 "workspace:opened",
                 serde_json::json!({ "path": path, "reason": "restore" }),
@@ -7090,7 +7442,11 @@ impl Backend {
     /// Safe Mode候補を復元する。復元後はrendererがopen_workspaceを再実行する。
     #[napi]
     pub async fn restore_recovery_candidate(&self, candidate_id: String) -> Result<()> {
-        begin_workspace_lifecycle_transition(&self.state, AdmissionKind::Restore)
+        let _workspace_operation = self
+            .state
+            .begin_workspace_operation()
+            .map_err(|error| app_err_to_napi(AppError::Anyhow(error)))?;
+        begin_workspace_lifecycle_recovery(&self.state)
             .map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
         let result =
@@ -10260,11 +10616,15 @@ impl Backend {
         &self,
         payload: serde_json::Value,
     ) -> Result<String> {
-        agent_write_cmd(
+        foreground_commit_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            narrative_extraction::narrative_extraction_prepare_commit,
+            |db, payload, control| {
+                narrative_extraction::narrative_extraction_prepare_commit_with_control(
+                    db, payload, control,
+                )
+            },
         )
         .await
     }
@@ -10274,11 +10634,15 @@ impl Backend {
         &self,
         payload: serde_json::Value,
     ) -> Result<String> {
-        agent_write_cmd(
+        foreground_commit_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            narrative_extraction::narrative_extraction_apply_commit,
+            |db, payload, control| {
+                narrative_extraction::narrative_extraction_apply_commit_with_control(
+                    db, payload, control,
+                )
+            },
         )
         .await
     }

@@ -112,6 +112,11 @@ function applyProjection(
   }
   const wire = JSON.stringify(view);
   if (view.revision < latestRevision) return;
+  // Re-delivery of the exact same snapshot is an idempotent observation.  In
+  // particular, do not run RecoveryRequired teardown twice: the first pass
+  // intentionally clears activeWorkspacePath after copying the binding into
+  // RecoveryShell, and a second pass must retain that shell and retry target.
+  if (view.revision === latestRevision && latestWire === wire) return;
   if (
     view.revision === latestRevision &&
     latestWire !== null &&
@@ -141,7 +146,12 @@ function applyProjection(
   invalidateWorkspaceProjectLoads();
   setCurrentImeWorkspaceIdentity(null);
   if (view.status === "recovery-required") {
-    const workspacePath = current.activeWorkspacePath;
+    // The first recovery projection moves the path into RecoveryShell while
+    // invalidating the active binding.  A repeated snapshot for the same
+    // revision must reuse that already-known path instead of turning the
+    // shell into a launcher with no retry target.
+    const workspacePath =
+      current.activeWorkspacePath ?? current.recoveryShell?.workspacePath;
     const recovery: RecoveryShellState | null = workspacePath
       ? {
           mode: "recovery-required",

@@ -13,7 +13,8 @@ use grimodex_db::state::WorkspaceState;
 use grimodex_db::{
     AdmissionKind, AdmissionOutcome, AdmissionTicket, ContentEffect,
     LifecycleResult, LifecycleState, LiveBinding, MaintenancePermit, PermitAdmission,
-    StateRevision, WorkspaceLifecycleCore,
+    RecoveryDescriptorId, StateRevision, WorkspaceLifecycleCore,
+    DeliveryAdmissionOutcome, DeliverySequence, FenceOutcome,
 };
 use grimodex_db::AppResult;
 use serde::{Deserialize, Serialize};
@@ -98,7 +99,7 @@ impl WorkspaceLifecycleViewAdapter {
         &self,
         kind: AdmissionKind,
     ) -> AppResult<(WorkspaceLifecycleView, bool)> {
-        let outcome = self.core.begin_transition(kind)?;
+        let outcome = self.try_begin_transition_kind(kind)?;
         let ticket = match outcome {
             AdmissionOutcome::Admitted(ticket) => ticket,
             AdmissionOutcome::NotAdmitted { .. } => {
@@ -119,6 +120,17 @@ impl WorkspaceLifecycleViewAdapter {
         Ok((view, true))
     }
 
+    pub(crate) fn try_begin_transition_kind(
+        &self,
+        kind: AdmissionKind,
+    ) -> AppResult<AdmissionOutcome> {
+        let outcome = self.core.begin_transition(kind)?;
+        if let AdmissionOutcome::Admitted(ticket) = &outcome {
+            self.lock_projection()?.transition_ticket = Some(ticket.clone());
+        }
+        Ok(outcome)
+    }
+
     /// Reserve a maintenance execution in the same shared core as Open and
     /// Restore. The permit owns the exact responsibility cell and releases it
     /// on every return path (including panic unwinding) through its Drop
@@ -127,6 +139,64 @@ impl WorkspaceLifecycleViewAdapter {
         &self,
     ) -> AppResult<PermitAdmission<MaintenancePermit>> {
         Ok(self.core.admit_maintenance_permit()?)
+    }
+
+    /// Begin recovery for an already-owned descriptor root.  Safe Mode uses
+    /// the reserved durable root (descriptor zero); ordinary recovery must
+    /// name the exact descriptor created by the previous transition.
+    pub(crate) fn begin_recovery_transition(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+    ) -> AppResult<(WorkspaceLifecycleView, bool)> {
+        let outcome = self.core.admit_recovery(descriptor_id)?;
+        let ticket = match outcome {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => {
+                return Err(anyhow::anyhow!(
+                    "NEX_LIFECYCLE_NOT_ADMITTED: descriptor-bound recovery is not available"
+                )
+                .into())
+            }
+        };
+        let mut projection = self.lock_projection()?;
+        projection.transition_ticket = Some(ticket);
+        let view = self.projected_view_with_projection(&mut projection)?;
+        Ok((view, true))
+    }
+
+    pub(crate) fn mark_safe_mode_recovery_required(&self) -> AppResult<WorkspaceLifecycleView> {
+        self.core.mark_safe_mode_recovery_required()?;
+        self.projected_view()
+    }
+
+    pub(crate) fn admit_delivery_at(
+        &self,
+        sequence: DeliverySequence,
+        fingerprint: String,
+    ) -> AppResult<DeliveryAdmissionOutcome> {
+        Ok(self.core.admit_delivery_at(sequence, fingerprint)?)
+    }
+
+    pub(crate) fn mark_delivery_terminal(&self, sequence: DeliverySequence) -> AppResult<bool> {
+        Ok(self.core.mark_delivery_terminal(sequence)?)
+    }
+
+    pub(crate) fn mark_delivery_terminal_with_result(
+        &self,
+        sequence: DeliverySequence,
+        result: String,
+    ) -> AppResult<bool> {
+        Ok(self
+            .core
+            .mark_delivery_terminal_with_result(sequence, Some(result))?)
+    }
+
+    pub(crate) fn ack_delivery(&self, sequence: DeliverySequence) -> AppResult<bool> {
+        Ok(self.core.ack_delivery(sequence)?)
+    }
+
+    pub(crate) fn resolve_or_fence(&self, sequence: DeliverySequence) -> AppResult<FenceOutcome> {
+        Ok(self.core.resolve_or_fence(sequence)?)
     }
 
     /// Publish a ready authority after the shared opener has completed and
@@ -176,38 +246,53 @@ impl WorkspaceLifecycleViewAdapter {
             .lock()
             .map_err(|error| anyhow::anyhow!("workspace lifecycle state lock poisoned: {error}"))?
             .is_some();
+        // This method is deliberately a pure observation boundary.  In
+        // particular, it must never infer Join from the presence of an old
+        // authority or from a Safe Mode flag: only the blocking supervisor
+        // that owns the worker JoinHandle may complete a transition.  A
+        // snapshot can therefore report the verified Safe Mode projection
+        // while leaving the core ticket live until that supervisor publishes
+        // the terminal outcome.
+        let snapshot = self.core.snapshot()?;
         if workspace.safe_mode.is_active() && !has_authority {
-            let snapshot = self.core.snapshot()?;
-            let transition_ticket = {
-                let projection = self.lock_projection()?;
-                projection.transition_ticket.clone()
-            };
-            if let Some(ticket) = transition_ticket {
-                // Safe Mode is the terminal outcome of the admitted Open or
-                // Restore transition.  Complete that transition through the
-                // same Join/recovery path as every other worker outcome;
-                // marking RecoveryRequired directly would leave the
-                // transition owner live and make the result look like an
-                // active-operation failure.
-                self.core.mark_transition_joined(&ticket)?;
-                self.core
-                    .require_recovery(&ticket, ticket.original_binding.clone(), None)?;
-                self.lock_projection()?.transition_ticket = None;
-            } else if !matches!(snapshot.state, LifecycleState::RecoveryRequired { .. }) {
-                self.core.mark_safe_mode_recovery_required()?;
+            if matches!(snapshot.state, LifecycleState::RecoveryRequired { .. }) {
+                return self.projected_view();
             }
-            return self.projected_view();
+            return self.projected_view_with_override(
+                &snapshot,
+                WorkspaceLifecycleStatus::RecoveryRequired,
+                WorkspaceLifecycleActivation::RequiresOpen,
+            );
         }
-        if has_authority {
+        self.projected_view()
+    }
+
+    /// Publish an authority that was installed by a compatibility/test owner
+    /// without an admitted transition.  This is intentionally separate from
+    /// `snapshot_for_workspace`: callers must opt into the state mutation at
+    /// a controlled lifecycle boundary.
+    pub(crate) fn ensure_authority_ready(
+        &self,
+        workspace: &WorkspaceState,
+    ) -> AppResult<WorkspaceLifecycleView> {
+        let snapshot = self.core.snapshot()?;
+        if matches!(snapshot.state, LifecycleState::NoWorkspace)
+            && self.lock_projection()?.transition_ticket.is_none()
+        {
             return self.publish_from_workspace(workspace, None);
         }
-        let snapshot = self.core.snapshot()?;
-        if matches!(snapshot.state, LifecycleState::Transition { .. }) {
-            return self.projected_view();
-        }
-        let mut projection = self.lock_projection()?;
-        projection.transition_ticket = None;
-        self.projected_view_with_projection(&mut projection)
+        self.projected_view()
+    }
+
+    /// Complete an admitted transition after the native supervisor has joined
+    /// its blocking worker.  This is the only production path that may turn a
+    /// transition ticket into Ready, Unchanged, Activated, or a recovery
+    /// descriptor.
+    pub(crate) fn complete_transition_from_workspace(
+        &self,
+        workspace: &WorkspaceState,
+    ) -> AppResult<WorkspaceLifecycleView> {
+        self.publish_from_workspace(workspace, None)
     }
 
     pub(crate) fn serialize(view: &WorkspaceLifecycleView) -> AppResult<String> {
@@ -280,6 +365,29 @@ impl WorkspaceLifecycleViewAdapter {
     fn projected_view(&self) -> AppResult<WorkspaceLifecycleView> {
         let mut projection = self.lock_projection()?;
         self.projected_view_with_projection(&mut projection)
+    }
+
+    fn projected_view_with_override(
+        &self,
+        snapshot: &grimodex_db::LifecycleSnapshot,
+        status: WorkspaceLifecycleStatus,
+        activation: WorkspaceLifecycleActivation,
+    ) -> AppResult<WorkspaceLifecycleView> {
+        let mut projection = self.lock_projection()?;
+        if status == WorkspaceLifecycleStatus::Closed {
+            projection.binding_token = None;
+            projection.token_revision = Some(snapshot.revision);
+        } else if projection.token_revision != Some(snapshot.revision) {
+            projection.token_revision = Some(snapshot.revision);
+            projection.binding_token = Some(new_binding_token());
+        }
+        Ok(WorkspaceLifecycleView {
+            schema_version: WORKSPACE_LIFECYCLE_SCHEMA_VERSION,
+            revision: snapshot.revision,
+            status,
+            binding_token: projection.binding_token.clone(),
+            activation,
+        })
     }
 
     fn projected_view_with_projection(

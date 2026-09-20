@@ -47,6 +47,20 @@ export type NativeWorkspaceOpenOutcome =
       status: "safe-mode";
       reason: string;
       candidates: RecoveryCandidate[];
+    }
+  | {
+      status: "not-admitted";
+      reasonCode: string;
+      snapshot: {
+        state:
+          | "no-workspace"
+          | "ready"
+          | "transition"
+          | "recovery-required"
+          | "closed";
+        revision: number;
+        phase?: "draining" | "replacing" | "recovering" | "finishing";
+      };
     };
 
 export interface RecoveryShellState {

@@ -61,7 +61,7 @@ const GRAPH_SQL_CHECK_INTERVAL: i32 = 1_000;
 const GRAPH_SOURCE_PAGE_SIZE: i64 = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GraphWorkStage {
+pub enum GraphWorkStage {
     Page,
     Row,
     A2,
@@ -87,7 +87,7 @@ pub(crate) enum GraphWorkStage {
 /// resource framework. The maintenance lane can provide a finite owner and
 /// cancellation policy while the index keeps all checks in the caller-owned
 /// transaction.
-pub(crate) trait GraphWorkControl {
+pub trait GraphWorkControl {
     fn check(&mut self, stage: GraphWorkStage) -> Result<()>;
 }
 

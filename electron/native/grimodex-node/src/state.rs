@@ -149,6 +149,11 @@ pub(crate) enum NarrativeMaintenanceAdmissionOwner {
     RestoreRecovery,
 }
 
+/// Process-local maintenance handoff ledger. It records quarantined Run
+/// owners and the close/reopen bookkeeping needed while the Native supervisor
+/// holds the shared workspace transition permit; it is not lifecycle
+/// admission, active membership, or a second switching state machine. The
+/// shared `WorkspaceLifecycleCore` decides every admission and terminal state.
 pub struct NarrativeMaintenanceRecoveryGate {
     state: Mutex<NarrativeMaintenanceRecoveryState>,
 }
@@ -1204,9 +1209,11 @@ struct NarrativeMaintenanceAttemptEntry {
     notify: Arc<Notify>,
 }
 
-/// Process-local owner for maintenance attempt cancellation and terminal
+/// Process-local execution ledger for maintenance cancellation and terminal
 /// receipts. Durable Run/Task/Attempt state remains in grimodex-db; this map
-/// only closes the main/native handoff race around one cycle.
+/// only records a Native execution's evidence after the shared lifecycle core
+/// admits it and closes the main/native handoff race around one cycle. It does
+/// not admit work or publish workspace state.
 pub struct NarrativeMaintenanceAttemptRegistry {
     state: Mutex<HashMap<String, NarrativeMaintenanceAttemptEntry>>,
     next_terminal_sequence: AtomicU64,
@@ -2403,6 +2410,24 @@ pub struct AppState {
     /// and the shared-Rust transaction so exactly one first execution emits
     /// the observer-only main wake; replays/no-ops do not emit it.
     pub narrative_maintenance_mutation_lock: Mutex<()>,
+    /// Common Native shutdown owner observes Open/Restore as well as
+    /// maintenance.  The count is process-local and is never used as a
+    /// durable terminal proof after restart.
+    pub workspace_operation_active: Arc<AtomicUsize>,
+    pub workspace_operation_notify: Arc<Notify>,
+    pub workspace_shutdown_requested: Arc<AtomicBool>,
+}
+
+pub struct WorkspaceOperationGuard {
+    active: Arc<AtomicUsize>,
+    notify: Arc<Notify>,
+}
+
+impl Drop for WorkspaceOperationGuard {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+        self.notify.notify_waiters();
+    }
 }
 
 impl AppState {
@@ -2496,7 +2521,41 @@ impl AppState {
             narrative_maintenance_foreground_barrier:
                 NarrativeMaintenanceForegroundBarrierState::default(),
             narrative_maintenance_mutation_lock: Mutex::new(()),
+            workspace_operation_active: Arc::new(AtomicUsize::new(0)),
+            workspace_operation_notify: Arc::new(Notify::new()),
+            workspace_shutdown_requested: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    pub fn begin_workspace_operation(&self) -> anyhow::Result<WorkspaceOperationGuard> {
+        anyhow::ensure!(
+            !self.workspace_shutdown_requested.load(Ordering::Acquire),
+            "NEX_NATIVE_SHUTDOWN_REQUESTED: workspace operation admission is closed"
+        );
+        self.workspace_operation_active.fetch_add(1, Ordering::AcqRel);
+        if self.workspace_shutdown_requested.load(Ordering::Acquire) {
+            self.workspace_operation_active.fetch_sub(1, Ordering::AcqRel);
+            self.workspace_operation_notify.notify_waiters();
+            anyhow::bail!("NEX_NATIVE_SHUTDOWN_REQUESTED: workspace operation admission is closed");
+        }
+        Ok(WorkspaceOperationGuard {
+            active: Arc::clone(&self.workspace_operation_active),
+            notify: Arc::clone(&self.workspace_operation_notify),
+        })
+    }
+
+    pub fn request_workspace_shutdown(&self) {
+        self.workspace_shutdown_requested.store(true, Ordering::Release);
+        self.workspace_operation_notify.notify_waiters();
+    }
+
+    pub async fn wait_workspace_operations(&self) {
+        loop {
+            if self.workspace_operation_active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            self.workspace_operation_notify.notified().await;
+        }
     }
 }
 

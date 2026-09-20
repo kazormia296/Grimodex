@@ -258,7 +258,10 @@ function sameBinding(
   );
 }
 
-function parseSnapshot(value: unknown): WorkspaceLifecycleSnapshot {
+function parseSnapshot(
+  value: unknown,
+  { allowRedactedReady = false }: { allowRedactedReady?: boolean } = {},
+): WorkspaceLifecycleSnapshot {
   const record = requireRecord(value, "$.snapshot");
   exactKeys(record, ["state", "revision", "phase", "binding"], "$.snapshot");
   const state = requireEnum(record.state, STATES, "$.snapshot.state");
@@ -278,7 +281,7 @@ function parseSnapshot(value: unknown): WorkspaceLifecycleSnapshot {
   if (state !== "transition" && phase !== undefined) {
     fail("$.snapshot.phase", "is only valid for transition state");
   }
-  if (state === "ready" && binding === undefined) {
+  if (state === "ready" && binding === undefined && !allowRedactedReady) {
     fail("$.snapshot.binding", "is required for ready state");
   }
   if (state !== "ready" && binding !== undefined) {
@@ -324,7 +327,10 @@ function parseResult(value: unknown): {
       return {
         status,
         reasonCode: requireReasonCode(record.reasonCode, "$.reasonCode"),
-        snapshot: parseSnapshot(record.snapshot),
+        // A rejected request may observe an already-running owner without
+        // receiving a renderer-safe authority identity.  The snapshot still
+        // carries the state/revision, but it never grants resume permission.
+        snapshot: parseSnapshot(record.snapshot, { allowRedactedReady: true }),
       };
     }
     case "pending": {

@@ -12,8 +12,13 @@ use super::super::dependency_edges::{consumer_dependency_set_digest, find_edges_
 use super::super::evaluator::{BuildAction, EvidenceFreshness};
 use super::super::material_membership::RevisionMaterialMembership;
 use super::super::publish_runtime::worst_edge_state_for_consumer;
-use super::super::restore_rebuild::evaluate_edge_from_db;
-use super::super::source_revision::is_validation_terminated;
+use super::super::restore_rebuild::{
+    evaluate_edge_from_db, evaluate_edge_from_db_with_control,
+};
+use super::super::source_revision::{
+    is_validation_terminated, ValidationContext,
+};
+use super::super::nir1_entity_relation_index::GraphWorkControl;
 use super::super::semantic_epoch::get_current_epoch;
 use super::{
     is_storage_error, pending, unavailable, RevisionFreshnessRead,
@@ -34,6 +39,29 @@ pub(in crate::narrative_extraction) fn read(
     conn: &Connection,
     project: &str,
     membership: &RevisionMaterialMembership,
+) -> Result<RevisionFreshnessRead> {
+    read_impl(conn, project, membership, None)
+}
+
+/// Context-bound counterpart for foreground Apply and bounded Freshness.
+/// Eligibility edges are evaluated through the exact connection and finite
+/// stop owner borrowed by the caller; no nested admission or replacement
+/// connection is created here.
+pub(in crate::narrative_extraction) fn read_with_validation_context(
+    context: &mut ValidationContext<'_, '_>,
+    project: &str,
+    membership: &RevisionMaterialMembership,
+) -> Result<RevisionFreshnessRead> {
+    let conn = context.connection();
+    let control = context.control();
+    read_impl(conn, project, membership, Some(control))
+}
+
+fn read_impl(
+    conn: &Connection,
+    project: &str,
+    membership: &RevisionMaterialMembership,
+    mut control: Option<&mut dyn GraphWorkControl>,
 ) -> Result<RevisionFreshnessRead> {
     let revision = &membership.revision_id;
     match is_generic_freshness_canonical(conn) {
@@ -171,7 +199,11 @@ pub(in crate::narrative_extraction) fn read(
         if owner != membership.run_id {
             return Ok(unavailable(Reason::CurrentSourceUnavailable));
         }
-        let observed = match evaluate_edge_from_db(conn, project, owner, edge) {
+        let observed_result = match control.as_deref_mut() {
+            Some(control) => evaluate_edge_from_db_with_control(conn, project, owner, edge, control),
+            None => evaluate_edge_from_db(conn, project, owner, edge),
+        };
+        let observed = match observed_result {
             Ok(observation) => observation,
             Err(error) if is_storage_error(&error) => return Err(error),
             Err(error) if is_validation_terminated(&error) => return Err(error),

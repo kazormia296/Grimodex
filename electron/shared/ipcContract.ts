@@ -480,6 +480,8 @@ export interface NapiBackendLike {
   openWorkspace(path: string): Promise<string>;
   /** Main-only lifecycle snapshot; never exposed as a renderer command. */
   getWorkspaceLifecycleView?(): Promise<string>;
+  /** Main-only idempotent lifecycle shutdown; never exposed to renderer IPC. */
+  shutdownWorkspaceLifecycle?(): Promise<string>;
   validateWorkspacePath(path: string): boolean;
   /** Main-only one-shot bridge; intentionally absent from NAPI_COMMANDS. */
   readLegacyApiKeysForMigration?(): Promise<string>;
@@ -971,6 +973,8 @@ export interface NapiBackendLike {
     reason: string,
   ): Promise<string>;
   runNarrativeMaintenanceCycle?(payload: unknown): Promise<string>;
+  ackNarrativeMaintenanceDelivery?(sequence: number): Promise<string>;
+  resolveNarrativeMaintenanceDelivery?(sequence: number): Promise<string>;
   // post_effect run 系（Phase 3d）。settings は dispatch が1回だけ読んだ
   // AiSettings snapshot。API key は未登録時 null、safeStorage lookup 自体が
   // 失敗した場合は apiKeyError に生メッセージを載せる。native は cache hit なら

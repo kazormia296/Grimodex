@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 use crate::error::{AppError, AppResult};
 use crate::recovery::SafeModeState;
 use crate::workspace_lease::WorkspaceLease;
-use crate::workspace_lifecycle::{WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore};
+use crate::workspace_lifecycle::{
+    LifecycleState, WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore,
+};
 use crate::Database;
 
 /// Inseparable workspace DB authority: a live [`Database`] handle always keeps
@@ -191,7 +193,15 @@ pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveW
         if ws_lock_ms >= 50 {
             tracing::warn!("with_db ws_state.lock wait={}ms", ws_lock_ms);
         }
-        if ws_state.switching.load(std::sync::atomic::Ordering::SeqCst) {
+        let lifecycle_state = ws_state
+            .switching
+            .core()
+            .snapshot()
+            .map_err(|error| anyhow::anyhow!("workspace lifecycle state unavailable: {error}"))?
+            .state;
+        if ws_state.switching.load(std::sync::atomic::Ordering::SeqCst)
+            || matches!(lifecycle_state, LifecycleState::Transition { .. })
+        {
             return Err(AppError::WorkspaceSwitching);
         }
         if ws_state.safe_mode.is_active() {

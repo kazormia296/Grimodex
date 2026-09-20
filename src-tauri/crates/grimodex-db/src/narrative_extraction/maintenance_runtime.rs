@@ -1163,6 +1163,11 @@ pub struct MaintenanceCycleRequest {
     /// a durable Run identity and is reset with the Native session.
     #[serde(default)]
     pub delivery_sequence: Option<u64>,
+    /// Main's exact content fingerprint.  Native binds the sequence and
+    /// fingerprint to the shared lifecycle ledger before any worker or Run
+    /// side effect begins.
+    #[serde(default)]
+    pub delivery_fingerprint: Option<String>,
     /// Snapshot binding captured by the Electron main scheduler at enqueue
     /// time. Shared-crate callers may omit it because they already supply the
     /// pinned `Database`; the N-API adapter requires it before dispatch.
@@ -1438,6 +1443,13 @@ pub fn preflight_maintenance_cycle_request(
         anyhow::ensure!(
             sequence > 0,
             "NEX_MAINTENANCE_DELIVERY_SEQUENCE_INVALID: sequence must be positive"
+        );
+        anyhow::ensure!(
+            request
+                .delivery_fingerprint
+                .as_deref()
+                .is_some_and(|fingerprint| !fingerprint.trim().is_empty()),
+            "NEX_MAINTENANCE_DELIVERY_FINGERPRINT_INVALID: sequence requires an exact fingerprint"
         );
     }
     let work = request.normalized_work()?;
@@ -4874,6 +4886,7 @@ mod tests {
                 .collect(),
             wake_project_ids: Vec::new(),
             delivery_sequence: None,
+            delivery_fingerprint: None,
             workspace_binding: None,
         }
     }
@@ -5818,6 +5831,7 @@ mod tests {
             }],
             wake_project_ids: Vec::new(),
             delivery_sequence: None,
+            delivery_fingerprint: None,
             workspace_binding: None,
         };
         let error = request
@@ -6520,6 +6534,7 @@ mod tests {
                 }],
                 wake_project_ids: Vec::new(),
                 delivery_sequence: None,
+                delivery_fingerprint: None,
                 workspace_binding: None,
             },
             |_| RecoveryMode::StartupRecovery,
@@ -7334,6 +7349,7 @@ mod tests {
                 }],
                 wake_project_ids: Vec::new(),
                 delivery_sequence: None,
+                delivery_fingerprint: None,
                 workspace_binding: None,
             };
 

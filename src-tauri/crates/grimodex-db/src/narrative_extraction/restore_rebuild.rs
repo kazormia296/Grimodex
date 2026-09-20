@@ -1140,7 +1140,7 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
     (control.should_stop)()?;
     let now = grimodex_core::now_rfc3339_millis();
 
-    let (run_id, semantic_epoch_id, already_running) = run_maintenance_graph_phase(
+    let (mut created, semantic_epoch_id) = run_maintenance_graph_phase(
         db,
         control,
         |conn, graph| {
@@ -1163,10 +1163,18 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
                     &spec_digest,
                     SystemRunWorkKeyReuse::RunningOnly,
                 )?;
-                Ok((handle.run_id, epoch_id, handle.reused))
+                Ok((handle, epoch_id))
             })
         },
     )?;
+    let run_id = created.run_id.clone();
+    let already_running = created.reused;
+    if !already_running {
+        // The surrounding phase transaction has committed successfully.
+        // Only now may the execution-owned slot claim Created; cleanup and
+        // finalization continue to use the same exact handle.
+        created.mark_creation_committed();
+    }
     if already_running {
         return Ok(RebuildDerivedStateOutcome::AlreadyRunning { run_id });
     }
@@ -1435,7 +1443,7 @@ pub(crate) fn rebuild_narrative_derived_state_for_project_with_graph_control(
     control.check(GraphWorkStage::Restore)?;
     let now = grimodex_core::now_rfc3339_millis();
 
-    let (run_id, semantic_epoch_id, already_running) = db.with_conn(|conn| {
+    let (mut created, semantic_epoch_id) = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             control.check(GraphWorkStage::Restore)?;
             let epoch_id = get_current_epoch(conn, project_id)?
@@ -1458,9 +1466,14 @@ pub(crate) fn rebuild_narrative_derived_state_for_project_with_graph_control(
                 &spec_digest,
                 SystemRunWorkKeyReuse::RunningOnly,
             )?;
-            Ok((handle.run_id, epoch_id, handle.reused))
+            Ok((handle, epoch_id))
         })
     })?;
+    let run_id = created.run_id.clone();
+    let already_running = created.reused;
+    if !already_running {
+        created.mark_creation_committed();
+    }
 
     if already_running {
         return Ok(RebuildDerivedStateOutcome::AlreadyRunning { run_id });
@@ -3521,7 +3534,7 @@ fn run_dependency_verify_for_project_with_coordinates_legacy(
 
     let spec = json!({ "verifyContractVersion": VERIFY_CONTRACT_VERSION });
     let spec_digest = format!("sha256:{}", digest_plan(&spec));
-    let created = db.with_conn(|conn| {
+    let mut created = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             create_maintenance_run_in_tx(
                 conn,
@@ -3535,7 +3548,10 @@ fn run_dependency_verify_for_project_with_coordinates_legacy(
             )
         })
     })?;
-    let run_id = created.run_id;
+    if !created.reused {
+        created.mark_creation_committed();
+    }
+    let run_id = created.run_id.clone();
     if created.reused {
         anyhow::bail!(
             "NEX_VERIFY_ALREADY_RUNNING: dependency-verify Run '{run_id}' is already running"
@@ -4057,7 +4073,7 @@ fn run_dependency_verify_for_project_with_coordinates_controlled(
 
     let spec = json!({ "verifyContractVersion": VERIFY_CONTRACT_VERSION });
     let spec_digest = format!("sha256:{}", digest_plan(&spec));
-    let created = run_maintenance_graph_phase(db, control, |conn, graph| {
+    let mut created = run_maintenance_graph_phase(db, control, |conn, graph| {
         with_immediate_transaction(conn, |conn| {
             graph.check(GraphWorkStage::Restore)?;
             create_maintenance_run_in_tx(
@@ -4072,7 +4088,10 @@ fn run_dependency_verify_for_project_with_coordinates_controlled(
             )
         })
     })?;
-    let run_id = created.run_id;
+    if !created.reused {
+        created.mark_creation_committed();
+    }
+    let run_id = created.run_id.clone();
     if created.reused {
         anyhow::bail!(
             "NEX_VERIFY_ALREADY_RUNNING: dependency-verify Run '{run_id}' is already running"
