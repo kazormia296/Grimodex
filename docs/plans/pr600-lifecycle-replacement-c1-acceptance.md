@@ -1,6 +1,6 @@
 # PR #600 lifecycle replacement: C1 acceptance record
 
-Candidate under review: `044340e6` (built from parent
+Candidate under review: `cb9f8caa66d07c8b624abc400998841387f28309` (built from parent
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`). Contract:
 `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`.
 
@@ -29,13 +29,17 @@ review record; it does not claim whole-product acceptance.
 
 ## Evidence inspected
 
-- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle`
-  passed 15 tests.
-- `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib
+  workspace_lifecycle` passed 23 tests.
+- `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib`
   passed 146 tests, including lifecycle view and open/restore ownership cases.
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib
+  narrative_extraction::maintenance_lifecycle` passed 20 tests.
 - Electron lifecycle result, projection, delivery, scheduler, and shutdown
-  tests passed (526 tests in the combined focused run).
-- `git diff --cached --check` passed before the candidate commit.
+  focused tests passed (85 tests); `pnpm exec tsc -p electron/tsconfig.json
+  --noEmit` passed.
+- `git diff --check` and the staged candidate diff check passed before the
+  candidate commit.
 
 ## Scope limits
 

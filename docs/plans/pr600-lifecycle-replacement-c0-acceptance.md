@@ -1,6 +1,6 @@
 # PR #600 lifecycle replacement: C0 acceptance record
 
-Candidate under review: `044340e6` (built from parent
+Candidate under review: `cb9f8caa66d07c8b624abc400998841387f28309` (built from parent
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`). Contract:
 `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`.
 
@@ -28,18 +28,21 @@ acceptance.
 ## Evidence inspected
 
 - `docs/plans/pr600-lifecycle-replacement.md` and the implementation diff at
-  candidate `044340e6`.
-- Layer A shared-core tests: `pnpm test:narrative:lifecycle` (15 core tests).
-- Native lifecycle/open/restore and supervisor tests: 146 tests passed.
-- Electron scheduler, delivery, result, shutdown, IPC, and projection tests:
-  526 tests passed.
-- DB connection/runtime/lifecycle focused suites passed, including 15
-  connection tests, 35 runtime tests, and the lifecycle/reacceptance test
-  binaries.
+  candidate `cb9f8caa`.
+- Layer A shared-core tests: `cargo test --manifest-path
+  src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle` (23 tests).
+- Native lifecycle/open/restore and supervisor tests: `cargo test
+  --manifest-path electron/native/grimodex-node/Cargo.toml --lib` (146 tests).
+- DB maintenance ownership tests: `cargo test --manifest-path
+  src-tauri/Cargo.toml -p grimodex-db --lib
+  narrative_extraction::maintenance_lifecycle` (20 tests).
+- Electron lifecycle, delivery, scheduler, result, and shutdown focused
+  tests: 85 tests passed; Electron TypeScript typecheck also passed.
 
 ## Scope limits
 
 The dedicated `test-lifecycle` failpoint feature/binary and a full real
 Electron IPC → N-API → SQLite → renderer Layer C evidence run are not part of
-this candidate. The C0 contract is therefore accepted as the implementation
-boundary, while full T01–T36 product acceptance remains a C5 responsibility.
+this candidate. T01–T36 are not represented as all-green by this C0 record;
+their execution and the independent C5 review remain required before the PR
+is considered accepted.
