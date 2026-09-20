@@ -1,6 +1,6 @@
 # PR #600 lifecycle replacement: C0 acceptance record
 
-Candidate under review: `2d5d1de2` (built from parent
+Candidate under review: `5fed7588` (built from parent
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`). Contract:
 `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`.
 
@@ -35,7 +35,7 @@ acceptance.
 ## Evidence inspected
 
 - `docs/plans/pr600-lifecycle-replacement.md` and the implementation diff at
-  candidate `2d5d1de2`.
+  candidate `5fed7588`.
 - Layer A shared-core tests: `cargo test --manifest-path
   src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle` (24 tests,
   including independent W2 Open with an unresolved W1 descriptor).
@@ -50,6 +50,9 @@ acceptance.
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib
   state::tests::active_workspace_snapshot_pins_authority_including_lease`
   passed for the frozen Tauri compatibility path.
+- Graph index and cold-reopen tests passed with an explicit foreground
+  validation owner; the no-context whole-eligibility rejection remains
+  typed and fail-closed.
 
 ## Scope limits
 

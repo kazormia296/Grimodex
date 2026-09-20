@@ -5,7 +5,7 @@ Parent branch: `codex/nir1-b-capacity-implementation`
 Base SHA: `8df6be62b2652a5c3e7bca1ffb0e874937313d43`
 Child branch: `codex/pr600-lifecycle-replacement`
 Contract: `pr600-lifecycle-ownership/2#workspace-maintenance-lifecycle`
-Implementation checkpoint: `2d5d1de2`
+Implementation checkpoint: `5fed7588`
 Worktree: `/home/grimodex/.codex/worktrees/pr600-lifecycle-replacement`
 
 This record separates focused implementation evidence from independent final
@@ -23,6 +23,7 @@ supply, and I7-P/I7-L resource ordering.
 - `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib narrative_freshness_restore_lock_tests` — 4 passed.
 - `pnpm exec tsc -p electron/tsconfig.json --noEmit` — passed.
 - `pnpm test:electron --run electron/main/narrativeMaintenance.reacceptance.test.ts electron/main/narrativeMaintenanceDelivery.test.ts electron/main/narrativeMaintenance.test.ts` — 83 passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::nir1_entity_relation::tests::` — 75 passed, including Graph cold-reopen and foreground-context paths.
 - `git diff --check` — passed on the implementation checkpoint.
 
 The focused tests cover the new W1-descriptor/W2-open transition, Native

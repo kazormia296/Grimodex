@@ -6,11 +6,12 @@ Parent base: `codex/nir1-b-capacity-implementation` at
 `8df6be62b2652a5c3e7bca1ffb0e874937313d43`
 Child branch: `codex/pr600-lifecycle-replacement`
 
-Latest implementation checkpoint: `2d5d1de2`. The checkpoint closes the
+Latest implementation checkpoint: `5fed7588`. The checkpoint closes the
 descriptor product-caller path, exact Run creation/recovery evidence, Native
-Freshness lifecycle membership, frozen Tauri compatibility access, and main
-delivery ACK retry. C5 still requires an independent Astra High review and a
-clean candidate-specific Quick/verify receipt.
+Freshness lifecycle membership, frozen Tauri compatibility access, main
+delivery ACK retry, and foreground Graph/Verify validation context supply.
+C5 still requires an independent Astra High review and a clean
+candidate-specific Quick/verify receipt.
 
 This document is the C0 contract and impact ledger for the single stacked PR
 that replaces the workspace maintenance control path. It is normative for the
