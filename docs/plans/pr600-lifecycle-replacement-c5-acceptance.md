@@ -71,7 +71,7 @@ that every Layer C journey or T01–T36 case has been executed.
 - `pnpm test:electron --run electron/shared/workspaceRestoreOutcome.test.ts electron/shared/ipcContract.test.ts electron/main/profileEgress.test.ts electron/main/narrativeMaintenanceDelivery.test.ts electron/main/narrativeMaintenance.reacceptance.test.ts electron/main/narrativeMaintenance.wiring.test.ts` — 6 files, 551 tests passed.
 - `pnpm exec vitest run electron/shared/workspaceRestoreOutcome.test.ts src/features/settings/backupRestoreAuthority.test.ts src/features/workspace/workspaceLifecycleProjection.test.ts src/features/workspace/recovery/applyNativeOpenOutcome.test.ts` — 3 files, 16 tests passed.
 - `pnpm exec tsc -p electron/tsconfig.json --noEmit` — passed.
-- `pnpm test:narrative:lifecycle` — prior focused lifecycle command remains recorded; the current candidate additionally passes the direct Native/core and Electron suites listed below.
+- `pnpm test:narrative:lifecycle` — 35 shared-core tests, one Freshness lifecycle-control test, and the opt-in foreground/maintenance plus full-capacity lifecycle harness passed.
 - `cargo check --manifest-path electron/native/grimodex-node/Cargo.toml` — passed; existing dead-code warnings only.
 - `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib workspace_lifecycle` — 35 passed, including shared foreground/maintenance admission, physical drain, recordless fence ACK, execution pruning, pending-start retirement, exact H+1 retry, and independent W2 Open with a W1 descriptor.
 - `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib` — 153 passed, including strict Restore DTO classification, Open/Restore ordering, same-path authority rebound, background recovery projection, Safe Mode authorization, and foreground cleanup ownership.
@@ -91,7 +91,7 @@ that every Layer C journey or T01–T36 case has been executed.
 | Luna max C5 review | pending | Must review the exact clean final HEAD read-only, including the three PR #601 P1 findings, the four additional boundary findings, and prior ownership findings. |
 | Layer C IPC journey | pending | A full Electron IPC → N-API → SQLite → renderer run has not been claimed. |
 | T01–T36 matrix | pending | Focused tests cover representative cases; absence of a complete matrix is not a pass. |
-| Quick + immediate verify | pending | Both commands must use the same frozen base/head pair after the final commit. |
+| Quick + immediate verify | passed for code checkpoint; final docs commit pending | Both commands must use the same frozen base/head pair after the final commit. |
 
 The Windows GNU target check remains environment-blocked when the
 `x86_64-w64-mingw32-gcc` toolchain is unavailable. No hosted-check, merge, or
@@ -106,16 +106,16 @@ parent_branch=codex/nir1-b-capacity-implementation
 base_sha=8df6be62b2652a5c3e7bca1ffb0e874937313d43
 child_branch=codex/pr600-lifecycle-replacement
 worktree=/home/grimodex/.codex/worktrees/pr600-lifecycle-replacement
-head_sha=recorded in the final PR update and freeze receipt
+head_sha=ee688314eaf076ca0de4dad4d788efd2214c5fee (code checkpoint; final docs-only freeze SHA follows)
 tree_status=must be clean before Quick/verify
 implementer=Luna max
 independent_reviewers=Luna max (C5; read-only; model gpt-5.6-luna, max reasoning)
 threat_model_ref_and_confirmation=policies/quality/iron-laws.md#GDX-PRECHECK-001; lifecycle ownership, renderer trust boundary, and process-local evidence limits are recorded in the contract
 gate_status_c0=bounded-review
 gate_status_c1=bounded-review
-gate_status_c5=pending exact-head Luna max plus Quick/verify
-quick_command=pnpm ci:local:quick -- --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head "$candidate_head"
-verify_command=pnpm ci:local:verify -- quick --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head "$candidate_head"
+gate_status_c5=pending exact-head Luna max plus final docs-only Quick/verify
+quick_command=pnpm ci:local:quick -- --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head ee688314eaf076ca0de4dad4d788efd2214c5fee
+verify_command=pnpm ci:local:verify -- quick --base 8df6be62b2652a5c3e7bca1ffb0e874937313d43 --head ee688314eaf076ca0de4dad4d788efd2214c5fee
 unresolved_findings=full Layer C IPC journey, complete T01-T36 evidence, independent final Luna max review, and candidate-bound Quick/verify
 environment_limits=Windows GNU check may be blocked by missing x86_64-w64-mingw32-gcc; no hosted-check claim
 freeze_timestamp=to be recorded after the final clean-head gates
