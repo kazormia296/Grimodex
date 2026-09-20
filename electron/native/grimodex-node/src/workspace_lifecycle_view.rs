@@ -9,12 +9,13 @@
 
 use std::sync::Mutex;
 
-use grimodex_db::state::WorkspaceState;
+use grimodex_db::state::{PinnedWorkspaceDb, WorkspaceState};
 use grimodex_db::{
     AdmissionKind, AdmissionOutcome, AdmissionTicket, ContentEffect,
-    LifecycleResult, LifecycleState, LiveBinding, MaintenancePermit, PermitAdmission,
-    RecoveryDescriptorId, StateRevision, WorkspaceExclusive, WorkspaceLifecycleCore,
-    DeliveryAdmissionOutcome, DeliverySequence, FenceOutcome,
+    ControlGeneration, ControlRequest, ControlSlotOutcome, DeliveryAdmissionOutcome,
+    DeliverySequence, FenceOutcome, LifecycleResult, LifecycleState, LiveBinding,
+    MaintenancePermit, PermitAdmission, RecoveryDescriptor, RecoveryDescriptorId, StateRevision,
+    WorkspaceExclusive, WorkspaceLifecycleCore,
 };
 use grimodex_db::AppResult;
 use serde::{Deserialize, Serialize};
@@ -93,6 +94,81 @@ impl WorkspaceLifecycleViewAdapter {
     /// through the adapter when publishing the opaque lifecycle view.
     pub(crate) fn lifecycle_snapshot(&self) -> AppResult<grimodex_db::LifecycleSnapshot> {
         Ok(self.core.snapshot()?)
+    }
+
+    /// Native-only accessors for the exact descriptor control protocol. The
+    /// renderer never receives these values; they remain behind the shared
+    /// lifecycle owner so recovery cannot be reimplemented in main/JS.
+    pub(crate) fn recovery_descriptor(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+    ) -> AppResult<RecoveryDescriptor> {
+        Ok(self.core.descriptor(descriptor_id)?)
+    }
+
+    pub(crate) fn recovery_descriptor_ids(&self) -> AppResult<Vec<RecoveryDescriptorId>> {
+        Ok(self.core.unresolved_descriptor_ids()?)
+    }
+
+    pub(crate) fn recovery_authority(
+        &self,
+        workspace: &WorkspaceState,
+    ) -> AppResult<Option<PinnedWorkspaceDb>> {
+        let snapshot = self.core.snapshot()?;
+        if !matches!(snapshot.state, LifecycleState::RecoveryRequired { .. } | LifecycleState::Ready(_))
+        {
+            return Ok(None);
+        }
+        Ok(workspace
+            .inner
+            .lock()
+            .map_err(|error| anyhow::anyhow!("workspace lifecycle state lock poisoned: {error}"))?
+            .as_ref()
+            .map(|active| std::sync::Arc::clone(&active.authority)))
+    }
+
+    pub(crate) fn request_recovery_control(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+        request: &ControlRequest,
+    ) -> AppResult<ControlSlotOutcome> {
+        Ok(self.core.control_request(descriptor_id, request)?)
+    }
+
+    pub(crate) fn complete_recovery_control(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+        generation: ControlGeneration,
+        result: &str,
+    ) -> AppResult<()> {
+        Ok(self
+            .core
+            .complete_control(descriptor_id, generation, result.to_owned())?)
+    }
+
+    pub(crate) fn resolve_recovery_control(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+        generation: ControlGeneration,
+    ) -> AppResult<()> {
+        Ok(self.core.resolve_control(descriptor_id, generation)?)
+    }
+
+    pub(crate) fn ack_recovery_control(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+        generation: ControlGeneration,
+    ) -> AppResult<()> {
+        Ok(self.core.ack_control(descriptor_id, generation)?)
+    }
+
+    pub(crate) fn release_recovery_responsibility(
+        &self,
+        descriptor_id: RecoveryDescriptorId,
+    ) -> AppResult<bool> {
+        Ok(self
+            .core
+            .release_descriptor_responsibility(descriptor_id)?)
     }
 
     /// Mark the beginning of an admitted Open/Restore/Shutdown transition.

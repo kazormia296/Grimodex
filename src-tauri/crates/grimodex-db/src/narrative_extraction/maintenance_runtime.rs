@@ -1308,6 +1308,12 @@ pub struct MaintenanceCycleControl<'a> {
     /// Attach the exact durable Run/Task/Attempt tuple to the already
     /// reserved lifecycle execution before the cycle can publish its result.
     pub attach_run: Option<&'a dyn Fn(RunOwnership) -> anyhow::Result<()>>,
+    /// Reserve the exact Run/Task/Attempt tuple before the writer starts any
+    /// creation side effect.  The Native lifecycle owner uses this callback
+    /// to retain a CreationUnknown obligation if the transaction result is
+    /// lost; it is intentionally separate from `attach_run`, which records
+    /// the post-COMMIT Created/Reused evidence.
+    pub reserve_run: Option<&'a dyn Fn(RunOwnership) -> anyhow::Result<()>>,
 }
 
 impl MaintenanceCycleRequest {
@@ -6183,6 +6189,7 @@ mod tests {
                 work_noop_completed: &work_noop_completed,
                 work_deferred: &work_deferred,
                 attach_run: None,
+                reserve_run: None,
             };
             let result =
                 run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
@@ -6648,6 +6655,7 @@ mod tests {
                 work_noop_completed: &work_noop_completed,
                 work_deferred: &work_noop_completed,
                 attach_run: None,
+                reserve_run: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db,
@@ -6709,6 +6717,7 @@ mod tests {
                 work_noop_completed: &work_completed,
                 work_deferred: &work_completed,
                 attach_run: None,
+                reserve_run: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6782,6 +6791,7 @@ mod tests {
                 work_noop_completed: &work_completed,
                 work_deferred: &work_completed,
                 attach_run: None,
+                reserve_run: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6872,6 +6882,7 @@ mod tests {
                 work_noop_completed: &work_completed,
                 work_deferred: &work_completed,
                 attach_run: None,
+                reserve_run: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6963,6 +6974,7 @@ mod tests {
                 work_noop_completed: &work_completed,
                 work_deferred: &work_completed,
                 attach_run: None,
+                reserve_run: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -7083,6 +7095,7 @@ mod tests {
             work_noop_completed: &no_op,
             work_deferred: &no_op,
             attach_run: None,
+            reserve_run: None,
         };
 
         let error = discover_durable_maintenance_work_with_coordinates_and_control(
@@ -7223,6 +7236,7 @@ mod tests {
             work_noop_completed: &no_op,
             work_deferred: &no_op,
             attach_run: None,
+            reserve_run: None,
         };
         let controlled = discover_before_cutover_maintenance_work_with_coordinates_and_control(
             &db,

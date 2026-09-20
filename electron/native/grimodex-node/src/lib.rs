@@ -120,8 +120,9 @@ use grimodex_db::web_editor_handoff;
 use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{
     with_db_state, AdmissionKind, AdmissionOutcome, AdmissionRejection, AppError, BatchStatement,
-    Database, DeliveryAdmissionOutcome, DeliverySequence, LifecycleSnapshot, LifecycleState,
-    MaintenancePermit, PermitAdmission, RepairIntegrityPayload, TransitionStage,
+    ControlRequest, ControlSlotOutcome, Database, DeliveryAdmissionOutcome,
+    DeliverySequence, LifecycleSnapshot, LifecycleState, MaintenancePermit, PermitAdmission,
+    RepairIntegrityPayload, TransitionStage,
 };
 use grimodex_db::narrative_extraction::{
     validation_terminated, ValidationTerminationReason,
@@ -131,7 +132,8 @@ use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, pa
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
 use state::{AppState, EventQueue, EventTsfn, NarrativeMaintenanceCleanupOutcome};
 use workspace_lifecycle_view::{
-    WorkspaceLifecycleView, WorkspaceLifecycleViewAdapter, WORKSPACE_LIFECYCLE_EVENT,
+    WorkspaceLifecycleStatus, WorkspaceLifecycleView, WorkspaceLifecycleViewAdapter,
+    WORKSPACE_LIFECYCLE_EVENT,
 };
 use uuid::Uuid;
 
@@ -1889,6 +1891,176 @@ fn publish_workspace_lifecycle_recovery_after_join(
     Ok(view)
 }
 
+/// Resolve one exact maintenance recovery descriptor before ordinary cycle
+/// admission. The descriptor is the only source of Run identity; no WorkKey
+/// lookup or `active_database()` fallback is allowed while the core is in
+/// RecoveryRequired. A successful resolution intentionally returns a
+/// workspace-unavailable result so main requeues the delivery and performs a
+/// fresh Ready snapshot before dispatching new work.
+fn reconcile_maintenance_recovery_descriptor(
+    state: &AppState,
+) -> std::result::Result<Option<String>, AppError> {
+    let snapshot = state.workspace_lifecycle.lifecycle_snapshot()?;
+    let descriptor_ids = match snapshot.state {
+        LifecycleState::RecoveryRequired { descriptor_id } => vec![descriptor_id],
+        LifecycleState::Ready(_) => state.workspace_lifecycle.recovery_descriptor_ids()?,
+        _ => return Ok(None),
+    };
+    let authority = match state.workspace_lifecycle.recovery_authority(&state.ws)? {
+        Some(authority) => authority,
+        None => return Ok(None),
+    };
+    let metadata_path = authority.path().join(".grimodex/workspace.json");
+    let metadata = std::fs::read_to_string(&metadata_path).map_err(anyhow::Error::from)?;
+    let workspace_id = serde_json::from_str::<serde_json::Value>(&metadata)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            AppError::Anyhow(anyhow::anyhow!(
+                "NEX_WORKSPACE_IDENTITY_INVALID: recovery authority metadata has no id"
+            ))
+        })?;
+    let locator = authority.path().to_string_lossy().into_owned();
+    let descriptor_id = descriptor_ids.into_iter().find(|descriptor_id| {
+        if *descriptor_id == grimodex_db::workspace_lifecycle::SAFE_MODE_RECOVERY_DESCRIPTOR_ID {
+            return false;
+        }
+        let Ok(descriptor) = state.workspace_lifecycle.recovery_descriptor(*descriptor_id) else {
+            return false;
+        };
+        descriptor.expected_binding.as_ref().is_some_and(|binding| {
+            binding.locator == locator
+                && binding.workspace_id == workspace_id
+                && binding.authority_instance == authority.identity()
+        })
+    });
+    let Some(descriptor_id) = descriptor_id else {
+        return Ok(None);
+    };
+    let descriptor = state.workspace_lifecycle.recovery_descriptor(descriptor_id)?;
+    let (view, changed) = state
+        .workspace_lifecycle
+        .begin_recovery_transition(descriptor_id)?;
+    if changed {
+        emit_workspace_lifecycle_view(state, &view);
+    }
+
+    let reconciliation = (|| -> std::result::Result<Option<String>, AppError> {
+        let mut runs = Vec::new();
+        if let Some(run) = descriptor.run.clone() {
+            runs.push(run);
+        }
+        runs.extend(descriptor.additional_runs.clone());
+        for ownership in runs {
+            match ownership.state {
+                grimodex_db::RunCreationState::Reserved
+                | grimodex_db::RunCreationState::CreationNotCommitted => {}
+                grimodex_db::RunCreationState::CreationUnknown => {
+                    match narrative_extraction::resolve_maintenance_run_creation_unknown(
+                        authority.db(),
+                        &ownership.handle,
+                    )
+                    .map_err(AppError::Anyhow)?
+                    {
+                        narrative_extraction::CreationResolution::NotCommitted => continue,
+                        narrative_extraction::CreationResolution::Created => {
+                            narrative_extraction::recover_maintenance_run_exact(
+                                authority.db(),
+                                &ownership.handle,
+                                "NEX_MAINTENANCE_RECOVERY_DESCRIPTOR",
+                            )
+                            .map_err(AppError::Anyhow)?;
+                        }
+                    }
+                }
+                grimodex_db::RunCreationState::Created
+                | grimodex_db::RunCreationState::Reused => {
+                    narrative_extraction::recover_maintenance_run_exact(
+                        authority.db(),
+                        &ownership.handle,
+                        "NEX_MAINTENANCE_RECOVERY_DESCRIPTOR",
+                    )
+                    .map_err(AppError::Anyhow)?;
+                }
+            }
+        }
+
+        let generation = descriptor.control_generation;
+        let request = ControlRequest {
+            generation,
+            fingerprint: format!("maintenance-descriptor:{descriptor_id}"),
+            payload: "terminalize-exact-runs".to_owned(),
+        };
+        match state
+            .workspace_lifecycle
+            .request_recovery_control(descriptor_id, &request)?
+        {
+            ControlSlotOutcome::Accepted { .. } => {
+                state.workspace_lifecycle.complete_recovery_control(
+                    descriptor_id,
+                    generation,
+                    "resolved",
+                )?;
+            }
+            ControlSlotOutcome::Replay { result, .. } => {
+                if result.as_deref() != Some("resolved") {
+                    state.workspace_lifecycle.complete_recovery_control(
+                        descriptor_id,
+                        generation,
+                        "resolved",
+                    )?;
+                }
+            }
+            ControlSlotOutcome::Conflict { .. } => {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_RECOVERY_CONTROL_CONFLICT"
+                )))
+            }
+            ControlSlotOutcome::Retired => {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_RECOVERY_CONTROL_RETIRED"
+                )))
+            }
+        }
+        state
+            .workspace_lifecycle
+            .resolve_recovery_control(descriptor_id, generation)?;
+        state
+            .workspace_lifecycle
+            .ack_recovery_control(descriptor_id, generation)?;
+        state
+            .workspace_lifecycle
+            .release_recovery_responsibility(descriptor_id)?;
+        Ok(Some("maintenance-recovery-complete".to_owned()))
+    })();
+
+    match reconciliation {
+        Ok(result) => {
+            // `begin_recovery_transition` must be joined before the core may
+            // publish a Ready binding. The recovery worker above performs no
+            // protected workspace replacement, so this is the exact native
+            // join boundary for the descriptor owner.
+            let view = publish_workspace_lifecycle_from_workspace(state)?;
+            if !matches!(view.status, WorkspaceLifecycleStatus::Ready) {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_RECOVERY_ACTIVATION_INCOMPLETE"
+                )));
+            }
+            Ok(result)
+        }
+        Err(error) => {
+            let _ = publish_workspace_lifecycle_recovery_after_join(state);
+            Err(error)
+        }
+    }
+}
+
 /// Called by the eventual native shutdown owner after terminal cleanup has
 /// been proven. It is deliberately crate-local so a renderer or arbitrary
 /// main caller cannot manufacture a Closed state by invoking a setter.
@@ -2056,6 +2228,7 @@ where
         work_noop_completed: &no_work,
         work_deferred: &no_work,
         attach_run: None,
+        reserve_run: None,
     };
 
     let operation_result = operation(authority.db(), &control, &canonical_work_key);
@@ -4044,19 +4217,34 @@ fn run_narrative_freshness_cycle_inner(
             }
         }
     }
+    let mut lifecycle_permit = match state.workspace_lifecycle.begin_maintenance()? {
+        PermitAdmission::Admitted(mut permit) => {
+            permit
+                .start()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+            permit
+        }
+        PermitAdmission::NotAdmitted { .. } => return Ok(None),
+    };
     // Liveness is minted only after the bounded cycle has returned
     // successfully. A failed graph evaluation, cursor reservation,
     // or publication therefore cannot attest a live scheduler or
     // activate the canonical authority.
     let mut lifecycle_control = NativeFreshnessLifecycleControl { state };
-    let (cycle_outcome, successful_cycle) = narrative_extraction::
+    let cycle_result = narrative_extraction::
         run_incremental_freshness_cycle_with_liveness_capability_and_hold_and_lifecycle_control(
             authority.db(),
             ci_config
                 .as_ref()
                 .and_then(|config| config.freshness_hold_project_id.as_deref()),
             &mut lifecycle_control,
-        )?;
+        );
+    let lifecycle_result = lifecycle_permit
+        .mark_joined()
+        .and_then(|_| lifecycle_permit.release().map(|_| ()))
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")));
+    lifecycle_result?;
+    let (cycle_outcome, successful_cycle) = cycle_result?;
     // A workspace swap may complete while the bounded cycle is
     // evaluating its pinned old authority. Re-resolve the active
     // authority before minting liveness so that a late old cycle can
@@ -5034,6 +5222,18 @@ impl Backend {
                     }
                 }
             }
+            // A previous maintenance execution may have transferred an
+            // exact Run owner to a descriptor while leaving the current
+            // authority usable for descriptor-bound recovery. Resolve that
+            // root before attempt/maintenance admission; RecoveryRequired
+            // deliberately rejects ordinary maintenance permits.
+            if let Some(reason) = reconcile_maintenance_recovery_descriptor(&state)? {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": reason,
+                })
+                .to_string());
+            }
             let mut attempt_guard = if let Some(attempt_id) = attempt_id {
                 request.workspace_binding.as_ref().ok_or_else(|| {
                     AppError::Anyhow(anyhow::anyhow!(
@@ -5561,6 +5761,13 @@ impl Backend {
                     .attach_run_ownership(ownership)
                     .map_err(|error| anyhow::anyhow!("{error}"))
             };
+            let reserve_run = |ownership: grimodex_db::workspace_lifecycle::RunOwnership| {
+                lifecycle_permit
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_LIFECYCLE_PERMIT_MISSING"))?
+                    .attach_run_ownership(ownership)
+                    .map_err(|error| anyhow::anyhow!("{error}"))
+            };
             let attempt_control = MaintenanceCycleControl {
                 should_stop: &should_stop,
                 stop_signal: stop_signal_for_control.clone(),
@@ -5573,6 +5780,7 @@ impl Backend {
                 work_noop_completed: &work_noop_completed,
                 work_deferred: &work_deferred,
                 attach_run: Some(&attach_run),
+                reserve_run: Some(&reserve_run),
             };
             lifecycle_work_started = true;
             let cycle_result = {

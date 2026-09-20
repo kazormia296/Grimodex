@@ -56,9 +56,12 @@ use super::maintenance_contracts::{
 };
 use super::maintenance_lifecycle::{
     canonical_failure_message, complete_maintenance_run_in_tx, create_maintenance_run_in_tx,
+    create_maintenance_run_in_tx_with_control,
     fail_maintenance_run_in_tx, hold_maintenance_run_in_tx, load_maintenance_run_in_tx,
-    cancel_maintenance_run_for_preemption_in_tx, MaintenanceFailureKind,
+    cancel_maintenance_run_for_preemption_in_tx, resolve_creation_unknown_in_tx,
+    CreationIdentity, CreationVerification, MaintenanceFailureKind, RunCreationReservation,
 };
+pub use super::maintenance_lifecycle::CreationResolution;
 use super::maintenance_runtime::{
     maintenance_stop_signal, validate_phase_success_outcome, FinalizationGrantScope,
     MaintenanceCycleControl, MaintenanceCycleGraphControl,
@@ -1153,7 +1156,7 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
                 })?.id;
                 let spec = json!({});
                 let spec_digest = format!("sha256:{}", digest_plan(&spec));
-                let handle = create_maintenance_run_in_tx(
+                let handle = create_maintenance_run_in_tx_with_control(
                     conn,
                     project_id,
                     "semantic-index-rebuild",
@@ -1162,6 +1165,7 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
                     &spec,
                     &spec_digest,
                     SystemRunWorkKeyReuse::RunningOnly,
+                    Some(control),
                 )?;
                 Ok((handle, epoch_id))
             })?;
@@ -1170,9 +1174,9 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control(
             // the only process-local proof of the committed exact tuple.
             if !created.0.reused {
                 created.0.mark_creation_committed();
-                if let Some(attach_run) = control.attach_run {
-                    attach_run(created.0.core_ownership())?;
-                }
+            }
+            if let Some(attach_run) = control.attach_run {
+                attach_run(created.0.core_ownership())?;
             }
             Ok(created)
         },
@@ -3837,6 +3841,170 @@ pub fn try_cancel_preempted_maintenance_run(
     result.into_result()
 }
 
+/// Reconcile one exact maintenance Run transferred to a lifecycle recovery
+/// descriptor.  Recovery never searches by WorkKey: the descriptor's
+/// durable tuple is the only authority, and a non-running exact tuple is
+/// already terminal for this recovery step.
+pub fn recover_maintenance_run_exact(
+    db: &Database,
+    handle: &crate::workspace_lifecycle::DurableRunHandle,
+    reason: &str,
+) -> anyhow::Result<bool> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let result = with_narrative_maintenance_graph_control(
+        db,
+        Duration::ZERO,
+        PRODUCTION_MAINTENANCE_PROGRESS_INTERVAL,
+        stop,
+        NarrativeMaintenanceGraphControlConfig::default(),
+        |conn, graph| {
+            graph.check(GraphWorkStage::ResultAssembly)?;
+            with_immediate_transaction(conn, |conn| {
+                let row: Option<(String, Option<String>, Option<String>, Option<String>, String, String)> =
+                    conn.query_row(
+                        "SELECT project_id, run_kind, semantic_epoch_id, work_key,
+                                spec_json, spec_digest
+                           FROM narrative_extraction_runs
+                          WHERE id = ?1",
+                        [&handle.run_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                let Some((project_id, run_kind, epoch_id, work_key, spec_json, spec_digest)) = row
+                else {
+                    anyhow::bail!(
+                        "NEX_MAINTENANCE_RECOVERY_RUN_MISSING: exact Run '{}' is absent",
+                        handle.run_id
+                    );
+                };
+                anyhow::ensure!(
+                    project_id == handle.project_id
+                        && run_kind.as_deref() == Some(handle.kind.as_str())
+                        && epoch_id.as_deref() == Some(handle.semantic_epoch_id.as_str())
+                        && work_key.as_deref() == Some(handle.work_key.as_str())
+                        && spec_json == handle.sealed_spec
+                        && spec_digest == handle.spec_digest,
+                    "NEX_MAINTENANCE_RECOVERY_RUN_IDENTITY_MISMATCH: exact Run '{}' does not match its descriptor",
+                    handle.run_id
+                );
+                let status: String = conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    [&handle.run_id],
+                    |row| row.get(0),
+                )?;
+                if status == NarrativeRunStatus::Running.as_str() {
+                    let loaded = load_maintenance_run_in_tx(conn, &handle.run_id)?;
+                    anyhow::ensure!(
+                        loaded.task_id == handle.task_id && loaded.attempt_id == handle.attempt_id,
+                        "NEX_MAINTENANCE_RECOVERY_RUN_CHILD_MISMATCH: exact Run '{}' children changed",
+                        handle.run_id
+                    );
+                    cancel_maintenance_run_for_preemption_in_tx(conn, &loaded, reason)?;
+                } else {
+                    let child_matches: bool = conn.query_row(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM narrative_extraction_tasks
+                             WHERE id = ?1 AND run_id = ?2)
+                         AND EXISTS(
+                            SELECT 1 FROM narrative_extraction_attempts a
+                             JOIN narrative_extraction_tasks t ON t.id = a.task_id
+                            WHERE a.id = ?3 AND t.id = ?4 AND t.run_id = ?2)",
+                        rusqlite::params![&handle.task_id, &handle.run_id, &handle.attempt_id, &handle.task_id],
+                        |row| row.get(0),
+                    )?;
+                    anyhow::ensure!(
+                        child_matches,
+                        "NEX_MAINTENANCE_RECOVERY_RUN_CHILD_MISMATCH: terminal Run '{}' has different children",
+                        handle.run_id
+                    );
+                }
+                graph.check(GraphWorkStage::ResultAssembly)?;
+                Ok(true)
+            })
+        },
+    )?;
+    let Some(result) = result else {
+        anyhow::bail!(
+            "{MAINTENANCE_CONNECTION_PREEMPTED_CODE}: exact Run recovery could not acquire the maintenance connection"
+        );
+    };
+    result.into_result()
+}
+
+/// Resolve a lost Run-creation result using the exact reserved tuple and the
+/// supervisor's post-Join connection/lineage receipt.  The normal zero-row
+/// query remains insufficient; this helper is intentionally only exposed to
+/// the Native recovery owner.
+pub fn resolve_maintenance_run_creation_unknown(
+    db: &Database,
+    handle: &crate::workspace_lifecycle::DurableRunHandle,
+) -> anyhow::Result<CreationResolution> {
+    let reservation = RunCreationReservation {
+        run_id: handle.run_id.clone(),
+        task_id: handle.task_id.clone(),
+        attempt_id: handle.attempt_id.clone(),
+        expected: Some(CreationIdentity {
+            project_id: handle.project_id.clone(),
+            run_kind: handle.kind.clone(),
+            semantic_epoch_id: handle.semantic_epoch_id.clone(),
+            work_key: handle.work_key.clone(),
+            spec_digest: handle.spec_digest.clone(),
+            task_kind: match handle.kind.as_str() {
+                "backfill" => "maintenance-backfill",
+                "dependency-verify" => "maintenance-dependency-verify",
+                "semantic-index-rebuild" => "maintenance-semantic-index-rebuild",
+                other => anyhow::bail!(
+                    "NEX_MAINTENANCE_RUN_KIND_INVALID: unsupported maintenance Run kind '{other}'"
+                ),
+            }
+            .to_string(),
+            task_input: handle.sealed_spec.clone(),
+        }),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let result = with_narrative_maintenance_graph_control(
+        db,
+        Duration::ZERO,
+        PRODUCTION_MAINTENANCE_PROGRESS_INTERVAL,
+        stop,
+        NarrativeMaintenanceGraphControlConfig::default(),
+        |conn, graph| {
+            graph.check(GraphWorkStage::ResultAssembly)?;
+            with_immediate_transaction(conn, |conn| {
+                let resolution = resolve_creation_unknown_in_tx(
+                    conn,
+                    &reservation,
+                    &handle.project_id,
+                    CreationVerification {
+                        worker_joined: true,
+                        connection_retired: true,
+                        same_database_identity: true,
+                        lineage_continuous: true,
+                        no_destructive_boundary: true,
+                    },
+                )?;
+                graph.check(GraphWorkStage::ResultAssembly)?;
+                Ok(resolution)
+            })
+        },
+    )?;
+    let Some(result) = result else {
+        anyhow::bail!(
+            "{MAINTENANCE_CONNECTION_PREEMPTED_CODE}: Run-creation resolution could not acquire the maintenance connection"
+        );
+    };
+    result.into_result()
+}
+
 pub(crate) fn run_maintenance_graph_phase_for_run<T, F>(
     db: &Database,
     control: &MaintenanceCycleControl<'_>,
@@ -4080,7 +4248,7 @@ fn run_dependency_verify_for_project_with_coordinates_controlled(
     let created = run_maintenance_graph_phase(db, control, |conn, graph| {
         let mut created = with_immediate_transaction(conn, |conn| {
             graph.check(GraphWorkStage::Restore)?;
-            create_maintenance_run_in_tx(
+            create_maintenance_run_in_tx_with_control(
                 conn,
                 project_id,
                 VERIFY_RUN_KIND,
@@ -4089,13 +4257,14 @@ fn run_dependency_verify_for_project_with_coordinates_controlled(
                 &spec,
                 &spec_digest,
                 SystemRunWorkKeyReuse::RunningOnly,
+                Some(control),
             )
         })?;
         if !created.reused {
             created.mark_creation_committed();
-            if let Some(attach_run) = control.attach_run {
-                attach_run(created.core_ownership())?;
-            }
+        }
+        if let Some(attach_run) = control.attach_run {
+            attach_run(created.core_ownership())?;
         }
         Ok(created)
     })?;
@@ -5980,6 +6149,7 @@ mod tests {
             work_noop_completed: &no_work,
             work_deferred: &no_work,
             attach_run: None,
+            reserve_run: None,
         };
 
         {
@@ -6040,6 +6210,7 @@ mod tests {
             work_noop_completed: &no_work,
             work_deferred: &no_work,
             attach_run: None,
+            reserve_run: None,
         };
 
         let error = record_verify_failure_controlled(
@@ -6109,6 +6280,7 @@ mod tests {
             work_noop_completed: &no_work,
             work_deferred: &no_work,
             attach_run: None,
+            reserve_run: None,
         };
 
         let error = record_rebuild_failure_controlled(

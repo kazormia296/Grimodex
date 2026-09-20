@@ -15,7 +15,7 @@ use super::execution_state::{next_run_lifecycle_timestamp_in_tx, parse_run_lifec
 use super::maintenance_runtime::{
     canonical_work_key_for_epoch, classify_failure, explicit_failure_code, retry_backoff_ms,
     select_unique_latest_lifecycle_evidence, spec_with_active_system_work_marker,
-    LifecycleEvidence, NarrativeSystemWorkMarker,
+    LifecycleEvidence, MaintenanceCycleControl, NarrativeSystemWorkMarker,
 };
 use super::repository::{
     create_system_run_in_tx_with_reserved_id, SystemRunWorkKeyReuse,
@@ -274,8 +274,7 @@ fn reservation_matches_created_tuple(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum CreationResolution {
+pub enum CreationResolution {
     NotCommitted,
     Created,
 }
@@ -298,8 +297,7 @@ pub(crate) struct CreationVerification {
 /// connection must be dead, the locator/lineage must be continuous, and the
 /// entire Run/Task/Attempt tuple must be absent.  Partial tuples and identity
 /// mismatches remain recovery responsibility.
-#[allow(dead_code)]
-pub(crate) fn resolve_creation_unknown_in_tx(
+pub fn resolve_creation_unknown_in_tx(
     conn: &Connection,
     reservation: &RunCreationReservation,
     project_id: &str,
@@ -356,13 +354,24 @@ pub(crate) fn resolve_creation_unknown_in_tx(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    match (run, task, attempt) {
-        (None, None, None) => {
+    let hidden_children: i64 = conn.query_row(
+        "SELECT
+            (SELECT COUNT(*) FROM narrative_extraction_tasks
+              WHERE run_id = ?1 AND id <> ?2)
+          + (SELECT COUNT(*)
+               FROM narrative_extraction_attempts a
+               JOIN narrative_extraction_tasks t ON t.id = a.task_id
+              WHERE t.run_id = ?1 AND a.id <> ?3)",
+        params![&reservation.run_id, &reservation.task_id, &reservation.attempt_id],
+        |row| row.get(0),
+    )?;
+    match (run, task, attempt, hidden_children) {
+        (None, None, None, 0) => {
             // The caller may now release the process-local ownership slot
             // without writing a synthetic cancelled Run.
             Ok(CreationResolution::NotCommitted)
         }
-        (Some(actual_run), Some(actual_task), Some(actual_attempt))
+        (Some(actual_run), Some(actual_task), Some(actual_attempt), 0)
             if reservation_matches_created_tuple(
                 reservation,
                 &actual_run,
@@ -370,7 +379,7 @@ pub(crate) fn resolve_creation_unknown_in_tx(
                 &actual_attempt,
                 project_id,
             ) => Ok(CreationResolution::Created),
-        (Some(_), _, _) | (_, Some(_), _) | (_, _, Some(_)) => Err(ownership_error(
+        _ => Err(ownership_error(
             "Run creation tuple is partial, cross-project, or does not match the reserved kind/epoch/work/spec identity",
         )),
     }
@@ -576,6 +585,35 @@ pub(crate) fn create_maintenance_run_in_tx(
     spec_digest: &str,
     reuse: SystemRunWorkKeyReuse,
 ) -> anyhow::Result<MaintenanceRunHandle> {
+    create_maintenance_run_in_tx_with_control(
+        conn,
+        project_id,
+        run_kind,
+        semantic_epoch_id,
+        work_key,
+        spec_json,
+        spec_digest,
+        reuse,
+        None,
+    )
+}
+
+/// Controlled variant used by Native lifecycle executions.  The exact
+/// reservation is handed to the shared core before the first Run DML, so a
+/// lost COMMIT result remains a CreationUnknown obligation instead of being
+/// silently discarded.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_maintenance_run_in_tx_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_kind: &str,
+    semantic_epoch_id: &str,
+    work_key: &str,
+    spec_json: &Value,
+    spec_digest: &str,
+    reuse: SystemRunWorkKeyReuse,
+    control: Option<&MaintenanceCycleControl<'_>>,
+) -> anyhow::Result<MaintenanceRunHandle> {
     anyhow::ensure!(
         !project_id.trim().is_empty()
             && !semantic_epoch_id.trim().is_empty()
@@ -617,6 +655,25 @@ pub(crate) fn create_maintenance_run_in_tx(
         task_kind,
         &requested_full_spec_json,
     );
+    let epoch = semantic_epoch_number_in_tx(conn, project_id, semantic_epoch_id)?;
+    if let Some(reserve_run) = control.and_then(|control| control.reserve_run) {
+        let ownership = crate::workspace_lifecycle::RunOwnership {
+            state: crate::workspace_lifecycle::RunCreationState::Reserved,
+            handle: crate::workspace_lifecycle::DurableRunHandle::new(
+                project_id,
+                &reservation.run_id,
+                &reservation.task_id,
+                &reservation.attempt_id,
+                run_kind,
+                semantic_epoch_id,
+                work_key,
+                epoch,
+                &requested_full_spec_json,
+                spec_digest,
+            ),
+        };
+        reserve_run(ownership)?;
+    }
     let run = create_system_run_in_tx_with_reserved_id(
         conn,
         project_id,
@@ -701,8 +758,6 @@ pub(crate) fn create_maintenance_run_in_tx(
          VALUES (?1, ?2, 1, 'running', ?3)",
         params![&attempt_id, &task_id, &run_started_at],
     )?;
-    let epoch = semantic_epoch_number_in_tx(conn, project_id, semantic_epoch_id)?;
-
     let handle = MaintenanceRunHandle {
         project_id: project_id.to_owned(),
         run_id,

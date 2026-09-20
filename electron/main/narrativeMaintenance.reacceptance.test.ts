@@ -335,4 +335,43 @@ describe("narrative maintenance reacceptance boundaries", () => {
     );
     scheduler.dispose();
   });
+
+  it("retries a failed Native delivery ACK without redispatching the batch", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(accepted());
+    let ackCalls = 0;
+    const ackNarrativeMaintenanceDelivery = vi
+      .fn()
+      .mockImplementation(async (sequence: number) => {
+        ackCalls += 1;
+        if (ackCalls === 1) {
+          throw new Error("temporary ACK transport failure");
+        }
+        return { status: "retired", sequence };
+      });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      runNarrativeMaintenanceCycle,
+      ackNarrativeMaintenanceDelivery,
+    });
+
+    scheduler.request(backfill("ack-retry", "same-occurrence"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(1);
+    const firstSequence = runNarrativeMaintenanceCycle.mock.calls[0]?.[0]
+      .deliverySequence;
+    expect(firstSequence).toBe(1);
+
+    // The ACK-only timer wakes even though the ordinary queue is empty. It
+    // retries the exact sequence and never calls Native cycle again.
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledTimes(2);
+    expect(ackNarrativeMaintenanceDelivery.mock.calls).toEqual([
+      [firstSequence],
+      [firstSequence],
+    ]);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(1);
+    await scheduler.dispose();
+  });
 });

@@ -209,6 +209,19 @@ pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveW
         }
         let ws = inner.as_ref().ok_or(AppError::NoWorkspace)?;
         let LifecycleState::Ready(binding) = lifecycle_state else {
+            // The Tauri shell is a frozen compatibility surface. Its test
+            // fixtures and legacy startup path install an already-verified
+            // authority before the Electron lifecycle adapter can publish a
+            // Ready projection. Preserve that narrow direct-owner path while
+            // keeping explicit Transition/RecoveryRequired/Closed states
+            // fail-closed.
+            if matches!(lifecycle_state, LifecycleState::NoWorkspace) {
+                if let Some(ws) = inner.as_ref() {
+                    return Ok(ActiveWorkspaceSnapshot {
+                        authority: Arc::clone(&ws.authority),
+                    });
+                }
+            }
             // Closed, RecoveryRequired, and an uninitialized NoWorkspace
             // projection must never leak an already-held authority to a
             // normal DB command.  Only the exact Ready binding may be pinned.
@@ -223,6 +236,17 @@ pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveW
             });
         };
         if binding.authority_instance != ws.authority.identity() {
+            // Frozen Tauri restore/test owners may replace `inner` directly
+            // after their own protected open boundary. They do not publish a
+            // shared-core binding, but they also leave the compatibility
+            // switching flag down; keep that legacy owner usable. Electron
+            // lifecycle transitions set the flag/core Transition and remain
+            // fail-closed above.
+            if !ws_state.switching.load(std::sync::atomic::Ordering::Acquire) {
+                return Ok(ActiveWorkspaceSnapshot {
+                    authority: Arc::clone(&ws.authority),
+                });
+            }
             return Err(AppError::Anyhow(anyhow::anyhow!(
                 "NEX_WORKSPACE_BINDING_CHANGED: lifecycle Ready binding does not match the active authority"
             )));

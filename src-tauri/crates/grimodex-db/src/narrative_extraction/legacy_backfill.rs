@@ -83,6 +83,7 @@ use super::dependency_edges::{
 use super::digest_plan;
 use super::maintenance_lifecycle::{
     canonical_failure_message, complete_maintenance_run_in_tx, create_maintenance_run_in_tx,
+    create_maintenance_run_in_tx_with_control,
     fail_maintenance_run_in_tx, hold_maintenance_run_in_tx, load_maintenance_run_in_tx,
     MaintenanceFailureKind,
 };
@@ -687,7 +688,7 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
                     let handle = load_maintenance_run_in_tx(conn, &run_id)?;
                     return Ok((handle, epoch_id, true));
                 }
-                let handle = create_maintenance_run_in_tx(
+                let handle = create_maintenance_run_in_tx_with_control(
                     conn,
                     project_id,
                     "backfill",
@@ -696,11 +697,14 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
                     &spec,
                     &spec_digest,
                     SystemRunWorkKeyReuse::RunningOnly,
+                    Some(control),
                 )?;
                 Ok((handle, epoch_id, false))
             })?;
-            if !created.0.reused && !created.2 {
-                created.0.mark_creation_committed();
+            if !created.2 {
+                if !created.0.reused {
+                    created.0.mark_creation_committed();
+                }
                 if let Some(attach_run) = control.attach_run {
                     attach_run(created.0.core_ownership())?;
                 }
@@ -2358,6 +2362,7 @@ mod tests {
             work_noop_completed: &no_work,
             work_deferred: &no_work,
             attach_run: None,
+            reserve_run: None,
         };
         let cancellation = super::super::source_revision::validation_terminated(
             super::super::source_revision::ValidationTerminationReason::Cancelled,

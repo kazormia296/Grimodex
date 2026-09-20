@@ -351,13 +351,14 @@ pub use restore_rebuild::{
     ensure_restore_epochs_for_workspace, list_pending_maintenance_wakes,
     production_verify_check_coverage, rebuild_narrative_derived_state_for_project,
     rebuild_narrative_derived_state_for_project_with_control,
+    recover_maintenance_run_exact, resolve_maintenance_run_creation_unknown,
     record_maintenance_delivery_failure_wake, run_dependency_verify_for_project,
     run_dependency_verify_for_project_with_coordinates,
     run_dependency_verify_for_project_with_coordinates_and_control,
     try_cancel_preempted_maintenance_run,
     verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
-    PendingMaintenanceWake, RebuildDerivedStateOutcome, RebuildDerivedStateSummary,
-    RebuildShadowVerificationSummary, VerifyRunOutcome,
+    CreationResolution, PendingMaintenanceWake, RebuildDerivedStateOutcome,
+    RebuildDerivedStateSummary, RebuildShadowVerificationSummary, VerifyRunOutcome,
 };
 #[allow(unused_imports)]
 pub(crate) use semantic_epoch::{create_epoch_in_tx, list_epochs};

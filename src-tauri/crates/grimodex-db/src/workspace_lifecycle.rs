@@ -944,14 +944,19 @@ impl WorkspaceLifecycleCore {
         }
         if !state.admissions.is_empty()
             || !state.joined_operations.is_empty()
-            || state
-                .executions
-                .values()
-                .any(|execution| execution.phase != ExecutionPhase::Completed)
-            || state
-                .work_executions
-                .values()
-                .any(|work| work.phase != ExecutionPhase::Completed)
+            || state.executions.values().any(|execution| {
+                execution.phase != ExecutionPhase::Completed
+                    && execution.phase != ExecutionPhase::RecoveryRequired
+            })
+            || state.work_executions.values().any(|work| {
+                work.phase != ExecutionPhase::Completed
+                    && state
+                        .executions
+                        .get(&work.execution_id)
+                        .is_some_and(|execution| {
+                            execution.phase != ExecutionPhase::RecoveryRequired
+                        })
+            })
             || !state.physical_exclusive_operations.is_empty()
         {
             return Err(LifecycleError::ActiveOperations);
@@ -1132,11 +1137,16 @@ impl WorkspaceLifecycleCore {
         let mut state = self.lock_state()?;
         let is_safe_mode_root = descriptor_id == SAFE_MODE_RECOVERY_DESCRIPTOR_ID;
         let has_descriptor_root = state.descriptors.contains_key(&descriptor_id);
-        if !matches!(
+        let descriptor_is_unresolved = state
+            .descriptors
+            .get(&descriptor_id)
+            .is_some_and(|descriptor| !descriptor.resolved);
+        let state_allows_descriptor = matches!(
             state.state,
             LifecycleState::RecoveryRequired { descriptor_id: current }
                 if current == descriptor_id
-        ) || (!has_descriptor_root && !is_safe_mode_root)
+        ) || (matches!(state.state, LifecycleState::Ready(_)) && descriptor_is_unresolved);
+        if !state_allows_descriptor || (!has_descriptor_root && !is_safe_mode_root)
         {
             return Ok(AdmissionOutcome::NotAdmitted {
                 reason: AdmissionRejection::RecoveryPrerequisite,
@@ -1306,8 +1316,19 @@ impl WorkspaceLifecycleCore {
             // root to prove, so it cannot be admitted from a transition or
             // an empty/ready workspace through the generic API.
             (LifecycleState::Transition { .. }, AdmissionKind::Recover)
-            | (LifecycleState::NoWorkspace, AdmissionKind::Recover)
-            | (LifecycleState::Ready(_), AdmissionKind::Recover) => {
+            | (LifecycleState::NoWorkspace, AdmissionKind::Recover) => {
+                Some(AdmissionRejection::RecoveryPrerequisite)
+            }
+            (LifecycleState::Ready(_), AdmissionKind::Recover)
+                if !matches!(
+                    recovery_descriptor_id,
+                    Some(descriptor_id)
+                        if state
+                            .descriptors
+                            .get(&descriptor_id)
+                            .is_some_and(|descriptor| !descriptor.resolved)
+                ) =>
+            {
                 Some(AdmissionRejection::RecoveryPrerequisite)
             }
             (LifecycleState::RecoveryRequired { .. }, kind)
@@ -1564,7 +1585,7 @@ impl WorkspaceLifecycleCore {
         if execution.phase == ExecutionPhase::Completed {
             return Err(LifecycleError::InvalidExecutionTransition);
         }
-        if let Some(existing) = &execution.run {
+        if let Some(existing) = &mut execution.run {
             // The durable tuple is the ownership identity. A later reader
             // may classify the same live tuple as Reused after the writer
             // first observed it as Created; that evidence transition is
@@ -1572,6 +1593,19 @@ impl WorkspaceLifecycleCore {
             // items under this one Native execution, so retain additional
             // exact handles instead of overwriting the first one.
             if existing.handle == run.handle {
+                existing.state = run.state;
+                return Ok(());
+            }
+            if existing.state == RunCreationState::Reserved {
+                *existing = run;
+                return Ok(());
+            }
+            if let Some(reserved) = execution
+                .additional_runs
+                .iter_mut()
+                .find(|owned| owned.state == RunCreationState::Reserved)
+            {
+                *reserved = run;
                 return Ok(());
             }
             if execution
@@ -1729,7 +1763,7 @@ impl WorkspaceLifecycleCore {
     ) -> Result<RecoveryDescriptorId, LifecycleError> {
         let mut state = self.lock_state()?;
         self.require_ticket_locked(&state, ticket)?;
-        let (run, additional_runs) = {
+        let (mut run, mut additional_runs) = {
             let execution = state
                 .executions
                 .get(&execution_id)
@@ -1744,6 +1778,19 @@ impl WorkspaceLifecycleCore {
             }
             (execution.run.clone(), execution.additional_runs.clone())
         };
+        // A reservation is created before the DB transaction. Once the
+        // worker has joined, an unpromoted slot is a CreationUnknown proof
+        // obligation, never something that may be silently dropped.
+        if let Some(ownership) = run.as_mut() {
+            if ownership.state == RunCreationState::Reserved {
+                ownership.state = RunCreationState::CreationUnknown;
+            }
+        }
+        for ownership in &mut additional_runs {
+            if ownership.state == RunCreationState::Reserved {
+                ownership.state = RunCreationState::CreationUnknown;
+            }
+        }
         let descriptor_id = state.next_descriptor;
         state.next_descriptor = RecoveryDescriptorId::new(descriptor_id.get().saturating_add(1));
         let generation = state.next_generation;
@@ -2020,6 +2067,7 @@ impl WorkspaceLifecycleCore {
         }) || state.executions.values().any(|execution| {
             execution.operation_id != ticket.operation_id
                 && execution.phase != ExecutionPhase::Completed
+                && execution.phase != ExecutionPhase::RecoveryRequired
         }) || state
             .physical_exclusive_operations
             .contains(&ticket.operation_id)
@@ -2078,6 +2126,7 @@ impl WorkspaceLifecycleCore {
         }) || state.executions.values().any(|execution| {
             execution.operation_id != ticket.operation_id
                 && execution.phase != ExecutionPhase::Completed
+                && execution.phase != ExecutionPhase::RecoveryRequired
         }) || state
             .physical_exclusive_operations
             .contains(&ticket.operation_id)
@@ -2409,6 +2458,19 @@ impl WorkspaceLifecycleCore {
             .get(&descriptor_id)
             .cloned()
             .ok_or(LifecycleError::UnknownDescriptor(descriptor_id))
+    }
+
+    /// Return unresolved descriptor roots for the Native recovery supervisor.
+    /// The values are copied under the core lock; no authority or transport
+    /// state is exposed through this helper.
+    pub fn unresolved_descriptor_ids(&self) -> Result<Vec<RecoveryDescriptorId>, LifecycleError> {
+        Ok(self
+            .lock_state()?
+            .descriptors
+            .values()
+            .filter(|descriptor| !descriptor.resolved)
+            .map(|descriptor| descriptor.descriptor_id)
+            .collect())
     }
 
     /// Bind a transport record to the exact descriptor root before the result
@@ -3303,6 +3365,49 @@ mod tests {
             .expect("recovery Join");
         core.activate(&recovery_ticket, binding(2), ContentEffect::Retained)
             .expect("descriptor-bound recovery activation");
+    }
+
+    #[test]
+    fn unresolved_descriptor_does_not_block_independent_workspace_open() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready W1");
+        let restore = match core
+            .begin_transition(AdmissionKind::Restore)
+            .expect("restore admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("restore must admit"),
+        };
+        core.mark_transition_joined(&restore).expect("restore Join");
+        let (descriptor_id, _) = core
+            .require_recovery(&restore, Some(binding(1)), None)
+            .expect("transfer W1 responsibility");
+
+        let open = match core
+            .begin_transition(AdmissionKind::Open)
+            .expect("W2 open admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("W1 descriptor must not block W2"),
+        };
+        core.mark_transition_joined(&open).expect("W2 Join");
+        core.activate(&open, binding(2), ContentEffect::Retained)
+            .expect("W2 activation");
+        assert!(matches!(
+            core.snapshot().expect("W2 snapshot").state,
+            LifecycleState::Ready(_)
+        ));
+
+        let recovery = match core
+            .admit_recovery(descriptor_id)
+            .expect("exact W1 descriptor recovery")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("exact recovery must admit from Ready"),
+        };
+        core.mark_transition_joined(&recovery).expect("recovery Join");
+        core.activate(&recovery, binding(2), ContentEffect::Retained)
+            .expect("descriptor recovery keeps W2 active");
     }
 
     #[test]

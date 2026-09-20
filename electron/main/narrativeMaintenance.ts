@@ -1160,6 +1160,13 @@ export function createNarrativeMaintenanceScheduler(
   // delivery cell.
   const deliveryLedger = new NarrativeMaintenanceDeliveryLedger();
   const deliverySequences = new Map<string, number>();
+  /**
+   * ACK is a transport operation, not a cycle result. Keep a failed ACK in a
+   * scheduler-owned queue so a later retry sends the same sequence without
+   * re-dispatching the batch or reusing its fingerprint for a new occurrence.
+   */
+  const pendingDeliveryAcks = new Map<number, { fingerprint: string }>();
+  let deliveryAckRetryTimer: ReturnType<typeof setTimeout> | null = null;
   const sharedCoordinator = backend ? processCoordinator : null;
   // hasMore is a durable native backlog signal, so retain the project that
   // owns the signal.  An unscoped boolean would allow another scheduler to
@@ -1319,6 +1326,45 @@ export function createNarrativeMaintenanceScheduler(
     }
   };
 
+  const scheduleDeliveryAckRetry = (): void => {
+    if (disposed || deliveryAckRetryTimer !== null || pendingDeliveryAcks.size === 0) {
+      return;
+    }
+    deliveryAckRetryTimer = setTimeout(() => {
+      deliveryAckRetryTimer = null;
+      void retryPendingDeliveryAcks().catch((error: unknown) => {
+        warn("[narrative-maintenance] delivery ACK retry failed:", error);
+        scheduleDeliveryAckRetry();
+      });
+    }, NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+  };
+
+  const retryPendingDeliveryAcks = async (): Promise<void> => {
+    const ack = backend?.ackNarrativeMaintenanceDelivery;
+    if (typeof ack !== "function") return;
+    for (const [sequence, entry] of [...pendingDeliveryAcks]) {
+      try {
+        const retired = deliveryAckRetired(
+          await Promise.resolve(ack.call(backend, sequence)),
+        );
+        if (!retired) continue;
+        if (!deliveryLedger.ack(sequence)) {
+          throw new Error("delivery ACK arrived before terminal result application");
+        }
+        pendingDeliveryAcks.delete(sequence);
+        if (deliverySequences.get(entry.fingerprint) === sequence) {
+          deliverySequences.delete(entry.fingerprint);
+        }
+      } catch (error) {
+        warn(
+          `[narrative-maintenance] retaining delivery ACK sequence ${sequence} for retry:`,
+          error,
+        );
+      }
+    }
+    if (pendingDeliveryAcks.size > 0) scheduleDeliveryAckRetry();
+  };
+
   const retireDelivery = async (
     fingerprint: string,
     sequence: number,
@@ -1335,6 +1381,8 @@ export function createNarrativeMaintenanceScheduler(
           await Promise.resolve(ack.call(backend, sequence)),
         );
         if (!retired) {
+          pendingDeliveryAcks.set(sequence, { fingerprint });
+          scheduleDeliveryAckRetry();
           warn(
             "[narrative-maintenance] Native delivery ACK is still pending; retaining delivery",
           );
@@ -1344,13 +1392,20 @@ export function createNarrativeMaintenanceScheduler(
       if (!deliveryLedger.ack(sequence)) {
         throw new Error("delivery ACK arrived before terminal result application");
       }
-      deliverySequences.delete(fingerprint);
+      pendingDeliveryAcks.delete(sequence);
+      if (deliverySequences.get(fingerprint) === sequence) {
+        deliverySequences.delete(fingerprint);
+      }
       return true;
     } catch (error) {
       // Keep the sequence mapped when retirement cannot be proven. A later
       // retry must replay this exact delivery instead of allocating a new
       // sequence and potentially duplicating a Native side effect.
       warn("[narrative-maintenance] delivery retirement not proven:", error);
+      if (typeof backend?.ackNarrativeMaintenanceDelivery === "function") {
+        pendingDeliveryAcks.set(sequence, { fingerprint });
+        scheduleDeliveryAckRetry();
+      }
       return false;
     }
   };
@@ -1697,7 +1752,12 @@ export function createNarrativeMaintenanceScheduler(
     const nativeDeliveryMethodsAvailable =
       typeof backend?.ackNarrativeMaintenanceDelivery === "function" ||
       typeof backend?.resolveNarrativeMaintenanceDelivery === "function";
-    const existingDeliverySequence = deliverySequences.get(deliveryFingerprint);
+    const mappedDeliverySequence = deliverySequences.get(deliveryFingerprint);
+    const existingDeliverySequence =
+      mappedDeliverySequence !== undefined &&
+      !pendingDeliveryAcks.has(mappedDeliverySequence)
+        ? mappedDeliverySequence
+        : undefined;
     const deliverySequence = existingDeliverySequence ?? deliveryLedger.H + 1;
     const deliveryAdmission = deliveryLedger.submit(
       deliverySequence,
@@ -2756,10 +2816,20 @@ export function createNarrativeMaintenanceScheduler(
       if (terminalReceiptFailure !== null) {
         throw terminalReceiptFailure;
       }
+      await retryPendingDeliveryAcks();
+      if (pendingDeliveryAcks.size > 0) {
+        throw new Error(
+          "NEX_MAINTENANCE_DELIVERY_ACK_PENDING: Native transport retirement is not proven",
+        );
+      }
       disposed = true;
       noteMutation();
       clearTimer();
       clearCoordinatorWait();
+      if (deliveryAckRetryTimer !== null) {
+        clearTimeout(deliveryAckRetryTimer);
+        deliveryAckRetryTimer = null;
+      }
       pending.clear();
       durableWakeProjects.clear();
       durableWakeRetryCounts.clear();
