@@ -6877,6 +6877,120 @@ mod tests {
     }
 
     #[test]
+    fn adapter_preemption_preserves_prior_success_and_defers_followup() {
+        let db = open_backfill_cycle_db(&["project-1"]);
+        let preempt_verify = Arc::new(AtomicBool::new(false));
+        let preempted = Arc::new(AtomicBool::new(false));
+        let completed = Mutex::new(Vec::new());
+        let deferred = Mutex::new(Vec::new());
+        let preempt_verify_for_hook = Arc::clone(&preempt_verify);
+        let preempted_for_hook = Arc::clone(&preempted);
+        let waiters_for_hook = Arc::clone(&db.foreground_connection_waiters);
+        db.with_conn(|conn| {
+            conn.authorizer(Some(move |context: AuthContext<'_>| {
+                if matches!(
+                    context.action,
+                    AuthAction::Transaction {
+                        operation: rusqlite::hooks::TransactionOperation::Begin
+                    }
+                ) && preempt_verify_for_hook.load(Ordering::SeqCst)
+                    && !preempted_for_hook.swap(true, Ordering::SeqCst)
+                {
+                    // Publish a foreground waiter inside Verify's first SQL
+                    // phase, after recovery/dispatch and before its Run exists.
+                    waiters_for_hook.fetch_add(1, Ordering::SeqCst);
+                }
+                Authorization::Allow
+            }))?;
+            Ok(())
+        })
+        .expect("install deterministic foreground handoff");
+
+        let should_stop = || Ok::<_, anyhow::Error>(());
+        let no_op = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+        let work_started = |item: &DesiredWork| {
+            preempt_verify.store(item.run_kind == AutomaticRunKind::Verify, Ordering::SeqCst);
+            Ok(())
+        };
+        let work_completed = |item: &DesiredWork| {
+            completed
+                .lock()
+                .expect("completed work")
+                .push(item.run_kind);
+            Ok(())
+        };
+        let work_deferred = |item: &DesiredWork| {
+            deferred.lock().expect("deferred work").push(item.run_kind);
+            Ok(())
+        };
+        let control = MaintenanceCycleControl {
+            should_stop: &should_stop,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &|_run_id: &str| Ok(()),
+            grant_finalize: &|_work_key: &str| Ok(()),
+            register_work: &no_op,
+            work_started: &work_started,
+            work_completed: &work_completed,
+            work_noop_completed: &no_op,
+            work_deferred: &work_deferred,
+            attach_run: None,
+            reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
+        };
+        let result = run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+            &db,
+            &backfill_cycle_request(&["project-1"]),
+            |_| RecoveryMode::SameProcessLive,
+            None,
+            None,
+            Some(&control),
+        );
+
+        // Remove the test waiter before any assertions or another DB read.
+        if preempted.load(Ordering::SeqCst) {
+            db.foreground_connection_waiters
+                .fetch_sub(1, Ordering::SeqCst);
+        }
+        let (completed_backfills, verify_runs) = db
+            .with_conn(|conn| {
+                conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+                assert!(conn.is_autocommit(), "preemption must roll back its phase");
+                conn.query_row(
+                    "SELECT
+                        SUM(run_kind = 'backfill' AND status = 'completed'),
+                        SUM(run_kind = 'dependency-verify')
+                     FROM narrative_extraction_runs WHERE project_id = 'project-1'",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read durable progress after clean preemption");
+        assert!(preempted.load(Ordering::SeqCst));
+        assert_eq!(completed_backfills, 1);
+        assert_eq!(verify_runs, 0);
+        assert_eq!(
+            *completed.lock().expect("completed work"),
+            [AutomaticRunKind::Backfill]
+        );
+        assert_eq!(
+            *deferred.lock().expect("deferred work"),
+            [AutomaticRunKind::Verify]
+        );
+        assert!(db.connection_reusable());
+        // Accepted describes this cycle's progress; the deferred work still
+        // requires Native to settle its attempt as interrupted.
+        let result = result.expect("foreground contention remains an accepted partial cycle");
+        assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+        assert!(result.has_more);
+    }
+
+    #[test]
     fn adapter_db_partial_success_registers_initial_batch_before_cancel() {
         let db = open_backfill_cycle_db(&["project-1", "project-2"]);
         let cancel_requested = Arc::new(AtomicBool::new(false));

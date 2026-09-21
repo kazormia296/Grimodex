@@ -106,12 +106,74 @@ journeys, with all three per-case clean passes. This is diagnostic evidence
 for the wrapped preemption correction, not a complete catalog or final
 candidate acceptance. The final ledger records the rebuilt r3 results.
 
+The r3 candidate `4f0863fc71a22154c68081a37350e7b59cdc5ba8`, tree
+`4ab7f4a69d9a8fe5048c2f190696b8c11339858d`, received Luna Max and Sol
+Approve. Quick run `b0a95324-8b40-4bea-9ba4-7240e44a20c9` and its immediate
+verify passed. Full run `4d3991ca-3266-4502-a218-8e5e1f0eb982` failed:
+`journeys.shard-1` encountered `NEX_WORKSPACE_RECOVERY_REQUIRES_DESCRIPTOR`
+during the configure Open A → B → A sequence for
+`chat-stream-workspace-switch`, and `rust.clippy` rejected the unused
+test-only `snapshot_current` wrapper. Full verification did not run. Removing
+that wrapper passed the exact clippy command; it does not repair the failed
+Full receipt or validate the new functional correction.
+
+The r4 target-Open correction keeps both Maintenance and Freshness quiesce
+leases while main's validated `open_workspace` invokes the existing recovery
+proof/ACK drain with an optional target path. Native selects both maintenance
+descriptors and retained receipts by canonical locator plus durable workspace
+ID under the existing `open_lock`; a private retained receipt preserves the
+original `LiveBinding` for replay filtering. The no-argument ordinary pump is
+unchanged, and failed W1 recovery must not block unrelated Open W2/W3. The
+exact recovery proof and descriptor receipt ACK precede Open dispatch.
+Delivery retirement is attempted separately: transient failure retains the
+existing `pendingDeliveryAcks`/`terminalReceiptFailure` responsibility and may
+allow Open after descriptor resolution, without a new path-proof cache. The
+existing C0 matrix records admission closure, handle ownership, cancellation,
+terminal evidence, retry, and restart boundaries for this correction.
+
+The separate ordinary Verify failure is now attributed to Native's handling
+of incomplete accepted work. The release diagnostic in
+`.artifacts/pr601-chat-release-r4-diagnostic-1` captured
+`NEX_MAINTENANCE_ATTEMPT_CANCELLED` with "cancellation won before final attempt
+publication" despite a null stop reason. Both foreground-deferred work and
+work left by the per-cycle dequeue cap can legitimately return accepted work
+with `hasMore`. Native ignored the existing `close_work_registration`
+completeness result, attempted success finalization, and reported cancellation
+when finalization was correctly refused, causing healthy connection retirement.
+
+The Native correction preserves that completeness result, checks an actual
+stop first, and routes incomplete `Accepted`/`Coalesced` work with `hasMore`
+through the existing interrupted cleanup receipt before success bookkeeping.
+The shared runtime's production accepted-result contract remains unchanged.
+The shared real-DB characterization covers foreground preemption after a
+successful Backfill, deferred Verify work, and a reusable connection; the
+Native 32-Backfill batch regression exercises the dequeue-cap finalization
+path. The final Native correction now has focused red/green regression proof
+and a passing full Native library suite. The rebuilt release Journey,
+independent reviews, and canonical Quick/Full results are recorded separately
+in the final ledger; focused passes do not establish those outcomes. The
+earlier single passing development-instrumented replay did not establish a fix.
+
 After the final clean commit, `.artifacts/c5-final-candidate.json` and the
 PR #601 body record the exact base/head/tree, reviewer results, focused
 evidence, and Quick/Full plus immediate verification receipts. Earlier reviews
 and receipts do not establish acceptance of the final candidate.
 
-## Focused evidence before final freeze (2026-09-21)
+## Current r4 focused evidence
+
+- Final Native library suite — 158/158 passed; `.artifacts/pr601-napi-tests-r6-final.log`. The real Native 32-Backfill regression failed before the fix with expected `accepted` versus actual `workspace-unavailable` in `.artifacts/pr601-napi-cap-before.log`, then passed in the final suite.
+- Shared real-DB accepted-result characterization — 1 passed; `.artifacts/pr601-preempted-cycle-contract.log`. The maintenance runtime suite passed 36 tests; `.artifacts/pr601-preempted-cycle-contract-runtime.log`.
+- Exact shared-Rust clippy command — passed; `.artifacts/pr601-shared-clippy-r4-final.log`.
+- Native clippy with release features `licensing,legacy-keyring-migration` — passed; `.artifacts/pr601-native-clippy-r4-final.log`.
+- Electron TypeScript check, 3 focused Electron files / 186 tests, and 87 IPC tests — passed. These checks cover the unchanged Electron sources; the later Native correction is covered by the final Native suite above.
+
+The target-Open routes in the C0 matrix and Native incomplete-work correction
+are implemented with the focused evidence above. This does not replace the
+rebuilt release Journey or independent acceptance. Their results and final
+Quick/Full receipts are recorded with the clean candidate in the external
+ledger and PR #601; no pass is implied before those results exist.
+
+## Historical r3 focused evidence (2026-09-21)
 
 - Chronicle focused suite — 56 tests passed; `.artifacts/pr601-chronicle-tests-r3.log`.
 - Maintenance connection focused suite — 24 tests passed, including queued mutex and reserved-handoff cancellation; `.artifacts/pr601-connection-tests-r3.log`.
@@ -121,16 +183,15 @@ and receipts do not establish acceptance of the final candidate.
 - Maintenance runtime focused suite — 35 tests passed; `.artifacts/pr601-maintenance-runtime-tests-r2.log`.
 - `pnpm test:narrative:lifecycle` — 38 shared-core tests, one Freshness lifecycle test, the isolated harness, 9 Native adapter tests, and 3 Native Open/Restore tests passed; `.artifacts/pr601-lifecycle-tests-r2.log`.
 
-The r3 Native full suite compiles the final acquisition and classifier
-corrections. The r2 maintenance-runtime, semantic, and lifecycle results remain
-focused evidence for unchanged callers; candidate-wide coverage is recorded
-by the final canonical Full. The lifecycle gate used the default Cargo
+The r3 Native full suite compiled the acquisition and classifier corrections
+at that checkpoint. The r2 maintenance-runtime, semantic, and lifecycle
+results are earlier focused evidence; they do not validate the r4 target-Open
+changes. The lifecycle gate used the default Cargo
 profiles; the other focused Rust commands used two build jobs and debug-free
 dev/test profiles.
 
-These focused results are from the corrective working tree and do not
-establish final acceptance. Their exact commands and candidate binding are
-recorded in the final ledger after the correction is complete.
+These historical focused results do not establish final acceptance. The final
+ledger records the new candidate's exact commands, results, and binding.
 
 ## First correction checkpoint evidence (2026-09-21)
 
@@ -184,10 +245,10 @@ release, and Restore `Unchanged`. That approval is historical.
 
 | Gate | Status | Evidence boundary |
 | --- | --- | --- |
-| C0 contract review | historical bounded/limited | The current ledger includes the Related Scenes callsites; final review must inspect that correction. |
+| C0 contract review | historical bounded/limited | The current ledger includes Related Scenes and target-Open recovery callsites; final review must inspect the r4 correction. |
 | C1 core review | historical bounded/limited | Earlier core coverage does not establish acceptance of the current correction. |
 | Luna Max / Sol C5 reviews | see final candidate ledger | Read-only independent results and exact candidate identity are recorded in `.artifacts/c5-final-candidate.json` and PR #601. |
-| Layer C IPC journey | see final candidate ledger | The first candidate failed with unexpected maintenance recovery. The final ledger records rebuilt diagnostics and canonical Full journeys; these do not establish the complete T01–T36 fault matrix. |
+| Layer C IPC journey | see final candidate ledger | r3 Full failed `chat-stream-workspace-switch` during configure; the separate ordinary Verify failure is attributed to Native incomplete-work finalization and its focused correction regressions passed. Rebuilt release diagnostics and canonical Full results are recorded externally and remain distinct from the complete T01–T36 fault matrix. |
 | T01–T36 matrix | pending | Focused tests cover representative cases; absence of a complete matrix is not a pass. |
 | Quick + immediate verify | see final candidate ledger | Both commands and receipt paths use the same fixed base/head in the external ledger. |
 | Full + immediate verify | see final candidate ledger | Runs after independent acceptance and resource-isolation preflight; both commands and receipts use the same fixed base/head. |
@@ -218,7 +279,7 @@ gate_status_c5=see final_candidate_ledger for candidate-bound review and receipt
 focused_commands_and_receipts=pre-freeze evidence above; final candidate binding recorded in final_candidate_ledger
 quick_and_verify=exact commands, fixed base/head, and receipt paths recorded in final_candidate_ledger
 full_and_verify=exact commands, fixed base/head, and receipt paths recorded in final_candidate_ledger
-unresolved_findings=r2 P1/P2 acceptance and Layer C editor-persistence recovery failure investigation; final statuses in final_candidate_ledger; complete T01-T36 evidence is not claimed
+unresolved_findings=final acceptance and rebuilt release Journey/canonical Full results for target-Open and Native incomplete-work corrections are recorded in final_candidate_ledger; focused regression passes do not close those gates; complete T01-T36 evidence is not claimed
 environment_limits=Windows GNU check may require missing x86_64-w64-mingw32-gcc; Windows installer requires Windows runner; no hosted-check claim
 freeze_timestamp=recorded in final_candidate_ledger
 ```

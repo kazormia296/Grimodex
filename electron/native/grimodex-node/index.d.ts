@@ -83,7 +83,7 @@ export declare class Backend {
    * an existing recovery root must remain actionable even when all normal
    * delivery records are retained at capacity.
    */
-  reconcileNarrativeMaintenanceRecovery(): Promise<string>
+  reconcileNarrativeMaintenanceRecovery(requestedWorkspacePath?: string | undefined | null): Promise<string>
   /**
    * Main-only ACK for the replayable descriptor recovery receipt.  The
    * descriptor and its durable responsibility were already resolved before

@@ -75,8 +75,7 @@ use grimodex_db::lint_terms::{
 use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
     self, is_transient_maintenance_preemption, AttentionDisposition, AutomaticRunKind,
-    FreshnessLifecycleControl,
-    GetNarrativeBackfillStatusPayload, GraphWorkControl, GraphWorkStage,
+    FreshnessLifecycleControl, GetNarrativeBackfillStatusPayload, GraphWorkControl, GraphWorkStage,
     IsRunResumableForReviewPayload, LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
     ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, MaintenanceCycleControl,
     MaintenanceCycleRequest, MaintenanceCycleStatus, MaintenanceWorkspaceBinding,
@@ -1222,6 +1221,7 @@ fn take_maintenance_recovery_binding(
 
 fn first_completed_maintenance_recovery_receipt(
     state: &AppState,
+    target: Option<&WorkspaceRecoveryTarget>,
 ) -> Option<(u64, NarrativeMaintenanceRecoveryReceipt)> {
     state
         .narrative_maintenance_recovery_receipts
@@ -1230,7 +1230,9 @@ fn first_completed_maintenance_recovery_receipt(
         .and_then(|receipts| {
             receipts
                 .iter()
-                .next()
+                .find(|(_, receipt)| {
+                    target.is_none_or(|target| target.matches(&receipt.expected_binding))
+                })
                 .map(|(id, receipt)| (*id, receipt.clone()))
         })
 }
@@ -1996,6 +1998,35 @@ fn begin_workspace_lifecycle_transition_wire_for_recovery(
     }
 }
 
+struct WorkspaceRecoveryTarget {
+    path: PathBuf,
+    workspace_id: Option<String>,
+}
+
+impl WorkspaceRecoveryTarget {
+    fn read(path: &str) -> Self {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        let workspace_id = std::fs::read_to_string(path.join(".grimodex/workspace.json"))
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|metadata| {
+                metadata
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .filter(|id| !id.trim().is_empty());
+        Self { path, workspace_id }
+    }
+
+    fn matches(&self, expected: &grimodex_db::LiveBinding) -> bool {
+        let expected_path = std::fs::canonicalize(&expected.locator)
+            .unwrap_or_else(|_| PathBuf::from(&expected.locator));
+        self.path == expected_path
+            && self.workspace_id.as_deref() == Some(expected.workspace_id.as_str())
+    }
+}
+
 /// Select the only descriptor that an explicit Open may resolve. A
 /// WorkspaceTransition root is eligible only when the requested locator and
 /// durable workspace identity are the same as the failed candidate; a retry
@@ -2005,8 +2036,7 @@ fn workspace_transition_recovery_for_open(
     requested_path: &str,
 ) -> std::result::Result<Option<grimodex_db::RecoveryDescriptorId>, AppError> {
     let snapshot = state.workspace_lifecycle.lifecycle_snapshot()?;
-    let requested =
-        std::fs::canonicalize(requested_path).unwrap_or_else(|_| PathBuf::from(requested_path));
+    let target = WorkspaceRecoveryTarget::read(requested_path);
     let descriptor_ids = match snapshot.state {
         grimodex_db::LifecycleState::RecoveryRequired { descriptor_id }
             if descriptor_id
@@ -2019,19 +2049,6 @@ fn workspace_transition_recovery_for_open(
     if descriptor_ids.is_empty() {
         return Ok(None);
     }
-    let metadata_path = requested.join(".grimodex/workspace.json");
-    let metadata = match std::fs::read_to_string(metadata_path) {
-        Ok(metadata) => metadata,
-        Err(_) => return Ok(None),
-    };
-    let requested_workspace_id = serde_json::from_str::<serde_json::Value>(&metadata)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-        });
     let mut matches = Vec::new();
     let mut maintenance_match = false;
     for descriptor_id in descriptor_ids {
@@ -2044,11 +2061,7 @@ fn workspace_transition_recovery_for_open(
         let Some(expected) = descriptor.expected_binding else {
             continue;
         };
-        let expected_path = std::fs::canonicalize(&expected.locator)
-            .unwrap_or_else(|_| PathBuf::from(&expected.locator));
-        if requested == expected_path
-            && requested_workspace_id.as_deref() == Some(expected.workspace_id.as_str())
-        {
+        if target.matches(&expected) {
             match descriptor.owner {
                 grimodex_db::workspace_lifecycle::RecoveryDescriptorOwner::WorkspaceTransition => {
                     matches.push(descriptor_id);
@@ -2076,6 +2089,11 @@ fn workspace_transition_recovery_for_open(
 /// workspace directory, but malformed/unsafe targets must be rejected while
 /// the current Ready authority is still untouched.
 fn preflight_workspace_open_target(path: &str) -> std::result::Result<(), AppError> {
+    if path.trim().is_empty() || path.contains('\0') {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "NEX_WORKSPACE_OPEN_TARGET_INVALID: workspace path must be nonempty and contain no NUL"
+        )));
+    }
     let target = Path::new(path);
     grimodex_db::open::reject_unsafe_workspace_path(target)?;
     if let Ok(metadata) = std::fs::symlink_metadata(target) {
@@ -2548,6 +2566,7 @@ struct MaintenanceRecoveryReconciliation {
 
 fn reconcile_maintenance_recovery_descriptor(
     state: &AppState,
+    target: Option<&WorkspaceRecoveryTarget>,
 ) -> std::result::Result<Option<MaintenanceRecoveryReconciliation>, AppError> {
     let snapshot = state.workspace_lifecycle.lifecycle_snapshot()?;
     let transition_ticket = state.workspace_lifecycle.current_transition_ticket()?;
@@ -2590,15 +2609,23 @@ fn reconcile_maintenance_recovery_descriptor(
         {
             continue;
         }
+        let Some(binding) = descriptor.expected_binding.as_ref() else {
+            continue;
+        };
+        if target.is_some_and(|target| !target.matches(binding)) {
+            continue;
+        }
         if maintenance_recovery_binding(state, descriptor_id).is_none() {
             // A maintenance descriptor without its exact process-local
             // binding proof is not actionable by this pump. Keep the durable
             // root visible for the owner that can supply that evidence.
+            if target.is_some() {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_RECOVERY_BINDING_MISSING"
+                )));
+            }
             continue;
         }
-        let Some(binding) = descriptor.expected_binding.as_ref() else {
-            continue;
-        };
         // A failed close leaves the old SQLite handle and its shared lease in
         // a recovery baton.  Finish that close before opening or selecting
         // any authority for this descriptor.  In particular, do not let
@@ -2635,9 +2662,13 @@ fn reconcile_maintenance_recovery_descriptor(
         // example W1 remains recoverable while W2 is Ready).  Reopen only the
         // exact descriptor locator under a fresh shared lease; never fall back
         // to the current active DB or a WorkKey lookup.
-        if let Ok(authority) = open_descriptor_recovery_authority(binding) {
-            selected = Some((descriptor_id, authority));
-            break;
+        match open_descriptor_recovery_authority(binding) {
+            Ok(authority) => {
+                selected = Some((descriptor_id, authority));
+                break;
+            }
+            Err(error) if target.is_some() => return Err(error),
+            Err(_) => {}
         }
     }
     let Some((descriptor_id, authority)) = selected else {
@@ -2682,7 +2713,12 @@ fn reconcile_maintenance_recovery_descriptor(
                 // descriptor remains unresolved.  Keep the descriptor pending and
                 // let the next recovery pump retry after W2 has joined; do not
                 // enter a partial Transition that activation cannot complete.
-                return Ok(None);
+                return Ok(target.map(|_| MaintenanceRecoveryReconciliation {
+                    descriptor_id,
+                    reason: "maintenance-recovery-admission-pending".to_owned(),
+                    maintenance_binding: maintenance_recovery_binding(state, descriptor_id),
+                    rebound_binding: None,
+                }));
             }
         }
     };
@@ -2937,6 +2973,13 @@ fn reconcile_maintenance_recovery_descriptor(
                             state,
                             descriptor_id,
                             NarrativeMaintenanceRecoveryReceipt {
+                                expected_binding: descriptor.expected_binding.clone().ok_or_else(
+                                    || {
+                                        AppError::Anyhow(anyhow::anyhow!(
+                                            "NEX_MAINTENANCE_RECOVERY_BINDING_MISSING"
+                                        ))
+                                    },
+                                )?,
                                 recovered_binding: binding.clone(),
                                 active_binding: Some(active_binding),
                                 rebound_binding: rebound_binding.clone(),
@@ -3027,7 +3070,7 @@ fn reconcile_maintenance_recovery_with_open_lock(
             "NEX_MAINTENANCE_OPEN_LOCK_UNAVAILABLE: {error}"
         ))
     })?;
-    reconcile_maintenance_recovery_descriptor(state)
+    reconcile_maintenance_recovery_descriptor(state, None)
 }
 
 /// Called by the eventual native shutdown owner after terminal cleanup has
@@ -5866,7 +5909,7 @@ fn run_narrative_freshness_cycle_inner(
     // Freshness is also a recovery pump.  A descriptor created by an earlier
     // Freshness failure must be reconciled even when ordinary maintenance has
     // no pending delivery to trigger its preflight.
-    let _ = reconcile_maintenance_recovery_descriptor(state)?;
+    let _ = reconcile_maintenance_recovery_descriptor(state, None)?;
     let mut lifecycle_permit = match state.workspace_lifecycle.begin_maintenance()? {
         PermitAdmission::Admitted(mut permit) => {
             if let Err(error) = permit.start() {
@@ -6062,11 +6105,10 @@ impl NarrativeMaintenanceAttemptGuard {
         Ok(())
     }
 
-    fn close_work_registration(&self) -> anyhow::Result<()> {
+    fn close_work_registration(&self) -> anyhow::Result<bool> {
         self.state
             .narrative_maintenance_attempts
-            .close_work_registration(&self.attempt_id)?;
-        Ok(())
+            .close_work_registration(&self.attempt_id)
     }
 
     fn mark_cleanup_clean(&mut self, state: &AppState) -> anyhow::Result<()> {
@@ -6644,23 +6686,53 @@ impl Backend {
     /// an existing recovery root must remain actionable even when all normal
     /// delivery records are retained at capacity.
     #[napi]
-    pub async fn reconcile_narrative_maintenance_recovery(&self) -> Result<String> {
+    pub async fn reconcile_narrative_maintenance_recovery(
+        &self,
+        requested_workspace_path: Option<String>,
+    ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            if let Some((descriptor_id, receipt)) =
-                first_completed_maintenance_recovery_receipt(&state)
-            {
-                return Ok(serde_json::json!({
-                    "status": "reconciled",
-                    "reason": "maintenance-recovery-complete",
-                    "descriptorId": descriptor_id,
-                    "recoveredBinding": receipt.recovered_binding,
-                    "activeBinding": receipt.active_binding,
-                    "reboundBinding": receipt.rebound_binding,
-                })
-                .to_string());
+            let replay_receipt = |target| {
+                first_completed_maintenance_recovery_receipt(&state, target).map(
+                    |(descriptor_id, receipt)| {
+                        serde_json::json!({
+                            "status": "reconciled",
+                            "reason": "maintenance-recovery-complete",
+                            "descriptorId": descriptor_id,
+                            "recoveredBinding": receipt.recovered_binding,
+                            "activeBinding": receipt.active_binding,
+                            "reboundBinding": receipt.rebound_binding,
+                        })
+                        .to_string()
+                    },
+                )
+            };
+            // Preserve transport-only replay after shutdown closes operation
+            // admission. Targeted replay still reads identity under open_lock.
+            if requested_workspace_path.is_none() {
+                if let Some(receipt) = replay_receipt(None) {
+                    return Ok(receipt);
+                }
             }
-            match reconcile_maintenance_recovery_with_open_lock(&state)? {
+            let _workspace_operation = state
+                .begin_workspace_operation()
+                .map_err(AppError::Anyhow)?;
+            let _open_guard = state.ws.open_lock.lock().map_err(|error| {
+                AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_OPEN_LOCK_UNAVAILABLE: {error}"
+                ))
+            })?;
+            let target = requested_workspace_path
+                .as_deref()
+                .map(|path| {
+                    preflight_workspace_open_target(path)?;
+                    Ok::<_, AppError>(WorkspaceRecoveryTarget::read(path))
+                })
+                .transpose()?;
+            if let Some(receipt) = replay_receipt(target.as_ref()) {
+                return Ok(receipt);
+            }
+            match reconcile_maintenance_recovery_descriptor(&state, target.as_ref())? {
                 Some(reconciliation) => {
                     let active_binding = active_database(&state.ws).ok().map(|authority| {
                         narrative_maintenance_binding_for_authority(&state, &authority)
@@ -6914,7 +6986,7 @@ impl Backend {
             // descriptor may be the only owner while the workspace is in
             // RecoveryRequired, so reconcile the exact root before the
             // ordinary active_database lookup makes that path unreachable.
-            let _ = reconcile_maintenance_recovery_descriptor(&state)?;
+            let _ = reconcile_maintenance_recovery_descriptor(&state, None)?;
             let authority = active_database(&state.ws).map_err(|error| {
                 AppError::Anyhow(anyhow::anyhow!(
                     "NEX_MAINTENANCE_AUTHORITY_UNAVAILABLE: {error}"
@@ -7865,16 +7937,34 @@ impl Backend {
                         }
                         Err(error) => return Err(AppError::Anyhow(error)),
                     };
-                    if let Some(guard) = attempt_guard.as_ref() {
+                    let all_work_completed = if let Some(guard) = attempt_guard.as_ref() {
                         // Dynamic discovery remains open until the shared cycle has
                         // returned.  Only now may an all-success work set acquire the
                         // attempt-level finalization state; a repeated effective key
                         // discovered after an earlier commit must remain cancellable.
-                        guard.close_work_registration().map_err(AppError::Anyhow)?;
-                    }
+                        guard.close_work_registration().map_err(AppError::Anyhow)?
+                    } else {
+                        true
+                    };
                     // Do not perform the post-cycle workspace revalidation or
                     // recovery-success bookkeeping after a stop has linearized.
                     should_stop()?;
+                    if !all_work_completed
+                        && result.has_more
+                        && matches!(
+                            result.status,
+                            MaintenanceCycleStatus::Accepted | MaintenanceCycleStatus::Coalesced
+                        )
+                    {
+                        // Accepted can include a foreground-preempted item or
+                        // registered follow-up work beyond the cycle budget.
+                        // Keep successful work terminal and requeue unfinished
+                        // work without retiring a clean workspace connection.
+                        return deferred_narrative_maintenance_result(
+                            &state,
+                            attempt_guard.as_mut(),
+                        );
+                    }
                     // Backfill/Verify/Rebuild progress through several transactions,
                     // so the workspace can be switched mid-cycle. Re-resolve the
                     // active authority under the open lock before treating this
@@ -15996,11 +16086,9 @@ mod narrative_maintenance_epoch_event_tests {
             + "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed";
         let cleanup = AppError::Anyhow(anyhow::anyhow!(cleanup));
         assert!(!is_narrative_maintenance_preemption(&cleanup));
-        assert!(is_narrative_maintenance_preemption(
-            &AppError::Anyhow(anyhow::anyhow!(
-                "NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived"
-            ))
-        ));
+        assert!(is_narrative_maintenance_preemption(&AppError::Anyhow(
+            anyhow::anyhow!("NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived")
+        )));
         assert!(!is_narrative_maintenance_preemption(
             &AppError::WorkspaceSwitching
         ));
@@ -16027,10 +16115,8 @@ mod narrative_maintenance_epoch_event_tests {
                 false,
             ),
             (
-                anyhow::anyhow!(
-                    "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed"
-                )
-                .context("NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived"),
+                anyhow::anyhow!("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed")
+                    .context("NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived"),
                 false,
             ),
         ];
@@ -16100,6 +16186,228 @@ mod narrative_maintenance_admission_unwind_tests {
         )
     }
 
+    fn retain_maintenance_descriptor(backend: &Backend) -> grimodex_db::RecoveryDescriptorId {
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        let mut permit = match backend
+            .state
+            .workspace_lifecycle
+            .begin_maintenance()
+            .expect("admit")
+        {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { .. } => panic!("maintenance admission"),
+        };
+        permit.start().expect("start");
+        permit.mark_joined().expect("join");
+        let descriptor_id = permit.transfer_to_recovery().expect("retain exact root");
+        record_maintenance_recovery_binding(&backend.state, descriptor_id, None, Some(&binding));
+        descriptor_id
+    }
+
+    #[tokio::test]
+    async fn targeted_open_recovery_filters_unrelated_roots_and_replay_receipts() {
+        let (backend, root) = backend_with_active_workspace("targeted-open-recovery");
+        let path_a = root.join("workspace").to_string_lossy().into_owned();
+        let descriptor_a = retain_maintenance_descriptor(&backend);
+        let path_b = root.join("workspace-b").to_string_lossy().into_owned();
+        backend
+            .open_workspace(path_b.clone())
+            .await
+            .expect("independent B Open");
+        let descriptor_b = retain_maintenance_descriptor(&backend);
+        let path_c = root.join("workspace-c").to_string_lossy().into_owned();
+        backend
+            .open_workspace(path_c.clone())
+            .await
+            .expect("independent C Open");
+        let ready_c = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("C Ready");
+
+        assert!(workspace_transition_recovery_for_open(&backend.state, &path_a).is_err());
+        let none: serde_json::Value = serde_json::from_str(
+            &backend
+                .reconcile_narrative_maintenance_recovery(Some(path_c))
+                .await
+                .expect("unrelated C"),
+        )
+        .expect("no matching root JSON");
+        assert_eq!(none["status"], "none");
+        assert_eq!(
+            backend
+                .state
+                .workspace_lifecycle
+                .recovery_descriptor_ids()
+                .expect("roots"),
+            vec![descriptor_a, descriptor_b]
+        );
+
+        // Complete B first, then recover A while B's unACKed receipt remains.
+        for (path, descriptor_id) in [(&path_b, descriptor_b), (&path_a, descriptor_a)] {
+            let result: serde_json::Value = serde_json::from_str(
+                &backend
+                    .reconcile_narrative_maintenance_recovery(Some(path.clone()))
+                    .await
+                    .expect("exact target recovery"),
+            )
+            .expect("recovery JSON");
+            assert_eq!(result["reason"], "maintenance-recovery-complete");
+            assert_eq!(result["descriptorId"], descriptor_id.get());
+            assert_eq!(result["reboundBinding"], serde_json::Value::Null);
+        }
+        assert_eq!(
+            backend
+                .state
+                .workspace_lifecycle
+                .lifecycle_snapshot()
+                .expect("C preserved")
+                .state,
+            ready_c.state
+        );
+        assert!(backend
+            .state
+            .workspace_lifecycle
+            .recovery_descriptor_ids()
+            .expect("roots resolved")
+            .is_empty());
+
+        // The unfiltered pump still replays its first receipt. A target skips
+        // that unrelated receipt instead of ACKing another workspace's proof.
+        let first: serde_json::Value = serde_json::from_str(
+            &backend
+                .reconcile_narrative_maintenance_recovery(None)
+                .await
+                .expect("ordinary pump"),
+        )
+        .expect("ordinary receipt JSON");
+        assert_eq!(first["descriptorId"], descriptor_a.get());
+        let target_b: serde_json::Value = serde_json::from_str(
+            &backend
+                .reconcile_narrative_maintenance_recovery(Some(path_b))
+                .await
+                .expect("B receipt replay"),
+        )
+        .expect("B receipt JSON");
+        assert_eq!(target_b["descriptorId"], descriptor_b.get());
+        assert_eq!(
+            backend
+                .state
+                .narrative_maintenance_recovery_receipts
+                .lock()
+                .expect("receipts")
+                .len(),
+            2
+        );
+        backend
+            .ack_narrative_maintenance_recovery(descriptor_a.to_string())
+            .expect("ACK A proof");
+        backend
+            .ack_narrative_maintenance_recovery(descriptor_b.to_string())
+            .expect("ACK B proof");
+        backend
+            .open_workspace(path_a)
+            .await
+            .expect("return A after exact recovery");
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn targeted_open_recovery_requires_original_identity_and_recovery_proof() {
+        let (backend, root) = backend_with_active_workspace("targeted-open-identity");
+        let path_a = root.join("workspace").to_string_lossy().into_owned();
+        let descriptor_a = retain_maintenance_descriptor(&backend);
+        let path_b = root.join("workspace-b").to_string_lossy().into_owned();
+        backend
+            .open_workspace(path_b.clone())
+            .await
+            .expect("independent B Open");
+        let proof = take_maintenance_recovery_binding(&backend.state, descriptor_a)
+            .expect("original proof");
+        let error = backend
+            .reconcile_narrative_maintenance_recovery(Some(path_a.clone()))
+            .await
+            .expect_err("matching root without proof must fail closed");
+        assert!(error
+            .reason
+            .contains("NEX_MAINTENANCE_RECOVERY_BINDING_MISSING"));
+        let none: serde_json::Value = serde_json::from_str(
+            &backend
+                .reconcile_narrative_maintenance_recovery(Some(path_b))
+                .await
+                .expect("unrelated B remains usable"),
+        )
+        .expect("unrelated JSON");
+        assert_eq!(none["status"], "none");
+
+        let metadata_path = root.join("workspace/.grimodex/workspace.json");
+        let original_metadata = std::fs::read_to_string(&metadata_path).expect("metadata");
+        for metadata in [r#"{"id":"replacement-identity"}"#, "invalid JSON", r#"{}"#] {
+            std::fs::write(&metadata_path, metadata).expect("changed metadata");
+            let none: serde_json::Value = serde_json::from_str(
+                &backend
+                    .reconcile_narrative_maintenance_recovery(Some(path_a.clone()))
+                    .await
+                    .expect("different or unknown identity must not select original root"),
+            )
+            .expect("unmatched JSON");
+            assert_eq!(none["status"], "none");
+        }
+        std::fs::write(&metadata_path, &original_metadata).expect("restore metadata");
+        record_maintenance_recovery_binding(
+            &backend.state,
+            descriptor_a,
+            proof.0.as_deref(),
+            Some(&proof.1),
+        );
+        backend
+            .reconcile_narrative_maintenance_recovery(Some(path_a.clone()))
+            .await
+            .expect("exact root recovered");
+        std::fs::write(&metadata_path, r#"{"id":"replacement-identity"}"#)
+            .expect("replace identity after receipt stored");
+        let none: serde_json::Value = serde_json::from_str(
+            &backend
+                .reconcile_narrative_maintenance_recovery(Some(path_a))
+                .await
+                .expect("receipt uses original identity"),
+        )
+        .expect("unmatched receipt JSON");
+        assert_eq!(none["status"], "none");
+        assert_eq!(
+            backend
+                .state
+                .narrative_maintenance_recovery_receipts
+                .lock()
+                .expect("receipt retained")
+                .len(),
+            1
+        );
+        for invalid_path in [String::new(), format!("{}\0", root.display())] {
+            assert!(backend
+                .reconcile_narrative_maintenance_recovery(Some(invalid_path))
+                .await
+                .is_err());
+        }
+        backend.state.request_workspace_shutdown();
+        let replay: serde_json::Value = serde_json::from_str(
+            &backend
+                .reconcile_narrative_maintenance_recovery(None)
+                .await
+                .expect("completed transport proof replays after shutdown admission closes"),
+        )
+        .expect("shutdown replay JSON");
+        assert_eq!(replay["descriptorId"], descriptor_a.get());
+        backend
+            .ack_narrative_maintenance_recovery(descriptor_a.to_string())
+            .expect("shutdown ACK retires completed proof");
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     async fn begin_and_cancel_after_panic(
         backend: &Backend,
         attempt_id: &str,
@@ -16123,6 +16431,106 @@ mod narrative_maintenance_admission_unwind_tests {
         .expect("terminal receipt JSON");
         assert_eq!(terminal["state"], "interrupted");
         assert_eq!(terminal["connectionReusable"], true);
+    }
+
+    #[tokio::test]
+    async fn native_cycle_budget_requeues_unstarted_followups_without_workspace_recovery() {
+        let (backend, root) = backend_with_active_workspace("cycle-budget-followups");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let identity = authority.identity();
+        let count = narrative_extraction::MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE;
+        let projects: Vec<_> = (0..count).map(|index| format!("project-{index}")).collect();
+        authority
+            .db()
+            .with_conn(|conn| {
+                for project in &projects {
+                    conn.execute(
+                        "INSERT INTO projects (id, title) VALUES (?1, ?1)",
+                        [project],
+                    )?;
+                }
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed a full Backfill batch");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        drop(authority);
+        let attempt_id = "attempt-cycle-budget-followups";
+        backend
+            .begin_narrative_maintenance_attempt(
+                attempt_id.to_owned(),
+                serde_json::to_value(&binding).expect("binding JSON"),
+            )
+            .await
+            .expect("begin full batch");
+        let work: Vec<_> = projects
+            .iter()
+            .map(|project| {
+                serde_json::json!({
+                    "projectId": project,
+                    "runKind": "backfill",
+                    "workKey": LEGACY_BACKFILL_WORK_KEY,
+                    "semanticEpochId": null,
+                    "reasons": ["workspace-opened"],
+                })
+            })
+            .collect();
+        let result: serde_json::Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "attemptId": attempt_id,
+                    "work": work,
+                    "wakeProjectIds": [],
+                    "workspaceBinding": binding,
+                }))
+                .await
+                .expect("bounded Native cycle"),
+        )
+        .expect("cycle JSON");
+        assert_eq!(result["status"], "accepted");
+        assert_eq!(result["hasMore"], true);
+        assert_eq!(result["preempted"], true);
+        let receipt: serde_json::Value = serde_json::from_str(
+            &backend
+                .cancel_narrative_maintenance_attempt(attempt_id.to_owned(), "closed".to_owned())
+                .await
+                .expect("read terminal receipt"),
+        )
+        .expect("receipt JSON");
+        assert_eq!(receipt["state"], "interrupted");
+        assert_eq!(receipt["stopReason"], serde_json::Value::Null);
+        assert_eq!(receipt["cleanup"]["status"], "clean");
+        assert_eq!(receipt["connectionReusable"], true);
+        let works = receipt["works"].as_array().expect("work receipts");
+        assert_eq!(
+            works
+                .iter()
+                .filter(|work| work["status"] == "succeeded")
+                .count(),
+            count
+        );
+        assert_eq!(
+            works
+                .iter()
+                .filter(|work| work["status"] == "not-started")
+                .count(),
+            count
+        );
+        assert!(backend
+            .state
+            .workspace_lifecycle
+            .recovery_descriptor_ids()
+            .expect("descriptor roots")
+            .is_empty());
+        let authority = active_database(&backend.state.ws).expect("same Ready authority");
+        assert_eq!(authority.identity(), identity);
+        assert!(authority.db().connection_reusable());
+        let completed: i64 = authority.db().with_conn(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM narrative_extraction_runs WHERE run_kind = 'backfill' AND status = 'completed'", [], |row| row.get(0)).map_err(Into::into)
+        }).expect("durable successes");
+        assert_eq!(completed, count as i64);
+        drop(authority);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]

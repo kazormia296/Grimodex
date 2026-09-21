@@ -237,16 +237,6 @@ pub(super) fn read_snapshot_with_control(
 /// The first snapshot fully replayed L1/L2. Compare all its persisted inputs
 /// atomically, then resolve every live Source and the bounded Feed again.
 /// A partial roster or changed dependency can never publish a cached subset.
-#[cfg(test)]
-pub(super) fn snapshot_current(
-    conn: &Connection,
-    project: &str,
-    snapshot: &BuildSnapshot,
-) -> Result<bool> {
-    let mut control = super::super::source_revision::ForegroundValidationControl;
-    snapshot_current_with_control(conn, project, snapshot, &mut control)
-}
-
 pub(super) fn snapshot_current_with_control(
     conn: &Connection,
     project: &str,

@@ -226,6 +226,25 @@ describe("narrative maintenance reacceptance boundaries", () => {
     scheduler.dispose();
   });
 
+  it("serializes Open target drains and keeps a failed target from poisoning the next", async () => {
+    const firstRecovery = deferred<{ status: "none" }>();
+    const reconcileNarrativeMaintenanceRecovery = vi.fn()
+      .mockReturnValueOnce(firstRecovery.promise)
+      .mockResolvedValue({ status: "none" });
+    const scheduler = createNarrativeMaintenanceScheduler({ reconcileNarrativeMaintenanceRecovery });
+    const lease = await scheduler.quiesceForWorkspaceSwitch?.();
+    const first = scheduler.reconcileRecoveryBeforeWorkspaceOpen?.("/W1");
+    const firstRejected = expect(first).rejects.toThrow("W1 unavailable");
+    const second = scheduler.reconcileRecoveryBeforeWorkspaceOpen?.("/W2");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reconcileNarrativeMaintenanceRecovery.mock.calls).toEqual([["/W1"]]);
+    firstRecovery.reject(new Error("W1 unavailable"));
+    await firstRejected;
+    await expect(second).resolves.toBeUndefined();
+    expect(reconcileNarrativeMaintenanceRecovery.mock.calls).toEqual([["/W1"], ["/W2"]]);
+    lease?.resume(false);
+  });
+
   it("rediscovers the binding after descriptor reconciliation before retrying work", async () => {
     let currentBinding = binding("authority-before-recovery", 1);
     const reconcileNarrativeMaintenanceRecovery = vi

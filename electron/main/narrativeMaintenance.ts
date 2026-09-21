@@ -174,8 +174,10 @@ export interface NarrativeMaintenanceBackendLike {
   runNarrativeMaintenanceCycle?(
     request: NarrativeMaintenanceCycleRequest,
   ): Promise<unknown>;
-  /** Resolve an existing Native recovery descriptor before delivery admission. */
-  reconcileNarrativeMaintenanceRecovery?(): Promise<unknown> | unknown;
+  /** Resolve existing Native recovery; an Open target excludes unrelated roots. */
+  reconcileNarrativeMaintenanceRecovery?(
+    requestedWorkspacePath?: string,
+  ): Promise<unknown> | unknown;
   /** ACK a replayable recovery receipt after main has matched its binding. */
   ackNarrativeMaintenanceRecovery?(descriptorId: string): Promise<unknown> | unknown;
   ackNarrativeMaintenanceDelivery?(sequence: number): Promise<unknown> | unknown;
@@ -232,6 +234,8 @@ export interface NarrativeMaintenanceScheduler {
   quiesceForWorkspaceSwitch?(): Promise<
     NarrativeMaintenanceQuiesceLease | undefined | void
   >;
+  /** Both maintenance and Freshness must be quiesced before target recovery. */
+  reconcileRecoveryBeforeWorkspaceOpen?(path: string): Promise<void>;
   beginNarrativeMaintenanceAttempt?(
     attemptId: string,
     workspaceBinding: NarrativeMaintenanceWorkspaceBinding,
@@ -1187,6 +1191,7 @@ export function createNarrativeMaintenanceScheduler(
   let quiescing = false;
   const activeWorkspaceSwitchOwners = new Set<symbol>();
   let quiesceTransition: Promise<void> | null = null;
+  let recoveryDrainPromise: Promise<void> = Promise.resolve();
   let activeAttemptId: string | null = null;
   // The presence of Native lifecycle methods is only a capability.  An
   // attempt becomes Native-owned after the exact begin acknowledgement has
@@ -2011,9 +2016,9 @@ export function createNarrativeMaintenanceScheduler(
   };
 
   /**
-   * A shutdown quiesce can create a maintenance recovery descriptor after the
+   * A workspace/shutdown quiesce can create a maintenance recovery descriptor after the
    * ordinary scheduler has stopped admitting work.  Drain that exact root
-   * here, before `disposed` becomes true, so Native shutdown never observes a
+   * here before Open/shutdown, so Native never observes a
    * process-local Run owner that the main scheduler has simply abandoned.
    *
    * This path deliberately uses the same proof validator and ACK operation as
@@ -2021,13 +2026,17 @@ export function createNarrativeMaintenanceScheduler(
    * workspace on its own; Native remains the authority for the descriptor and
    * its replacement binding.
    */
-  const drainRecoveryBeforeDispose = async (): Promise<void> => {
+  const performRecoveryDrain = async (
+    requestedWorkspacePath?: string,
+  ): Promise<void> => {
     const reconcileRecovery = backend?.reconcileNarrativeMaintenanceRecovery;
     if (typeof reconcileRecovery !== "function") return;
 
     const maxAttempts = 4;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const raw = await reconcileRecovery.call(backend);
+      const raw = requestedWorkspacePath === undefined
+        ? await reconcileRecovery.call(backend)
+        : await reconcileRecovery.call(backend, requestedWorkspacePath);
       const recovery =
         typeof raw === "string"
           ? (JSON.parse(raw) as {
@@ -2063,7 +2072,7 @@ export function createNarrativeMaintenanceScheduler(
 
       if (!applyRecoveredRecoveryProof(recovery)) {
         throw new Error(
-          "NEX_MAINTENANCE_RECOVERY_PROOF_INVALID: shutdown recovery proof was not accepted",
+          "NEX_MAINTENANCE_RECOVERY_PROOF_INVALID: recovery proof was not accepted",
         );
       }
       const recoveryMatches = recoveryReceiptMatchesFailedBinding(recovery);
@@ -2071,7 +2080,7 @@ export function createNarrativeMaintenanceScheduler(
         recoveryMatches && terminalReceiptFailure?.recoveryAcked === true;
       if (!recoveryAlreadyAcked && !(await acknowledgeRecoveredRecovery(recovery))) {
         throw new Error(
-          "NEX_MAINTENANCE_RECOVERY_ACK_PENDING: shutdown recovery receipt was not acknowledged",
+          "NEX_MAINTENANCE_RECOVERY_ACK_PENDING: recovery receipt was not acknowledged",
         );
       }
       if (recoveryMatches && terminalReceiptFailure !== null) {
@@ -2092,13 +2101,24 @@ export function createNarrativeMaintenanceScheduler(
         clearRecoveredTerminalReceiptFailure(recovery);
       }
       // The ACK retires the process-local proof.  Re-query once more so a
-      // second descriptor or a replayable receipt cannot survive into Native
-      // shutdown unnoticed.
+      // second matching descriptor or replayable receipt cannot survive the
+      // boundary unnoticed. Native alone selects an Open target's roots.
     }
 
     throw new Error(
-      "NEX_MAINTENANCE_RECOVERY_PENDING: descriptor recovery was not proven before shutdown",
+      "NEX_MAINTENANCE_RECOVERY_PENDING: descriptor recovery was not proven before the workspace boundary",
     );
+  };
+
+  const drainRecovery = (requestedWorkspacePath?: string): Promise<void> => {
+    // Open callers retain their leases while queued here. Native proof/ACK
+    // replay makes repeated targets idempotent; a failed target cannot poison
+    // the next unrelated target or race shutdown's final drain.
+    const drain = recoveryDrainPromise
+      .catch(() => undefined)
+      .then(() => performRecoveryDrain(requestedWorkspacePath));
+    recoveryDrainPromise = drain;
+    return drain;
   };
 
   const runCycle = async (): Promise<void> => {
@@ -3688,10 +3708,17 @@ export function createNarrativeMaintenanceScheduler(
       return quiesceForWorkspaceSwitch();
     },
 
+    async reconcileRecoveryBeforeWorkspaceOpen(path: string): Promise<void> {
+      if (disposed || !quiescing || activeWorkspaceSwitchOwners.size === 0) {
+        throw new Error("NEX_MAINTENANCE_RECOVERY_REQUIRES_QUIESCENCE");
+      }
+      await drainRecovery(path);
+    },
+
     async dispose(): Promise<void> {
       if (disposed) return;
       await quiesceForWorkspaceSwitch();
-      await drainRecoveryBeforeDispose();
+      await drainRecovery();
       await retryPendingDeliveryAcks();
       // Shutdown has no replacement workspace that can discard a failed
       // Native connection. Keep the process fail-closed and surface the

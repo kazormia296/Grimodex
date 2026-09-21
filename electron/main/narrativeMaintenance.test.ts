@@ -2756,7 +2756,7 @@ describe("narrative maintenance scheduler", () => {
     expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledWith(1);
   });
 
-  it("clears recovery ownership after a later retry retires the old delivery", async () => {
+  it.each(["pump", "target-open"])("clears %s recovery ownership after a later retry retires the old delivery", async (recoveryPath) => {
     const failedBinding = {
       authorityId: "authority-delivery-ack-retry",
       generation: 21,
@@ -2831,7 +2831,13 @@ describe("narrative maintenance scheduler", () => {
     scheduler.requestWithBinding(workItem, failedBinding);
     scheduler.start();
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
-    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    if (recoveryPath === "target-open") {
+      await scheduler.quiesceForWorkspaceSwitch?.();
+      await scheduler.reconcileRecoveryBeforeWorkspaceOpen?.("/target");
+      expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenLastCalledWith("/target");
+    } else {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
 
     expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
     expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledOnce();

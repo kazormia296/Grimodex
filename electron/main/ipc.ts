@@ -2063,6 +2063,7 @@ export function registerIpcRouter(
   narrativeMaintenance?: Pick<
     NarrativeMaintenanceScheduler,
     | "quiesceForWorkspaceSwitch"
+    | "reconcileRecoveryBeforeWorkspaceOpen"
     | "beginNarrativeMaintenanceAttempt"
     | "cancelNarrativeMaintenanceAttempt"
   >,
@@ -2175,6 +2176,20 @@ export function registerIpcRouter(
         let manualMaintenanceAttemptId: string | null = null;
         try {
           if (WORKSPACE_SWITCH_COMMANDS.has(cmd)) {
+            const requestedWorkspacePath =
+              cmd === "open_workspace" && "path" in dispatchArgs
+                ? dispatchArgs.path
+                : undefined;
+            if (
+              cmd === "open_workspace" &&
+              (typeof requestedWorkspacePath !== "string" ||
+                requestedWorkspacePath.trim().length === 0 ||
+                requestedWorkspacePath.includes("\0"))
+            ) {
+              throw new Error(
+                "invalid args `path` for command `open_workspace`: expected a non-empty path",
+              );
+            }
             const acquired: Array<
               NarrativeMaintenanceQuiesceLease | NarrativeFreshnessQuiesceLease
             > = [];
@@ -2196,6 +2211,14 @@ export function registerIpcRouter(
                 typeof freshnessLease.resume === "function"
               ) {
                 acquired.push(freshnessLease);
+              }
+              if (typeof requestedWorkspacePath === "string") {
+                // Freshness can publish a recovery descriptor while joining.
+                // Keep both producers stopped until Native has reconciled
+                // only this Open target and main has ACKed its exact proof.
+                await narrativeMaintenance?.reconcileRecoveryBeforeWorkspaceOpen?.(
+                  requestedWorkspacePath,
+                );
               }
               workspaceSwitchLeases = acquired;
             } catch (error) {

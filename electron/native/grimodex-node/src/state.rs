@@ -167,6 +167,8 @@ pub struct NarrativeMaintenanceRecoveryGate {
 /// must match before ordinary delivery may resume.
 #[derive(Clone, Debug)]
 pub(crate) struct NarrativeMaintenanceRecoveryReceipt {
+    /// Original descriptor identity, retained for target-scoped Open replay.
+    pub expected_binding: grimodex_db::LiveBinding,
     pub recovered_binding: MaintenanceWorkspaceBinding,
     pub active_binding: Option<MaintenanceWorkspaceBinding>,
     /// Set only when Native proves that the descriptor's exact expected
