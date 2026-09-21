@@ -10,7 +10,7 @@ use crate::error::{AppError, AppResult};
 use crate::recovery::SafeModeState;
 use crate::workspace_lease::WorkspaceLease;
 use crate::workspace_lifecycle::{
-    LifecycleState, WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore,
+    LifecycleError, LifecycleState, WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore,
 };
 use crate::Database;
 
@@ -189,7 +189,16 @@ pub struct GlobalSettingsPath {
 /// `with_db_state` 経由で毎回解決する。どちらも switching / no-workspace の
 /// fail-closed 契約は同一。
 pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveWorkspaceSnapshot> {
-    let participant = ws_state.lifecycle_core().begin_workspace_participant()?;
+    let participant = ws_state
+        .lifecycle_core()
+        .begin_workspace_participant()
+        .map_err(|error| match error {
+            // A lifecycle transition is a retryable workspace-switch window
+            // for ordinary DB callers. Preserve the stable wire marker instead
+            // of leaking the core's ownership diagnostic to IPC consumers.
+            LifecycleError::ActiveOperations => AppError::WorkspaceSwitching,
+            other => AppError::from(other),
+        })?;
     let lock_started = std::time::Instant::now();
     {
         let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -279,7 +288,13 @@ pub fn with_db_state<T>(
     // Closed in the small gap between pinning the Arc and entering the DB
     // closure. The participant is independent of foreground/maintenance
     // scheduling and is released after the caller's transaction returns.
-    let _participant = ws_state.lifecycle_core().begin_workspace_participant()?;
+    let _participant = ws_state
+        .lifecycle_core()
+        .begin_workspace_participant()
+        .map_err(|error| match error {
+            LifecycleError::ActiveOperations => AppError::WorkspaceSwitching,
+            other => AppError::from(other),
+        })?;
     let authority = active_database(ws_state)?;
     Ok(f(authority.db())?)
 }
@@ -364,6 +379,25 @@ mod tests {
         let err = active_database(&state)
             .err()
             .expect("switching 中は DB を pin できない");
+        assert!(err.to_string().contains("WORKSPACE_SWITCHING"));
+    }
+
+    #[test]
+    fn active_database_maps_core_transition_to_workspace_switching() {
+        let state = workspace_state_with_db();
+        let outcome = state
+            .switching
+            .core()
+            .begin_transition(crate::workspace_lifecycle::AdmissionKind::Open)
+            .expect("transition admission");
+        assert!(matches!(
+            outcome,
+            crate::workspace_lifecycle::AdmissionOutcome::Admitted(_)
+        ));
+
+        let err = active_database(&state)
+            .err()
+            .expect("ordinary DB access must be retryable during a core transition");
         assert!(err.to_string().contains("WORKSPACE_SWITCHING"));
     }
 
