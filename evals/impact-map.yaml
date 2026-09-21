@@ -12,10 +12,16 @@ allSuites:
   - nir1-capacity-diagnostics
 rules:
   - id: quality-foundation
-    reason: Quality policy, skills, selectors, and evaluation metadata affect every gate.
+    reason: Quality policy, instruction entrypoints, skills, selectors, and evaluation metadata affect every gate.
     paths:
       - AGENTS.md
+      - CLAUDE.md
+      - GLOBAL_CLAUDE.md
+      - src-CLAUDE.md
+      - src-tauri-CLAUDE.md
+      - README.md
       - .agents/skills/**
+      - .claude/skills/**
       - docs/communication-style-guide.md
       - policies/quality/**
       - evals/**

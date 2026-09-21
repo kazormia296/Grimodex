@@ -1,18 +1,20 @@
 ---
 name: refactor-cross-boundaries
 description: >
-  Grimodex の既存の外部挙動を保ちながら、renderer、Electron IPC、N-API、
-  shared Rust、MCP、永続化、または複数 AI provider 経路のうち2層以上で、
-  責務・型・契約・データフローを協調変更する横断リファクタに使う。
-  「横断リファクタ」「境界整理」「責務移動」「パイプライン再編」で発火する。
-  新機能は implement-feature、新規 IPC command は add-electron-command、
-  調査のみは explore-codebase を使う。バグ修正は debug-issue を主フローとし、
-  2層以上の既存契約変更を伴う部分では本スキルの影響マトリクスも併用する。
+  Grimodex の既存挙動を保ちながら、renderer、IPC、N-API、shared Rust、MCP、永続化、
+  AI provider 経路のうち二つ以上で責務・型・契約を協調変更する。新機能やバグ修正では
+  それぞれの skill を主フローとし、必要な横断変更だけ本スキルの影響マトリクスを使う。
 ---
 
 # Refactor Cross Boundaries
 
 既存の振る舞いを保ち、複数境界の契約と所有権を一貫して変更する。
+
+高リスクな変更は [GDX-PRECHECK-001](../../../policies/quality/iron-laws.md#GDX-PRECHECK-001)、
+候補の独立受入れと freeze は [GDX-TRACE-001](../../../policies/quality/iron-laws.md#GDX-TRACE-001)、
+commit／CI／公開証跡は [検証と公開範囲](../../../policies/quality/iron-laws.md#agent-validation) に従う。
+immutable child／revision と bounded lookup を扱う場合は
+[ID と検索範囲の契約](../../../policies/quality/iron-laws.md#immutable-identity) も適用する。
 
 ## Phase 1: 不変条件とベースライン
 
@@ -22,7 +24,7 @@ description: >
 4. カバレッジがなければ characterization test を追加し、旧実装で成功させる。
 5. `rg` で実際の entry point から consumer／sink まで追跡する。
 
-挙動維持が目的なので、`implement-feature` の red-first TDD は適用しない。テストを失敗させるのは、仕様変更が明示された部分だけとする。
+既存挙動を保つ部分は現行実装を通る characterization test で固定し、明示された仕様変更だけ新しい期待値を設定する。
 
 ## Phase 2: 影響マトリクスと設計レビュー
 

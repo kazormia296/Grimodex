@@ -1,10 +1,8 @@
 ---
 name: create-branch
 description: >
-  最新のリモート基点から安全に作業ブランチを作成する。
-  「ブランチを切って」「作業ブランチを作って」「新しいブランチから始めて」
-  と依頼されたときに使用する。既定はorigin/master、明示された場合は指定された
-  originまたはローカルのブランチ／refを基点にする。push、commit、mergeは行わない。
+  Grimodex の作業ブランチ作成を依頼されたとき、指定された ref または最新の
+  origin/master を基点に作成する。commit、push、merge は含めない。
 ---
 
 # Create Branch

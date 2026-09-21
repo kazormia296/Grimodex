@@ -1,206 +1,76 @@
 # Grimodex — AI統合小説執筆エディタ
 
-## プロジェクト概要
+Electron + React 19 + TypeScript、TipTap、SQLite の小説執筆エディタ。
+コア体験は、AIとのチャットから知識を抽出・構造化して執筆に活かすこと。
 
-Electron + React 19 + TypeScript。TipTapベースのリッチテキストエディタに
-AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説執筆ツール。
-**コア体験: AIとのチャットから知識を抽出し、構造化して執筆に活かす。**
+## 実装の境界
 
-現行デスクトップランタイムは Electron。renderer は typed preload IPC を介して
-main process を呼び、Rust 実装は N-API モジュールと standalone MCP から共有する。
-`src-tauri` 直下の Tauri シェルは v1 互換・移行確認用に凍結した legacy コードであり、
-新機能の実装先にしない。`src-tauri/crates/` の共有 crates と MCP は引き続き現役。
+- renderer → typed preload IPC → Electron main → N-API → 共有 Rust の順で呼び出す。
+  renderer から Node／Electron／N-API を直接 import しない。
+- IPC の正本は `electron/shared/ipcContract.ts`。main で引数を再検証する。
+  renderer は `src/lib/` の wrapper 経由で `window.grimodex` を利用する。
+- Rust ドメイン実装は `src-tauri/crates/`、Electron binding は
+  `electron/native/grimodex-node/`。`src-tauri` 直下の Tauri shell は v1 互換・移行確認用の
+  frozen legacy で、新機能の実装先にしない。共有 crates と standalone MCP は現役。
+- React は関数コンポーネントと hooks、グローバル状態は Zustand、局所状態は Jotai。
+  ES modules、TypeScript strict、2スペースインデントを使う。
+- renderer の DB 操作は Drizzle 経由。schema／migration の正本は `grimodex-db`。
+  SQLite は WAL／FTS5 を使う。
+- シーンごとの独立 TipTap インスタンスと AI 会話履歴、挿入テキストの
+  source metadata（human／ai／unknown）を維持する。
 
-## コマンド
+## 作業範囲と完了
 
-- デスクトップ開発: pnpm electron:dev
-- フロントのみ: pnpm dev
-- ビルド: pnpm electron:build
-- パッケージ: pnpm electron:package
-- テスト: pnpm test
-- テスト(単体): pnpm test --run [ファイルパス]
-- 差分ローカルCI: pnpm ci:local:quick
-- 完全ローカルCI: pnpm ci:local:full
-- ローカルCI一覧: pnpm ci:local:list
-- ローカルCI証跡検証: pnpm ci:local:verify -- <quick|full> --base origin/master --head HEAD
-- フロントCI相当: pnpm verify:frontend
-- Electronテスト: pnpm test:electron --run
-- N-APIビルド: pnpm napi:build
-- N-APIテスト（上記ビルド後）: pnpm --dir electron/native/grimodex-node test
-- Lint: pnpm lint:fix
-- 型チェック: npx tsc --noEmit
-- Electron型チェック: pnpm exec tsc -p electron/tsconfig.json --noEmit
-- N-APIチェック: cargo check --manifest-path electron/native/grimodex-node/Cargo.toml
-- 共有Rustチェック: cargo check --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
-- 共有Rustテスト: cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
+依頼された変更とその検証を終えるまで進める。承認済みの範囲内の可逆な修正・検証で
+再承認を求めない。調査・レビューだけの依頼は read-only とし、既存の無関係な差分を保持する。
+commit、push、merge、公開は依頼範囲に含まれる場合だけ行い、明示された停止点を守る。
+commit は作業ブランチで行い、変更ファイルを明示して stage する。master に直接 commit／push しない。
 
-## ローカルCI gate
+検証は変更内容とリスクで選ぶ。調査・レビューや通常文書だけの作業で Quick／Full を開始しない。
+AI指示・skills・品質規則は動作契約なので、通常文書と区別して品質ゲートを適用する。
+同じ候補・環境・command の成功結果は、変更・失敗・未解決の懸念がなければ再実行しない。
+完了時は結果、実施した検証、未解決事項を報告し、未実行を成功扱いしない。
 
-- 通常のPR／branch pushではGitHub Actionsのrunnerを起動しない。hosted PR checkが無いことを
-  greenの根拠にせず、次のローカル証跡を必須gateとして扱う。
-- 関連する実装・修正・AI behavior assetは、まずfocused検証を完了する。commitが依頼範囲に
-  含まれる場合はCI許可の有無にかかわらず候補commitを作り、PR／releaseの証跡が依頼範囲に含まれ、
-  CIが許可されている場合だけ、cleanな候補HEADでQuickを実行し、base／headはshell-localに一度だけ
-  解決した固定値をQuickと直後のverifyへ同じ展開文字列で渡す。commit-onlyまたはCI明示除外の作業では
-  Quickを開始せず候補commitを保持し、merge／release readinessを主張しない。候補変更後は旧receiptを
-  再利用しない。commit／PRを依頼されていない調査・レビューではQuickのためだけにcommitを作らず、CIも開始しない。
-  明示的にdirtyなworking-treeのQuickを求められた場合でも診断専用の証拠として扱う。
-  PR用の例は次の通りである。
+## 必要な場面で読む正本
 
-  ```bash
-  candidate_base="$(git rev-parse 'origin/master^{commit}')"
-  candidate_head="$(git rev-parse 'HEAD^{commit}')"
-  pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
-  pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
-  ```
-- merge前の初回Fullは、`git fetch origin master`後のcurrent `origin/master`がcandidate HEADの祖先であることを
-  初回Fullの前提として確認する。遅れていればcandidateを安全に更新してHEADを取り直し、Fullを最初からやり直す。
-  その前提を満たしたcleanなcommit済みHEADで、shell-localの不変な`candidate_base`／`candidate_head`をそれぞれ
-  `origin/master^{commit}`／`HEAD^{commit}`から一度だけ解決し、再代入せず次を実行する。Fullとそのreceiptの全verifyには
-  同じ展開済み入力文字列を渡し、短縮refや別の記録値へ切り替えない。
-  `pnpm ci:local:full -- --base "$candidate_base" --head "$candidate_head"`、直後の
-  `pnpm ci:local:verify -- full --base "$candidate_base" --head "$candidate_head"`を使う。merge直前のprecheckでは
-  fetch済みcurrent baseが`candidate_base`と一致する通常pathだけ同じpinで再verifyする。candidateをfreezeしてFull receiptを
-  得た後のupstream baseの進行は原則として古い証跡を再利用しない。ただし、candidate HEAD／PR diffが不変で、upstream deltaが
-  editorial docs/ADR-onlyであり、executable、build、dependency、CI、policy、schema、manifest、generated-contractの内容も
-  ratified decision／acceptance meaningも変えていないことを確認できる場合に限り、狭いupstream-base exceptionを適用できる。
-  exceptionでは同じ元の`candidate_base`／`candidate_head`で旧receiptを再verifyし、upstream deltaを別に分類する。exceptionと
-  比例したstatic／focused checksを記録し、旧receiptを新しいbaseに束縛されたものとは扱わない。曖昧さまたはcandidate HEADの
-  変更が一つでもあればreceiptを無効化し、Full-from-stage-1 + verifyをやり直す。
-  merge直前のprecheckはfetch後にbaseを比較・分類し、通常pathでは検証済みcandidate base、exception pathでは承認済みのcurrent baseの
-  いずれか一つだけを`approved_merge_base`として記録する。squash mergeの場合だけ、merge後にfetchして実際のsquash merge commitのfirst parent
-  （`<merge-sha>^1`）を`approved_merge_base`と一度だけ比較し、merge commitの`origin/master`への包含も確認する。明示されたnon-squash方式は
-  before mergeにmethod-specific actual-base/post-merge verification procedureがdefined and approvedであることを確認し、未定義・未承認ならstopする。
-  non-squash方式ではdo not reuse the squash first-parent rule（squash用first-parent ruleを流用せず）、一般的なnon-squash verification logicも追加しない。不一致ならverified successとせず、
-  新たなupstream deltaを分類して必要なrevalidationを行う。merge may have occurredだが、acceptance evidence is not valid until resolved。
-- release tag前は、squash前のbranch証跡を再利用せず、merge後のrelease commitそのものを
-  cleanなcheckout／worktreeの現在HEADとして同じFullとverifyを再実行する。
-- `--from`は失敗調査・再開用のpartial run、`--dry-run`は計画確認だけである。どちらも
-  merge／releaseの成功証跡にせず、原因解消後に`--from`なしのFullを最初から実行する。
-- 必須command、toolchain、依存、host capabilityが不足した場合は`blocked`として停止する。
-  skipped、deferred、古いreceipt、Windows以外で実行不能なrelease-only項目をpassedへ
-  読み替えない。Windows NSISの最終compileは手動Full CI／tag releaseで別途検証する。
+該当する作業の前に、次のリンク先の対象節を読む。全ファイルの一括読込は不要。
 
-- immutable child／revisionを扱う変更では、復元、Decision書込、再読取、表示、receiptを同じ
-  child／revision IDへ固定し、親`runId`だけで再選択しない。bounded lookupは全体一覧をlimit後に
-  絞って不存在と判断せず、mockでもlimit・順序・cursorとN/N+1境界を再現する。操作対象外の
-  Decisionが不変であることを確認する。Journeyは作成後にdurable IDと対応するUI投影が確定するまで
-  編集せず、selectorの表示だけをready判定にしない。
+- 開発環境・コマンド: [README の Development](README.md#development--開発)、実行定義は `package.json`
+- React／TipTap／renderer: [フロントエンド規約](src-CLAUDE.md)
+- 共有 Rust／N-API／DB: [Rust 規約](src-tauri-CLAUDE.md)
+- 検証範囲の選択: [検証の適用条件](policies/quality/iron-laws.md#agent-validation)
+- 長期・高リスク、security-sensitive threat model、external-egress／subprocess／background／async-lifecycle、外部 Claude review: [GDX-PRECHECK-001](policies/quality/iron-laws.md#GDX-PRECHECK-001)。編集・送信前に適用し、必要なユーザー確認が未了なら `[precheck]` で停止する
+- PR／merge／release の CI 証跡、candidate freeze、Full 前の resource-isolation preflight: [GDX-TRACE-001](policies/quality/iron-laws.md#GDX-TRACE-001) と [CI runner](docs/local-ci-runner.md)。clean な候補、固定 base／head、receipt の条件を守る
+- immutable child／revision、bounded lookup、Journey: [ID とページネーションの契約](policies/quality/iron-laws.md#immutable-identity)
+- AI指示・prompt・policy・評価: [Iron Laws](policies/quality/iron-laws.md) の関連 requirement と `evals/quality-manifest.yaml`
 
-## 高リスク作業の運用規律
+通常の PR／branch push で hosted checks がないことを green の根拠にしない。
+commit-only は Quick を要求せず、merge／release readiness を主張しない。
 
-- セキュリティに関わる `security-sensitive threat model` は `draft` のまま保持する。信頼主体／未信頼主体
-  （trusted/untrusted actors）、対象内／対象外の攻撃（in-scope and out-of-scope attacks）、必須防御
-  （mandatory defenses）、受入れ条件への影響（acceptance implications）を確認し、explicit user confirmation
-  （ユーザーの明示確認）が得られるまで固定しない。material changes には reconfirmation（再確認）が必要である。
-  サブエージェントとレビュー担当は提案だけを行い、脅威モデルを無断で固定・変更しない。確認未了は blocking
-  precheck として `[precheck]` で停止する。
-- 長期または高リスクの作業は、実装担当と独立した受入れレビュー担当を分離する。`one integrator`（統合担当1名）、
-  `implementer(s)`（実装担当）、`candidate-untouched independent acceptance reviewer(s)`（候補を編集していない
-  独立受入れレビュー担当）を置き、役割を重複させない。受入れレビュー担当は候補を編集しない。候補台帳
-  （`single candidate ledger`）に `base`、`head`、`tree`、`clean state`、`receipt directory`、ユーザー確認済み
-  `threat-model version/ref` を記録し、`focused gates` を通過してから `freeze` する。大規模な横断変更は
-  `reviewable lanes` に分割し、`critical candidate` は必要最小限に保つ。`freeze` 後は編集せず、finding があれば
-  候補を再開して receipt を無効化する。
-- external-egress／subprocess／background／async-lifecycle の変更は、編集前に有限（`finite owner/lifecycle
-  matrix`）の行列を作る。全ての `entry/start/retry/reentrant` 経路を対象に、admission closure、pending-start work、
-  active handle ownership、cancellation、bounded wait、実際の終了証拠（`close/exit/terminal receipt`）、
-  `error/timeout/onClosed` の所有者、persisted restart stateを各行へ割り当てる。kill request、error event、
-  rejected promiseだけではtermination proofにならない。high-effort reviewとcandidate-untouched independent
-  acceptance reviewはP2+をfreezeと高コストなFullの前に解消し、Full後はcandidateが不変であることを確認するだけとする。
-  candidateに変更がなければ意味のレビューを開き直さない。
-- 高コストな Full の前には、generic resource-isolation preflightと、リスク評価で適用対象となった late stage に限る
-  focused preflight（`risk-derived applicable late stages only`）を実施する。resource-isolationはno competing heavy run、
-  enough writable capacity on actual workspace/build-cache/temp filesystemsを確認し、root/home pressureとtemp quotaを
-  separateに確認する。any fixed capacity/quota threshold（GB、percentage、inode、その他numericを含む）、host-specific cache deletion list、
-  deletion automationは要求・実施しない。thresholdsはrisk/workload/filesystem stateから導出し、hardcodeしない。このpreflightはread-onlyであり、must not auto-delete artifacts, kill other jobs, or rewrite temp paths。
-  competing jobはcoordination stopであり、kill authorityではない。runtime performance／fresh Xvfb、migration/recovery、real product journeys は例示（examples）であり、
-  一律要件（blanket requirements）ではない。該当しない host capability は要求せず、block条件にも使わない。各
-  preflight は診断専用（diagnostic only）で、clean Full-from-stage-1 + verifyを置き換えない。
-- 原因不明の runtime failure は、因果関係を示す causal evidence が得られるまで `unattributed runtime blocker`
-  として扱う。変更したパスだけから環境または製品の状態を推定しない。rAF、event-loop、wake/discovery counts、
-  memory-sampler duration、process CPU/I/O、device/PSI を相関させ、exact failed receipt を保存する。
-- `diagnostic/P3 debt` は、ユーザーの明示的な許可がない限り `critical candidate` から分離する。
-- 外部 Claude review では、送信前に data categories（データ分類）と permission（送信許可）を確認する。ユーザーが
-  override しない限り、`claude-fable-5-1` を effort `high` で使う。requested/effective model・effort・Fast を記録し、
-  silently substitute しない。外部 review の条件は実施する作業の開始時 precheck で固定し、確認は承認済みデータに限る。
-  すべてのリポジトリやログを送る包括許可にはしない。
+## Skill の選択
 
-## GitHub認証（Codex sandbox）
+単語の一致だけでなく、依頼の目的と変更対象から主フローを選ぶ。補助 skill はその担当範囲だけに使う。
 
-- 通常のユーザー端末では `gh auth status` が成功していても、Codex の sandbox 内では
-  OS keyring を参照できず、`The token in default is invalid` と誤判定されることがある。
-- sandbox 内の失敗だけを根拠に、ユーザーへ再ログインを依頼したり `gh auth logout` を
-  実行したりしない。まず同じ `gh auth status` を `require_escalated` で再実行し、
-  sandbox 外の keyring から認証状態を確認する。
-- 認証が sandbox 外で成功した場合、keyring／ネットワークを必要とする `gh`・`git`
-  操作も、必要な範囲に限定して escalation して続行する。トークン本体は出力しない。
-- sandbox 外でも失敗した場合に限り、`gh auth login -h github.com` をユーザーへ案内する。
+- コードの調査だけ: [explore-codebase](.agents/skills/explore-codebase/SKILL.md)
+- 新機能・既存機能の拡張: [implement-feature](.agents/skills/implement-feature/SKILL.md)
+- バグ・一般 CI の修正: [debug-issue](.agents/skills/debug-issue/SKILL.md)
+- Electron の新規 IPC command: [add-electron-command](.agents/skills/add-electron-command/SKILL.md)
+- 既存経路を renderer／IPC／N-API／Rust／MCP または複数 AI provider の2層以上で再編: [refactor-cross-boundaries](.agents/skills/refactor-cross-boundaries/SKILL.md)。実装前に影響マトリクスを作る。バグ修正時は補助として使う
+- AI指示・システムプロンプト・skill・AI評価fixture の変更: [grimodex-author](.agents/skills/grimodex-author/SKILL.md)
+- 差分評価・品質ゲートの実行依頼／AI behavior asset 変更後: [grimodex-impact-gate](.agents/skills/grimodex-impact-gate/SKILL.md)
+- 通常のコードレビュー／多次元敵対的レビュー: [review-code](.agents/skills/review-code/SKILL.md)／[adversarial-review](.agents/skills/adversarial-review/SKILL.md)
+- テスト作成・不足ケースの検証: [test-feature](.agents/skills/test-feature/SKILL.md)
+- UI のアニメーション・トランジション: [polish-motion](.agents/skills/polish-motion/SKILL.md)。`src/lib/animation.ts` の共有定数を使う
+- 最新基点から作業ブランチを作成: [create-branch](.agents/skills/create-branch/SKILL.md)
+- push・PR・merge: [ship-branch](.agents/skills/ship-branch/SKILL.md)
+- version 更新・release 準備: [bump-version](.agents/skills/bump-version/SKILL.md)。GitHub Release は Draft で停止し、公開には別の明示指示が必要
+- release workflow／tag build／署名／公証／packaging／publish 失敗: [debug-release-ci](.agents/skills/debug-release-ci/SKILL.md)。修正中は version／release notes／tag を変更しない
+- リリースノートなどの公開向け文章: [write-grimodex-copy](.agents/skills/write-grimodex-copy/SKILL.md)。技術文書・UI文言には適用しない
+- validation 起動時の tsx IPC pipe／listen EPERM: [rerun-sandbox-eperm](.agents/skills/rerun-sandbox-eperm/SKILL.md)。一般の権限エラーには使わない
 
-## コード規約
+## GitHub 認証
 
-- ES modules（import/export）、CommonJS禁止
-- 2スペースインデント、TypeScript strictモード
-- React: 関数コンポーネント + hooks のみ
-- 状態管理: グローバル=Zustand、局所=Jotai
-- DB操作: Drizzle ORM経由、生SQL禁止
-- テスト: Vitest、ソースと同階層に \*.test.ts
-- コンポーネント: 1ファイル1コンポーネント、200行超えたら分割
-- Rust: unwrap()禁止、thiserror/anyhow使用（共有 crates の詳細は src-tauri-CLAUDE.md）
-- アニメ: duration/easing は `src/lib/animation.ts` の `DURATIONS`/`EASINGS`/`VARIANTS` 経由（べた書き禁止、詳細は /polish-motion）
-- React/TS詳細は src-CLAUDE.md を参照
-
-## アーキテクチャ原則
-
-- feature-based ディレクトリ構造（src/features/[name]/）
-- renderer は Node/Electron/N-API を直接 import せず、`window.grimodex` の typed preload API を使う
-- IPC の正本は `electron/shared/ipcContract.ts`。main 側で引数を再検証し、N-API backend を呼ぶ
-- Rust のドメイン実装は `src-tauri/crates/` に置き、Electron 用 binding は `electron/native/grimodex-node/` に置く
-- 既存経路の責務・型・契約・データフローを renderer／Electron IPC／N-API／shared Rust／MCP、
-  または複数 AI provider 経路のうち2つ以上で協調変更する場合は、`/refactor-cross-boundaries` を使用し、実装前に影響マトリクスを作る
-- AI指示、system prompt、Codex skill、AI policy、AI経路レジストリ、評価fixtureなどの
-  AI behavior asset を作成・変更する場合は `/grimodex-author` を使用し、実在する正本と評価証跡を一緒に更新する
-- AI behavior asset の変更後、および commit／PR 前の差分評価では `/grimodex-impact-gate` を使用し、
-  canonical quality workflow が選択した Light suite を読み取り専用で実行する
-- sandbox 内の tsx IPC pipe／listen EPERM で validation が起動不能になった場合は
-  `/rerun-sandbox-eperm` を使用し、同一 command を sandbox 外で一度だけ再実行して判定する
-- 通常の単一 pass レビューは `/review-code`、独立 reviewer による多次元敵対的レビューは
-  `/adversarial-review` を使用し、reviewer の model／effort／Fast の requested と effective を記録する
-- 新機能は `/implement-feature`、新規 Electron IPC command は `/add-electron-command` を優先する
-- バグ修正は `/debug-issue` を主フローとし、上記の横断条件を満たす場合は影響マトリクスも併用する
-- Electron release CI／release workflow／tag build／署名・公証／installer migration／artifact publish
-  の失敗は `/debug-release-ci` を主フローとする。一般のPR／master CI失敗は `/debug-issue` を使う
-- release CI修正中はversion、release notes、tagを変更せず、失敗stage相当のfocused gateを先に通す。
-  workflow再実行だけを目的にpatch versionを上げない。修正merge後のDraft Release準備だけを `/bump-version` へ渡す
-- Grimodexの公開向け文書は `docs/communication-style-guide.md` を正本として `/write-grimodex-copy`
-  を使用する。Issue、PR、コミット、UI／エラー／復旧手順、API／IPC／MCP／CLI／セットアップ等の
-  技術文書には適用しない
-- version更新を含むリリース作業は `/bump-version` を主フローとし、リリースノート作成だけを
-  `/write-grimodex-copy` に委ねる。release commit後のpush／PR／mergeは `/ship-branch` へ渡す。
-  tag workflow完了後もGitHub ReleaseはDraftのまま停止し、公開には別の明示指示を必要とする
-- SQLite WALモード、FTS5有効
-- エディタ: チャプター/シーンごとに独立TipTapインスタンス
-- AIチャット: シーンごとに独立した会話履歴を保持
-- 帰属追跡: テキスト挿入時にsource metadata（human/ai/unknown）を記録
-
-## スキル発火条件
-
-| トリガーワード                                                                                              | 発動スキル                 | 動作                                   |
-| ----------------------------------------------------------------------------------------------------------- | -------------------------- | -------------------------------------- |
-| 「調べて」「調査」                                                                                          | /explore-codebase          | コード探索                             |
-| 「ブランチを切って」「作業ブランチを作って」「新しいブランチ」                                             | /create-branch             | fetch／ff-only pull→最新baseから作成    |
-| 「AI指示」「システムプロンプト」「Codexスキル」「AI評価fixture」                                            | /grimodex-author           | 正本→評価証跡→差分品質ゲート           |
-| 「差分評価」「品質ゲート」「impact gate」「コミット前／PR前評価」                                           | /grimodex-impact-gate      | 差分→関連Light suite選択・実行         |
-| 「実装して」「作って」                                                                                      | /implement-feature         | 実装フロー                             |
-| 「多次元敵対的レビュー」「敵対的レビュー」「複眼レビュー」「red-team review」                               | /adversarial-review        | 独立reviewer→反証→finding統合          |
-| 「レビュー」                                                                                                | /review-code               | コードレビュー                         |
-| 「tsx IPC EPERM」「listen EPERM」「sandbox外で同じテストを再実行」                                          | /rerun-sandbox-eperm       | 証拠固定→同一commandを1回だけ再実行    |
-| 「テスト」                                                                                                  | /test-feature              | テスト作成・実行                       |
-| 「release CI失敗」「release workflow失敗」「tag build失敗」「packaging失敗」「署名」「公証」「publish失敗」 | /debug-release-ci          | run／SHA固定→対象stageだけ検証         |
-| 「デバッグ」「修正」「一般CI失敗」                                                                          | /debug-issue               | 一般デバッグフロー                     |
-| 「Electronコマンド」「IPC」「invoke」                                                                       | /add-electron-command      | IPC一括追加                            |
-| 「アニメ」「トランジション」「動き」「磨いて」                                                              | /polish-motion             | UIモーション規律                       |
-| 「横断リファクタ」「境界整理」「責務移動」「パイプライン再編」                                              | /refactor-cross-boundaries | 影響マトリクス→段階レビュー→CI相当検証 |
-| 「リリースノート」「広報文」「告知文」「README冒頭」「日英リリースノート」                                  | /write-grimodex-copy       | 正本確認→事実整理→日英整合→公開前確認  |
-| 「バージョン上げて」「リリースタグ」「リリース準備」                                                        | /bump-version              | version→文面→PR→tag→Draft確認          |
-| 「PR出して」「プルリク作って」「pushしてマージ」「shipして」                                                | /ship-branch               | push→PR→CI・レビュー→squash merge      |
+sandbox 内だけで `gh auth status` が invalid になる場合は OS keyring の可視性を疑う。
+利用可能な許可済み host 実行で同じ確認を行い、成功したら必要な GitHub 操作をそこで続ける。
+host 確認前に logout／再ログインを要求せず、token は表示しない。
+実行環境が権限昇格を許可しない場合は、それを回避せず可視性の制限として報告する。

@@ -1,91 +1,81 @@
 ---
 name: grimodex-impact-gate
 description: >
-  Grimodex の Git 差分から関連 requirement と Light 評価 suite を選択し、
-  canonical quality workflow を読み取り専用で実行して証跡を報告する。
-  「差分評価」「品質ゲート」「impact gate」、commit／PR 前の検証、
-  grimodex-author 後の評価で使用する。テスト作成、失敗修正、意味的コードレビュー、
-  commit、push、merge には使用しない。
+  Grimodex の差分品質評価で canonical selector の Light suite を実行し、証跡を報告する。
+  AI behavior asset 変更後や明示された commit／PR 前の品質評価に使い、修正・レビュー・公開は担当しない。
 ---
 
 # Grimodex Impact Gate
 
-差分選択ロジックを再実装せず、repository の canonical command を実行する薄い gate として
-振る舞う。コード、テスト、fixture、baseline は編集しない。
+差分選択ロジックを再実装せず、canonical command で品質モデルと選択された Light suite を検証する。
+コード、テスト、fixture、baseline は編集しない。
 
-## Preflight
+## 評価範囲を決める
 
-1. `AGENTS.md`、`policies/quality/iron-laws.md`、`evals/impact-map.yaml`、
-   `evals/quality-manifest.yaml` を読む。
-2. `git status` で staged、unstaged、untracked の状態を確認する。
-3. `package.json` に `verify:quality`、`ci:local:quick`、`ci:local:verify` が実在することを確認する。
-4. PR／commit 間を評価する場合は base と head を実在確認する。比較範囲を確定できない
-   場合は推測せず、全 suite fallback または `[precheck]` として扱う。
+`git status` で既存差分を把握し、依頼の比較範囲を確認する。
+[検証の適用条件](../../../policies/quality/iron-laws.md#agent-validation) と、
+`evals/impact-map.yaml`／`evals/quality-manifest.yaml` の関連部分を読む。
+実行する command の定義は `package.json` で確認する。
 
-## Execute the canonical gates
+commit／PR を依頼していない調査・レビューだけの作業から本 gate や CI を自動起動しない。
+AI behavior asset の変更や明示された差分評価では、次の診断用経路を使える。
+commit の依頼だけを理由に本 gate を追加せず、通常の修正は適用条件に従って focused 検証を選ぶ。
+比較範囲が不明な場合は推測せず、selector の全 suite fallback または `[precheck]` とする。
 
-1. 品質モデルと selector 自体を先に検証する。
+## 品質モデルの検証
 
-   ```bash
-   pnpm verify:quality
-   ```
+```bash
+pnpm verify:quality
+```
 
-2. PR／releaseの証跡が依頼範囲に含まれ、CIが許可されている場合だけ、focused検証後のcleanな候補commitを対象に、
-   local CI wrapperから選択されたLight suiteを実行する。次のブロック全体が同じ条件のguard内にあり、
-   `candidate_base`／`candidate_head`は候補HEADの後に一度だけ解決し、Quickと直後のverifyへ同じ値を渡す。
-   commit-onlyまたはCI明示除外の作業ではこのブロックを実行せず、commit／PRが依頼されていない調査・レビューではcommitを作らず、
-   CIも開始せず、working treeの選択・実行は診断専用として扱う。
-   wrapperが内部で`pnpm eval:impact`を呼ぶため、差分選択ロジックを別経路で再実装しない。
+呼出元で同じ候補・環境・command の成功が確認済みなら再実行しない。
+`verify:quality` と Light suite は同一の検証範囲ではないので、片方の成功を他方の代わりにしない。
 
-   ```bash
-   # PR／releaseの証跡が依頼され、CIが許可された場合だけ実行する
-   candidate_base="$(git rev-parse 'origin/master^{commit}')"
-   candidate_head="$(git rev-parse 'HEAD^{commit}')"
-   pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
-   pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
-   ```
+## 作業ツリー・限定範囲の Light 評価
 
-3. 明示的な比較範囲が必要な場合は、上記のguard内で検証済みのrefを`candidate_base`／`candidate_head`へ一度だけ代入し、
-   以後は再解決・再代入しない。guard外でQuickまたはverifyを開始してはならない。実行途中で差分やHEADが変わったreceiptを成功証跡にしない。
+PR／release の候補証跡を作らない変更では、Quick を開始せず canonical selector を直接使う。
+選択だけの確認は `--run` を付けない。実行時は次を使う。
 
-   machine-readable evidenceの正本は`.artifacts/local-ci/quick.json`、選択suiteの詳細は
-   `.artifacts/local-ci/impact.json`とする。stdoutのbannerをJSONとして扱わない。
+```bash
+pnpm eval:impact -- --run
+```
 
-`evals/impact-map.yaml` の rule を手作業で再判定したり、選択 suite を減らしたりしない。
-selector が複数 rule の suite を合算し、未分類 path、空差分、取得不能な差分を安全側の
-全 suite fallback として扱う。untracked file も評価対象から除外しない。
+標準の差分収集は branch・staged・unstaged・untracked を含む。依頼がファイル集合を指定する場合だけ
+`--changed-file <path>` を各対象に指定し、対象外の既存差分を明記する。
+限定範囲の結果はその範囲の診断証拠であり、candidate 全体の Quick／Full receipt としない。
+選択済み suite を手作業で減らさず、空差分・取得不能・未分類の全 suite fallback も変更しない。
 
-## Interpret results
+## PR／release の候補証跡
 
-- 全ての selected Light suite が成功した場合だけ Light gate を成功とする。
-- receiptが`complete`で、requested／resolved base・headと現在candidateが一致する場合だけ
-  Quick gateを成功とする。`--from`、`--dry-run`、stale receiptは成功証跡ではない。
-- Heavy evaluation は実 connector、資格情報、課金、環境分離を必要とするため、通常は
-  `deferred` evidence としてコマンドと理由を報告する。deferred／skipped を passed としない。
-- 実行可能な runner 自体がない評価は `blocked` gap として必要作業を報告し、Heavy の
-  runnable command や成功へ読み替えない。
-- diff fallback が発生した場合は、原因と全 suite が選ばれたことを明示する。
-- immutable child／revisionを扱う差分では、復元・Decision・再読取・表示・receiptのIDが同一で、親`runId`だけで
-  再選択していないこと、操作対象外のDecisionが不変であることを確認する。bounded lookupはlimit後の一覧だけで
-  不存在と判定せず、mockでlimit・順序・cursorとN/N+1境界を再現する。
-- command が失敗した場合は最初の失敗を保持し、再試行で隠さない。失敗分類と該当 suite を
-  報告して停止する。
-- 本スキル内で production code、テスト、fixture、manifest、impact map を修正しない。
-  修正依頼は原因に応じて `debug-issue`、`test-feature`、`grimodex-author` へ渡す。
-- 本スキルは `review-code` の意味的監査や `refactor-cross-boundaries` の実行経路
-  impact matrix を置き換えない。
+PR／release の証跡が依頼範囲に含まれ、CI が許可されている場合だけ、focused 検証後の
+clean な候補 commit で次を実行する。commit-only や CI 明示除外では開始しない。
+事前に [GDX-TRACE-001](../../../policies/quality/iron-laws.md#GDX-TRACE-001) を読み、
+base／head を一度だけ解決して Quick と直後の verify に同じ値を渡す。
 
-## Report
+```bash
+candidate_base="$(git rev-parse 'origin/master^{commit}')"
+candidate_head="$(git rev-parse 'HEAD^{commit}')"
+pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
+pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
+```
 
-次を一つの結果として報告する。
+wrapper が Light suite を実行するため、この経路で `eval:impact -- --run` を別途重ねない。
+証跡は `.artifacts/local-ci/quick.json`、選択詳細は `.artifacts/local-ci/impact.json`。
+stdout の banner を JSON として扱わない。明示的な比較 ref を使う場合も同じ固定入力を守る。
 
-- 比較範囲と changed files
-- requested／resolved base・head SHA と Node／platform runtime
-- matched rule と fallback の有無
-- affected requirement ID
-- selected Light suite と各終了結果
-- Heavy evaluation の deferred command と理由
-- blocked evaluation の理由と runner 化に必要な作業
-- failure class、既知の gap、次に必要な担当 skill
+## 結果の扱い
 
-証跡のいずれかが欠ける場合は完了扱いにしない。
+selected Light suite がすべて成功した場合だけ Light gate の成功とする。
+Quick は complete receipt の requested／resolved base・head と現在候補が一致する場合だけ成功とし、
+partial `--from`、dry-run、stale receipt は受入れ証拠にしない。
+immutable child／revision の評価では
+[ID とページネーションの契約](../../../policies/quality/iron-laws.md#immutable-identity) も確認する。
+
+最初の失敗を保存し、失敗分類と suite を報告する。修正は原因に応じて `debug-issue`、
+`test-feature`、`grimodex-author` へ渡し、再試行で失敗を隠さない。
+Heavy は実行権限・資格情報・環境が揃って実行するまで `deferred`、runner がなければ `blocked`。
+どちらも passed に読み替えない。
+
+比較範囲、matched rule／fallback、requirement ID、各 Light 結果、Heavy の command と延期理由、
+blocked gap、failure class を報告する。PR 証跡では固定 base／head と runtime も含める。
+本 gate は `review-code` の意味的監査や `refactor-cross-boundaries` の影響マトリクスを置き換えない。

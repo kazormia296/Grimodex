@@ -48,6 +48,45 @@ function normalizeSection(section) {
   return section.replace(/\s+/g, " ").trim();
 }
 
+function sectionFromAnchor(markdown, anchor) {
+  const anchorPattern = new RegExp(
+    `<a\\s+id=["']${escapeRegExp(anchor)}["']\\s*><\\/a>`,
+  );
+  const match = markdown.match(anchorPattern);
+  assert.ok(match, `the stable policy anchor ${anchor} must exist`);
+  const following = markdown.slice(match.index + match[0].length).trimStart();
+  const heading = following.match(/^##[ \t]+[^\n]+/);
+  assert.ok(heading, `${anchor} must precede its canonical level-two section`);
+  return sectionFromHeading(following, heading[0]);
+}
+
+async function assertLocalMarkdownLink(sourcePath, targetPath, anchor) {
+  const source = await read(sourcePath);
+  const links = [...source.matchAll(/\[[^\]\n]+\]\(([^)\s]+)\)/g)];
+  const expectedPath = path.resolve(repoRoot, targetPath);
+  const link = links.find((match) => {
+    const [destination, fragment] = match[1].split("#");
+    return (
+      !/^[a-z]+:/i.test(destination) &&
+      path.resolve(repoRoot, path.dirname(sourcePath), destination) === expectedPath &&
+      fragment === anchor
+    );
+  });
+  assert.ok(
+    link,
+    `${sourcePath} must link to ${targetPath}${anchor ? `#${anchor}` : ""}`,
+  );
+  const target = await read(targetPath);
+  if (anchor) {
+    assert.match(
+      target,
+      new RegExp(`<a\\s+id=["']${escapeRegExp(anchor)}["']\\s*><\\/a>`),
+      `${targetPath} must expose the exact stable anchor ${anchor}`,
+    );
+  }
+  return source;
+}
+
 function commandBindings(section, command, label) {
   const lines =
     section.match(
@@ -527,14 +566,79 @@ test("repo routing points AI behavior authoring and diff evaluation to narrow sk
   assert.match(agents, /差分評価|impact gate|品質ゲート/);
 });
 
-test("agent operation contracts keep candidate evidence and bounded identity checks aligned", async () => {
+test("entrypoints and scoped skills resolve canonical policy anchors before applicable work", async () => {
+  const policyPath = "policies/quality/iron-laws.md";
+  const routes = new Map([
+    ["AGENTS.md", ["agent-validation", "GDX-PRECHECK-001", "GDX-TRACE-001", "immutable-identity"]],
+    [".agents/skills/debug-issue/SKILL.md", ["agent-validation", "GDX-PRECHECK-001", "GDX-TRACE-001"]],
+    [".agents/skills/implement-feature/SKILL.md", ["agent-validation", "GDX-PRECHECK-001", "GDX-TRACE-001", "immutable-identity"]],
+    [".agents/skills/review-code/SKILL.md", ["agent-validation", "GDX-PRECHECK-001", "GDX-TRACE-001", "immutable-identity"]],
+    [".agents/skills/refactor-cross-boundaries/SKILL.md", ["agent-validation", "GDX-PRECHECK-001", "GDX-TRACE-001", "immutable-identity"]],
+    [".agents/skills/test-feature/SKILL.md", ["agent-validation", "immutable-identity"]],
+    [".agents/skills/explore-codebase/SKILL.md", ["agent-validation"]],
+    [".agents/skills/grimodex-author/SKILL.md", ["agent-validation", "GDX-PRECHECK-001"]],
+    [".agents/skills/grimodex-impact-gate/SKILL.md", ["agent-validation", "GDX-TRACE-001", "immutable-identity"]],
+  ]);
+  for (const [sourcePath, anchors] of routes) {
+    for (const anchor of anchors) {
+      await assertLocalMarkdownLink(sourcePath, policyPath, anchor);
+    }
+  }
+
   const agents = await read("AGENTS.md");
+  assert.match(agents, /(?:該当|適用).*前に.*読む/);
+  for (const [scope, anchor] of [
+    [/検証|commit|CI/, "agent-validation"],
+    [/高リスク|セキュリティ|lifecycle/, "GDX-PRECHECK-001"],
+    [/証跡|PR|merge|release/, "GDX-TRACE-001"],
+    [/immutable|child|revision|不変ID/, "immutable-identity"],
+  ]) {
+    const route = agents.split("\n").find((line) => line.includes(`#${anchor}`));
+    assert.match(route, scope, `${anchor} must declare when it applies`);
+  }
+
+  const claude = await read("CLAUDE.md");
+  assert.match(claude, /^@AGENTS\.md$/m, "Claude must import the shared instruction entrypoint");
+  await assertLocalMarkdownLink("README.md", "AGENTS.md");
+  for (const skill of [
+    "add-electron-command", "bump-version", "debug-issue", "explore-codebase",
+    "implement-feature", "polish-motion", "review-code", "ship-branch", "test-feature",
+  ]) {
+    await assertLocalMarkdownLink(
+      `.claude/skills/${skill}/SKILL.md`,
+      `.agents/skills/${skill}/SKILL.md`,
+    );
+  }
+});
+
+test("validation scope preserves instruction gates and conditional CI without routine overtesting", async () => {
+  const policy = await read("policies/quality/iron-laws.md");
+  const validation = normalizeSection(sectionFromAnchor(policy, "agent-validation"));
+  assert.match(validation, /Investigation.*review only.*Read-only.*no Quick\/Full/i);
+  assert.match(validation, /Ordinary prose.*formatting.*diff.*link checks/i);
+  assert.match(validation, /Implementation or bug fix.*Focused checks.*affected boundaries/i);
+  assert.match(validation, /AI instructions.*skills.*policy.*contract tests.*grimodex-impact-gate.*Light/i);
+  assert.match(validation, /Commit only.*requested candidate commit.*no Quick.*merge-readiness/i);
+  assert.match(validation, /PR\/release evidence with CI allowed.*Clean candidate Quick.*immediate verify/i);
+  assert.match(validation, /Merge or release tag with CI allowed.*Full and verify.*preflight/i);
+  assert.match(validation, /Instruction and policy changes are behavior changes.*Markdown/i);
+  assert.match(validation, /successful command result.*same candidate, environment, and command.*rerun when those inputs change/i);
+  assert.match(validation, /all-suite fallback.*empty, unavailable, or unclassified diffs.*required acceptance receipt/i);
+
+  const agents = await read("AGENTS.md");
+  assert.match(agents, /承認済み.*可逆.*修正・検証.*再承認を求めない/s);
+  assert.match(agents, /調査・レビューだけ.*read-only/s);
+  assert.match(agents, /commit、push、merge、公開.*依頼範囲/s);
+});
+
+test("agent operation contracts keep candidate evidence and bounded identity checks aligned", async () => {
   const ironLaws = await read("policies/quality/iron-laws.md");
-  const debug = await read(".agents/skills/debug-issue/SKILL.md");
-  const implement = await read(".agents/skills/implement-feature/SKILL.md");
-  const impactGate = await read(".agents/skills/grimodex-impact-gate/SKILL.md");
-  const review = await read(".agents/skills/review-code/SKILL.md");
-  const testFeature = await read(".agents/skills/test-feature/SKILL.md");
+  const trace = normalizeSection(
+    sectionFromAnchor(ironLaws, "GDX-TRACE-001"),
+  );
+  const identity = normalizeSection(
+    sectionFromAnchor(ironLaws, "immutable-identity"),
+  );
   const matrix = await read(
     ".agents/skills/refactor-cross-boundaries/references/impact-matrix.md",
   );
@@ -554,62 +658,30 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     }
   };
 
-  assertOrder(agents, [
-    ["focused validation", /まずfocused検証を完了/],
-    ["candidate commit", /候補commitを作り/],
-    ["clean candidate", /cleanな候補HEAD/],
-    ["Quick", /Quickを実行/],
-    ["immediate verify", /直後のverify/],
+  assertOrder(trace, [
+    ["focused validation", /focused validation finishes first/],
+    ["candidate commit", /candidate commit is created/],
+    ["clean candidate", /candidate must be clean/],
+    ["Quick", /run local Quick/],
+    ["immediate verify", /Quick is immediately verified/],
   ]);
-  assert.match(agents, /commit／PRを依頼されていない調査・レビューではQuickの\s*ためだけにcommitを作らず/);
-  assert.match(agents, /commitを作らず、CIも開始しない/);
-  assert.match(
-    ironLaws,
-    /candidate commit.*candidate must be clean.*Quick is immediately verified.*same fixed base\/head/is,
-  );
-  assert.match(ironLaws, /Quick is immediately verified with the same fixed base\/head\s+values/is);
+  assert.match(trace, /Quick is immediately verified with the same fixed base\/head values/i);
+  assert.match(trace, /Commit-only or CI-excluded work.*without starting Quick.*does not claim merge\/release readiness/i);
+  assert.match(trace, /without a requested commit or PR.*does not create a commit or start PR-bound CI solely for Quick/i);
+  assert.match(trace, /Normal PR and branch pushes do not start hosted GitHub Actions runners/i);
+  assert.match(trace, /absence of hosted PR checks is not evidence of a passing gate/i);
+  assert.match(trace, /Windows NSIS final compilation.*separate manual Full CI.*tag-release obligation.*unavailable release-only check is never passed/i);
 
-  for (const [name, skill] of [
-    ["debug-issue", debug],
-    ["implement-feature", implement],
-  ]) {
-    const focusedPattern =
-      name === "implement-feature" ? /focused validation/ : /focused検証/;
-    assertOrder(skill, [
-      [`${name} focused validation`, focusedPattern],
-      [`${name} candidate commit`, /候補commit/],
-      [`${name} Quick`, /Quick/],
-      [`${name} verify`, /直後のverify|verifyを実行/],
-    ]);
-    assert.match(
-      skill,
-      /(?:commitが依頼されていない場合|ユーザーがcommit／PRを依頼していない場合)はQuickのためだけにcommitを作らず/,
-    );
+  for (const contract of [identity, matrix]) {
+    assert.match(contract, /immutable child.*revision|immutable.*child.*revision/i);
+    assert.match(contract, /親`runId`だけ.*再選択|parent.*runId.*reselect|reselect.*parent.*runId.*alone/is);
+    assert.match(contract, /limit.*順序.*cursor.*N\/N\+1|limit.*order.*cursor.*N\/N\+1/i);
+    assert.match(contract, /(?:操作対象外|対象外)Decision.*不変|non-target.*Decision.*unchanged/i);
   }
-  assert.match(debug, /依頼済みの範囲内の修正は再承認を求めず継続/);
-  assert.match(debug, /commitが依頼されている場合だけ/);
-  assert.match(
-    implement,
-    /commitが依頼範囲に含まれる場合はCI許可の有無にかかわらず候補commitを作成する/,
-  );
-  assert.match(
-    implement,
-    /CIが明示的に除外されたcommit-only作業ではQuickを実行せず/,
-  );
-  assert.match(
-    impactGate,
-    /PR／releaseの証跡が依頼範囲に含まれ.*CIが許可されている場合だけ.*次のブロック全体が同じ条件のguard内.*candidate_base.*candidate_head.*Quick.*verify/is,
-  );
-  assert.match(impactGate, /commit／PRが依頼されていない調査・レビューではcommitを作らず/);
-  assert.match(impactGate, /commitを作らず、\s*CIも開始せず/);
-  assert.match(impactGate, /guard外でQuickまたはverifyを開始してはならない/);
-
-  for (const skill of [review, testFeature, matrix]) {
-    assert.match(skill, /immutable child.*revision|immutable.*child.*revision/i);
-    assert.match(skill, /親`runId`だけ.*再選択|parent.*runId.*reselect/is);
-    assert.match(skill, /limit.*順序.*cursor.*N\/N\+1|limit.*order.*cursor.*N\/N\+1/i);
-    assert.match(skill, /(?:操作対象外|対象外)Decision.*不変|non-target.*Decision.*unchanged/i);
-  }
+  assert.match(identity, /restor.*Decision.*reread.*display.*receipt.*same.*(?:child|revision).*ID/i);
+  assert.match(identity, /(?:limit.*filter|filter.*limit|limit.*不存在|limit.*absence)/i);
+  assert.match(identity, /durable ID.*corresponding UI.*projection.*before editing/i);
+  assert.match(identity, /selector.*(?:ready|readiness)/i);
   assert.match(runbook, /durable ID.*corresponding UI\s*projection before editing/is);
   assert.match(runbook, /selector.*ready signal/);
   assert.match(runbook, /28 catalog entries as 10\/9\/9 shards/);
@@ -629,6 +701,10 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   assert.match(createBranch, /git worktree add -b/);
   assert.match(createBranch, /保存先とbranch名の衝突/);
   assert.match(createBranch, /明示された新worktreeでは元checkoutのdirty状態は停止条件にせず/);
+  assert.match(ship, /依頼が push のみ、PR 作成まで、マージまで.*依頼文から確定/);
+  assert.match(ship, /push のみでは.*PR／merge 用 Quick／Full.*開始せず.*remote HEAD 確認で完了/);
+  assert.match(ship, /PR 作成までなら.*Quick gate.*完了し.*merge 用 gate へ進まない/);
+  assert.match(ship, /auto-merge が有効.*push のみまたは PR 作成だけ.*push せず停止/);
   assert.match(ship, /candidate_base.*candidate_head.*Quick.*verify/is);
   assert.match(
     ship,
@@ -680,19 +756,12 @@ test("agent operation contracts keep candidate evidence and bounded identity che
 });
 
 test("high-risk work keeps threat models user-confirmed and candidate evidence reproducible", async () => {
-  const agents = await read("AGENTS.md");
   const policy = await read("policies/quality/iron-laws.md");
-  const agentsCiSection = normalizeSection(
-    sectionFromHeading(agents, "## ローカルCI gate"),
-  );
-  const agentsSection = normalizeSection(
-    sectionFromHeading(agents, "## 高リスク作業の運用規律"),
-  );
   const policySection = normalizeSection(
-    sectionFromHeading(policy, "## GDX-PRECHECK-001 — Stop on failed prechecks"),
+    sectionFromAnchor(policy, "GDX-PRECHECK-001"),
   );
   const traceSection = normalizeSection(
-    sectionFromHeading(policy, "## GDX-TRACE-001 — Preserve traceability and failure state"),
+    sectionFromAnchor(policy, "GDX-TRACE-001"),
   );
   const ship = await read(".agents/skills/ship-branch/SKILL.md");
   const shipCiRawSection = sectionFromHeading(
@@ -714,13 +783,8 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     (requirement) => requirement.id === "GDX-PRECHECK-001",
   );
 
-  function assertBothSections(label, pattern) {
-    assert.match(agentsSection, pattern, label + " is missing from AGENTS.md");
-    assert.match(
-      policySection,
-      pattern,
-      label + " is missing from GDX-PRECHECK-001",
-    );
+  function assertPolicyContract(label, pattern) {
+    assert.match(policySection, pattern, label + " is missing from GDX-PRECHECK-001");
   }
 
   for (const phrase of [
@@ -736,11 +800,9 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     /blocking precheck/i,
     /\[precheck\]/i,
   ]) {
-    assertBothSections("threat-model precheck contract", phrase);
+    assertPolicyContract("threat-model precheck contract", phrase);
   }
 
-  assert.match(agentsSection, /サブエージェントとレビュー担当.*提案/i);
-  assert.match(agentsSection, /脅威モデル.*無断.*固定.*変更/i);
   assert.match(
     policySection,
     /subagents and reviewers may propose.*not silently freeze or change/i,
@@ -757,17 +819,8 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     /critical candidate/i,
     /focused gates/i,
   ]) {
-    assertBothSections("candidate/reviewer contract", phrase);
+    assertPolicyContract("candidate/reviewer contract", phrase);
   }
-  assert.match(
-    agentsSection,
-    /実装担当.*独立.*受入れレビュー担当.*分離/i,
-  );
-  assert.match(agentsSection, /役割.*重複させない/i);
-  assert.match(agentsSection, /受入れレビュー担当.*候補.*編集しない/i);
-  assert.match(agentsSection, /focused gates.*freeze/i);
-  assert.match(agentsSection, /freeze.*編集せず/i);
-  assert.match(agentsSection, /候補.*再開.*receipt.*無効化/i);
   assert.match(policySection, /roles do not overlap/i);
   assert.match(policySection, /acceptance reviewer\(s\).*must not edit the candidate/i);
   assert.match(policySection, /focused gates.*candidate freezes/i);
@@ -789,14 +842,8 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     /diagnostic only/i,
     /clean Full-from-stage-1 \+ verify/i,
   ]) {
-    assertBothSections("focused preflight contract", phrase);
+    assertPolicyContract("focused preflight contract", phrase);
   }
-  assert.match(agentsSection, /例示.*examples/i);
-  assert.match(agentsSection, /一律要件.*blanket requirements/i);
-  assert.match(
-    agentsSection,
-    /該当しない host capability.*要求せず.*block条件にも使わない/i,
-  );
   assert.match(policySection, /examples, not blanket requirements/i);
   assert.match(policySection, /inapplicable host capability/i);
 
@@ -809,25 +856,16 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     /kill request.*error event.*rejected promise.*termination proof/i,
     /high.?effort review.*candidate-untouched independent acceptance.*P2\+/i,
   ]) {
-    assertBothSections("lifecycle-owner precheck contract", phrase);
+    assertPolicyContract("lifecycle-owner precheck contract", phrase);
   }
-  assert.match(
-    agentsSection,
-    /編集前に.*finite owner\/lifecycle matrix.*全ての.*entry\/start\/retry\/reentrant/i,
-  );
   assert.match(
     policySection,
     /before mutation.*every entry\/start\/retry\/reentrant path/i,
   );
   assert.match(
-    agentsSection,
-    /any fixed capacity\/quota threshold.*percentage.*inode.*numeric.*host-specific cache deletion list.*deletion automation/i,
-  );
-  assert.match(
     policySection,
     /any fixed capacity\/quota threshold.*percentage.*inode.*numeric.*host-specific cache deletion list.*deletion automation/i,
   );
-  assert.match(agentsSection, /thresholds.*risk\/workload\/filesystem state.*hardcode/i);
   assert.match(policySection, /thresholds.*risk, workload, and filesystem state.*hardcoding/i);
   assert.match(
     shipCiSection,
@@ -842,9 +880,8 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     /diagnostic\/P3 debt/i,
     /critical candidate/i,
   ]) {
-    assertBothSections("runtime/debt contract", phrase);
+    assertPolicyContract("runtime/debt contract", phrase);
   }
-  assert.match(agentsSection, /変更したパスだけから環境または製品の状態を推定しない/i);
   assert.match(policySection, /Do not infer environment or product status from touched paths/i);
 
   for (const phrase of [
@@ -853,13 +890,8 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     /effort.*high/i,
     /Fast/i,
   ]) {
-    assertBothSections("external-review model contract", phrase);
+    assertPolicyContract("external-review model contract", phrase);
   }
-  assert.match(agentsSection, /Claude review/i);
-  assert.match(agentsSection, /外部 review.*作業.*開始時 precheck.*固定/i);
-  assert.match(agentsSection, /requested\/effective model/i);
-  assert.match(agentsSection, /silently substitute/i);
-  assert.match(agentsSection, /すべてのリポジトリやログを送る包括許可にはしない/i);
   assert.match(policySection, /external Claude review.*start-of-work precheck/i);
   assert.match(policySection, /requested and effective model/i);
   assert.match(policySection, /never silently substitute/i);
@@ -920,7 +952,7 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     approvedMergeBase > fetchBeforeApproval,
     "merge precheck must fetch before base approval/classification",
   );
-  for (const section of [agentsCiSection, policySection, traceSection]) {
+  for (const section of [policySection, traceSection]) {
     assert.match(
       section,
       /candidate(?:[_ ]base).*(?:candidate(?:[_ ]head)|and head).*(?:once|一度だけ).*Full.*(?:every verify|全verify)/i,
@@ -932,9 +964,8 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
       "one approved merge base must be recorded",
     );
   }
-  assert.match(agentsCiSection, /first parent.*<merge-sha>\^1.*approved_merge_base/i);
   assert.match(policySection, /first parent.*<merge-sha>\^1.*approved.*merge-base/i);
-  for (const section of [agentsCiSection, policySection, traceSection, shipMergeSection]) {
+  for (const section of [policySection, traceSection, shipMergeSection]) {
     assert.match(
       section,
       /non.?squash.*before merge.*method.?specific.*actual.?base.*post.?merge.*defined.*approved.*stop/i,
@@ -1014,6 +1045,18 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     trace.implementedBy.includes("AGENTS.md"),
     "AGENTS.md must be traced under GDX-TRACE-001",
   );
+  for (const entrypoint of ["CLAUDE.md", "GLOBAL_CLAUDE.md"]) {
+    assert.ok(precheck.implementedBy.includes(entrypoint), entrypoint);
+    assert.ok(trace.implementedBy.includes(entrypoint), entrypoint);
+  }
+  for (const skill of [
+    "add-electron-command", "bump-version", "debug-issue", "explore-codebase",
+    "implement-feature", "polish-motion", "review-code", "ship-branch", "test-feature",
+    "update-licenses",
+  ]) {
+    const adapter = `.claude/skills/${skill}/SKILL.md`;
+    assert.ok(trace.implementedBy.includes(adapter), `${adapter} must preserve traceability`);
+  }
   assert.ok(
     trace.implementedBy.includes(".agents/skills/ship-branch/SKILL.md"),
     "ship-branch must be traced under GDX-TRACE-001",
@@ -2122,7 +2165,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   }
 });
 
-test("new skills use current frontmatter and call the canonical commands", async () => {
+test("AI authoring delegates once to the conditional canonical quality gate", async () => {
   const author = await read(".agents/skills/grimodex-author/SKILL.md");
   const impact = await read(".agents/skills/grimodex-impact-gate/SKILL.md");
 
@@ -2136,11 +2179,46 @@ test("new skills use current frontmatter and call the canonical commands", async
   ]);
   assert.match(author, /policies\/quality\/iron-laws\.md/);
   assert.match(author, /evals\/quality-manifest\.yaml/);
-  assert.match(author, /pnpm verify:quality/);
-  assert.match(author, /grimodex-impact-gate/);
-  assert.match(impact, /pnpm ci:local:quick/);
-  assert.match(impact, /pnpm ci:local:verify/);
+  await assertLocalMarkdownLink(
+    ".agents/skills/grimodex-author/SKILL.md",
+    ".agents/skills/grimodex-impact-gate/SKILL.md",
+  );
+  assert.match(author, /grimodex-impact-gate.*verify:quality.*Light.*まとめて/is);
+  assert.match(author, /成功済み command.*重ねて実行しない/);
+  const authorCommands = [...author.matchAll(/```(?:bash|sh)\n([\s\S]*?)```/g)]
+    .map((match) => match[1]).join("\n");
+  assert.doesNotMatch(authorCommands, /pnpm (?:verify:quality|eval:impact|ci:local:quick)/);
+  assert.match(impact, /commit／PR.*依頼していない調査・レビュー.*gate.*CI.*自動起動しない/);
+  assert.match(impact, /pnpm verify:quality/);
+  assert.match(impact, /verify:quality.*Light suite.*同一の検証範囲ではない/);
+  assert.match(impact, /成功が確認済みなら再実行しない/);
+
+  const diagnostic = normalizeSection(
+    sectionFromHeading(impact, "## 作業ツリー・限定範囲の Light 評価"),
+  );
+  assert.match(diagnostic, /候補証跡を作らない変更.*Quick.*開始せず/);
+  assert.match(diagnostic, /pnpm eval:impact -- --run/);
+  assert.match(diagnostic, /branch.*staged.*unstaged.*untracked/);
+  assert.match(diagnostic, /ファイル集合を指定する場合だけ.*--changed-file.*対象外の既存差分/);
+  assert.match(diagnostic, /限定範囲.*診断証拠.*candidate 全体.*Quick／Full receipt.*しない/);
+  assert.match(diagnostic, /suite.*減らさず.*全 suite fallback.*変更しない/);
+
+  const candidateRaw = sectionFromHeading(impact, "## PR／release の候補証跡");
+  const candidate = normalizeSection(candidateRaw);
+  assert.match(candidate, /PR／release の証跡が依頼範囲に含まれ.*CI が許可されている場合だけ.*focused 検証.*clean な候補 commit/);
+  assert.match(candidate, /commit-only.*CI 明示除外.*開始しない/);
+  assert.match(candidate, /base／head.*一度だけ解決.*Quick.*直後.*verify.*同じ値/);
+  assert.match(candidate, /wrapper.*Light suite.*eval:impact -- --run.*別途重ねない/);
+  const quick = commandBindings(candidateRaw, "pnpm ci:local:quick", "Quick");
+  const verify = commandBindings(candidateRaw, "pnpm ci:local:verify -- quick", "Quick verify");
+  assert.deepEqual(quick, [{ base: '"$candidate_base"', head: '"$candidate_head"' }]);
+  assert.deepEqual(verify, quick);
+  assert.deepEqual(commandBindings(impact, "pnpm ci:local:quick", "all Quick"), quick);
+  assert.deepEqual(commandBindings(impact, "pnpm ci:local:verify -- quick", "all Quick verify"), verify);
+  assert.ok(candidateRaw.indexOf("pnpm ci:local:quick") < candidateRaw.indexOf("pnpm ci:local:verify -- quick"));
   assert.match(impact, /deferred/i);
+  assert.match(impact, /blocked/i);
+  assert.match(impact, /どちらも passed に読み替えない/);
 });
 
 test("adversarial review keeps execution controls explicit and findings evidence-backed", async () => {
@@ -2291,7 +2369,7 @@ test("release CI failures route through a no-bump targeted debug skill", async (
   assert.match(agents, /release CI|release workflow/i);
   assert.match(agents, /debug-release-ci/);
   assert.match(agents, /一般.*CI.*debug-issue/);
-  assert.match(agents, /再実行.*目的.*patch version.*上げない/is);
+  assert.match(releaseDebug, /version.*(?:変更しない|増やさず|上げない)/is);
 
   assert.match(releaseDebug, /run ID/);
   assert.match(releaseDebug, /head SHA/i);
@@ -2356,7 +2434,6 @@ test("public copy follows the canonical style guide and version bumps stop at a 
 
   assert.match(agents, /write-grimodex-copy/);
   assert.match(agents, /リリースノート|告知文|広報文/);
-  assert.match(agents, /日英リリースノート/);
   assert.doesNotMatch(agents, /「日英版」/);
   assert.match(bump, /write-grimodex-copy/);
   assert.match(bump, /RELEASE_NOTES\/v<新バージョン>\.ja\.md/);

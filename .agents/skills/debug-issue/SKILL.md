@@ -1,39 +1,34 @@
 ---
 name: debug-issue
 description: >
-  バグを調査・修正する。再現→原因特定→修正→検証の順で進める。
-  Use when: 「デバッグして」「修正して」「エラーが出る」「動かない」
-  と言われたとき。一般のPR／master CI、ランタイムエラー、型エラーの修正に使う。
-  Electron release workflow、tag build、署名、公証、publishの失敗はdebug-release-ciへ渡す。
+  Grimodex の不具合、ランタイム／型エラー、通常の PR／master CI 失敗を
+  診断・修正する。Electron release workflow や packaging の失敗は debug-release-ci を使う。
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, MultiEdit
 ---
 
-「$1」を修正してください。
+# Debug Issue
 
-0. Electron release workflow、tag build、署名、公証、installer migration、artifact publishの失敗なら、versionを変更せず`/debug-release-ci`へ渡す
-1. エラーメッセージ・再現手順を確認する
-2. 関連コードを探索し、根本原因を特定する
-   - Electron IPC関連なら renderer / preload / main / N-API の各境界を確認
-3. 依頼済みの範囲内の修正は再承認を求めず継続する。範囲を広げる、不可逆操作を含める、または
-   既存の明示確認要件に触れる場合だけ、その確認を得てから実装する
-4. 修正を実装する
-5. 既存テストが通過することを確認する
-6. 再発防止のためのテストを追加する
-7. `pnpm test` + `pnpm test:electron --run` + 対象 Rust crate の `cargo test` で確認
-8. focused検証後、commitが依頼範囲に含まれる場合はCI許可の有無にかかわらずcleanな候補commitを作る。
-   PR／releaseの証跡が依頼範囲に含まれ、CIが許可されている場合だけ、候補commit後に
-   `candidate_base`／`candidate_head`を一度だけ解決し、同じ値でQuickと直後のverifyを実行する。
-   commit-onlyまたはCI明示除外の作業ではQuickを開始せず候補commitを保持し、merge／release readinessを主張しない。
-   失敗、blocked、partial、dry-runを成功扱いせず、原因を解消してcompleteな証跡になるまでPRへ進まない。
-   commitが依頼されていない場合はQuickのためだけにcommitを作らず、CIも開始せず、working-treeの評価は診断専用とする。
+観測された失敗の原因を、再現条件とコード上の根拠で特定し、依頼された範囲で修正する。
+調査だけの依頼では編集せず、原因、影響、修正方針を報告する。
 
-   ```bash
-   candidate_base="$(git rev-parse 'origin/master^{commit}')"
-   candidate_head="$(git rev-parse 'HEAD^{commit}')"
-   pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
-   pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
-   ```
+## 境界と修正範囲
 
-9. commitが依頼されている場合だけ、検証済みの候補commitを最終commitとして保持する
+- Electron IPC に関わる場合は renderer／preload／main／N-API のうち、失敗が通る境界を追う。
+  複数境界の既存契約を協調変更する部分には
+  [refactor-cross-boundaries](../refactor-cross-boundaries/SKILL.md) の影響マトリクスを使う。
+- Electron release workflow、tag build、署名、公証、installer migration、artifact publish の
+  失敗は、version を変えず [debug-release-ci](../debug-release-ci/SKILL.md) を使う。
+- 原因未確定の runtime failure は環境や製品へ帰属させず、失敗時の証拠と未確認事項を残す。
+  高リスクな修正では編集前に
+  [GDX-PRECHECK-001](../../../policies/quality/iron-laws.md#GDX-PRECHECK-001) を適用する。
 
-**推測で修正しない。原因を特定してから修正すること。**
+## 検証と完了
+
+修正前に失敗条件を固定し、修正後に同じ条件で期待する振る舞いを確認する。回帰テストは
+実際の不具合を検出できる場合に追加し、実装に合わせて既存の期待値を弱めない。
+レイアウトや幾何の検証には実ブラウザを使う。happy-dom は flex／grid の実寸を計算しない。
+
+変更範囲とリスクに比例した focused validation を選ぶ。commit、Quick／Full、証跡の条件は
+[検証と公開範囲](../../../policies/quality/iron-laws.md#agent-validation)、高リスク候補の独立受入れと
+freeze は [GDX-TRACE-001](../../../policies/quality/iron-laws.md#GDX-TRACE-001) に従う。
+原因、変更内容、再現条件の検証結果、残る制約を報告する。

@@ -1,12 +1,9 @@
 ---
 name: rerun-sandbox-eperm
 description: >
-  sandbox 内で pnpm test／Vitest を起動した際に、tsx／Vite の bootstrap が IPC pipe、
-  socket、または listen の作成で EPERM になった場合だけ、最初の失敗を保存し、同一の
-  validation command を sandbox 外で一度だけ再実行して環境制約か実際のテスト失敗かを
-  判定する。「tsx の IPC pipe 作成が EPERM」「listen EPERM」「sandbox 外で同じテストを
-  再実行」といった状況で使用する。一般的な EPERM、product code の権限エラー、破壊的・
-  副作用を伴う command の再試行には使用しない。
+  pnpm test／Vitest の tsx／Vite bootstrap が IPC pipe、socket、listen の作成で
+  EPERM になった場合、証拠を保持して同一 command を sandbox 外で一度だけ再実行する。
+  product code の権限エラーや副作用を伴う command の再試行には使わない。
 ---
 
 # Rerun Sandbox EPERM

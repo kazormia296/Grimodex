@@ -4709,6 +4709,8 @@ test("AI workflow authorities require local Quick and complete Full evidence", a
     bumpVersion,
     implementFeature,
     debugIssue,
+    policy,
+    packageSource,
   ] = await Promise.all([
     read("AGENTS.md"),
     read(".agents/skills/grimodex-impact-gate/SKILL.md"),
@@ -4716,22 +4718,42 @@ test("AI workflow authorities require local Quick and complete Full evidence", a
     read(".agents/skills/bump-version/SKILL.md"),
     read(".agents/skills/implement-feature/SKILL.md"),
     read(".agents/skills/debug-issue/SKILL.md"),
+    read("policies/quality/iron-laws.md"),
+    read("package.json"),
   ]);
 
-  for (const command of [
-    "pnpm ci:local:quick",
-    "pnpm ci:local:full",
-    "pnpm ci:local:list",
-    "pnpm ci:local:verify",
+  const packageJson = JSON.parse(packageSource);
+  for (const [script, argument] of [
+    ["ci:local:quick", "quick"],
+    ["ci:local:full", "full"],
+    ["ci:local:list", "--list"],
+    ["ci:local:verify", "--verify"],
   ]) {
-    assert.match(agents, new RegExp(command.replaceAll(":", "\\:")));
+    assert.equal(packageJson.scripts[script], `node scripts/local-ci.mjs ${argument}`);
+  }
+  for (const [sourcePath, source] of [
+    ["AGENTS.md", agents],
+    [".agents/skills/implement-feature/SKILL.md", implementFeature],
+    [".agents/skills/debug-issue/SKILL.md", debugIssue],
+  ]) {
+    for (const anchor of ["agent-validation", "GDX-TRACE-001"]) {
+      const destinations = [...source.matchAll(/\[[^\]\n]+\]\(([^)\s]+)\)/g)]
+        .map((match) => match[1].split("#"));
+      assert.ok(destinations.some(([target, fragment]) => (
+        path.resolve(repoRoot, path.dirname(sourcePath), target) ===
+          path.join(repoRoot, "policies/quality/iron-laws.md") &&
+        fragment === anchor
+      )), `${sourcePath} must route CI scope to the canonical ${anchor} section`);
+      assert.ok(policy.includes(`<a id="${anchor}"></a>`));
+    }
   }
   assert.match(impactGate, /pnpm ci:local:quick/);
+  assert.match(impactGate, /pnpm ci:local:verify -- quick/);
   assert.match(shipBranch, /pnpm ci:local:full/);
   assert.match(shipBranch, /pnpm ci:local:verify/);
   assert.match(shipBranch, /--from/);
   assert.match(bumpVersion, /pnpm ci:local:full/);
   assert.match(bumpVersion, /release commit/);
-  assert.match(implementFeature, /pnpm ci:local:quick/);
-  assert.match(debugIssue, /pnpm ci:local:quick/);
+  assert.match(policy, /clean candidate run local Quick.*immediately verified/s);
+  assert.match(policy, /Partial `--from` runs.*never\s+converted into merge or release passes/s);
 });
