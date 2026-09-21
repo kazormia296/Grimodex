@@ -78,6 +78,21 @@ export declare class Backend {
    */
   getNarrativeMaintenanceWorkspaceBinding(): string | null
   /**
+   * Main-only, delivery-independent descriptor recovery preflight. This
+   * is intentionally callable before the main delivery ledger is touched:
+   * an existing recovery root must remain actionable even when all normal
+   * delivery records are retained at capacity.
+   */
+  reconcileNarrativeMaintenanceRecovery(): Promise<string>
+  /**
+   * Main-only ACK for the replayable descriptor recovery receipt.  The
+   * descriptor and its durable responsibility were already resolved before
+   * this call; ACK only retires the process-local notification so a
+   * Freshness preflight cannot consume it before the main scheduler has
+   * observed the exact recovered binding.
+   */
+  ackNarrativeMaintenanceRecovery(descriptorId: string): string
+  /**
    * Configure the one-shot, main-only product-journey seam. The payload is
    * parsed into the shared Rust schema and validated again there; this
    * method is intentionally not present in the renderer IPC router.
@@ -141,7 +156,16 @@ export declare class Backend {
    * successful drain.
    */
   runNarrativeMaintenanceCycle(payload: any): Promise<string>
+  /**
+   * ACK only the Native delivery record after main has applied the
+   * structurally validated terminal result.  This retires transport state;
+   * it does not settle an unfinished Run or recovery descriptor.
+   */
   ackNarrativeMaintenanceDelivery(sequence: number): Promise<string>
+  /**
+   * Resolve a lost admission reply without allocating another delivery
+   * record.  Main may fence only the current H+1 sequence.
+   */
   resolveNarrativeMaintenanceDelivery(sequence: number): Promise<string>
   /**
    * Persist a scheduler delivery failure before Electron drops its
@@ -290,12 +314,18 @@ export declare class Backend {
    */
   openWorkspace(path: string): Promise<string>
   /**
-   * Main-only strict lifecycle snapshot. The payload contains only an opaque
-   * binding token, a monotonic revision, an allowlisted status, and an
-   * activation marker; it never contains workspace paths or native IDs.
+   * Main-only, strict lifecycle snapshot. This deliberately does not call
+   * `active_database`: recovery-only and transition states must remain
+   * observable while no authority is published.
    */
   getWorkspaceLifecycleView(): Promise<string>
-  /** Main-only idempotent lifecycle shutdown; publishes Closed only on proof. */
+  /**
+   * Request the idempotent Native lifecycle shutdown and publish `Closed`
+   * only after every admitted Open/Restore worker has returned.  The core
+   * still refuses the terminal transition while delivery records,
+   * descriptors, or maintenance permits remain unresolved, so a timeout
+   * or an interrupted worker cannot be mistaken for terminal proof.
+   */
   shutdownWorkspaceLifecycle(): Promise<string>
   /**
    * 既存 workspace 判定 (commands/workspace.rs の同名コマンドと同一実装)。
