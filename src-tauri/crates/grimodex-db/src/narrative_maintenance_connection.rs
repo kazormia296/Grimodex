@@ -952,7 +952,8 @@ impl Database {
     {
         check_participant(participant)?;
         config.participant = Some(participant.clone());
-        let conn = self.lock_conn()?;
+        let mut check_acquisition = || check_participant(participant);
+        let conn = self.lock_conn_with_check(Some(&mut check_acquisition))?;
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             with_narrative_maintenance_connection_scope_with_latch(
                 &conn,
@@ -1228,6 +1229,127 @@ mod tests {
         .expect("ready workspace");
         let participant = core.begin_workspace_participant().expect("participant");
         (core, participant)
+    }
+
+    #[test]
+    fn participant_sql_scope_cancels_while_queued_for_connection() {
+        let db = Arc::new(test_db());
+        let (core, participant) = test_participant();
+        let body_ran = Arc::new(AtomicBool::new(false));
+        let held = db
+            .conn
+            .lock()
+            .expect("hold connection before worker starts");
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_db = db.clone();
+        let worker_body_ran = body_ran.clone();
+        let worker = thread::spawn(move || {
+            let result = worker_db.with_participant_sql_scope(&participant, |_| {
+                worker_body_ran.store(true, Ordering::Release);
+                Ok(())
+            });
+            drop(participant);
+            let _ = done_tx.send(result);
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while db.foreground_connection_waiter_count() == 0 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        let queued = db.foreground_connection_waiter_count() == 1;
+        let shutdown = core.request_shutdown();
+        let result_while_held = done_rx.recv_timeout(Duration::from_secs(2));
+        let waiters_while_held = db.foreground_connection_waiter_count();
+        let participants_while_held = core.workspace_participant_count();
+        let reusable_while_held = db.connection_reusable();
+
+        // Release before assertions/join so the old blocking acquisition
+        // fails within the timeout instead of stranding the worker.
+        drop(held);
+        worker
+            .join()
+            .expect("queued worker joined after fallback release");
+        assert!(queued, "worker must enter the real foreground wait path");
+        shutdown.expect("shutdown requested while connection remained held");
+        let error = result_while_held
+            .expect("worker must finish before the held connection is released")
+            .expect_err("queued participant must be cancelled");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(!body_ran.load(Ordering::Acquire));
+        assert_eq!(waiters_while_held, 0);
+        assert_eq!(participants_while_held.expect("participant count"), 0);
+        assert!(reusable_while_held);
+        core.close()
+            .expect("queued participant released before shutdown completion");
+    }
+
+    #[test]
+    fn participant_connection_wait_cancels_behind_finalization_reservation() {
+        let db = Arc::new(test_db());
+        let (core, participant) = test_participant();
+        let body_ran = Arc::new(AtomicBool::new(false));
+        let reservation = db
+            .try_reserve_maintenance_finalization()
+            .expect("reserve finalization before participant acquisition");
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_db = db.clone();
+        let worker_body_ran = body_ran.clone();
+        let worker = thread::spawn(move || {
+            let result = {
+                let mut checks = 0;
+                let mut check = || {
+                    checks += 1;
+                    if checks == 3 {
+                        // Entry and the first loop check precede observing
+                        // the reservation; the third proves it waited.
+                        let _ = waiting_tx.send(());
+                    }
+                    check_participant(&participant)
+                };
+                worker_db
+                    .lock_conn_with_check(Some(&mut check))
+                    .map(|_conn| {
+                        worker_body_ran.store(true, Ordering::Release);
+                    })
+            };
+            drop(participant);
+            let _ = done_tx.send(result);
+        });
+
+        let reached_wait_loop = waiting_rx.recv_timeout(Duration::from_secs(2));
+        let waiters_at_reservation = db.foreground_connection_waiter_count();
+        let shutdown = core.request_shutdown();
+        let result_while_reserved = done_rx.recv_timeout(Duration::from_secs(2));
+        let waiters_while_reserved = db.foreground_connection_waiter_count();
+        let participants_while_reserved = core.workspace_participant_count();
+        let reusable_while_reserved = db.connection_reusable();
+
+        // A regression that ignores cancellation must still be able to
+        // acquire and return after the bounded failure observation.
+        drop(reservation);
+        worker
+            .join()
+            .expect("reserved worker joined after fallback release");
+        reached_wait_loop.expect("worker reached reserved foreground loop");
+        shutdown.expect("shutdown requested during finalization reservation");
+        let error = result_while_reserved
+            .expect("worker must finish while finalization remains reserved")
+            .expect_err("reserved participant must be cancelled");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(!body_ran.load(Ordering::Acquire));
+        assert_eq!(waiters_at_reservation, 0);
+        assert_eq!(waiters_while_reserved, 0);
+        assert_eq!(participants_while_reserved.expect("participant count"), 0);
+        assert!(reusable_while_reserved);
+        core.close()
+            .expect("reserved participant released before shutdown completion");
     }
 
     #[test]

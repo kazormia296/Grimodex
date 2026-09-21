@@ -380,7 +380,20 @@ impl Database {
     }
 
     pub(crate) fn lock_conn(&self) -> anyhow::Result<MutexGuard<'_, Connection>> {
+        self.lock_conn_with_check(None)
+    }
+
+    /// Keep the existing priority/handoff rules while an admitted lifecycle
+    /// owner can stop before it acquires the SQLite mutex. Ordinary callers
+    /// keep their blocking acquisition rather than entering a polling loop.
+    pub(crate) fn lock_conn_with_check(
+        &self,
+        mut check: Option<&mut dyn FnMut() -> anyhow::Result<()>>,
+    ) -> anyhow::Result<MutexGuard<'_, Connection>> {
         self.ensure_connection_reusable()?;
+        if let Some(check) = check.as_deref_mut() {
+            check()?;
+        }
         if Self::maintenance_no_wait_active() {
             if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
                 anyhow::bail!(
@@ -399,6 +412,9 @@ impl Database {
                 }
             };
             self.ensure_connection_reusable()?;
+            if let Some(check) = check.as_deref_mut() {
+                check()?;
+            }
             if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
                 drop(conn);
                 anyhow::bail!(
@@ -409,6 +425,9 @@ impl Database {
         }
         if !Self::background_connection_priority_active() {
             loop {
+                if let Some(check) = check.as_deref_mut() {
+                    check()?;
+                }
                 // A final transaction reserves the handoff before acquiring
                 // its process-local grant. Do not announce a foreground
                 // waiter into that narrow window.
@@ -428,8 +447,27 @@ impl Database {
                     std::thread::sleep(Duration::from_millis(1));
                     continue;
                 }
-                let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+                let conn = if let Some(check) = check.as_deref_mut() {
+                    loop {
+                        check()?;
+                        self.ensure_connection_reusable()?;
+                        match self.conn.try_lock() {
+                            Ok(conn) => break conn,
+                            Err(TryLockError::WouldBlock) => {
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                            Err(TryLockError::Poisoned(error)) => {
+                                return Err(anyhow::anyhow!("{error}"));
+                            }
+                        }
+                    }
+                } else {
+                    self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?
+                };
                 self.ensure_connection_reusable()?;
+                if let Some(check) = check.as_deref_mut() {
+                    check()?;
+                }
                 // Keep the waiter published until this caller owns the
                 // connection. A background contender then observes either a
                 // waiting foreground caller or the foreground-owned mutex.
@@ -439,6 +477,9 @@ impl Database {
         }
 
         loop {
+            if let Some(check) = check.as_deref_mut() {
+                check()?;
+            }
             if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
                 std::thread::sleep(Duration::from_millis(1));
                 continue;
@@ -448,6 +489,9 @@ impl Database {
                     if let Err(error) = self.ensure_connection_reusable() {
                         drop(conn);
                         return Err(error);
+                    }
+                    if let Some(check) = check.as_deref_mut() {
+                        check()?;
                     }
                     // Close the observation-to-lock race. A foreground caller
                     // that announced itself while try_lock succeeded gets the

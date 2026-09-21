@@ -91,26 +91,42 @@ These changes do not promise hard 30-second termination of synchronous
 inference or an OS stall. Independent acceptance remains candidate-bound in
 the external ledger.
 
+The second candidate, `2de4ff4bf45ef71ebec0dd2c444a604d2696068d`, received
+Sol Approve and Luna Max Request changes for one remaining P2: a stopped
+participant could remain blocked in connection mutex acquisition before the
+SQL progress hook existed. The r3 correction adds cancellation checks to that
+existing acquisition path while preserving ordinary blocking callers,
+foreground handoff, finalization reservations, and connection health checks.
+A held-mutex regression requires the queued participant to cancel and drain
+before the original holder releases the connection.
+
+The rebuilt second candidate passed the selected `editor-persistence`,
+`editor-pending-project-switch`, and `chronicle-extract-review-apply-reopen`
+journeys, with all three per-case clean passes. This is diagnostic evidence
+for the wrapped preemption correction, not a complete catalog or final
+candidate acceptance. The final ledger records the rebuilt r3 results.
+
 After the final clean commit, `.artifacts/c5-final-candidate.json` and the
 PR #601 body record the exact base/head/tree, reviewer results, focused
 evidence, and Quick/Full plus immediate verification receipts. Earlier reviews
 and receipts do not establish acceptance of the final candidate.
 
-## Current r2 pre-freeze focused evidence (2026-09-21)
+## Focused evidence before final freeze (2026-09-21)
 
-- Chronicle focused suite — 56 tests passed; `.artifacts/pr601-chronicle-tests-r2.log`.
-- Maintenance connection focused suite — 22 tests passed; `.artifacts/pr601-connection-tests-r2.log`.
+- Chronicle focused suite — 56 tests passed; `.artifacts/pr601-chronicle-tests-r3.log`.
+- Maintenance connection focused suite — 24 tests passed, including queued mutex and reserved-handoff cancellation; `.artifacts/pr601-connection-tests-r3.log`.
 - Shared semantic suite — 275 tests passed; `.artifacts/pr601-semantic-tests.log`.
-- Native full library suite — 155 tests passed, including the wrapped Verify preemption regression; `.artifacts/pr601-napi-tests-r2.log`. The regression failed before classifier reuse in `.artifacts/pr601-wrapped-preemption-before.log`.
+- Native full library suite — 155 tests passed, including the wrapped Verify preemption regression; `.artifacts/pr601-napi-tests-r3.log`. The regression failed before classifier reuse in `.artifacts/pr601-wrapped-preemption-before.log`.
 - `cargo check --manifest-path electron/native/grimodex-node/Cargo.toml` — passed; `.artifacts/pr601-napi-check-r2.log`.
 - Maintenance runtime focused suite — 35 tests passed; `.artifacts/pr601-maintenance-runtime-tests-r2.log`.
 - `pnpm test:narrative:lifecycle` — 38 shared-core tests, one Freshness lifecycle test, the isolated harness, 9 Native adapter tests, and 3 Native Open/Restore tests passed; `.artifacts/pr601-lifecycle-tests-r2.log`.
 
-The Native full suite compiles the final classifier correction. The earlier
-DB and semantic results cover unchanged implementation; the only later shared
-change exports the existing classifier for Native reuse. The lifecycle gate
-used the default Cargo profiles; the other r2 Rust commands used two build
-jobs and debug-free dev/test profiles.
+The r3 Native full suite compiles the final acquisition and classifier
+corrections. The r2 maintenance-runtime, semantic, and lifecycle results remain
+focused evidence for unchanged callers; candidate-wide coverage is recorded
+by the final canonical Full. The lifecycle gate used the default Cargo
+profiles; the other focused Rust commands used two build jobs and debug-free
+dev/test profiles.
 
 These focused results are from the corrective working tree and do not
 establish final acceptance. Their exact commands and candidate binding are
