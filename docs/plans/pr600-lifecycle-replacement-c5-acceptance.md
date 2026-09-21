@@ -321,6 +321,20 @@ work must not be replayed merely to recover that obligation. Candidate-bound
 regression, review, and full validation evidence for this correction belongs
 in the parent ledger; the failed Full remains retained separately.
 
+A subsequent parent Full on `0a4a2a30af7462a8697add7467401e6d2e5f28e6`
+(run `b30e2718-d809-4503-95d5-40e84bdd28d4`) failed before the chat workspace
+switch: the open menu and persisted recent-workspace list both lacked the
+prepared second workspace. The cold fixture launched Native workspace setup
+after bridge readiness, while renderer initialization could still read and
+save an intermediate settings snapshot. Fixture setup now waits for the
+existing first-run Welcome DOM (also behind the EULA modal), which proves
+that initialization selected Welcome from its empty recent-workspace list,
+before performing Native setup. This
+orders fixture preparation without changing product settings behavior or
+weakening the switch Journey. The exact stale writer in the retained failed
+run was not recorded; the delayed-initialization regression and fresh Full
+remain required evidence for the correction.
+
 This parent merge does not ratify numeric supported capacity, activate Graph
 query/product dispatch or later NIR-1 lanes, certify the complete T01–T36
 matrix, or replace the release-only Windows installer gate.

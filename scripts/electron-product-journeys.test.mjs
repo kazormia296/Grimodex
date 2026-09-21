@@ -3718,7 +3718,7 @@ test("receipt is reverified after bridge readiness and after process close", asy
   }
 });
 
-test("workspace pairs are created in one cold configure session before startup auto-open", async (t) => {
+test("workspace pairs wait for cold startup before Native preparation", async (t) => {
   const temporaryRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-product-workspace-pair-"),
   );
@@ -3727,7 +3727,34 @@ test("workspace pairs are created in one cold configure session before startup a
   const workspaceB = path.join(temporaryRoot, "workspace-b");
   const calls = [];
   const app = {};
-  const page = {};
+  let finishStartup;
+  const startup = new Promise((resolve) => {
+    finishStartup = resolve;
+  });
+  let observeBoundary;
+  const boundary = new Promise((resolve) => {
+    observeBoundary = resolve;
+  });
+  const page = {
+    getByRole(role, { name, includeHidden }) {
+      assert.equal(role, "button");
+      assert.ok(name.test("🇯🇵 日本語"));
+      assert.equal(
+        includeHidden,
+        true,
+        "EULA hides the welcome screen from accessibility",
+      );
+      return {
+        async waitFor(options) {
+          assert.deepEqual(options, { state: "attached" });
+          calls.push({ kind: "startup-wait" });
+          observeBoundary();
+          await startup;
+          calls.push({ kind: "startup-ready" });
+        },
+      };
+    },
+  };
   const harness = {
     async launch(phase) {
       calls.push({ kind: "launch", phase });
@@ -3735,6 +3762,7 @@ test("workspace pairs are created in one cold configure session before startup a
     },
     async invokeOk(_page, command, args) {
       calls.push({ kind: "invoke", command, args });
+      if (command === "open_workspace") observeBoundary();
       if (command === "get_global_settings") {
         return {
           recentWorkspaces: [],
@@ -3752,10 +3780,21 @@ test("workspace pairs are created in one cold configure session before startup a
     },
   };
 
-  await configureWorkspace(harness, workspaceA, {
+  const configuring = configureWorkspace(harness, workspaceA, {
     appSettings: { "editor.autoSaveDelay": 60_000 },
     additionalWorkspaces: [workspaceB],
   });
+  await boundary;
+  const opensBeforeStartup = calls.filter(
+    (call) => call.command === "open_workspace",
+  ).length;
+  finishStartup();
+  await configuring;
+  assert.equal(
+    opensBeforeStartup,
+    0,
+    "Native Open must not change recents while the cold renderer is still initializing",
+  );
 
   assert.deepEqual(
     calls
