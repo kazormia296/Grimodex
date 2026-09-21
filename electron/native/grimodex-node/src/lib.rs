@@ -3493,7 +3493,19 @@ where
                             .map(|_| ())
                             .map_err(|error| anyhow::anyhow!("{error}"));
                     }
-                    let _ = retire_authority_for_recovery(&state, Some(authority));
+                    // A successful close is a durable part of the recovery
+                    // proof.  Record it on the exact lifecycle permit before
+                    // transferring the unfinished Run, otherwise a
+                    // CreationUnknown descriptor can never pass its
+                    // connection-retirement gate even though the old handle
+                    // was actually closed.
+                    let retirement =
+                        retire_authority_for_recovery_with_status(&state, Some(authority));
+                    if retirement.connection_retired {
+                        lifecycle_permit
+                            .mark_connection_retired()
+                            .map_err(|error| anyhow::anyhow!("{error}"))?;
+                    }
                 }
                 let descriptor_id = lifecycle_permit
                     .transfer_to_recovery()

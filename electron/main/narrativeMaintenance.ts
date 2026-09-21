@@ -1203,6 +1203,8 @@ export function createNarrativeMaintenanceScheduler(
   let terminalReceiptFailure: {
     error: Error;
     binding: NarrativeMaintenanceAttemptBinding | null;
+    /** The recovery receipt ACK succeeded, but transport retirement may not. */
+    recoveryAcked?: boolean;
     delivery?: {
       fingerprint: string;
       sequence: number;
@@ -2060,27 +2062,44 @@ export function createNarrativeMaintenanceScheduler(
                 } | null);
           const failedDelivery = terminalReceiptFailure?.delivery;
           const proofApplied = applyRecoveredRecoveryProof(recovery ?? {});
-          const markerWasCleared =
-            proofApplied && clearRecoveredTerminalReceiptFailure(recovery ?? {});
+          const recoveryMatches = recoveryReceiptMatchesFailedBinding(
+            recovery ?? {},
+          );
           // A completed descriptor receipt is replayable until its exact
           // failed-cleanup marker has been retired.  Do not ACK a mismatched
           // receipt: doing so would discard the only main-side evidence that
           // the quarantined binding is still unsafe to reuse.
           const shouldAckRecovery =
-            terminalReceiptFailure === null ||
-            markerWasCleared ||
-            !recoveryReceiptMatchesFailedBinding(recovery ?? {});
-          const receiptAcked = proofApplied && shouldAckRecovery
-            ? await acknowledgeRecoveredRecovery(recovery ?? {})
+            proofApplied &&
+            (terminalReceiptFailure === null ||
+              recoveryMatches) &&
+            terminalReceiptFailure?.recoveryAcked !== true;
+          const receiptAcked = proofApplied && recoveryMatches
+            ? terminalReceiptFailure?.recoveryAcked === true ||
+              (shouldAckRecovery &&
+                (await acknowledgeRecoveredRecovery(recovery ?? {})))
             : false;
-          const deliveryAcked =
-            terminalReceiptFailure === null &&
+          if (
             receiptAcked &&
-            (!markerWasCleared || failedDelivery === undefined ||
+            terminalReceiptFailure !== null &&
+            recoveryMatches
+          ) {
+            terminalReceiptFailure.recoveryAcked = true;
+          }
+          const deliveryAcked =
+            receiptAcked &&
+            (failedDelivery === undefined ||
               (await retireDelivery(
                 failedDelivery.fingerprint,
                 failedDelivery.sequence,
               )));
+          // Keep the cleanup-failure marker until both the descriptor ACK and
+          // the old transport record have been retired.  If either ACK fails,
+          // the next cycle reuses the exact ownership proof instead of losing
+          // the delivery identity with this stack frame.
+          if (proofApplied && deliveryAcked) {
+            clearRecoveredTerminalReceiptFailure(recovery ?? {});
+          }
           if (deliveryAcked) {
             schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
           } else {
