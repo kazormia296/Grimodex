@@ -83,16 +83,25 @@ use super::dependency_edges::{
 use super::digest_plan;
 use super::maintenance_lifecycle::{
     canonical_failure_message, complete_maintenance_run_in_tx, create_maintenance_run_in_tx,
+    create_maintenance_run_in_tx_with_control,
     fail_maintenance_run_in_tx, hold_maintenance_run_in_tx, load_maintenance_run_in_tx,
     MaintenanceFailureKind,
 };
 use super::maintenance_runtime::{
-    discover_durable_maintenance_work_in_tx, validate_phase_success_outcome, AutomaticRunKind,
-    NarrativeMaintenanceCiFault, WorkKey,
+    discover_durable_maintenance_work_in_tx, validate_phase_success_outcome, AutomaticRunKind, FinalizationGrantScope,
+    MaintenanceCycleControl, NarrativeMaintenanceCiFault, WorkKey,
+};
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage, NeverStopGraphWorkControl};
+use super::restore_rebuild::{
+    is_controlled_maintenance_termination, run_maintenance_graph_phase,
+    run_maintenance_graph_phase_for_run, transfer_controlled_maintenance_run_to_owner,
+    MAINTENANCE_CONNECTION_PREEMPTED_CODE,
 };
 use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
-use super::task_leases::with_immediate_transaction;
+use super::task_leases::{
+    with_immediate_transaction, with_immediate_transaction_with_creation_outcome,
+};
 use super::terminal_failure::{
     project_terminal_failure_for_run_generated_in_tx,
     resolve_terminal_failure_for_run_generated_in_tx,
@@ -568,6 +577,23 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
     db: &Database,
     project_id: &str,
 ) -> anyhow::Result<LegacyBackfillBootstrapOutcome> {
+    bootstrap_legacy_dependency_backfill_for_project_with_control(db, project_id, None, "")
+}
+
+/// Backfill owner with a process-local stop check supplied by the bounded
+/// maintenance cycle. The check is evaluated before phase 2 and again inside
+/// the terminal success transaction; no durable schema is involved.
+pub fn bootstrap_legacy_dependency_backfill_for_project_with_control(
+    db: &Database,
+    project_id: &str,
+    control: Option<&super::maintenance_runtime::MaintenanceCycleControl<'_>>,
+    work_key: &str,
+) -> anyhow::Result<LegacyBackfillBootstrapOutcome> {
+    if let Some(control) = control {
+        return bootstrap_legacy_dependency_backfill_for_project_controlled(
+            db, project_id, control, work_key,
+        );
+    }
     let now = grimodex_core::now_rfc3339_millis();
 
     let (run_id, reused) = db.with_conn(|conn| {
@@ -615,8 +641,193 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
         })
     });
 
-    let finalize_result = finalize_legacy_backfill_run(db, project_id, &run_id, &transform_result);
+    let finalize_result = finalize_legacy_backfill_run_with_control(
+        db,
+        project_id,
+        &run_id,
+        &transform_result,
+        control,
+        work_key,
+    );
     if let Err(finalize_error) = finalize_result {
+        return Err(anyhow::anyhow!(
+            "legacy dependency backfill: failed to finalize run '{run_id}' with durable terminal evidence: {finalize_error}"
+        ));
+    }
+
+    match transform_result {
+        Ok(summary) => Ok(LegacyBackfillBootstrapOutcome::Ran { run_id, summary }),
+        Err(error) => Err(error),
+    }
+}
+
+fn bootstrap_legacy_dependency_backfill_for_project_controlled(
+    db: &Database,
+    project_id: &str,
+    control: &MaintenanceCycleControl<'_>,
+    work_key: &str,
+) -> anyhow::Result<LegacyBackfillBootstrapOutcome> {
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
+    (control.should_stop)()?;
+    let now = grimodex_core::now_rfc3339_millis();
+    let spec = json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
+    let spec_digest = format!("sha256:{}", digest_plan(&spec));
+
+    let (created, semantic_epoch_id, completed_marker) = run_maintenance_graph_phase(
+        db,
+        control,
+        |conn, graph| {
+            if let Some(reset) = control.reset_run_creation_tracking {
+                reset()?;
+            }
+            let mut created = with_immediate_transaction_with_creation_outcome(
+                conn,
+                |conn| {
+                graph.check(GraphWorkStage::Restore)?;
+                require_current_c2zb_marker(conn)?;
+                let epoch_id = match get_current_epoch(conn, project_id)? {
+                    Some(epoch) => epoch.id,
+                    None => create_epoch_in_tx(conn, project_id, "initial", None)?,
+                };
+                if let Some(run_id) =
+                    find_valid_completed_backfill_run_id_with_control(conn, project_id, graph)?
+                {
+                    let handle = load_maintenance_run_in_tx(conn, &run_id)?;
+                    return Ok((handle, epoch_id, true));
+                }
+                let handle = create_maintenance_run_in_tx_with_control(
+                    conn,
+                    project_id,
+                    "backfill",
+                    &epoch_id,
+                    LEGACY_DEPENDENCY_PRODUCER_GENERATION,
+                    &spec,
+                    &spec_digest,
+                    SystemRunWorkKeyReuse::RunningOnly,
+                    Some(control),
+                )?;
+                Ok((handle, epoch_id, false))
+                },
+                |outcome| {
+                    if let Some(mark_outcome) = control.mark_run_creation_outcome {
+                        mark_outcome(outcome)?;
+                    }
+                    Ok(())
+                },
+            )?;
+            if !created.2 {
+                if !created.0.reused {
+                    created.0.mark_creation_committed();
+                }
+                if let Some(attach_run) = control.attach_run {
+                    attach_run(created.0.core_ownership())?;
+                }
+            }
+            Ok(created)
+        },
+    )?;
+    let run_id = created.run_id.clone();
+    let reused = created.reused || completed_marker;
+
+    if reused {
+        return Ok(LegacyBackfillBootstrapOutcome::AlreadyRun { run_id });
+    }
+    let transform_result = run_maintenance_graph_phase_for_run(
+        db,
+        control,
+        &run_id,
+        |conn, graph| {
+            with_immediate_transaction(conn, |conn| {
+                graph.check(GraphWorkStage::Restore)?;
+                backfill_project_semantic_build_graph_in_tx_for_run_with_control(
+                    conn,
+                    project_id,
+                    &now,
+                    &run_id,
+                    graph,
+                )
+            })
+        },
+    );
+    if transform_result
+        .as_ref()
+        .err()
+        .is_some_and(is_controlled_maintenance_termination)
+    {
+        let Err(error) = transform_result else {
+            unreachable!("controlled Backfill termination must carry an error")
+        };
+        if let Err(owner_error) = transfer_controlled_maintenance_run_to_owner(
+            db, &run_id, &error, control,
+        ) {
+            return Err(error.context(format!(
+                "legacy dependency backfill: failed to transfer exact Run ownership: {owner_error}"
+            )));
+        }
+        return Err(error);
+    }
+
+    let finalize_result = run_maintenance_graph_phase_for_run(
+        db,
+        control,
+        &run_id,
+        |conn, graph| {
+            let should_finalize_success = transform_result.is_ok()
+                && !super::maintenance_runtime::foreground_system_work_barrier_requested();
+            // Keep the scope and optional reservation outside the transaction
+            // closure.  A successful Backfill acquires the reservation only
+            // after its final stop check, but the guard must survive COMMIT.
+            let mut reservation = None;
+            let _finalization_scope = should_finalize_success
+                .then(|| FinalizationGrantScope::new(control));
+            with_immediate_transaction(conn, |conn| {
+                graph.check(GraphWorkStage::ResultAssembly)?;
+                if should_finalize_success {
+                    // The final stop check and Native grant are inside the
+                    // same transaction; the reservation/scope outlive this
+                    // closure so they remain active through COMMIT.
+                    let current_epoch_id = get_current_epoch(conn, project_id)?.map(|epoch| epoch.id);
+                    anyhow::ensure!(
+                        current_epoch_id.as_deref() == Some(semantic_epoch_id.as_str()),
+                        "NEX_BACKFILL_STALE_EPOCH: Backfill Run '{run_id}' captured epoch '{}', but project '{project_id}' is now at epoch '{}'",
+                        semantic_epoch_id,
+                        current_epoch_id.as_deref().unwrap_or("<none>")
+                    );
+                    graph.check(GraphWorkStage::ResultAssembly)?;
+                    reservation = Some(db.try_reserve_maintenance_finalization().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "{MAINTENANCE_CONNECTION_PREEMPTED_CODE}: foreground waiter arrived before finalization reservation"
+                        )
+                    })?);
+                    (control.grant_finalize)(work_key)?;
+                }
+                finalize_legacy_backfill_run_in_tx(
+                    conn,
+                    project_id,
+                    &run_id,
+                    Some(&semantic_epoch_id),
+                    &transform_result,
+                )
+            })
+            .inspect(|_| {
+                drop(reservation);
+            })
+        },
+    );
+    if let Err(finalize_error) = finalize_result {
+        if is_controlled_maintenance_termination(&finalize_error) {
+            if let Err(owner_error) = transfer_controlled_maintenance_run_to_owner(
+                db,
+                &run_id,
+                &finalize_error,
+                control,
+            ) {
+                return Err(finalize_error.context(format!(
+                    "legacy dependency backfill: failed to transfer exact Run ownership after finalization interruption: {owner_error}"
+                )));
+            }
+            return Err(finalize_error);
+        }
         return Err(anyhow::anyhow!(
             "legacy dependency backfill: failed to finalize run '{run_id}' with durable terminal evidence: {finalize_error}"
         ));
@@ -631,6 +842,15 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
 fn find_valid_completed_backfill_run_id(
     conn: &Connection,
     project_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let mut control = NeverStopGraphWorkControl;
+    find_valid_completed_backfill_run_id_with_control(conn, project_id, &mut control)
+}
+
+fn find_valid_completed_backfill_run_id_with_control(
+    conn: &Connection,
+    project_id: &str,
+    control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Option<String>> {
     let mut statement = conn.prepare(
         "SELECT id, run_kind, status, spec_json, semantic_epoch_id, work_key,
@@ -653,6 +873,7 @@ fn find_valid_completed_backfill_run_id(
         ))
     })?;
     for row in rows {
+        control.check(GraphWorkStage::Restore)?;
         let (run_id, run_kind, status, spec_json, epoch_id, work_key, completed_at, outcome_json) =
             row?;
         if is_valid_completed_backfill_marker(
@@ -678,14 +899,41 @@ fn find_valid_completed_backfill_run_id(
 /// Keeping this owner-only step in a named helper makes the phase boundary
 /// explicit: the generic task APIs must not be able to cancel the Run between
 /// the transform commit and this durable status/evidence transaction.
+///
+/// Test-only entry point: production paths finalize through
+/// `finalize_legacy_backfill_run_with_control`.
+#[cfg(test)]
 fn finalize_legacy_backfill_run(
     db: &Database,
     project_id: &str,
     run_id: &str,
     transform_result: &anyhow::Result<BackfillSummary>,
 ) -> anyhow::Result<()> {
+    finalize_legacy_backfill_run_with_control(db, project_id, run_id, transform_result, None, "")
+}
+
+fn finalize_legacy_backfill_run_with_control(
+    db: &Database,
+    project_id: &str,
+    run_id: &str,
+    transform_result: &anyhow::Result<BackfillSummary>,
+    control: Option<&super::maintenance_runtime::MaintenanceCycleControl<'_>>,
+    work_key: &str,
+) -> anyhow::Result<()> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            if let Some(control) = control {
+                (control.should_stop)()?;
+                // A foreground success is intentionally held behind the
+                // authoring barrier. Its durable outcome remains running
+                // until the exact Run is released, so the cycle must not
+                // acquire the strict finalization grant on this path.
+                if transform_result.is_ok()
+                    && !super::maintenance_runtime::foreground_system_work_barrier_requested()
+                {
+                    (control.grant_finalize)(work_key)?;
+                }
+            }
             finalize_legacy_backfill_run_in_tx(conn, project_id, run_id, None, transform_result)
         })
     })
@@ -853,6 +1101,24 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx_for_run(
     now: &str,
     backfill_run_id: &str,
 ) -> anyhow::Result<BackfillSummary> {
+    let mut control = NeverStopGraphWorkControl;
+    backfill_project_semantic_build_graph_in_tx_for_run_with_control(
+        conn,
+        project_id,
+        now,
+        backfill_run_id,
+        &mut control,
+    )
+}
+
+pub(crate) fn backfill_project_semantic_build_graph_in_tx_for_run_with_control(
+    conn: &Connection,
+    project_id: &str,
+    now: &str,
+    backfill_run_id: &str,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<BackfillSummary> {
+    control.check(GraphWorkStage::Restore)?;
     anyhow::ensure!(
         !backfill_run_id.trim().is_empty(),
         "NEX_BACKFILL_RUN_INVALID: backfill Run id is required"
@@ -905,6 +1171,7 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx_for_run(
         .flatten();
     let mut applications_without_run_id = 0usize;
     for application in load_legacy_applications(conn, project_id)? {
+        control.check(GraphWorkStage::Restore)?;
         // `applied_entity_kind` is the writer-row vocabulary
         // (`codex_entry`, `temporal_scene_chronicle`, ...), which is neither
         // what the Change Feed addresses objects by nor what `commit.rs`'s
@@ -967,12 +1234,13 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx_for_run(
         // ApplyCommit.run_id is lineage for the C2-ZB migration only, so a
         // legacy Application with NULL lineage can still emit its durable
         // projection dependency Edge under the fresh owner.
-        record_legacy_dependency_edges_in_tx(
+        record_legacy_dependency_edges_in_tx_with_control(
             conn,
             project_id,
             &application.id,
             backfill_run_id,
             now,
+            control,
         )?;
     }
     // The rows minted above all took `authority: None` -- a whole-entity
@@ -982,7 +1250,9 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx_for_run(
     // is the common case: the Backfill runs on old workspaces, and old
     // workspaces have been edited. Replaying the ledger here makes ownership
     // independent of whether the Backfill or the human write happened first.
+    control.check(GraphWorkStage::Coverage)?;
     reproject_user_ownership_from_authority_in_tx(conn, Some(project_id))?;
+    control.check(GraphWorkStage::ResultAssembly)?;
 
     let contributions_after = count_contributions(conn, project_id)?;
     let edges_after = count_edges(conn, project_id)?;
@@ -1017,14 +1287,16 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx_for_run(
 /// backfilled Edge then evaluated as `source-missing` because no resolver
 /// could match it back to its Source.
 // NARRATIVE_DEPENDENCY_PRODUCER: legacy-application-projection-dependency
-fn record_legacy_dependency_edges_in_tx(
+fn record_legacy_dependency_edges_in_tx_with_control(
     conn: &Connection,
     project_id: &str,
     application_id: &str,
     backfill_run_id: &str,
     now: &str,
+    control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<()> {
     for dependency in load_legacy_projection_dependencies(conn, application_id)? {
+        control.check(GraphWorkStage::Edge)?;
         let source_object_identity =
             canonical_source_object_identity(&dependency.source_kind, &dependency.source_key)?;
         let read_set_json = serde_json::to_string(&[dependency.observed_revision_token.as_str()])?;
@@ -2057,6 +2329,84 @@ mod tests {
             Ok(())
         })
         .expect("read owner-finalized Backfill Run");
+    }
+
+    #[test]
+    fn controlled_backfill_termination_transfers_the_exact_run_owner() {
+        let db = test_db();
+        let run_id = db
+            .with_conn(|conn| {
+                seed_project(conn, "project-1");
+                with_immediate_transaction(conn, |conn| {
+                    let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+                    let spec = json!({
+                        "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION
+                    });
+                    let spec_digest = format!("sha256:{}", digest_plan(&spec));
+                    Ok(create_maintenance_run_in_tx(
+                        conn,
+                        "project-1",
+                        "backfill",
+                        &epoch_id,
+                        LEGACY_BACKFILL_WORK_KEY,
+                        &spec,
+                        &spec_digest,
+                        SystemRunWorkKeyReuse::RunningOnly,
+                    )?
+                    .run_id)
+                })
+            })
+            .expect("create controlled Backfill Run");
+
+        let no_stop = || Ok::<_, anyhow::Error>(());
+        let no_defer = |_run_id: &str| Ok::<_, anyhow::Error>(());
+        let no_grant = |_work_key: &str| Ok::<_, anyhow::Error>(());
+        let no_work = |_item: &crate::narrative_extraction::DesiredWork| {
+            Ok::<_, anyhow::Error>(())
+        };
+        let control = super::super::maintenance_runtime::MaintenanceCycleControl {
+            should_stop: &no_stop,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &no_defer,
+            grant_finalize: &no_grant,
+            register_work: &no_work,
+            work_started: &no_work,
+            work_completed: &no_work,
+            work_noop_completed: &no_work,
+            work_deferred: &no_work,
+            attach_run: None,
+            reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
+        };
+        let cancellation = super::super::source_revision::validation_terminated(
+            super::super::source_revision::ValidationTerminationReason::Cancelled,
+            "controlled Backfill cancellation",
+        );
+
+        super::super::restore_rebuild::transfer_controlled_maintenance_run_to_owner(
+            &db,
+            &run_id,
+            &cancellation,
+            &control,
+        )
+        .expect("controlled Backfill must transfer its exact Run owner");
+
+        let status: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read transferred Backfill status");
+        assert_eq!(status, "cancelled");
     }
 
     #[test]

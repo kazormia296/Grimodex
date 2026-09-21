@@ -6,6 +6,8 @@ use anyhow::{ensure, Result};
 use rusqlite::{types::ValueRef, Connection};
 use sha2::{Digest, Sha256};
 
+use super::super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
+
 const QUERIES: &[&str] = &[
     "SELECT s.* FROM narrative_proposal_sets s WHERE s.project_id=?1 ORDER BY s.id",
     "SELECT p.* FROM narrative_proposals p JOIN narrative_proposal_sets s ON s.id=p.proposal_set_id WHERE s.project_id=?1 ORDER BY p.id",
@@ -27,7 +29,11 @@ const QUERIES: &[&str] = &[
     "SELECT f.* FROM narrative_consumer_freshness f WHERE f.project_id=?1 AND f.consumer_kind='proposal-revision' ORDER BY f.consumer_key",
 ];
 
-pub(super) fn read(conn: &Connection, project: &str) -> Result<String> {
+pub(super) fn read(
+    conn: &Connection,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<String> {
     ensure!(
         !conn.is_autocommit(),
         "NIR1 input guard requires a transaction"
@@ -35,12 +41,14 @@ pub(super) fn read(conn: &Connection, project: &str) -> Result<String> {
     let mut hash = Sha256::new();
     hash.update(b"nir1-cold-input-cas/1");
     for (index, query) in QUERIES.iter().enumerate() {
+        control.check(GraphWorkStage::Source)?;
         hash.update((index as u64).to_le_bytes());
         let mut statement = conn.prepare(query)?;
         let columns = statement.column_count();
         hash.update((columns as u64).to_le_bytes());
         let mut rows = statement.query([project])?;
         while let Some(row) = rows.next()? {
+            control.check(GraphWorkStage::Row)?;
             hash.update(b"row");
             for column in 0..columns {
                 match row.get_ref(column)? {
@@ -56,12 +64,18 @@ pub(super) fn read(conn: &Connection, project: &str) -> Result<String> {
                     ValueRef::Text(value) => {
                         hash.update(b"text");
                         hash.update((value.len() as u64).to_le_bytes());
-                        hash.update(value);
+                        for chunk in value.chunks(8192) {
+                            control.check(GraphWorkStage::Digest)?;
+                            hash.update(chunk);
+                        }
                     }
                     ValueRef::Blob(value) => {
                         hash.update(b"blob");
                         hash.update((value.len() as u64).to_le_bytes());
-                        hash.update(value);
+                        for chunk in value.chunks(8192) {
+                            control.check(GraphWorkStage::Digest)?;
+                            hash.update(chunk);
+                        }
                     }
                 }
             }

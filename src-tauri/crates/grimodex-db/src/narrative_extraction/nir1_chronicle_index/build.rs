@@ -3,12 +3,13 @@ use std::collections::BTreeMap;
 use anyhow::{ensure, Result};
 use rusqlite::Connection;
 
+use super::super::nir1_entity_relation_index::GraphWorkControl;
 use super::super::{
     c2zc_canonical_cutover::is_generic_freshness_canonical,
     dependency_edges::{canonical_source_object_identity, find_edges_by_consumer, DependencyEdge},
     project_scope_authority::load_live_project_scope_authority,
     retrieval_admission::{
-        build::{finalize_build_candidate, preflight_build_candidate, BuildCandidate},
+        build::{finalize_build_candidate_with_control, preflight_build_candidate, BuildCandidate},
         ChronicleRetrievalDocument,
     },
     revision_eligibility::pending::{self, FeedSnapshot},
@@ -57,6 +58,17 @@ pub fn prepare_chronicle_index_build(
     runtime: &NirChronicleIndexRuntime,
     project: &str,
 ) -> Result<NirIndexBuildRead> {
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    prepare_chronicle_index_build_with_control(conn, runtime, project, &mut control)
+}
+
+pub fn prepare_chronicle_index_build_with_control(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<NirIndexBuildRead> {
+    control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Source)?;
     ensure!(
         !conn.is_autocommit(),
         "NIR1 preparation requires a read transaction"
@@ -69,10 +81,10 @@ pub fn prepare_chronicle_index_build(
         Ok(value) => value,
         Err(reason) => return Ok(NirIndexBuildRead::Unavailable { reason }),
     };
-    if super::query::current_proof(conn, runtime, project)?.is_some() {
+    if super::query::current_proof_with_control(conn, runtime, project, control)?.is_some() {
         return Ok(NirIndexBuildRead::AlreadyUsable);
     }
-    let snapshot = match read_snapshot(conn, project)? {
+    let snapshot = match read_snapshot_with_control(conn, project, control)? {
         Ok(value) => value,
         Err(reason) => return Ok(NirIndexBuildRead::Unavailable { reason }),
     };
@@ -92,10 +104,21 @@ pub fn prepare_chronicle_index_build(
     })
 }
 
+#[cfg(test)]
 pub(super) fn read_snapshot(
     conn: &Connection,
     project: &str,
 ) -> Result<std::result::Result<BuildSnapshot, Reason>> {
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    read_snapshot_with_control(conn, project, &mut control)
+}
+
+pub(super) fn read_snapshot_with_control(
+    conn: &Connection,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<std::result::Result<BuildSnapshot, Reason>> {
+    control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Source)?;
     if !is_generic_freshness_canonical(conn)? {
         return Ok(Err(Reason::CanonicalAuthorityUnavailable));
     }
@@ -124,7 +147,7 @@ pub(super) fn read_snapshot(
     let Some(epoch) = get_current_epoch(conn, project)? else {
         return Ok(Err(Reason::CurrentEpochUnavailable));
     };
-    let roster = source::read_eligibility_source(conn, project)?;
+    let roster = source::read_eligibility_source_with_control(conn, project, control)?;
     let language: String = conn.query_row(
         "SELECT language FROM projects WHERE id=?1",
         [project],
@@ -150,6 +173,7 @@ pub(super) fn read_snapshot(
     // cannot suppress a valid candidate.
     let mut preflights = Vec::new();
     for revision in &roster.revisions {
+        control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Row)?;
         if let Ok(preflight) = preflight_build_candidate(conn, project, revision, &authority)? {
             preflights.push(preflight);
         }
@@ -180,9 +204,15 @@ pub(super) fn read_snapshot(
     };
     let mut candidates = Vec::new();
     for preflight in preflights {
-        if let Ok(candidate) =
-            finalize_build_candidate(conn, project, &authority, preflight, &material_scope_cache)?
-        {
+        control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Row)?;
+        if let Ok(candidate) = finalize_build_candidate_with_control(
+            conn,
+            project,
+            &authority,
+            preflight,
+            &material_scope_cache,
+            control,
+        )? {
             candidates.push(candidate);
         }
     }
@@ -191,7 +221,7 @@ pub(super) fn read_snapshot(
         Ok(value) => value,
         Err(_) => return Ok(Err(Reason::PendingChange)),
     };
-    let input_guard = super::input_guard::read(conn, project)?;
+    let input_guard = super::input_guard::read(conn, project, control)?;
     Ok(Ok(BuildSnapshot {
         input_guard,
         prior,
@@ -207,11 +237,13 @@ pub(super) fn read_snapshot(
 /// The first snapshot fully replayed L1/L2. Compare all its persisted inputs
 /// atomically, then resolve every live Source and the bounded Feed again.
 /// A partial roster or changed dependency can never publish a cached subset.
-pub(super) fn snapshot_current(
+pub(super) fn snapshot_current_with_control(
     conn: &Connection,
     project: &str,
     snapshot: &BuildSnapshot,
+    control: &mut dyn GraphWorkControl,
 ) -> Result<bool> {
+    control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Source)?;
     if !is_generic_freshness_canonical(conn)? {
         return Ok(false);
     }
@@ -225,8 +257,9 @@ pub(super) fn snapshot_current(
     }
     if prior != snapshot.prior
         || get_current_epoch(conn, project)?.is_none_or(|epoch| epoch.id != snapshot.semantic_epoch)
-        || source::read_eligibility_source(conn, project)?.digest != snapshot.roster_digest
-        || super::input_guard::read(conn, project)? != snapshot.input_guard
+        || source::read_eligibility_source_with_control(conn, project, control)?.digest
+            != snapshot.roster_digest
+        || super::input_guard::read(conn, project, control)? != snapshot.input_guard
     {
         return Ok(false);
     }
@@ -240,11 +273,14 @@ pub(super) fn snapshot_current(
     {
         return Ok(false);
     }
-    for observation in super::super::restore_rebuild::evaluate_owned_edges_from_db_in_tx(
-        conn,
-        project,
-        &snapshot.edges,
-    )? {
+    for observation in
+        super::super::restore_rebuild::evaluate_owned_edges_from_db_in_tx_with_control(
+            conn,
+            project,
+            &snapshot.edges,
+            control,
+        )?
+    {
         if observation.freshness != super::super::evaluator::EvidenceFreshness::Fresh
             || observation.build_action != super::super::evaluator::BuildAction::None
             || observation.reason_code.is_some()

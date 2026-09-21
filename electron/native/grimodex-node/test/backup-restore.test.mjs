@@ -121,14 +121,27 @@ async function readVersion(backend) {
   return result[0]?.value;
 }
 
-test("workspace未openでは listBackups / restoreBackup が安定マーカーでrejectする", async (t) => {
+test("workspace未openでは listBackups はrejectし restoreBackup はClosed outcomeを返す", async (t) => {
   const fixture = makeFixture("no-workspace");
   t.after(fixture.cleanup);
 
   await assert.rejects(fixture.backend.listBackups(), /No workspace is open/);
-  await assert.rejects(
-    fixture.backend.restoreBackup("grimodex-20260711-120000.db"),
-    /No workspace is open/,
+  const restore = JSON.parse(
+    await fixture.backend.restoreBackup("grimodex-20260711-120000.db"),
+  );
+  assert.deepEqual(
+    {
+      status: restore.status,
+      operationOutcome: restore.operationOutcome,
+      contentEffect: restore.contentEffect,
+      reasonCode: restore.reasonCode,
+    },
+    {
+      status: "closed",
+      operationOutcome: "unknown",
+      contentEffect: "none",
+      reasonCode: "no-workspace",
+    },
   );
 });
 
@@ -288,19 +301,21 @@ test("traversalと破損backupは現行DBを変更しない", async (t) => {
     "grimodex-../x.db",
     "evil.db",
   ]) {
-    await assert.rejects(
-      fixture.backend.restoreBackup(name),
-      /不正なバックアップ名/,
-    );
+    const result = JSON.parse(await fixture.backend.restoreBackup(name));
+    assert.equal(result.status, "unchanged");
+    assert.equal(result.operationOutcome, "failed");
+    assert.equal(result.contentEffect, "none");
     assert.equal(await readVersion(fixture.backend), "live");
   }
 
   const corrupt = "grimodex-20260711-120000.db";
   writeFileSync(join(fixture.backups, corrupt), "not a sqlite database");
-  await assert.rejects(
-    fixture.backend.restoreBackup(corrupt),
-    /バックアップ|SQLite|database|整合性|破損/i,
+  const corruptResult = JSON.parse(
+    await fixture.backend.restoreBackup(corrupt),
   );
+  assert.equal(corruptResult.status, "unchanged");
+  assert.equal(corruptResult.operationOutcome, "failed");
+  assert.equal(corruptResult.contentEffect, "none");
   assert.equal(await readVersion(fixture.backend), "live");
   assert.equal(statSync(join(fixture.workspace, "grimodex.db")).isFile(), true);
 });
@@ -321,9 +336,9 @@ test("migration非互換backupは適用前に拒否して現行DBを維持する
   );
   incompatible.close();
 
-  await assert.rejects(
-    fixture.backend.restoreBackup(backupName),
-    /現在のアプリで開けません/,
-  );
+  const result = JSON.parse(await fixture.backend.restoreBackup(backupName));
+  assert.equal(result.status, "unchanged");
+  assert.equal(result.operationOutcome, "failed");
+  assert.equal(result.contentEffect, "none");
   assert.equal(await readVersion(fixture.backend), "live");
 });

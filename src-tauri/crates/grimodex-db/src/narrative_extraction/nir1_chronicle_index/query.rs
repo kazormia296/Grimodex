@@ -3,13 +3,16 @@ use std::sync::Arc;
 use anyhow::{ensure, Result};
 use rusqlite::Connection;
 
+use super::super::nir1_entity_relation_index::GraphWorkControl;
 use super::super::retrieval_admission::{
     read_retrieval_query_context, read_retrieval_scene_source, ChronicleRetrievalDocument,
     QueryIdentityState, RetrievalQueryContext, RetrievalQueryContextRead,
     RetrievalSceneSourceBinding, RetrievalSceneSourceRead,
 };
 use super::{
-    canonical::proof_current, evidence::exact_utf16_quote, runtime::IndexProof,
+    canonical::{proof_current, proof_current_with_control},
+    evidence::exact_utf16_quote,
+    runtime::IndexProof,
     NirChronicleIndexRuntime, NirEmbeddingIdentity, NirIndexUnavailableReason as Reason,
 };
 
@@ -167,12 +170,23 @@ pub fn validate_chronicle_query_status_snapshot(
     runtime: &NirChronicleIndexRuntime,
     snapshot: &NirQuerySnapshot,
 ) -> Result<bool> {
-    validate_binding(
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    validate_chronicle_query_status_snapshot_with_control(conn, runtime, snapshot, &mut control)
+}
+
+pub fn validate_chronicle_query_status_snapshot_with_control(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    snapshot: &NirQuerySnapshot,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
+    validate_binding_with_control(
         conn,
         runtime,
         snapshot.owner,
         &snapshot.proof,
         &snapshot.query,
+        control,
     )
     .map(|query| query.is_some())
 }
@@ -195,15 +209,27 @@ pub(super) fn current_proof(
     runtime: &NirChronicleIndexRuntime,
     project: &str,
 ) -> Result<Option<Arc<IndexProof>>> {
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    current_proof_with_control(conn, runtime, project, &mut control)
+}
+
+pub(super) fn current_proof_with_control(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<Option<Arc<IndexProof>>> {
     let proof = runtime.lock()?.proofs.get(project).cloned();
     let Some(proof) = proof else {
         return Ok(None);
     };
-    Ok(if proof_current(conn, runtime, &proof)? {
-        Some(proof)
-    } else {
-        None
-    })
+    Ok(
+        if proof_current_with_control(conn, runtime, &proof, control)? {
+            Some(proof)
+        } else {
+            None
+        },
+    )
 }
 
 pub fn read_chronicle_query_status(
@@ -212,6 +238,17 @@ pub fn read_chronicle_query_status(
     project: &str,
     scene: &str,
 ) -> Result<NirQueryStatusRead> {
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    read_chronicle_query_status_with_control(conn, runtime, project, scene, &mut control)
+}
+
+pub fn read_chronicle_query_status_with_control(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    project: &str,
+    scene: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<NirQueryStatusRead> {
     let RetrievalQueryContextRead::Available(query_context) =
         read_retrieval_query_context(conn, project, scene)?
     else {
@@ -219,10 +256,12 @@ pub fn read_chronicle_query_status(
             reason: Reason::QueryUnavailable,
         });
     };
-    let snapshot = current_proof(conn, runtime, project)?.map(|proof| NirQuerySnapshot {
-        owner: runtime.owner(),
-        proof,
-        query: QueryBinding::from(&query_context),
+    let snapshot = current_proof_with_control(conn, runtime, project, control)?.map(|proof| {
+        NirQuerySnapshot {
+            owner: runtime.owner(),
+            proof,
+            query: QueryBinding::from(&query_context),
+        }
     });
     let index_usable = snapshot.is_some();
     Ok(NirQueryStatusRead::Available {
@@ -250,7 +289,8 @@ pub fn qualify_chronicle_index_query(
             reason: Reason::ColdIndex,
         });
     };
-    qualify_proof(runtime, proof, query)
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    qualify_proof(runtime, proof, query, &mut control)
 }
 
 /// Lend only the exact capability captured before query embedding. One full
@@ -260,29 +300,42 @@ pub fn qualify_chronicle_index_snapshot(
     runtime: &NirChronicleIndexRuntime,
     snapshot: &NirQuerySnapshot,
 ) -> Result<NirQualifiedRead> {
-    let Some(query) = validate_binding(
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    qualify_chronicle_index_snapshot_with_control(conn, runtime, snapshot, &mut control)
+}
+
+pub fn qualify_chronicle_index_snapshot_with_control(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    snapshot: &NirQuerySnapshot,
+    control: &mut dyn GraphWorkControl,
+) -> Result<NirQualifiedRead> {
+    let Some(query) = validate_binding_with_control(
         conn,
         runtime,
         snapshot.owner,
         &snapshot.proof,
         &snapshot.query,
+        control,
     )?
     else {
         return Ok(NirQualifiedRead::Unavailable {
             reason: Reason::QueryUnavailable,
         });
     };
-    qualify_proof(runtime, snapshot.proof.clone(), query)
+    qualify_proof(runtime, snapshot.proof.clone(), query, control)
 }
 
 fn qualify_proof(
     runtime: &NirChronicleIndexRuntime,
     proof: Arc<IndexProof>,
     query: RetrievalQueryContext,
+    control: &mut dyn GraphWorkControl,
 ) -> Result<NirQualifiedRead> {
     let binding = QueryBinding::from(&query);
     let mut documents = Vec::new();
     for (index, candidate) in proof.candidates.iter().enumerate() {
+        control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Row)?;
         // This gate executes before vectors enter any scorer, ranker or limit.
         if candidate.embedding.is_none() || !candidate.verified.admits(&query) {
             continue;
@@ -330,12 +383,23 @@ pub fn validate_chronicle_query_snapshot(
     runtime: &NirChronicleIndexRuntime,
     batch: &NirQualifiedBatch,
 ) -> Result<bool> {
-    validate_binding(
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    validate_chronicle_query_snapshot_with_control(conn, runtime, batch, &mut control)
+}
+
+pub fn validate_chronicle_query_snapshot_with_control(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    batch: &NirQualifiedBatch,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
+    validate_binding_with_control(
         conn,
         runtime,
         batch.owner,
         &batch.proof,
         &QueryBinding::from(&batch.query),
+        control,
     )
     .map(|query| query.is_some())
 }
@@ -348,21 +412,33 @@ pub fn validate_chronicle_bound_batch(
     original: &NirQuerySnapshot,
     batch: &NirQualifiedBatch,
 ) -> Result<bool> {
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    validate_chronicle_bound_batch_with_control(conn, runtime, original, batch, &mut control)
+}
+
+pub fn validate_chronicle_bound_batch_with_control(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    original: &NirQuerySnapshot,
+    batch: &NirQualifiedBatch,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
     if original.owner != batch.owner
         || !Arc::ptr_eq(&original.proof, &batch.proof)
         || original.query != QueryBinding::from(&batch.query)
     {
         return Ok(false);
     }
-    validate_chronicle_query_snapshot(conn, runtime, batch)
+    validate_chronicle_query_snapshot_with_control(conn, runtime, batch, control)
 }
 
-fn validate_binding(
+fn validate_binding_with_control(
     conn: &Connection,
     runtime: &NirChronicleIndexRuntime,
     owner: u64,
     proof: &Arc<IndexProof>,
     expected: &QueryBinding,
+    control: &mut dyn GraphWorkControl,
 ) -> Result<Option<RetrievalQueryContext>> {
     ensure!(
         !conn.is_autocommit(),
@@ -373,7 +449,7 @@ fn validate_binding(
     }
     let current = runtime.lock()?.proofs.get(&proof.project).cloned();
     if current.is_none_or(|current| !Arc::ptr_eq(&current, proof))
-        || !proof_current(conn, runtime, proof)?
+        || !proof_current_with_control(conn, runtime, proof, control)?
     {
         return Ok(None);
     }
@@ -398,10 +474,27 @@ pub fn read_chronicle_evidence_navigation(
     runtime: &NirChronicleIndexRuntime,
     handle: &NirEvidenceHandle,
 ) -> Result<NirEvidenceNavigationRead> {
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    read_chronicle_evidence_navigation_with_control(conn, runtime, handle, &mut control)
+}
+
+pub fn read_chronicle_evidence_navigation_with_control(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    handle: &NirEvidenceHandle,
+    control: &mut dyn GraphWorkControl,
+) -> Result<NirEvidenceNavigationRead> {
     let unavailable = || NirEvidenceNavigationRead::Unavailable {
         reason: Reason::EvidenceUnavailable,
     };
-    let Some(query) = validate_binding(conn, runtime, handle.owner, &handle.proof, &handle.query)?
+    let Some(query) = validate_binding_with_control(
+        conn,
+        runtime,
+        handle.owner,
+        &handle.proof,
+        &handle.query,
+        control,
+    )?
     else {
         return Ok(unavailable());
     };

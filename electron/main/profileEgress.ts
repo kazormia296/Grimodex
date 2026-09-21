@@ -5,6 +5,7 @@ import {
   type CommandArgs,
   type NapiBackendLike,
 } from "../shared/ipcContract.js";
+import { parseWorkspaceRestoreOutcome } from "../shared/workspaceRestoreOutcome.js";
 
 export const D2A_EGRESS_DENIED_MARKER = "D2A_EGRESS_DENIED:";
 
@@ -470,6 +471,7 @@ function typedResultRoute(command: string): D2aRoute | undefined {
 const ALLOWED_BACKEND_EVENTS = new Set([
   "backend:ready",
   "workspace:opened",
+  "workspace:lifecycle-state",
   "license:state_changed",
   "semantic:model_download_progress",
   "semantic:reindex_progress",
@@ -540,6 +542,14 @@ export interface ProfileEgressGate {
   ): void;
   activateFirstRestrictedPublication?(): Promise<void>;
   observeBackendEvent?(channel: string, payload: unknown): void;
+  /** Main-only proof from a Native restore result; never exposed to renderer. */
+  observeWorkspaceLifecycleResult?(payload: unknown): void;
+}
+
+interface ReadyWorkspaceBinding {
+  readonly bindingToken: string;
+  readonly workspaceId: string;
+  readonly revision: number;
 }
 
 class NativeBoundProfileEgressGate implements ProfileEgressGate {
@@ -561,6 +571,23 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     () => Promise<void>
   >();
   private workspaceId: string | null = null;
+  // Safe Mode/restore-only keeps a restricted authorization target even while
+  // no Ready database binding exists. This is intentionally separate from the
+  // normal Ready workspace so lifecycle projection cannot erase the target
+  // needed by list/verify/restore/explicit-open commands.
+  private recoveryWorkspaceId: string | null = null;
+  private lifecycleRevision = -1;
+  private lifecycleBindingToken: string | null = null;
+  private lifecycleStatus: string | null = null;
+  private lifecycleActivation: string | null = null;
+  /**
+   * The last normal Ready observation is the only source from which a failed
+   * Restore may recover main authorization.  It is deliberately retained
+   * through Transition, but never used without an operation-scoped
+   * Unchanged proof.
+   */
+  private lastReadyWorkspaceBinding: ReadyWorkspaceBinding | null = null;
+  private pendingUnchangedWorkspaceBinding: ReadyWorkspaceBinding | null = null;
   private readonly identities = new Map<number, MainIssuedCallerIdentity>();
   private readonly registrationErrors = new Map<number, string>();
 
@@ -611,7 +638,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
         callerId: randomUUID(),
         callerEpoch: this.callerEpoch,
         senderId,
-        workspaceId: this.workspaceId,
+        workspaceId: this.workspaceId ?? this.recoveryWorkspaceId,
         sessionId: randomUUID(),
       } satisfies MainIssuedCallerIdentity);
     if (!existing) this.identities.set(senderId, identity);
@@ -849,7 +876,216 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     return this.activationPromise;
   }
 
+  /**
+   * Consume the trusted result of the legacy Restore command.  Native's
+   * Unchanged outcome carries the opaque lifecycle token and revision that
+   * prove the exact old authority survived.  A Ready snapshot alone is not
+   * enough: after Transition it may describe a new instance or an unrelated
+   * recovery projection.  The proof is therefore either applied immediately
+   * when its terminal Ready snapshot was observed first, or held until that
+   * exact snapshot arrives through the event bus.
+   */
+  observeWorkspaceLifecycleResult(payload: unknown): void {
+    let outcome: ReturnType<typeof parseWorkspaceRestoreOutcome>;
+    try {
+      outcome = parseWorkspaceRestoreOutcome(payload);
+    } catch {
+      return;
+    }
+    if (outcome.status !== "unchanged") return;
+    const token = outcome.lifecycle.bindingToken;
+    const lastReady = this.lastReadyWorkspaceBinding;
+    if (
+      token === null ||
+      lastReady === null ||
+      token !== lastReady.bindingToken ||
+      outcome.lifecycle.status !== "ready" ||
+      outcome.lifecycle.activation !== "ready" ||
+      outcome.lifecycle.revision <= lastReady.revision ||
+      this.recoveryWorkspaceId !== null ||
+      this.lifecycleRevision > outcome.lifecycle.revision
+    ) {
+      return;
+    }
+
+    const proof: ReadyWorkspaceBinding = {
+      bindingToken: token,
+      workspaceId: lastReady.workspaceId,
+      revision: outcome.lifecycle.revision,
+    };
+
+    // A successful replacement or a different workspace event supersedes an
+    // old proof.  Never overwrite that binding with the retained old target.
+    if (
+      this.workspaceId !== null &&
+      this.workspaceId !== proof.workspaceId
+    ) {
+      this.pendingUnchangedWorkspaceBinding = null;
+      return;
+    }
+
+    if (
+      this.lifecycleStatus === "ready" &&
+      this.lifecycleBindingToken === proof.bindingToken &&
+      // Apply immediately only after the exact terminal Ready snapshot has
+      // already been observed.  A queued Transition/Ready pair may overtake
+      // this result callback; treating an older Ready observation as terminal
+      // would let that delayed Transition clear the restored binding and the
+      // delayed Ready would then have no proof left to apply.
+      this.lifecycleRevision === proof.revision
+    ) {
+      this.restoreNormalWorkspaceBinding(proof);
+      return;
+    }
+    if (
+      this.lifecycleStatus === "transition" ||
+      this.lifecycleStatus === "ready"
+    ) {
+      this.pendingUnchangedWorkspaceBinding = proof;
+    }
+  }
+
+  private restoreNormalWorkspaceBinding(proof: ReadyWorkspaceBinding): void {
+    if (this.recoveryWorkspaceId !== null) {
+      this.pendingUnchangedWorkspaceBinding = null;
+      return;
+    }
+    if (
+      this.workspaceId !== null &&
+      this.workspaceId !== proof.workspaceId
+    ) {
+      this.pendingUnchangedWorkspaceBinding = null;
+      return;
+    }
+    const senderIds = [...this.identities.keys()];
+    if (senderIds.length > 0) {
+      try {
+        this.invalidateCallers?.();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        for (const senderId of senderIds) {
+          this.registrationErrors.set(senderId, detail);
+        }
+      }
+    }
+    this.identities.clear();
+    this.registrationErrors.clear();
+    this.workspaceId = proof.workspaceId;
+    this.lastReadyWorkspaceBinding = proof;
+    this.pendingUnchangedWorkspaceBinding = null;
+  }
+
   observeBackendEvent(channel: string, payload: unknown): void {
+    if (channel === "workspace:lifecycle-state") {
+      if (payload === null || typeof payload !== "object") return;
+      const record = payload as Record<string, unknown>;
+      if (
+        !Number.isSafeInteger(record.revision) ||
+        typeof record.status !== "string" ||
+        typeof record.activation !== "string" ||
+        (record.bindingToken !== null &&
+          typeof record.bindingToken !== "string")
+      ) {
+        return;
+      }
+      const revision = record.revision as number;
+      if (revision < this.lifecycleRevision) return;
+      const token =
+        typeof record.bindingToken === "string" ? record.bindingToken : null;
+      const bindingChanged =
+        token !== this.lifecycleBindingToken ||
+        record.status !== this.lifecycleStatus ||
+        record.activation !== this.lifecycleActivation;
+      const changed = revision > this.lifecycleRevision || bindingChanged;
+      this.lifecycleRevision = revision;
+      this.lifecycleBindingToken = token;
+      this.lifecycleStatus = record.status;
+      this.lifecycleActivation = record.activation;
+
+      // A result callback may arrive before the nonblocking lifecycle event
+      // for the same operation.  Apply the proof at the exact Ready revision
+      // even when the event is revision-only (same token/status); otherwise a
+      // delayed Transition can clear the binding and the final Ready event
+      // would be mistaken for an already-observed snapshot.
+      const pending = this.pendingUnchangedWorkspaceBinding;
+      const pendingReadyMatches =
+        pending !== null &&
+        record.status === "ready" &&
+        record.activation === "ready" &&
+        token === pending.bindingToken &&
+        revision === pending.revision;
+      if (pendingReadyMatches) {
+        this.restoreNormalWorkspaceBinding(pending);
+      }
+      if (!changed) return;
+      if (
+        this.pendingUnchangedWorkspaceBinding !== null &&
+        revision >= this.pendingUnchangedWorkspaceBinding.revision &&
+        (record.status !== "ready" ||
+          token !== this.pendingUnchangedWorkspaceBinding.bindingToken ||
+          revision !== this.pendingUnchangedWorkspaceBinding.revision)
+      ) {
+        // A newer or differently bound observation makes the operation proof
+        // stale.  In particular, a NotAdmitted result never arms this slot.
+        this.pendingUnchangedWorkspaceBinding = null;
+      }
+      // A descriptor recovery that is unrelated to the currently Ready
+      // workspace advances the shared lifecycle revision while preserving the
+      // same renderer binding token/status.  Revision is still published for
+      // freshness, but it is not proof that caller authorization changed.
+      // Keep in-flight W2 profile work alive in this revision-only case.
+      if (!bindingChanged) return;
+      const senderIds = [...this.identities.keys()];
+      try {
+        this.invalidateCallers?.();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        for (const senderId of senderIds) {
+          this.registrationErrors.set(senderId, detail);
+        }
+      }
+      // `workspace:opened` is emitted by Native before the terminal Ready
+      // lifecycle snapshot. Preserve a trusted recovery target across both
+      // the requires-open projection and the Transition emitted while a Safe
+      // Mode restore is in progress. Transition closes ordinary workspace
+      // access, but it must not erase the target that authorizes the next
+      // descriptor-bound recovery/Open. All caller identities are
+      // invalidated and must re-register against the retained target.
+      if (record.status === "ready" && record.activation === "ready") {
+        this.recoveryWorkspaceId = null;
+        if (
+          token !== null &&
+          this.workspaceId !== null &&
+          this.recoveryWorkspaceId === null
+        ) {
+          this.lastReadyWorkspaceBinding = {
+            bindingToken: token,
+            workspaceId: this.workspaceId,
+            revision,
+          };
+        }
+      } else if (
+        record.status === "recovery-required" ||
+        record.activation === "requires-open"
+      ) {
+        this.workspaceId = this.recoveryWorkspaceId;
+      } else if (
+        record.status === "transition" &&
+        this.recoveryWorkspaceId !== null
+      ) {
+        this.workspaceId = null;
+      } else {
+        this.workspaceId = null;
+        this.recoveryWorkspaceId = null;
+      }
+      if (record.status === "closed") {
+        this.lastReadyWorkspaceBinding = null;
+        this.pendingUnchangedWorkspaceBinding = null;
+      }
+      this.identities.clear();
+      this.registrationErrors.clear();
+      return;
+    }
     if (
       channel !== "workspace:opened" ||
       payload === null ||
@@ -879,10 +1115,13 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
           this.registrationErrors.set(senderId, detail);
         }
       }
-      this.workspaceId = workspaceId;
       this.identities.clear();
       this.registrationErrors.clear();
     }
+    const restoreOnly = record.restoreOnly === true;
+    this.pendingUnchangedWorkspaceBinding = null;
+    this.workspaceId = workspaceId;
+    this.recoveryWorkspaceId = restoreOnly ? workspaceId : null;
   }
 }
 

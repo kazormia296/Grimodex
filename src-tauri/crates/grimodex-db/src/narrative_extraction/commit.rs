@@ -80,7 +80,11 @@ use super::semantic_bindings::{
     apply_semantic_binding_upsert_in_tx, parse_semantic_binding_upsert_payload,
     OP_KIND_SEMANTIC_BINDING_UPSERT,
 };
-use super::source_revision::resolve_source_revision;
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
+use super::source_revision::{
+    is_validation_terminated, resolve_source_revision_with_validation_context,
+    validation_context, validation_terminated, ValidationTerminationReason,
+};
 use super::task_leases::with_immediate_transaction;
 use super::temporal_constraints::{
     apply_constraint_create_in_tx, parse_constraint_create_payload, OP_KIND_CONSTRAINT_CREATE,
@@ -111,6 +115,26 @@ const STATUS_UNDONE: &str = "undone";
 const STATUS_REDONE: &str = "redone";
 const STATUS_FAILED: &str = "failed";
 const STATUS_INVALIDATED: &str = "invalidated";
+
+/// Explicit owner for the frozen standalone DB/legacy adapter.  Native's
+/// production path supplies `ForegroundValidationControl`; this adapter is
+/// only used when the caller already owns the Database transaction boundary.
+struct StandaloneForegroundValidationControl;
+
+impl GraphWorkControl for StandaloneForegroundValidationControl {
+    fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // This adapter is constructed only by the public standalone transaction
+    // owner below. That owner already supplies the DB/transaction boundary
+    // required by the compatibility API, so it must explicitly opt into the
+    // full eligibility read rather than inheriting the fail-closed default
+    // used by arbitrary controls.
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
+}
 
 struct CommitPlanValidationContext<'a> {
     expected_calendar_version: Option<i64>,
@@ -151,8 +175,32 @@ pub fn narrative_extraction_prepare_commit(
     db: &Database,
     payload: PrepareCommitPayload,
 ) -> anyhow::Result<Value> {
+    // The standalone DB API is the frozen compatibility adapter used by the
+    // legacy shell and file-backed tests.  It owns the enclosing transaction
+    // for the duration of this call, so it supplies an explicit command
+    // context instead of silently falling back to `NeverStop`.
+    let mut compatibility_owner = StandaloneForegroundValidationControl;
+    narrative_extraction_prepare_commit_with_control(
+        db,
+        payload,
+        Some(&mut compatibility_owner),
+    )
+}
+
+/// Foreground lifecycle owner variant.  The borrowed control is threaded only
+/// through the whole-eligibility Source contract; it does not grant any
+/// semantic Apply authority or create a nested maintenance admission.
+pub fn narrative_extraction_prepare_commit_with_control(
+    db: &Database,
+    payload: PrepareCommitPayload,
+    control: Option<&mut dyn GraphWorkControl>,
+) -> anyhow::Result<Value> {
+    let mut lifecycle_control = control;
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            if let Some(control) = lifecycle_control.as_mut() {
+                control.check(GraphWorkStage::Source)?;
+            }
             require_narrative_apply_allowed(conn)?;
             let mut sealed_plan = sealed_plan_json(&payload)?;
             let plan_digest = digest_plan(&json!({
@@ -226,12 +274,29 @@ pub fn narrative_extraction_prepare_commit(
             )?;
             let authority_digest =
                 digest_authority_rows(conn, &payload.proposal_set_id, &applications)?;
-            let source_contract = build_source_contract(
-                conn,
-                &payload.project_id,
-                &payload.run_id,
-                &applications,
-            )?;
+            let source_contract = {
+                // The foreground command owns this borrowed validation
+                // capability for the duration of the same write transaction.
+                // It is intentionally not a maintenance re-admission.
+                let owner: &mut dyn GraphWorkControl = lifecycle_control
+                    .as_deref_mut()
+                    .ok_or_else(|| {
+                        validation_terminated(
+                            ValidationTerminationReason::ContextUnavailable,
+                            "whole-project eligibility requires a caller-owned validation context",
+                        )
+                    })?;
+                build_source_contract(
+                    conn,
+                    &payload.project_id,
+                    &payload.run_id,
+                    &applications,
+                    owner,
+                )?
+            };
+            if let Some(control) = lifecycle_control.as_mut() {
+                control.check(GraphWorkStage::Source)?;
+            }
             validate_retraction_targets(
                 conn,
                 &payload.project_id,
@@ -424,7 +489,16 @@ fn build_source_contract(
     project_id: &str,
     run_id: &str,
     applications: &[(String, String)],
+    owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<SealedSourceContract> {
+    if !owner.allows_full_eligibility() {
+        return Err(validation_terminated(
+            ValidationTerminationReason::ContextUnavailable,
+            "whole-project eligibility requires a caller-owned validation context",
+        ));
+    }
+    let mut validation = validation_context(conn, owner);
+    validation.ensure_connection(conn)?;
     let mut revision_rows = Vec::with_capacity(applications.len());
     let mut source_rows = Vec::new();
     let mut read_rows = Vec::new();
@@ -473,8 +547,8 @@ fn build_source_contract(
         }));
 
         for source in &persisted_source_basis {
-            let current = resolve_source_revision(
-                conn,
+            let current = resolve_source_revision_with_validation_context(
+                &mut validation,
                 project_id,
                 run_id,
                 &source.source_kind,
@@ -498,8 +572,8 @@ fn build_source_contract(
         }
 
         if envelope_schema_version(&envelope) == Some(2) {
-            for row in super::v2_apply_sources::load_v2_apply_sources(
-                conn,
+            for row in super::v2_apply_sources::load_v2_apply_sources_with_validation_context(
+                &mut validation,
                 project_id,
                 run_id,
                 revision_id,
@@ -534,8 +608,13 @@ fn build_source_contract(
                 .and_then(Value::as_str)
                 .map(Ok)
                 .unwrap_or_else(|| source_kind_for_read_set(kind))?;
-            let current =
-                resolve_source_revision(conn, project_id, run_id, source_kind, input_ref)?;
+            let current = resolve_source_revision_with_validation_context(
+                &mut validation,
+                project_id,
+                run_id,
+                source_kind,
+                input_ref,
+            )?;
             if let Some(expected) = object.get("revisionToken").and_then(Value::as_str) {
                 anyhow::ensure!(
                     current.revision_token == expected,
@@ -842,10 +921,28 @@ pub fn narrative_extraction_apply_commit(
     db: &Database,
     payload: ApplyCommitPayload,
 ) -> anyhow::Result<Value> {
+    let mut compatibility_owner = StandaloneForegroundValidationControl;
+    narrative_extraction_apply_commit_with_control(
+        db,
+        payload,
+        Some(&mut compatibility_owner),
+    )
+}
+
+/// Apply counterpart of [`narrative_extraction_prepare_commit_with_control`].
+pub fn narrative_extraction_apply_commit_with_control(
+    db: &Database,
+    payload: ApplyCommitPayload,
+    control: Option<&mut dyn GraphWorkControl>,
+) -> anyhow::Result<Value> {
+    let mut lifecycle_control = control;
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let timestamp = Utc::now().timestamp_millis();
 
     let apply_result = db.with_conn(|conn| {
+        if let Some(control) = lifecycle_control.as_deref_mut() {
+            control.check(GraphWorkStage::Source)?;
+        }
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         with_immediate_transaction(conn, |conn| {
             let existing =
@@ -950,12 +1047,29 @@ pub fn narrative_extraction_apply_commit(
                 existing.prepared_policy_version == Some(current_policy_version),
                 "NEX_PREPARED_POLICY_CHANGED: prepared policy version no longer matches"
             );
-            let current_source_contract = build_source_contract(
-                conn,
-                &sealed_plan.project_id,
-                &sealed_plan.run_id,
-                &applications,
-            )?;
+            let current_source_contract = {
+                // Apply revalidates the sealed contract on the same
+                // transaction and borrowed owner as its DML.  A separate
+                // connection or nested maintenance admission is forbidden.
+                let owner: &mut dyn GraphWorkControl = lifecycle_control
+                    .as_deref_mut()
+                    .ok_or_else(|| {
+                        validation_terminated(
+                            ValidationTerminationReason::ContextUnavailable,
+                            "whole-project eligibility requires a caller-owned validation context",
+                        )
+                    })?;
+                build_source_contract(
+                    conn,
+                    &sealed_plan.project_id,
+                    &sealed_plan.run_id,
+                    &applications,
+                    owner,
+                )?
+            };
+            if let Some(control) = lifecycle_control.as_deref_mut() {
+                control.check(GraphWorkStage::Source)?;
+            }
             anyhow::ensure!(
                 current_source_contract.revision_envelope_digest
                     == sealed_source_contract.revision_envelope_digest,
@@ -1544,8 +1658,24 @@ pub fn narrative_extraction_apply_commit(
                 )?;
                 let envelope: Value = serde_json::from_str(&envelope_json)?;
                 let read_set = if envelope_schema_version(&envelope) == Some(2) {
-                    super::v2_apply_sources::load_v2_apply_sources(
-                        conn,
+                    let owner: &mut dyn GraphWorkControl = lifecycle_control
+                        .as_deref_mut()
+                        .ok_or_else(|| {
+                            validation_terminated(
+                                ValidationTerminationReason::ContextUnavailable,
+                                "V2 apply source validation requires a caller-owned validation context",
+                            )
+                        })?;
+                    if !owner.allows_full_eligibility() {
+                        return Err(validation_terminated(
+                            ValidationTerminationReason::ContextUnavailable,
+                            "V2 apply source validation requires a caller-owned validation context",
+                        ));
+                    }
+                    let mut validation = validation_context(conn, owner);
+                    validation.ensure_connection(conn)?;
+                    super::v2_apply_sources::load_v2_apply_sources_with_validation_context(
+                        &mut validation,
                         &payload.project_id,
                         &payload.run_id,
                         &application.revision_id,
@@ -1846,6 +1976,13 @@ pub fn narrative_extraction_apply_commit(
     match apply_result {
         Ok(receipt) => Ok(receipt),
         Err(err) => {
+            // A lifecycle stop is neither Source absence nor an Apply
+            // failure.  Preserve the typed signal and leave the durable
+            // Prepared row retryable; string-based audit classifiers below
+            // must never turn it into failed/invalidated.
+            if is_validation_terminated(&err) {
+                return Err(err);
+            }
             let message = err.to_string();
             let invalidation = message.contains("NEX_SOURCE_")
                 || message.contains("NEX_READ_SET_DRIFT")

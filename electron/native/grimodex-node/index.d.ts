@@ -78,6 +78,21 @@ export declare class Backend {
    */
   getNarrativeMaintenanceWorkspaceBinding(): string | null
   /**
+   * Main-only, delivery-independent descriptor recovery preflight. This
+   * is intentionally callable before the main delivery ledger is touched:
+   * an existing recovery root must remain actionable even when all normal
+   * delivery records are retained at capacity.
+   */
+  reconcileNarrativeMaintenanceRecovery(requestedWorkspacePath?: string | undefined | null): Promise<string>
+  /**
+   * Main-only ACK for the replayable descriptor recovery receipt.  The
+   * descriptor and its durable responsibility were already resolved before
+   * this call; ACK only retires the process-local notification so a
+   * Freshness preflight cannot consume it before the main scheduler has
+   * observed the exact recovered binding.
+   */
+  ackNarrativeMaintenanceRecovery(descriptorId: string): string
+  /**
    * Configure the one-shot, main-only product-journey seam. The payload is
    * parsed into the shared Rust schema and validated again there; this
    * method is intentionally not present in the renderer IPC router.
@@ -108,6 +123,27 @@ export declare class Backend {
    */
   ackNarrativeMaintenanceWakeOutbox(ids: Array<string>, workspaceBinding: any): Promise<string>
   /**
+   * Register one process-local maintenance attempt against the exact
+   * workspace recovery generation. This is main-only and has no durable
+   * schema; durable Run/Task/Attempt rows remain owned by the existing
+   * maintenance runtime.
+   */
+  beginNarrativeMaintenanceAttempt(attemptId: string, workspaceBinding: any): Promise<string>
+  /**
+   * Request cancellation and wait until the Native attempt has produced a
+   * terminal receipt. A late request after FinalizeGranted observes the
+   * already-successful receipt and cannot rewrite it.
+   */
+  cancelNarrativeMaintenanceAttempt(attemptId: string, reason: string): Promise<string>
+  /**
+   * Retire a consumed Native terminal receipt.  This method is main-only
+   * and intentionally absent from the renderer/preload contract.  The
+   * registry refuses an ACK while an admitted owner or waiter still holds
+   * the receipt, so a late ACK cannot delete a result another caller is
+   * still waiting to observe.
+   */
+  ackNarrativeMaintenanceAttempt(attemptId: string): string
+  /**
    * Electron main-only serialized system-work cycle.
    *
    * The request is validated in shared Rust, then executed against one
@@ -120,6 +156,17 @@ export declare class Backend {
    * successful drain.
    */
   runNarrativeMaintenanceCycle(payload: any): Promise<string>
+  /**
+   * ACK only the Native delivery record after main has applied the
+   * structurally validated terminal result.  This retires transport state;
+   * it does not settle an unfinished Run or recovery descriptor.
+   */
+  ackNarrativeMaintenanceDelivery(sequence: number): Promise<string>
+  /**
+   * Resolve a lost admission reply without allocating another delivery
+   * record.  Main may fence only the current H+1 sequence.
+   */
+  resolveNarrativeMaintenanceDelivery(sequence: number): Promise<string>
   /**
    * Persist a scheduler delivery failure before Electron drops its
    * process-local identity. The receipt is append-only and workspace-scoped
@@ -267,6 +314,20 @@ export declare class Backend {
    */
   openWorkspace(path: string): Promise<string>
   /**
+   * Main-only, strict lifecycle snapshot. This deliberately does not call
+   * `active_database`: recovery-only and transition states must remain
+   * observable while no authority is published.
+   */
+  getWorkspaceLifecycleView(): Promise<string>
+  /**
+   * Request the idempotent Native lifecycle shutdown and publish `Closed`
+   * only after every admitted Open/Restore worker has returned.  The core
+   * still refuses the terminal transition while delivery records,
+   * descriptors, or maintenance permits remain unresolved, so a timeout
+   * or an interrupted worker cannot be mistaken for terminal proof.
+   */
+  shutdownWorkspaceLifecycle(): Promise<string>
+  /**
    * 既存 workspace 判定 (commands/workspace.rs の同名コマンドと同一実装)。
    * 軽量 stat のみなので設計どおり同期のまま (§4.2「純関数の validate 除く」)。
    */
@@ -306,7 +367,7 @@ export declare class Backend {
    * 再open時にDB由来のCodex matcherを破棄し、semantic 4-cache epochも
    * rotateして復元前DBへのlate writeを不可視にする。
    */
-  restoreBackup(fileName: string): Promise<void>
+  restoreBackup(fileName: string): Promise<string>
   /** Safe Mode中の復元候補をopaque idだけで列挙する。 */
   listRecoveryCandidates(): Promise<string>
   /** candidate idを検証し、復元前の候補メタデータを返す。 */

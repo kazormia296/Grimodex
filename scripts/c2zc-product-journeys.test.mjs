@@ -67,6 +67,7 @@ import {
   launchRestoreVerifyRebuildVerifyRestorePhaseForProductJourney,
   NARRATIVE_FRESHNESS_DISABLE_ENV,
   NARRATIVE_MAINTENANCE_FAULT_ENV,
+  NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
@@ -168,6 +169,7 @@ test("live authority snapshots preserve every cursor reservation and run field",
     semanticEpochId: "e1",
     specJson: JSON.stringify({ kind: "freshness-evaluation" }),
     outcomeSummaryJson: JSON.stringify({ throughSequenceInclusive: 2 }),
+    terminalReasonCode: null,
     createdAt: "2026-08-29T00:00:01.000Z",
     startedAt: "2026-08-29T00:00:01.000Z",
     completedAt: "2026-08-29T00:00:02.000Z",
@@ -179,6 +181,7 @@ test("live authority snapshots preserve every cursor reservation and run field",
       if (request.sql.includes("FROM narrative_extraction_runs")) {
         assert.match(request.sql, /consumer_id AS consumerId/);
         assert.match(request.sql, /spec_json AS specJson/);
+        assert.match(request.sql, /terminal_reason_code AS terminalReasonCode/);
         return { rows: [run] };
       }
       if (request.sql.includes("FROM narrative_change_events")) {
@@ -210,6 +213,51 @@ test("live authority snapshots preserve every cursor reservation and run field",
   );
 });
 
+test("live authority snapshots settle only controlled maintenance preemptions", async () => {
+  const runs = [
+    {
+      id: "freshness-run",
+      projectId: "project-e1",
+      runKind: "freshness-evaluation",
+      status: "completed",
+    },
+    {
+      id: "preempted-run",
+      projectId: "project-e1",
+      runKind: "dependency-verify",
+      status: "cancelled",
+      terminalReasonCode: NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE,
+    },
+  ];
+  const harness = {
+    invokeOk: async (_page, command, request) => {
+      if (command === "narrative_maintenance_inbox_list") return [];
+      if (request.sql.includes("FROM narrative_extraction_runs")) {
+        return { rows: runs };
+      }
+      return { rows: [] };
+    },
+  };
+
+  const settled = await readC2ZcAuthoritySnapshot(
+    harness,
+    { id: "page" },
+    "project-e1",
+  );
+  assert.equal(settled.projectSettled, true);
+
+  runs[1] = {
+    ...runs[1],
+    terminalReasonCode: "NEX_UNKNOWN_STOP",
+  };
+  const unsettled = await readC2ZcAuthoritySnapshot(
+    harness,
+    { id: "page" },
+    "project-e1",
+  );
+  assert.equal(unsettled.projectSettled, false);
+});
+
 test("live run projection preserves spec-only idle checkpoint provenance", async () => {
   const run = {
     id: "idle-freshness-run",
@@ -223,6 +271,7 @@ test("live run projection preserves spec-only idle checkpoint provenance", async
       kind: "incremental-freshness-idle-checkpoint@1",
     }),
     outcomeSummaryJson: JSON.stringify({ throughSequenceInclusive: 2 }),
+    terminalReasonCode: null,
     createdAt: "2026-08-29T00:00:01.000Z",
     startedAt: "2026-08-29T00:00:01.000Z",
     completedAt: "2026-08-29T00:00:02.000Z",
@@ -997,6 +1046,78 @@ test("C2-ZC lifecycle verifier isolates an exact four-run delta after baseline",
       label,
     );
   }
+});
+
+test("C2-ZC lifecycle verifier ignores only controlled connection preemption retries", () => {
+  const fixture = strictLifecycleRuns();
+  const preemption = {
+    ...structuredClone(fixture.runs[0]),
+    id: "verify-preempted",
+    status: "cancelled",
+    terminalReasonCode: "NEX_MAINTENANCE_CONNECTION_PREEMPTED",
+    completedAt: fixture.runs[0].completedAt,
+  };
+  const observed = [
+    fixture.runs[0],
+    preemption,
+    ...fixture.runs.slice(1),
+  ];
+  assert.doesNotThrow(() =>
+    assertC2ZcRestoreLifecycleOrder(observed, {
+      currentEpochId: "e1",
+      restoreEpochId: "e1",
+      expectedRestoreLifecycle: fixture.expectedRestoreLifecycle,
+      marker: fixture.marker,
+      rustOutcome: fixture.rustOutcome,
+      fixtureSemantic: fixtureSemantic(),
+    }),
+  );
+
+  const unknownCancellation = structuredClone(observed);
+  unknownCancellation[1].terminalReasonCode = "NEX_MAINTENANCE_INTERRUPTED";
+  assert.throws(
+    () =>
+      assertC2ZcRestoreLifecycleOrder(unknownCancellation, {
+        currentEpochId: "e1",
+        restoreEpochId: "e1",
+        expectedRestoreLifecycle: fixture.expectedRestoreLifecycle,
+        marker: fixture.marker,
+        rustOutcome: fixture.rustOutcome,
+        fixtureSemantic: fixtureSemantic(),
+      }),
+    /four|4|lifecycle|completed|order/i,
+  );
+});
+
+test("C2-ZC lifecycle verifier accepts an idle checkpoint before rebuild", () => {
+  const fixture = strictLifecycleRuns();
+  const idleCheckpoint = {
+    ...structuredClone(fixture.runs[3]),
+    id: "fresh-idle-checkpoint",
+    createdAt: fixture.times[2],
+    startedAt: fixture.times[2],
+    completedAt: fixture.times[3],
+    outcomeSummaryJson: JSON.stringify({
+      kind: "current-epoch-idle-checkpoint",
+    }),
+  };
+  const observed = [
+    fixture.runs[0],
+    idleCheckpoint,
+    fixture.runs[1],
+    fixture.runs[2],
+  ];
+
+  assert.doesNotThrow(() =>
+    assertC2ZcRestoreLifecycleOrder(observed, {
+      currentEpochId: "e1",
+      restoreEpochId: "e1",
+      expectedRestoreLifecycle: fixture.expectedRestoreLifecycle,
+      marker: fixture.marker,
+      rustOutcome: fixture.rustOutcome,
+      fixtureSemantic: fixtureSemantic(),
+    }),
+  );
 });
 
 test("C2-ZC manifest baseline is immutable and exact", () => {

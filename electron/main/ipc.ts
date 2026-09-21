@@ -45,6 +45,7 @@ import {
 } from "./windows.js";
 import {
   claimNarrativeMaintenanceForegroundRelease,
+  normalizeWorkspaceBinding,
   scheduleNarrativeMaintenanceForegroundRelease,
 } from "./narrativeMaintenance.js";
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
@@ -55,6 +56,14 @@ import type {
   MainIssuedCallerIdentity,
   ProfileEgressGate,
 } from "./profileEgress.js";
+import type {
+  NarrativeMaintenanceQuiesceLease,
+  NarrativeMaintenanceScheduler,
+} from "./narrativeMaintenance.js";
+import type {
+  NarrativeFreshnessQuiesceLease,
+  NarrativeFreshnessScheduler,
+} from "./narrativeFreshness.js";
 
 const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_create",
@@ -66,6 +75,17 @@ const MANUAL_LICENSE_COMMANDS = new Set([
   "activate_license",
   "revalidate_license",
   "deactivate_license",
+]);
+
+const WORKSPACE_SWITCH_COMMANDS = new Set([
+  "open_workspace",
+  "restore_backup",
+  "restore_recovery_candidate",
+]);
+
+const MANUAL_NARRATIVE_MAINTENANCE_COMMANDS = new Set([
+  "verify_narrative_dependency_graph",
+  "rebuild_narrative_derived_state",
 ]);
 
 // Scan publication is an import-only canonical writer. Keep it out of the
@@ -2040,6 +2060,17 @@ export function registerIpcRouter(
     LicenseValidationScheduler,
     "runManualOperation"
   >,
+  narrativeMaintenance?: Pick<
+    NarrativeMaintenanceScheduler,
+    | "quiesceForWorkspaceSwitch"
+    | "reconcileRecoveryBeforeWorkspaceOpen"
+    | "beginNarrativeMaintenanceAttempt"
+    | "cancelNarrativeMaintenanceAttempt"
+  >,
+  narrativeFreshness?: Pick<
+    NarrativeFreshnessScheduler,
+    "quiesceForWorkspaceSwitch"
+  >,
 ): void {
   const relatedScenesReconciler = createRelatedScenesReconciler({
     reconcile: async () => {
@@ -2067,6 +2098,9 @@ export function registerIpcRouter(
         ? performance.now()
         : null;
       let workspaceOpenResult: "success" | "failure" = "failure";
+      let workspaceSwitchLeases: Array<
+        NarrativeMaintenanceQuiesceLease | NarrativeFreshnessQuiesceLease
+      > = [];
       try {
         if (typeof cmd !== "string") {
           return {
@@ -2090,6 +2124,19 @@ export function registerIpcRouter(
           canonicalArgs,
           event.sender,
         );
+        // `attemptId` is a main-issued lifecycle identity. Strip any value
+        // supplied by a renderer before the profile gate and only add the
+        // exact scheduler-owned id below after admission succeeds.
+        const rendererSafeArgs =
+          MANUAL_NARRATIVE_MAINTENANCE_COMMANDS.has(cmd) &&
+          isRecord(boundArgs) &&
+          isRecord(boundArgs.payload)
+            ? (() => {
+                const { attemptId: _rendererAttemptId, ...payload } =
+                  boundArgs.payload;
+                return { ...boundArgs, payload };
+              })()
+            : boundArgs;
         const callerIdentity = profileEgress?.issueCallerIdentity(
           event.sender.id,
         );
@@ -2098,13 +2145,13 @@ export function registerIpcRouter(
         // typed commands. A number of existing Native requests deliberately
         // reject unknown fields, so an enumerable authority sidecar would
         // make otherwise valid UI calls fail their exact-key validation.
-        const dispatchArgs = callerIdentity
-          ? Object.defineProperty({ ...boundArgs }, "callerIdentity", {
+        let dispatchArgs = callerIdentity
+          ? Object.defineProperty({ ...rendererSafeArgs }, "callerIdentity", {
               value: callerIdentity,
               enumerable: false,
               configurable: true,
             })
-          : boundArgs;
+          : rendererSafeArgs;
         try {
           profileEgress?.assertInvoke(cmd, dispatchArgs);
         } catch (error) {
@@ -2126,13 +2173,148 @@ export function registerIpcRouter(
               ),
           });
         let envelope: Envelope;
+        let manualMaintenanceAttemptId: string | null = null;
         try {
+          if (WORKSPACE_SWITCH_COMMANDS.has(cmd)) {
+            const requestedWorkspacePath =
+              cmd === "open_workspace" && "path" in dispatchArgs
+                ? dispatchArgs.path
+                : undefined;
+            if (
+              cmd === "open_workspace" &&
+              (typeof requestedWorkspacePath !== "string" ||
+                requestedWorkspacePath.trim().length === 0 ||
+                requestedWorkspacePath.includes("\0"))
+            ) {
+              throw new Error(
+                "invalid args `path` for command `open_workspace`: expected a non-empty path",
+              );
+            }
+            const acquired: Array<
+              NarrativeMaintenanceQuiesceLease | NarrativeFreshnessQuiesceLease
+            > = [];
+            try {
+              const maintenanceLease =
+                await narrativeMaintenance?.quiesceForWorkspaceSwitch?.();
+              if (
+                maintenanceLease &&
+                typeof maintenanceLease === "object" &&
+                typeof maintenanceLease.resume === "function"
+              ) {
+                acquired.push(maintenanceLease);
+              }
+              const freshnessLease =
+                await narrativeFreshness?.quiesceForWorkspaceSwitch?.();
+              if (
+                freshnessLease &&
+                typeof freshnessLease === "object" &&
+                typeof freshnessLease.resume === "function"
+              ) {
+                acquired.push(freshnessLease);
+              }
+              if (typeof requestedWorkspacePath === "string") {
+                // Freshness can publish a recovery descriptor while joining.
+                // Keep both producers stopped until Native has reconciled
+                // only this Open target and main has ACKed its exact proof.
+                await narrativeMaintenance?.reconcileRecoveryBeforeWorkspaceOpen?.(
+                  requestedWorkspacePath,
+                );
+              }
+              workspaceSwitchLeases = acquired;
+            } catch (error) {
+              await Promise.all(
+                acquired.map((lease) =>
+                  Promise.resolve(lease.resume(false)).catch(() => undefined),
+                ),
+              );
+              throw error;
+            }
+          }
+          if (
+            MANUAL_NARRATIVE_MAINTENANCE_COMMANDS.has(cmd) &&
+            typeof narrativeMaintenance?.beginNarrativeMaintenanceAttempt ===
+              "function" &&
+            typeof narrativeMaintenance?.cancelNarrativeMaintenanceAttempt ===
+              "function"
+          ) {
+            const binding = normalizeWorkspaceBinding(
+              backend?.getNarrativeMaintenanceWorkspaceBinding?.(),
+            );
+            if (binding !== null) {
+              const attemptId = `manual-ipc-${randomUUID()}`;
+              await narrativeMaintenance.beginNarrativeMaintenanceAttempt(
+                attemptId,
+                binding,
+              );
+              manualMaintenanceAttemptId = attemptId;
+              if (isRecord(dispatchArgs) && isRecord(dispatchArgs.payload)) {
+                // The attempt identity is issued by main after the renderer
+                // request has passed its authority gate. Native binds the
+                // manual operation to this exact process-local attempt.
+                dispatchArgs = {
+                  ...dispatchArgs,
+                  payload: {
+                    ...dispatchArgs.payload,
+                    attemptId,
+                  },
+                };
+              } else {
+                throw new Error(
+                  "NEX_MAINTENANCE_ATTEMPT_PAYLOAD_MISSING: manual maintenance payload is unavailable",
+                );
+              }
+            }
+          }
           envelope =
             licenseValidation && MANUAL_LICENSE_COMMANDS.has(cmd)
               ? await licenseValidation.runManualOperation(dispatch)
               : await dispatch();
         } catch (error) {
           envelope = { ok: false, error: toErrorString(error) };
+        }
+        if (cmd === "restore_backup" && envelope.ok) {
+          // The renderer also consumes this operation-scoped result, but the
+          // main profile gate must see the trusted Native proof first.  A
+          // failed Restore may return `unchanged` without another
+          // `workspace:opened`; feed that proof into the same authorization
+          // owner before the next renderer invoke can mint a caller.
+          profileEgress?.observeWorkspaceLifecycleResult?.(envelope.value);
+        }
+        if (
+          manualMaintenanceAttemptId !== null &&
+          typeof narrativeMaintenance?.cancelNarrativeMaintenanceAttempt ===
+            "function"
+        ) {
+          try {
+            const receipt =
+              await narrativeMaintenance.cancelNarrativeMaintenanceAttempt(
+                manualMaintenanceAttemptId,
+                "closed",
+              );
+            const receiptRecord = isRecord(receipt) ? receipt : null;
+            const cleanup =
+              receiptRecord && isRecord(receiptRecord.cleanup)
+                ? receiptRecord.cleanup
+                : null;
+            const reusable =
+              receiptRecord?.connectionReusable === true &&
+              cleanup?.status === "clean";
+            if (!reusable && envelope.ok) {
+              envelope = {
+                ok: false,
+                error:
+                  "NEX_MAINTENANCE_CONNECTION_UNUSABLE: manual maintenance terminal receipt did not prove Native connection reuse",
+              };
+            }
+          } catch (error) {
+            const cleanupError = toErrorString(error);
+            envelope = envelope.ok
+              ? { ok: false, error: cleanupError }
+              : {
+                  ok: false,
+                  error: `${envelope.error}; ${cleanupError}`,
+                };
+          }
         }
         if (envelope.ok) {
           const resultKind = nativeDbResultKind(cmd, envelope.value);
@@ -2239,6 +2421,25 @@ export function registerIpcRouter(
               journalId,
             );
           }
+        }
+        if (workspaceSwitchLeases.length > 0) {
+          const leases = workspaceSwitchLeases;
+          workspaceSwitchLeases = [];
+          await Promise.all(
+            leases.map(async (lease) => {
+              try {
+                // Restore retained maintenance/Freshness work after the
+                // workspace switch attempt. Each lease remains closed after
+                // cleanup failure and rejects stale/overlapping resumes.
+                await lease.resume(envelope.ok);
+              } catch (resumeError) {
+                console.warn(
+                  "[narrative-maintenance] failed to resume retained workspace participants:",
+                  resumeError,
+                );
+              }
+            }),
+          );
         }
         workspaceOpenResult = envelope.ok ? "success" : "failure";
         if (!envelope.ok) {

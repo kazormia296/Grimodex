@@ -98,6 +98,37 @@ describe("narrative maintenance trigger coordinator", () => {
     coordinator.dispose();
   });
 
+  it("joins an in-flight discovery without registering work after disposal", async () => {
+    const scheduler = makeScheduler();
+    const pendingDiscovery = deferred<unknown>();
+    const discoverNarrativeMaintenanceWork = vi
+      .fn()
+      .mockReturnValue(pendingDiscovery.promise);
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      { discoverNarrativeMaintenanceWork },
+      scheduler,
+    );
+
+    coordinator.handleBackendEvent("workspace:opened", {});
+    await vi.runOnlyPendingTimersAsync();
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledOnce();
+
+    const disposal = Promise.resolve(coordinator.dispose());
+    let settled = false;
+    void disposal.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    pendingDiscovery.resolve(
+      discovery("authority-after-dispose", 2, [[backfill("late-project")]]),
+    );
+    await disposal;
+
+    expect(scheduler.requestManyWithBinding).not.toHaveBeenCalled();
+  });
+
   it("routes an expected C2-ZC NOT_READY wake through BeforeCutover discovery", async () => {
     const scheduler = makeScheduler();
     const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
@@ -897,6 +928,44 @@ describe("narrative maintenance trigger coordinator", () => {
 
     expect(scheduler.requestManyWithBinding).not.toHaveBeenCalled();
     expect(ackNarrativeMaintenanceWakeOutbox).not.toHaveBeenCalled();
+    coordinator.dispose();
+  });
+
+  it("treats lifecycle transition as a deferred wake-outbox drain", async () => {
+    const scheduler = makeScheduler();
+    const warn = vi.fn();
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => ({
+          authorityId: "authority-transition",
+          generation: 4,
+        }),
+        listNarrativeMaintenanceWakeOutbox: vi
+          .fn()
+          .mockRejectedValueOnce(
+            new Error("workspace lifecycle has active owners or unacknowledged work"),
+          )
+          .mockResolvedValueOnce([]),
+        ackNarrativeMaintenanceWakeOutbox: vi.fn(),
+        discoverNarrativeMaintenanceWork: vi.fn(),
+      },
+      scheduler,
+      { warn },
+    );
+
+    await coordinator.drainWakeOutbox();
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(coordinator.getQuiescenceState?.()).toMatchObject({
+      wakeOutboxDrainFailed: false,
+      wakeOutboxPendingRows: false,
+    });
+
+    await coordinator.drainWakeOutbox();
+    expect(coordinator.getQuiescenceState?.()).toMatchObject({
+      wakeOutboxDrainSucceeded: true,
+      wakeOutboxDrainFailed: false,
+    });
     coordinator.dispose();
   });
 

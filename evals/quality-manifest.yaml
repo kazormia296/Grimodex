@@ -16,6 +16,7 @@ lightSuites:
   - narrative-extraction
   - narrative-semantic-contract
   - nir1-entity-relation-review
+  - nir1-capacity-diagnostics
 requirements:
   - id: GDX-ROUTE-001
     title: Every production AI route is registered, routed, and assigned a verifier.
@@ -232,9 +233,16 @@ requirements:
       - electron/native/grimodex-node/src/lib.rs
       - electron/main/index.ts
       - electron/main/narrativeMaintenance.ts
+      - electron/main/narrativeMaintenanceDelivery.ts
+      - electron/main/workspaceLifecycleResult.ts
+      - electron/main/workspaceLifecycleView.ts
+      - scripts/quality/validate-lifecycle-contract.mjs
+      - electron/main/narrativeMaintenanceAttempt.ts
+      - electron/main/narrativeMaintenanceAttempt.test.ts
       - electron/main/narrativeMaintenance.test.ts
       - electron/main/narrativeMaintenance.phase1.test.ts
       - electron/main/narrativeMaintenance.followup.test.ts
+      - electron/main/narrativeMaintenance.review-fixes.test.ts
       - electron/main/narrativeMaintenance.reacceptance.test.ts
       - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
       - electron/main/narrativeMaintenance.wiring.test.ts
@@ -244,10 +252,29 @@ requirements:
       - electron/main/narrativeMaintenanceBootstrap.test.ts
       - electron/main/narrativeMaintenanceCiSeam.ts
       - electron/main/narrativeMaintenanceCiSeam.test.ts
+      - electron/main/narrativeMaintenanceShutdown.ts
+      - electron/main/narrativeMaintenanceShutdown.test.ts
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
       - electron/main/foregroundBarrierRelease.test.ts
+      - electron/main/narrativeMaintenanceDelivery.test.ts
+      - electron/main/workspaceLifecycleResult.test.ts
+      - electron/main/workspaceLifecycleView.test.ts
+      - src/features/workspace/workspaceLifecycleProjection.ts
+      - src/features/timelapse/recorder.ts
       - src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/reconciliation_envelope.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/source_revision.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/v2_apply_sources.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/source.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/revision_eligibility/freshness.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_lifecycle.rs
+      - src-tauri/crates/grimodex-db/src/workspace_lifecycle.rs
+      - src-tauri/crates/grimodex-db/src/domain_writes.rs
+      - electron/native/grimodex-node/src/workspace_lifecycle_view.rs
+      - electron/native/grimodex-node/src/state.rs
       - src-tauri/crates/grimodex-db/src/migrate.rs
       - src-tauri/crates/grimodex-db/src/backup_restore.rs
       - src-tauri/crates/grimodex-core/src/workspace_schema.rs
@@ -293,6 +320,13 @@ requirements:
       - electron/shared/nir1EntityRelationIpcContract.test.ts
       - electron/main/ipc.test.ts
       - electron/main/profileEgress.test.ts
+      - electron/main/narrativeMaintenanceDelivery.test.ts
+      - electron/main/workspaceLifecycleResult.test.ts
+      - electron/main/workspaceLifecycleView.test.ts
+      - scripts/quality/validate-lifecycle-contract.mjs
+      - src-tauri/crates/grimodex-db/src/workspace_lifecycle.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs
+      - electron/native/grimodex-node/src/workspace_lifecycle_view.rs
       - src/features/codex/CodexEntityRelationReviewDialog.test.tsx
       - src/features/codex/CodexEntityRelationReviewDialog.integration.test.tsx
       - src/features/codex/codexEntityRelationReviewApi.test.ts
@@ -779,9 +813,12 @@ requirements:
       - src-tauri/crates/grimodex-core/src/workspace_schema.rs
       - electron/main/index.ts
       - electron/main/narrativeMaintenance.ts
+      - electron/main/narrativeMaintenanceAttempt.ts
+      - electron/main/narrativeMaintenanceAttempt.test.ts
       - electron/main/narrativeMaintenance.test.ts
       - electron/main/narrativeMaintenance.phase1.test.ts
       - electron/main/narrativeMaintenance.followup.test.ts
+      - electron/main/narrativeMaintenance.review-fixes.test.ts
       - electron/main/narrativeMaintenance.reacceptance.test.ts
       - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
       - electron/main/narrativeMaintenance.wiring.test.ts
@@ -790,6 +827,8 @@ requirements:
       - electron/main/narrativeMaintenanceBootstrap.test.ts
       - electron/main/narrativeMaintenanceCiSeam.ts
       - electron/main/narrativeMaintenanceCiSeam.test.ts
+      - electron/main/narrativeMaintenanceShutdown.ts
+      - electron/main/narrativeMaintenanceShutdown.test.ts
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
       - electron/main/foregroundBarrierRelease.test.ts
@@ -808,6 +847,13 @@ requirements:
       - src/lib/tauri.ts
       - electron/main/ipc.ts
       - electron/main/profileEgress.ts
+      - electron/main/narrativeMaintenanceDelivery.ts
+      - electron/main/narrativeMaintenanceDelivery.test.ts
+      - electron/main/workspaceLifecycleResult.ts
+      - electron/main/workspaceLifecycleResult.test.ts
+      - electron/main/workspaceLifecycleView.ts
+      - electron/main/workspaceLifecycleView.test.ts
+      - src/features/workspace/workspaceLifecycleProjection.ts
       - electron/native/grimodex-node/index.d.ts
       - electron/native/grimodex-node/src/lib.rs
       - electron/shared/ipcContract.ts
@@ -1024,6 +1070,13 @@ requirements:
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
+      - evals/nir1-capacity/manifest.v1.json
+      - evals/nir1-capacity/schema.v1.json
+      - scripts/nir1-material-capacity-probe.mjs
+      - scripts/nir1-material-capacity-probe.test.mjs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_diagnostics.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs
+      - src-tauri/crates/grimodex-db/tests/nir1_capacity_binary.rs
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/eval-fixtures.test.mjs
@@ -1034,6 +1087,7 @@ requirements:
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4_review_fixes.py
+      - scripts/nir1-material-capacity-probe.test.mjs
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4_runner.py
@@ -1041,6 +1095,7 @@ requirements:
       - eval-ground-search-events
       - eval-route-search-codex
       - eval-isolation-ask-user
+      - eval-nir1-capacity-diagnostics
   - id: GDX-TRACE-001
     title: Requirements, changes, suites, results, failures, and deferred work remain linked.
     definedIn: policies/quality/iron-laws.md#GDX-TRACE-001
@@ -1149,6 +1204,7 @@ requirements:
       - eval-route-search-scenes
       - eval-narrative-runtime-authority-fail-closed
       - eval-nir1-entity-relation-review
+      - eval-nir1-capacity-diagnostics
 heavyEvaluations:
   - id: heavy-nir1-raw-retrieval-baseline
     suiteId: retrieval-grounding

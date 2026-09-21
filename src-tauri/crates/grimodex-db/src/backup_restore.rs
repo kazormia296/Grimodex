@@ -203,10 +203,26 @@ pub fn restore_backup_core(
     on_reopened: impl FnOnce(),
 ) -> AppResult<()> {
     // Serialize against open_workspace and concurrent restores.
-    let _open_guard = ws_state
+    let open_guard = ws_state
         .open_lock
         .lock()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    restore_backup_core_with_open_lock(ws_state, &open_guard, file_name, on_reopened)
+}
+
+/// Restore while the caller already owns `WorkspaceState::open_lock`.
+///
+/// The Electron maintenance owner must close admission before it begins the
+/// restore, but it must also acquire the shared open lock before doing so. A
+/// separate entry point lets that owner keep the same guard through the
+/// replacement without recursively locking `restore_backup_core`.
+pub fn restore_backup_core_with_open_lock(
+    ws_state: &WorkspaceState,
+    _open_guard: &std::sync::MutexGuard<'_, ()>,
+    file_name: &str,
+    on_reopened: impl FnOnce(),
+) -> AppResult<()> {
 
     let ws_path = {
         let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -1871,7 +1887,7 @@ mod tests {
         let state = WorkspaceState {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: AtomicBool::new(false),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: std::sync::Mutex::new(()),
         };
         (dir, state)
@@ -1919,7 +1935,7 @@ mod tests {
         WorkspaceState {
             inner: std::sync::Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: AtomicBool::new(false),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: std::sync::Mutex::new(()),
         }
     }
@@ -2037,7 +2053,7 @@ mod tests {
         let state = WorkspaceState {
             inner: std::sync::Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: AtomicBool::new(false),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: std::sync::Mutex::new(()),
         };
         assert!(list_backups(&state)
@@ -2128,7 +2144,7 @@ mod tests {
         let mismatch_state = WorkspaceState {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(mismatch_authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: AtomicBool::new(false),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: std::sync::Mutex::new(()),
         };
         set_marker(&mismatch_state, "mismatch-live");

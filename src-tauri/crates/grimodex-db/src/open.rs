@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use crate::recovery::{OpenWorkspacePayload, WorkspaceOpenOutcome};
 use crate::state::{ActiveWorkspace, GlobalSettingsPath, WorkspaceAuthority, WorkspaceState};
 use crate::workspace;
-use crate::{AppError, Database};
+use crate::{AppError, Database, WorkspaceLifecycleCompatibilityView};
 
 /// Fixed, non-sensitive stage names for the development-only native
 /// workspace-open trace. Keeping this as an enum prevents paths, identifiers,
@@ -682,16 +682,14 @@ fn is_system_directory(path: &Path) -> bool {
 /// で確実に false へ戻す。open_workspace が途中で `?` で抜けてもフラグが
 /// 立ちっぱなしにならない (立ちっぱなし = 全 DB コマンドが恒久拒否 = 文鎮化)。
 /// `backup_restore::restore_backup_core` も同じガードを使う。
-pub struct SwitchingGuard<'a>(pub &'a std::sync::atomic::AtomicBool);
+pub struct SwitchingGuard<'a>(pub &'a WorkspaceLifecycleCompatibilityView);
 
 /// Same-path reopen quiesce: wait for sole authority owner, drop the old
-/// authority (releasing its shared lease), hold the maintenance exclusive claim
-/// through open, and on pre-replace failure best-effort republish a
-/// current-schema authority via DDL-free reopen (never re-run the full
-/// Migration Supervisor).
-struct QuiescedSamePath<'a> {
-    ws_state: &'a WorkspaceState,
-    ws_path: PathBuf,
+/// authority (releasing its shared lease), and hold the maintenance exclusive
+/// claim through the explicit replacement operation.  A failed operation is
+/// left for the lifecycle supervisor to classify as RecoveryRequired; Drop
+/// never starts a new reopen or publishes an authority behind that supervisor.
+struct QuiescedSamePath {
     did_quiesce: bool,
     /// When true, Drop must not republish (Safe Mode / RecoveryRequired /
     /// successful replacement).
@@ -699,11 +697,9 @@ struct QuiescedSamePath<'a> {
     _maintenance: Option<WorkspaceMaintenanceClaim>,
 }
 
-impl<'a> QuiescedSamePath<'a> {
-    fn begin(ws_state: &'a WorkspaceState, ws_path: &Path) -> Result<Self, AppError> {
+impl QuiescedSamePath {
+    fn begin(ws_state: &WorkspaceState, ws_path: &Path) -> Result<Self, AppError> {
         let mut guard = Self {
-            ws_state,
-            ws_path: ws_path.to_path_buf(),
             did_quiesce: false,
             abandon_restore: false,
             _maintenance: None,
@@ -758,32 +754,18 @@ impl<'a> QuiescedSamePath<'a> {
     }
 }
 
-impl Drop for QuiescedSamePath<'_> {
+impl Drop for QuiescedSamePath {
     fn drop(&mut self) {
         if !self.did_quiesce || self.abandon_restore {
             return;
         }
-        // Release in-process maintenance exclusive before acquiring shared lease.
+        // Release only the in-process claim.  Starting a new DB open from Drop
+        // would bypass the lifecycle Join/activation boundary and could revive
+        // an authority while the replacement worker is still unobserved.
         self._maintenance = None;
-        match crate::migration_supervisor::reopen_existing_current_authority(&self.ws_path) {
-            Ok(opened) => {
-                let authority = Arc::new(WorkspaceAuthority::new(
-                    opened.database,
-                    self.ws_path.clone(),
-                    opened.lease,
-                ));
-                if let Ok(mut inner) = self.ws_state.inner.lock() {
-                    if inner.is_none() {
-                        *inner = Some(ActiveWorkspace::new(authority));
-                    }
-                }
-            }
-            Err(error) => {
-                tracing::error!(
-                    "WORKSPACE_REACTIVATION_FAILED during same-path pre-replace recovery: {error}"
-                );
-            }
-        }
+        tracing::warn!(
+            "workspace replacement failed after quiesce; lifecycle supervisor must own recovery"
+        );
     }
 }
 
@@ -835,6 +817,7 @@ pub fn open_workspace_sync(
         &mut trace,
         &mut traced_hook,
         &mut prepare_wal,
+        None,
     )
 }
 
@@ -848,8 +831,36 @@ pub fn open_workspace_sync_traced(
     trace: &mut NativeWorkspaceOpenTrace,
     on_swapped: &mut dyn FnMut(&mut NativeWorkspaceOpenTrace),
 ) -> Result<WorkspaceOpenOutcome, AppError> {
+    open_workspace_sync_traced_with_pre_swap(ws_state, gs_path, path, trace, on_swapped, None)
+}
+
+/// Traced open with a hook run while `open_lock` is still held before the
+/// opener can remove or publish an authority. Native main uses this narrow
+/// admission point to close the maintenance-attempt/workspace-swap race.
+///
+/// The hook must run before [`QuiescedSamePath::begin`]. Restore-only
+/// outcomes return before the normal authority-publish point below and may
+/// remove the old authority while entering Safe Mode or RecoveryRequired. A
+/// caller that needs to close another process-local admission gate therefore
+/// cannot wait until the normal publish path.
+pub fn open_workspace_sync_traced_with_pre_swap(
+    ws_state: &WorkspaceState,
+    gs_path: &GlobalSettingsPath,
+    path: &str,
+    trace: &mut NativeWorkspaceOpenTrace,
+    on_swapped: &mut dyn FnMut(&mut NativeWorkspaceOpenTrace),
+    before_swap: Option<&mut dyn FnMut() -> Result<(), AppError>>,
+) -> Result<WorkspaceOpenOutcome, AppError> {
     let mut prepare_wal = crate::open_wal::prepare_wal_for_open;
-    open_workspace_sync_impl(ws_state, gs_path, path, trace, on_swapped, &mut prepare_wal)
+    open_workspace_sync_impl(
+        ws_state,
+        gs_path,
+        path,
+        trace,
+        on_swapped,
+        &mut prepare_wal,
+        before_swap,
+    )
 }
 
 fn open_workspace_sync_impl(
@@ -861,6 +872,7 @@ fn open_workspace_sync_impl(
     prepare_wal: &mut dyn FnMut(
         &Database,
     ) -> anyhow::Result<crate::open_wal::OpenWalPreparationOutcome>,
+    mut before_swap: Option<&mut dyn FnMut() -> Result<(), AppError>>,
 ) -> Result<WorkspaceOpenOutcome, AppError> {
     // open 自体を直列化 (併走 migrate の check-then-act / 二重
     // VACUUM INTO 防止)。ロック順序は open_lock → inner → write_lock
@@ -890,6 +902,10 @@ fn open_workspace_sync_impl(
         .switching
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let _switching_guard = SwitchingGuard(&ws_state.switching);
+
+    if let Some(before_swap) = before_swap.as_mut() {
+        before_swap()?;
+    }
 
     let mut quiesced = trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
         QuiescedSamePath::begin(ws_state, &ws_path)
@@ -1197,7 +1213,7 @@ mod tests {
         let ws_state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let gs_path = GlobalSettingsPath {
@@ -1291,10 +1307,8 @@ mod tests {
 
     #[test]
     fn newest_backup_age_ignores_content_addressed_alias_when_mixed_with_timestamp_backup() {
-        let dir = std::env::temp_dir().join(format!(
-            "grimodex-auto-backup-age-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("grimodex-auto-backup-age-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let alias = format!(
             "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
@@ -1481,7 +1495,7 @@ mod tests {
         let ws_state = Arc::new(WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace::new(previous_authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         });
         let gs_path = Arc::new(GlobalSettingsPath {
@@ -1573,7 +1587,7 @@ mod tests {
         let ws_state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let gs_path = GlobalSettingsPath {
@@ -1645,7 +1659,7 @@ mod tests {
         let ws_state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let mut trace = NativeWorkspaceOpenTrace::new(false);
@@ -1660,6 +1674,7 @@ mod tests {
             &mut trace,
             &mut on_swapped,
             &mut prepare_wal,
+            None,
         );
         let error = result.expect_err("restoration failure must fail open");
         assert!(error
@@ -1688,7 +1703,7 @@ mod tests {
         let ws_state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let mut initial_hook = || {};
@@ -1810,7 +1825,7 @@ mod tests {
         let ws_state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let mut initial_hook = || {};

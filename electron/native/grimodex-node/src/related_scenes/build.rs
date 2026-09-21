@@ -1,4 +1,5 @@
 use super::*;
+use grimodex_db::narrative_extraction::{GraphWorkControl, GraphWorkStage};
 use grimodex_semantic::runtime::{
     Nir1DocumentEmbeddingOutcome, Nir1EmbeddingDocument, SemanticEmbeddingAuditBinding,
     SemanticEmbeddingIdentity,
@@ -7,6 +8,7 @@ use grimodex_semantic::runtime::{
 pub(super) fn schedule(
     state: Arc<AppState>,
     request: SemanticRequest,
+    participant: grimodex_db::workspace_lifecycle::WorkspaceParticipant,
     project: String,
 ) -> Result<()> {
     if !current_request(&state, &request)? {
@@ -24,6 +26,9 @@ pub(super) fn schedule(
     // needed index publication. Workspace/model changes still revoke the job.
     let weak_state = Arc::downgrade(&state);
     tokio::spawn(async move {
+        // Keep the workspace participant across every retry and blocking
+        // build. A transition must observe this task before publishing a
+        // replacement authority.
         loop {
             let Some(state) = weak_state.upgrade() else {
                 break;
@@ -31,8 +36,9 @@ pub(super) fn schedule(
             let work_state = state.clone();
             let work_request = request.clone();
             let work_project = project.clone();
+            let work_participant = participant.clone();
             let result = tokio::task::spawn_blocking(move || {
-                build_once(&work_state, &work_request, &work_project)
+                build_once(&work_state, &work_request, &work_participant, &work_project)
             })
             .await;
             match result {
@@ -66,6 +72,61 @@ enum BuildOutcome {
     Stopped,
 }
 
+/// The detached Chronicle build is a lifecycle participant, but the
+/// participant itself is not a full-roster validation context.  Borrow the
+/// exact pinned request and re-check its workspace/generation at every Source
+/// page and serialization boundary so a transition or shutdown can interrupt
+/// the eligibility read before publication.
+pub(super) struct RelatedScenesBuildControl<'a> {
+    state: &'a AppState,
+    request: &'a SemanticRequest,
+    participant: &'a WorkspaceParticipant,
+}
+
+impl<'a> RelatedScenesBuildControl<'a> {
+    pub(super) fn new(
+        state: &'a AppState,
+        request: &'a SemanticRequest,
+        participant: &'a WorkspaceParticipant,
+    ) -> Self {
+        RelatedScenesBuildControl {
+            state,
+            request,
+            participant,
+        }
+    }
+}
+
+impl GraphWorkControl for RelatedScenesBuildControl<'_> {
+    fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
+        use grimodex_db::narrative_extraction::{
+            validation_terminated, ValidationTerminationReason,
+        };
+        if self
+            .participant
+            .stop_requested()
+            .map_err(|error| anyhow!(error.to_string()))?
+            || self.state.ws.safe_mode.is_active()
+        {
+            return Err(validation_terminated(
+                ValidationTerminationReason::Cancelled,
+                "RELATED_SCENES_INVALIDATED",
+            ));
+        }
+        if self.state.semantic.snapshot_epoch().generation() != self.request.epoch().generation() {
+            return Err(validation_terminated(
+                ValidationTerminationReason::WorkspaceGenerationChanged,
+                "RELATED_SCENES_WORKSPACE_CHANGED",
+            ));
+        }
+        Ok(())
+    }
+
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
+}
+
 fn identity(model: SemanticEmbeddingIdentity) -> index::NirEmbeddingIdentity {
     index::NirEmbeddingIdentity {
         model_id: model.model_id,
@@ -82,13 +143,18 @@ fn audit(audit: SemanticEmbeddingAuditBinding) -> index::NirEmbeddingAuditBindin
     }
 }
 
-fn build_once(state: &AppState, request: &SemanticRequest, project: &str) -> Result<BuildOutcome> {
+fn build_once(
+    state: &AppState,
+    request: &SemanticRequest,
+    participant: &WorkspaceParticipant,
+    project: &str,
+) -> Result<BuildOutcome> {
     let started = Instant::now();
     if !current_request(state, request)? {
         return Ok(BuildOutcome::Stopped);
     }
     let db = request.database();
-    match db.with_read_transaction(|conn| {
+    match db.with_participant_read_transaction(participant, |conn| {
         db.nir_chronicle_index_runtime()
             .rebuild_requested(conn, project)
     })? {
@@ -96,8 +162,14 @@ fn build_once(state: &AppState, request: &SemanticRequest, project: &str) -> Res
         None => return Ok(BuildOutcome::Stopped),
         Some(true) => {}
     }
-    let prepared = db.with_read_transaction(|conn| {
-        index::prepare_chronicle_index_build(conn, db.nir_chronicle_index_runtime(), project)
+    let mut control = RelatedScenesBuildControl::new(state, request, participant);
+    let prepared = db.with_participant_read_transaction(participant, |conn| {
+        index::prepare_chronicle_index_build_with_control(
+            conn,
+            db.nir_chronicle_index_runtime(),
+            project,
+            &mut control,
+        )
     })?;
     let (plan, documents) = match prepared {
         index::NirIndexBuildRead::Ready { plan, documents } => (plan, documents),
@@ -111,9 +183,11 @@ fn build_once(state: &AppState, request: &SemanticRequest, project: &str) -> Res
     let model = identity(
         state
             .semantic
-            .nir1_document_embedding_identity(request, project)?,
+            .nir1_document_embedding_identity_with_control(request, project, || {
+                control.check(GraphWorkStage::Row)
+            })?,
     );
-    let mut outcomes = db.with_read_transaction(|conn| {
+    let mut outcomes = db.with_participant_read_transaction(participant, |conn| {
         index::read_reusable_chronicle_embeddings(
             conn,
             db.nir_chronicle_index_runtime(),
@@ -140,9 +214,12 @@ fn build_once(state: &AppState, request: &SemanticRequest, project: &str) -> Res
             serialized_statement_digest: doc.serialized_statement_digest.clone(),
         })
         .collect::<Vec<_>>();
-    let embedded = state
-        .semantic
-        .embed_nir1_documents(request, project, &inputs)?;
+    let embedded =
+        state
+            .semantic
+            .embed_nir1_documents_with_control(request, project, &inputs, || {
+                control.check(GraphWorkStage::Row)
+            })?;
     ensure!(
         documents.len() == embedded.len(),
         "RELATED_SCENES_DOCUMENT_OUTCOME_MISSING"
@@ -197,11 +274,13 @@ fn build_once(state: &AppState, request: &SemanticRequest, project: &str) -> Res
     if !current_request(state, request)? {
         return Ok(BuildOutcome::Stopped);
     }
-    let published = index::publish_chronicle_index_build(
+    let published = index::publish_chronicle_index_build_with_participant(
         &db,
         db.nir_chronicle_index_runtime(),
         plan,
         outcomes,
+        &mut control,
+        participant,
     )?;
     tracing::debug!(target:"grimodex::nir1_index", prepare_ms=prepared_at.duration_since(started).as_millis(),
         embedding_ms=embedded_at.duration_since(prepared_at).as_millis(),

@@ -439,6 +439,12 @@ export async function configureWorkspace(
   const launched = await harness.launch("configure");
   let closed = false;
   try {
+    // The bridge is ready before cold workspace initialization settles.
+    // Wait for its empty-recents welcome screen (behind the EULA modal) before
+    // Native Open changes settings startup could migrate from a stale snapshot.
+    await launched.page
+      .getByRole("button", { name: /日本語/, includeHidden: true })
+      .waitFor({ state: "attached" });
     await harness.invokeOk(launched.page, "open_workspace", {
       path: workspace,
     });
@@ -456,9 +462,9 @@ export async function configureWorkspace(
         },
       });
     }
-    // Create every secondary DB before global settings enable startup
-    // auto-open. Launching another renderer between these native swaps can
-    // race its startup hydration against the test-only DB preparation.
+    // Create every secondary DB in the same initialized renderer. Launching
+    // another renderer between these Native swaps would start auto-open
+    // hydration alongside the test-only DB preparation again.
     for (const additionalWorkspace of configuredWorkspaces.slice(1)) {
       await harness.invokeOk(launched.page, "open_workspace", {
         path: additionalWorkspace,

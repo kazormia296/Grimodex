@@ -34,6 +34,20 @@ interface Call {
   args: unknown[];
 }
 
+const restoreOutcomeWire = JSON.stringify({
+  status: "restored",
+  operationOutcome: "succeeded",
+  contentEffect: "replaced",
+  lifecycle: {
+    schemaVersion: 1,
+    revision: 4,
+    status: "ready",
+    bindingToken: "restore-token",
+    activation: "ready",
+  },
+  activation: "ready",
+});
+
 function mutationIdentity(requestId: string, projectId = "p1") {
   return {
     projectId,
@@ -4348,9 +4362,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
-  it("restore_backup: 安全な fileName だけを位置引数へ写像し unit を null にする", async () => {
+  it("restore_backup: 安全な fileName を位置引数へ写像し strict outcome を検証する", async () => {
     const { backend } = fakeBackend();
-    const restoreBackup = vi.fn().mockResolvedValue(undefined);
+    const restoreBackup = vi.fn().mockResolvedValue(restoreOutcomeWire);
     Object.assign(backend, { restoreBackup });
 
     for (const fileName of [
@@ -4362,7 +4376,22 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         { fileName },
         { backend, shell: noShell },
       );
-      expect(env).toEqual({ ok: true, value: null });
+      expect(env).toEqual({
+        ok: true,
+        value: {
+          status: "restored",
+          operationOutcome: "succeeded",
+          contentEffect: "replaced",
+          lifecycle: {
+            schemaVersion: 1,
+            revision: 4,
+            status: "ready",
+            bindingToken: "restore-token",
+            activation: "ready",
+          },
+          activation: "ready",
+        },
+      });
     }
 
     expect(restoreBackup.mock.calls).toEqual([

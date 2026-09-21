@@ -12,11 +12,13 @@ pub(super) fn run(
     );
     let op = &lease.data;
     let db = op.request.database();
-    let batch = db.with_read_transaction(|conn| {
-        index::qualify_chronicle_index_snapshot(
+    let mut control = build::RelatedScenesBuildControl::new(state, &op.request, &op.participant);
+    let batch = db.with_participant_read_transaction(&op.participant, |conn| {
+        index::qualify_chronicle_index_snapshot_with_control(
             conn,
             db.nir_chronicle_index_runtime(),
             &op.original,
+            &mut control,
         )
     })?;
     let index::NirQualifiedRead::Qualified(batch) = batch else {
@@ -67,7 +69,7 @@ pub(super) fn run(
             .then(ae.evidence_id().cmp(be.evidence_id()))
     });
     let mut scenes = Vec::new();
-    db.with_read_transaction(|conn| {
+    db.with_participant_read_transaction(&op.participant, |conn| {
         let language: String = conn.query_row(
             "SELECT language FROM projects WHERE id=?1",
             [op.source.project_id()],
@@ -106,8 +108,8 @@ pub(super) fn run(
             }
         }
         ensure!(
-            index::validate_chronicle_query_snapshot(
-                conn, db.nir_chronicle_index_runtime(), &batch
+            index::validate_chronicle_query_snapshot_with_control(
+                conn, db.nir_chronicle_index_runtime(), &batch, &mut control
             )?,
             "RELATED_SCENES_INVALIDATED"
         );

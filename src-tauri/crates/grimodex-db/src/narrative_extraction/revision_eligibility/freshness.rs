@@ -12,7 +12,14 @@ use super::super::dependency_edges::{consumer_dependency_set_digest, find_edges_
 use super::super::evaluator::{BuildAction, EvidenceFreshness};
 use super::super::material_membership::RevisionMaterialMembership;
 use super::super::publish_runtime::worst_edge_state_for_consumer;
-use super::super::restore_rebuild::evaluate_edge_from_db;
+use super::super::restore_rebuild::{
+    evaluate_edge_from_db, evaluate_edge_from_db_with_control,
+};
+use super::super::source_revision::{
+    is_validation_terminated, validation_terminated, ValidationContext,
+    ValidationTerminationReason,
+};
+use super::super::nir1_entity_relation_index::GraphWorkControl;
 use super::super::semantic_epoch::get_current_epoch;
 use super::{
     is_storage_error, pending, unavailable, RevisionFreshnessRead,
@@ -34,11 +41,36 @@ pub(in crate::narrative_extraction) fn read(
     project: &str,
     membership: &RevisionMaterialMembership,
 ) -> Result<RevisionFreshnessRead> {
+    read_impl(conn, project, membership, None)
+}
+
+/// Context-bound counterpart for foreground Apply and bounded Freshness.
+/// Eligibility edges are evaluated through the exact connection and finite
+/// stop owner borrowed by the caller; no nested admission or replacement
+/// connection is created here.
+#[allow(dead_code)]
+pub(in crate::narrative_extraction) fn read_with_validation_context(
+    context: &mut ValidationContext<'_, '_>,
+    project: &str,
+    membership: &RevisionMaterialMembership,
+) -> Result<RevisionFreshnessRead> {
+    let conn = context.connection();
+    let control = context.control();
+    read_impl(conn, project, membership, Some(control))
+}
+
+fn read_impl(
+    conn: &Connection,
+    project: &str,
+    membership: &RevisionMaterialMembership,
+    mut control: Option<&mut dyn GraphWorkControl>,
+) -> Result<RevisionFreshnessRead> {
     let revision = &membership.revision_id;
     match is_generic_freshness_canonical(conn) {
         Ok(true) => {}
         Ok(false) => return Ok(unavailable(Reason::CanonicalAuthorityUnavailable)),
         Err(error) if is_storage_error(&error) => return Err(error),
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(_) => return Ok(unavailable(Reason::CanonicalAuthorityUnavailable)),
     }
     let Some(epoch) = get_current_epoch(conn, project)? else {
@@ -66,6 +98,23 @@ pub(in crate::narrative_extraction) fn read(
     let edges = find_edges_by_consumer(conn, project, "proposal-revision", revision)?;
     if edges.is_empty() || edges.len() != membership.material_basis.source_basis.len() {
         return Ok(unavailable(Reason::EdgeStateUnavailable));
+    }
+    let needs_eligibility_context = edges.iter().any(|edge| {
+        edge.source_object_identity
+            .starts_with("project:nir1-chronicle-eligibility:")
+            || edge
+                .source_object_identity
+                .starts_with("project:nir1-entity-relation-eligibility:")
+    });
+    if needs_eligibility_context
+        && !control
+            .as_deref()
+            .is_some_and(|owner| owner.allows_full_eligibility())
+    {
+        return Err(validation_terminated(
+            ValidationTerminationReason::ContextUnavailable,
+            "revision Freshness eligibility requires a caller-owned validation context",
+        ));
     }
     let expected_digest =
         consumer_dependency_set_digest(conn, project, "proposal-revision", revision)?;
@@ -134,6 +183,7 @@ pub(in crate::narrative_extraction) fn read(
         Ok(Some(aggregate)) => aggregate,
         Ok(None) => return Ok(unavailable(Reason::EdgeStateUnavailable)),
         Err(error) if is_storage_error(&error) => return Err(error),
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(_) => return Ok(unavailable(Reason::EdgeStateInvalid)),
     };
     if aggregate.freshness != EvidenceFreshness::Fresh
@@ -147,6 +197,9 @@ pub(in crate::narrative_extraction) fn read(
             validate_current_evaluation_run_reference(conn, project, &epoch.id, revision, publisher)
         {
             if is_storage_error(&error) {
+                return Err(error);
+            }
+            if is_validation_terminated(&error) {
                 return Err(error);
             }
             return Ok(unavailable(Reason::PublisherInvalid));
@@ -165,9 +218,14 @@ pub(in crate::narrative_extraction) fn read(
         if owner != membership.run_id {
             return Ok(unavailable(Reason::CurrentSourceUnavailable));
         }
-        let observed = match evaluate_edge_from_db(conn, project, owner, edge) {
+        let observed_result = match control.as_deref_mut() {
+            Some(control) => evaluate_edge_from_db_with_control(conn, project, owner, edge, control),
+            None => evaluate_edge_from_db(conn, project, owner, edge),
+        };
+        let observed = match observed_result {
             Ok(observation) => observation,
             Err(error) if is_storage_error(&error) => return Err(error),
+            Err(error) if is_validation_terminated(&error) => return Err(error),
             Err(_) => return Ok(unavailable(Reason::CurrentSourceUnavailable)),
         };
         if observed.freshness != EvidenceFreshness::Fresh

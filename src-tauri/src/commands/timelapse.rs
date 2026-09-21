@@ -165,7 +165,7 @@ pub(crate) fn timelapse_layout_snapshot_record(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::{atomic::AtomicBool, Mutex};
+    use std::sync::Mutex;
 
     use serde_json::{json, Value};
     use tauri::ipc::{CallbackFn, InvokeBody};
@@ -207,7 +207,7 @@ mod tests {
             WorkspaceState {
                 inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
                 safe_mode: SafeModeState::default(),
-                switching: AtomicBool::new(false),
+                switching: grimodex_db::WorkspaceLifecycleCompatibilityView::default(),
                 open_lock: Mutex::new(()),
             },
             expected_workspace_path,

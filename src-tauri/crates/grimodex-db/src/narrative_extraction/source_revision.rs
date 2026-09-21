@@ -8,13 +8,157 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::Digest;
+use std::fmt;
 
 use super::change_feed;
 use super::project_scope_authority::load_live_project_scope_authority;
 
+/// A borrowed validation capability for a whole-eligibility read.  The
+/// connection and lifecycle owner are coupled in one value so callers cannot
+/// accidentally resolve a long roster on a different connection or silently
+/// re-admit a nested maintenance operation.  The owner is never retained by a
+/// Source result.
+pub(crate) struct ValidationConnectionScope<'conn> {
+    connection: &'conn Connection,
+}
+
+pub(crate) struct ValidationContext<'conn, 'owner> {
+    scope: ValidationConnectionScope<'conn>,
+    owner: &'owner mut dyn super::nir1_entity_relation_index::GraphWorkControl,
+}
+
+/// Explicit foreground writer owner for compatibility entry points that run
+/// inside the caller's transaction.  It is intentionally scoped to that
+/// transaction and has no authority outside it; maintenance and Native
+/// commands provide their cancelling owner instead.
+pub(crate) struct ForegroundValidationControl;
+
+impl super::nir1_entity_relation_index::GraphWorkControl for ForegroundValidationControl {
+    fn check(
+        &mut self,
+        _stage: super::nir1_entity_relation_index::GraphWorkStage,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
+}
+
+impl<'conn, 'owner> ValidationContext<'conn, 'owner> {
+    pub(crate) fn ensure_connection(&self, candidate: &Connection) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            std::ptr::eq(self.scope.connection, candidate),
+            "NEX_VALIDATION_CONTEXT_CONNECTION_MISMATCH: validation context must borrow the enclosing transaction"
+        );
+        Ok(())
+    }
+
+    pub(crate) fn control(
+        &mut self,
+    ) -> &mut dyn super::nir1_entity_relation_index::GraphWorkControl {
+        self.owner
+    }
+
+    pub(crate) fn connection(&self) -> &'conn Connection {
+        self.scope.connection
+    }
+}
+
+pub(crate) fn validation_context<'conn, 'owner>(
+    connection: &'conn Connection,
+    owner: &'owner mut dyn super::nir1_entity_relation_index::GraphWorkControl,
+) -> ValidationContext<'conn, 'owner> {
+    ValidationContext {
+        scope: ValidationConnectionScope { connection },
+        owner,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CurrentSourceRevision {
     pub revision_token: String,
+}
+
+/// A validation attempt can be stopped for reasons that are different from a
+/// Source being absent or stale.  The outer maintenance owner supplies this
+/// marker when it stops an attempt; Source, Verify, Rebuild, and disclosure
+/// readers must preserve it through their `anyhow` chains rather than turning
+/// it into an ordinary domain result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum ValidationTerminationReason {
+    ContextUnavailable,
+    Cancelled,
+    TimedOut,
+    Closed,
+    WorkspaceGenerationChanged,
+    ForegroundPreempted,
+    CleanupFailed,
+}
+
+impl ValidationTerminationReason {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::ContextUnavailable => "context-unavailable",
+            Self::Cancelled => "cancelled",
+            Self::TimedOut => "timeout",
+            Self::Closed => "closed",
+            Self::WorkspaceGenerationChanged => "workspace-generation-changed",
+            Self::ForegroundPreempted => "foreground-preempted",
+            Self::CleanupFailed => "cleanup-failed",
+        }
+    }
+}
+
+/// Typed process-local signal for an interrupted validation.  It is not a
+/// persisted authority or a replacement for the maintenance lifecycle
+/// receipt; it exists solely to stop read/verify helpers from coercing an
+/// interruption into `missing`, `stale`, `Unknown`, or a successful result.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct ValidationTerminated {
+    pub reason: ValidationTerminationReason,
+    message: String,
+}
+
+impl ValidationTerminated {
+    #[allow(dead_code)]
+    pub fn new(reason: ValidationTerminationReason, message: impl Into<String>) -> Self {
+        Self {
+            reason,
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for ValidationTerminated {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "NEX_VALIDATION_TERMINATED:{}: {}",
+            self.reason.code(),
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for ValidationTerminated {}
+
+#[allow(dead_code)]
+pub fn validation_terminated(
+    reason: ValidationTerminationReason,
+    message: impl Into<String>,
+) -> anyhow::Error {
+    anyhow::Error::new(ValidationTerminated::new(reason, message))
+}
+
+/// `anyhow` preserves this marker when callers add context.  Keep the check
+/// in one place so every reader makes the same distinction from routine
+/// Source absence/staleness.
+pub fn is_validation_terminated(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ValidationTerminated>().is_some()
 }
 
 pub(crate) fn resolve_source_revision(
@@ -53,30 +197,18 @@ pub(crate) fn resolve_source_revision(
             ensure_non_empty_token(authority.source.revision_token)
         }
         super::nir1_chronicle_index::SOURCE_KIND => {
-            anyhow::ensure!(
-                source_key == super::nir1_chronicle_index::source::source_key(project_id),
-                "NEX_SOURCE_KEY_INVALID: eligibility Source must belong to the exact project"
-            );
-            let source = if conn.is_autocommit() {
-                let tx = conn.unchecked_transaction()?;
-                super::nir1_chronicle_index::source::read_eligibility_source(&tx, project_id)?
-            } else {
-                super::nir1_chronicle_index::source::read_eligibility_source(conn, project_id)?
-            };
-            ensure_non_empty_token(source.digest)
+            let _ = (conn, project_id, run_id, source_key);
+            Err(validation_terminated(
+                ValidationTerminationReason::ContextUnavailable,
+                "Chronicle eligibility requires a caller-owned ValidationContext",
+            ))
         }
         super::nir1_entity_relation_index::SOURCE_KIND => {
-            anyhow::ensure!(
-                source_key == super::nir1_entity_relation_index::source_key(project_id),
-                "NEX_SOURCE_KEY_INVALID: Entity/Relation eligibility Source must belong to the exact project"
-            );
-            let source = if conn.is_autocommit() {
-                let tx = conn.unchecked_transaction()?;
-                super::nir1_entity_relation_index::read_eligibility_source(&tx, project_id)?
-            } else {
-                super::nir1_entity_relation_index::read_eligibility_source(conn, project_id)?
-            };
-            ensure_non_empty_token(source.digest)
+            let _ = (conn, project_id, run_id, source_key);
+            Err(validation_terminated(
+                ValidationTerminationReason::ContextUnavailable,
+                "Entity/Relation eligibility requires a caller-owned ValidationContext",
+            ))
         }
         "narrative-artifact" => resolve_narrative_artifact(conn, project_id, source_key),
         "import-capture" => resolve_import_capture(conn, source_key),
@@ -85,6 +217,104 @@ pub(crate) fn resolve_source_revision(
             "NEX_SOURCE_KIND_UNSUPPORTED: no source revision resolver is registered for '{other}'"
         ),
     }
+}
+
+/// Controlled Source re-resolution used by whole-project maintenance. The
+/// ordinary resolver remains the compatibility entry point for short reads;
+/// this variant binds the Graph eligibility Source to the caller's finite
+/// work owner so a cancellation cannot be normalized as missing or stale.
+pub(crate) fn resolve_source_revision_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    source_kind: &str,
+    source_key: &str,
+    control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<CurrentSourceRevision> {
+    control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+    if source_kind == super::nir1_entity_relation_index::SOURCE_KIND {
+        if !control.allows_full_eligibility() {
+            return Err(validation_terminated(
+                ValidationTerminationReason::ContextUnavailable,
+                "Entity/Relation eligibility requires a caller-owned validation context",
+            ));
+        }
+        anyhow::ensure!(
+            source_key == super::nir1_entity_relation_index::source_key(project_id),
+            "NEX_SOURCE_KEY_INVALID: Entity/Relation eligibility Source must belong to the exact project"
+        );
+        let source = if conn.is_autocommit() {
+            let tx = conn.unchecked_transaction()?;
+            super::nir1_entity_relation_index::read_eligibility_source_with_control(
+                &tx, project_id, control,
+            )?
+        } else {
+            super::nir1_entity_relation_index::read_eligibility_source_with_control(
+                conn, project_id, control,
+            )?
+        };
+        return ensure_non_empty_token(source.digest);
+    }
+    if source_kind == super::nir1_chronicle_index::SOURCE_KIND {
+        if !control.allows_full_eligibility() {
+            return Err(validation_terminated(
+                ValidationTerminationReason::ContextUnavailable,
+                "Chronicle eligibility requires a caller-owned validation context",
+            ));
+        }
+        anyhow::ensure!(
+            source_key == super::nir1_chronicle_index::source::source_key(project_id),
+            "NEX_SOURCE_KEY_INVALID: eligibility Source must belong to the exact project"
+        );
+        let source = if conn.is_autocommit() {
+            let tx = conn.unchecked_transaction()?;
+            super::nir1_chronicle_index::source::read_eligibility_source_with_control(
+                &tx, project_id, control,
+            )?
+        } else {
+            super::nir1_chronicle_index::source::read_eligibility_source_with_control(
+                conn, project_id, control,
+            )?
+        };
+        return ensure_non_empty_token(source.digest);
+    }
+    // Source kinds without a controlled Graph reader retain their existing
+    // canonical implementation. Re-check after it returns so a SQLite
+    // interruption or a stop arriving during that read cannot be normalized
+    // by a caller into an ordinary missing/stale diagnostic.
+    match resolve_source_revision(conn, project_id, run_id, source_kind, source_key) {
+        Ok(current) => {
+            control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+            Ok(current)
+        }
+        Err(error) if is_validation_terminated(&error) => Err(error),
+        Err(error) => {
+            control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+            Err(error)
+        }
+    }
+}
+
+/// Resolve a Source using the connection and lifecycle owner captured by
+/// [`ValidationContext`].  This is the preferred entry point for Prepare,
+/// Apply, Freshness and Chronicle maintenance callsites that may reach a
+/// whole-project eligibility roster.
+pub(crate) fn resolve_source_revision_with_validation_context(
+    context: &mut ValidationContext<'_, '_>,
+    project_id: &str,
+    run_id: &str,
+    source_kind: &str,
+    source_key: &str,
+) -> anyhow::Result<CurrentSourceRevision> {
+    let conn = context.scope.connection;
+    resolve_source_revision_with_control(
+        conn,
+        project_id,
+        run_id,
+        source_kind,
+        source_key,
+        context.control(),
+    )
 }
 
 /// Lazy-load-safe summary of a source's current state. Deliberately has no
@@ -134,10 +364,35 @@ pub(crate) fn resolve_current_source_state(
     )
 }
 
+/// Controlled counterpart for Verify/Restore paths. It deliberately shares
+/// the same missing/stale normalization as the ordinary reader while keeping
+/// `ValidationTerminated` errors intact.
+pub(crate) fn resolve_current_source_state_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    source_kind: &str,
+    source_key: &str,
+    control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<CurrentSourceState> {
+    control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+    current_source_state_from_resolution(
+        source_kind,
+        resolve_source_revision_with_control(
+            conn,
+            project_id,
+            run_id,
+            source_kind,
+            source_key,
+            control,
+        ),
+    )
+}
+
 /// Only the bounded, read-only edge batch owns this temporary authority.
 /// Each versioned Scope Source still verifies its sealed Run/document binding.
 /// Do not retain this state between batches or across a write in the caller.
-pub(super) fn resolve_current_source_state_in_batch(
+pub(super) fn resolve_current_source_state_in_batch_with_control(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
@@ -146,8 +401,10 @@ pub(super) fn resolve_current_source_state_in_batch(
     authority: &mut Option<
         grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
     >,
+    control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
 ) -> anyhow::Result<CurrentSourceState> {
     anyhow::ensure!(!conn.is_autocommit(), "Source batch requires a transaction");
+    control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
     let resolved = if source_kind == "scope-dependency-projection-v1" {
         (|| {
             if authority.is_none() {
@@ -167,7 +424,14 @@ pub(super) fn resolve_current_source_state_in_batch(
             )
         })()
     } else {
-        resolve_source_revision(conn, project_id, run_id, source_kind, source_key)
+        resolve_source_revision_with_control(
+            conn,
+            project_id,
+            run_id,
+            source_kind,
+            source_key,
+            control,
+        )
     };
     current_source_state_from_resolution(source_kind, resolved)
 }
@@ -178,6 +442,7 @@ fn current_source_state_from_resolution(
 ) -> anyhow::Result<CurrentSourceState> {
     let resolved = match resolved {
         Ok(resolved) => resolved,
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(error) if is_source_missing_error(&error) => {
             return Ok(CurrentSourceState {
                 exists: false,
@@ -918,6 +1183,27 @@ mod tests {
     }
 
     #[test]
+    fn validation_termination_survives_source_state_normalization() {
+        let error = validation_terminated(
+            ValidationTerminationReason::ForegroundPreempted,
+            "foreground work arrived while validating",
+        );
+        let normalized = current_source_state_from_resolution(
+            "scene-body",
+            Err::<CurrentSourceRevision, _>(error.context("source resolver context")),
+        )
+        .expect_err("an interruption must not become missing or stale");
+        assert!(is_validation_terminated(&normalized));
+        let marker = normalized
+            .downcast_ref::<ValidationTerminated>()
+            .expect("typed termination marker");
+        assert_eq!(
+            marker.reason,
+            ValidationTerminationReason::ForegroundPreempted
+        );
+    }
+
+    #[test]
     fn resolve_current_source_state_for_large_scene_body_never_grows_with_body_length() {
         // A ~64,000 char body. If `resolve_current_source_state` ever started
         // loading the body (e.g. to hash it for `content_digest`), the
@@ -1084,5 +1370,20 @@ mod tests {
             Ok(())
         })
         .expect("compare Codex aggregate revisions");
+    }
+
+    #[test]
+    fn eligibility_resolution_without_context_is_typed_before_sql() {
+        let conn = Connection::open_in_memory().expect("connection");
+        let error = resolve_source_revision(
+            &conn,
+            "project",
+            "run",
+            super::super::nir1_chronicle_index::SOURCE_KIND,
+            "chronicle-eligibility:project",
+        )
+        .expect_err("whole eligibility must require caller-owned context");
+        assert!(is_validation_terminated(&error));
+        assert!(error.to_string().contains("context-unavailable"));
     }
 }

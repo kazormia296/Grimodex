@@ -873,7 +873,7 @@ mod tests {
         let state = WorkspaceState {
             inner: Mutex::new(None),
             safe_mode: SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let session = SafeModeSession::from_workspace(

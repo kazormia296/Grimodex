@@ -64,6 +64,59 @@ describe("narrative maintenance deferred contract", () => {
     scheduler.dispose();
   });
 
+  it("parks deferred work when Native returns a clean interrupted terminal receipt", async () => {
+    const binding = { authorityId: "authority-deferred", generation: 4 };
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue({
+      status: "deferred",
+      hasMore: true,
+    });
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: "closed",
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
+    const scheduler = createNarrativeMaintenanceScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+    });
+
+    scheduler.request(work("verify-requested"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+    expect(scheduler.getQuiescenceState?.().timerScheduled).toBe(false);
+    expect(scheduler.getQuiescenceState?.().queueIdle).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS * 10);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+    scheduler.request(work("phase-join-opened"));
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    scheduler.dispose();
+  });
+
   it("dispatches mixed work together once the native lane accepts all automatic kinds", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()

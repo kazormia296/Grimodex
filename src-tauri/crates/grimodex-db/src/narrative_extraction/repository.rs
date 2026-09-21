@@ -14,6 +14,8 @@ use grimodex_core::{
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
 use super::c2zc_canonical_cutover::current_c2zc_run_epoch_in_tx;
@@ -30,9 +32,11 @@ use super::nir1_entity_relation::{
     NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_PROPOSAL_KIND,
     NIR1_ENTITY_RELATION_REVISION_ORIGIN, NIR1_ENTITY_RELATION_SET_KIND,
 };
+use super::nir1_entity_relation_index::GraphWorkControl;
 use super::publish_runtime::publish_complete_runless_freshness_in_tx;
 use super::restore_rebuild::evaluate_edge_from_db;
 use super::semantic_epoch::get_current_epoch;
+use super::source_revision::validation_context;
 
 /// Generation of the current Proposal Revision dependency declaration writer.
 /// This is paired with the bundled producer registry; bump both when the
@@ -53,8 +57,9 @@ use super::models::{
     ReviseAndDecidePayload, SaveProposalSetPayload,
 };
 use super::reconciliation_envelope::{
-    ensure_v2_proposal_payload_digest, envelope_schema_version, validate_envelope_source_tokens,
-    validate_reconciliation_envelope, SourceBasisRow, ORIGIN_ENVELOPED, ORIGIN_LEGACY_UNBOUND,
+    ensure_v2_proposal_payload_digest, envelope_schema_version,
+    validate_envelope_source_tokens_with_validation_context, validate_reconciliation_envelope,
+    SourceBasisRow, ORIGIN_ENVELOPED, ORIGIN_LEGACY_UNBOUND,
 };
 use super::task_leases::{
     claim_next_task, claimed_task_to_value, load_task_row, persist_task_artifacts,
@@ -70,6 +75,249 @@ const RUN_CANCELLED_ATTEMPT_FAILURE_CODE: &str = "NEX_RUN_CANCELLED";
 const RUN_CANCELLED_ATTEMPT_POLICY_VERSION: &str = "v1";
 const CHRONICLE_RUN_SPEC_KIND: &str = "chronicle.extract.run-spec@2";
 const CHRONICLE_EXISTING_EVENTS_CATALOG_KIND: &str = "chronicle.existing-events-catalog@1";
+
+#[derive(Default)]
+struct ProjectLifecycleAdmission {
+    destructive: bool,
+    creation_reservations: usize,
+}
+
+/// One process-local admission table for both sides of the project lifecycle
+/// race.  A single mutex makes "reserve a Run" and "reserve destructive
+/// delete" mutually visible; two independent maps could otherwise both
+/// observe the project as idle and cross the same boundary.
+static PROJECT_LIFECYCLE_ADMISSIONS: OnceLock<
+    Mutex<HashMap<String, ProjectLifecycleAdmission>>,
+> = OnceLock::new();
+
+fn project_lifecycle_key(namespace: &str, project_id: &str) -> String {
+    format!("{namespace}\u{0}{project_id}")
+}
+
+/// Stable namespace for a verified Database authority. The canonical path is
+/// retained for diagnostics, while the file identity distinguishes a
+/// same-path replacement. Reopening the same DB keeps both values stable;
+/// copying/replacing it produces a different key.
+pub fn project_lifecycle_namespace_for_database(
+    db: &Database,
+) -> anyhow::Result<String> {
+    db.with_conn(|conn| {
+        let path: String = conn.query_row(
+            "SELECT file FROM pragma_database_list WHERE name = 'main'",
+            [],
+            |row| row.get(0),
+        )?;
+        if path.trim().is_empty() {
+            return Ok("memory".to_owned());
+        }
+        let canonical = std::fs::canonicalize(&path)
+            .unwrap_or_else(|_| Path::new(&path).to_path_buf())
+            .to_string_lossy()
+            .into_owned();
+        let identity = super::maintenance_lifecycle::sqlite_database_file_identity(
+            Path::new(&canonical),
+        )?;
+        Ok(format!("{canonical}#{identity}"))
+    })
+}
+
+fn project_lifecycle_admissions(
+) -> &'static Mutex<HashMap<String, ProjectLifecycleAdmission>> {
+    PROJECT_LIFECYCLE_ADMISSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Process-local guard for destructive project writers.  It coordinates the
+/// lifecycle owner and the project delete path in this process only; it is
+/// deliberately not advertised as cross-process SQLite authority.
+#[allow(dead_code)]
+pub(crate) fn try_reserve_project_destructive_permit(project_id: &str) -> anyhow::Result<()> {
+    try_reserve_project_destructive_permit_in_namespace("legacy", project_id)
+}
+
+pub(crate) fn try_reserve_project_destructive_permit_in_namespace(
+    namespace: &str,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    let admissions = project_lifecycle_admissions();
+    let mut admissions = admissions
+        .lock()
+        .map_err(|error| anyhow::anyhow!("project lifecycle admissions poisoned: {error}"))?;
+    let key = project_lifecycle_key(namespace, project_id);
+    let admission = admissions.entry(key).or_default();
+    anyhow::ensure!(
+        !admission.destructive && admission.creation_reservations == 0,
+        "NEX_PROJECT_DESTRUCTIVE_BUSY: project '{project_id}' has lifecycle ownership"
+    );
+    admission.destructive = true;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) fn release_project_destructive_permit(project_id: &str) {
+    release_project_destructive_permit_in_namespace("legacy", project_id);
+}
+
+pub(crate) fn release_project_destructive_permit_in_namespace(
+    namespace: &str,
+    project_id: &str,
+) {
+    if let Ok(mut admissions) = project_lifecycle_admissions().lock() {
+        let key = project_lifecycle_key(namespace, project_id);
+        if let Some(admission) = admissions.get_mut(&key) {
+            admission.destructive = false;
+            if admission.creation_reservations == 0 {
+                admissions.remove(&key);
+            }
+        }
+    }
+}
+
+pub(crate) fn project_destructive_permit_active(project_id: &str) -> bool {
+    project_destructive_permit_active_in_namespace("legacy", project_id)
+}
+
+#[allow(dead_code)]
+pub(crate) fn project_destructive_permit_active_for_database(
+    db: &Database,
+    project_id: &str,
+) -> anyhow::Result<bool> {
+    let namespace = project_lifecycle_namespace_for_database(db)?;
+    Ok(project_destructive_permit_active_in_namespace(
+        &namespace,
+        project_id,
+    ))
+}
+
+fn project_destructive_permit_active_in_namespace(namespace: &str, project_id: &str) -> bool {
+    project_lifecycle_admissions()
+        .lock()
+        .ok()
+        .and_then(|admissions| {
+            admissions
+                .get(&project_lifecycle_key(namespace, project_id))
+                .map(|entry| entry.destructive)
+        })
+        .unwrap_or(false)
+}
+
+/// Process-local reservation count for maintenance Run creation. Destructive
+/// project writers consult this alongside the destructive permit so a project
+/// cannot be deleted between the lifecycle reservation and its first Run
+/// INSERT. This is coordination only; durable Run/lineage evidence remains
+/// mandatory for recovery and the registry is not a cross-process authority.
+pub fn try_reserve_project_creation(project_id: &str) -> anyhow::Result<()> {
+    try_reserve_project_creation_in_namespace_impl("legacy", project_id)
+}
+
+pub fn try_reserve_project_creation_for_database(
+    db: &Database,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    let namespace = project_lifecycle_namespace_for_database(db)?;
+    try_reserve_project_creation_in_namespace_impl(&namespace, project_id)
+}
+
+/// Reserve a Run creation slot when the caller already owns the database
+/// connection (for example from inside its creation transaction). Resolving
+/// the namespace through `db.with_conn` at that point would try to lock the
+/// same SQLite mutex recursively and turn a valid foreground-priority path
+/// into a synthetic maintenance preemption. The namespace must have been
+/// captured from the verified authority before the transaction began.
+pub fn try_reserve_project_creation_in_namespace(
+    namespace: &str,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    try_reserve_project_creation_in_namespace_impl(namespace, project_id)
+}
+
+fn try_reserve_project_creation_in_namespace_impl(
+    namespace: &str,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !project_id.trim().is_empty(),
+        "NEX_PROJECT_CREATION_RESERVATION_INVALID: project id is empty"
+    );
+    let admissions = project_lifecycle_admissions();
+    let mut admissions = admissions
+        .lock()
+        .map_err(|error| anyhow::anyhow!("project lifecycle admissions poisoned: {error}"))?;
+    let key = project_lifecycle_key(namespace, project_id);
+    let admission = admissions.entry(key).or_default();
+    anyhow::ensure!(
+        !admission.destructive,
+        "NEX_PROJECT_DESTRUCTIVE_BUSY: project '{project_id}' is under a destructive permit"
+    );
+    admission.creation_reservations += 1;
+    Ok(())
+}
+
+pub fn release_project_creation(project_id: &str) {
+    release_project_creation_in_namespace("legacy", project_id);
+}
+
+pub fn release_project_creation_for_handle(
+    project_id: &str,
+    database_path: Option<&str>,
+    database_file_identity: Option<&str>,
+) {
+    let namespace = match (database_path, database_file_identity) {
+        (Some(":memory:"), Some(":memory:")) => "memory".to_owned(),
+        (Some(path), Some(identity)) if !path.trim().is_empty() && !identity.trim().is_empty() => {
+            let canonical = std::fs::canonicalize(path)
+                .unwrap_or_else(|_| Path::new(path).to_path_buf())
+                .to_string_lossy()
+                .into_owned();
+            format!("{}#{}", canonical, identity)
+        }
+        _ => "legacy".to_owned(),
+    };
+    release_project_creation_in_namespace(&namespace, project_id);
+}
+
+fn release_project_creation_in_namespace(namespace: &str, project_id: &str) {
+    if let Ok(mut admissions) = project_lifecycle_admissions().lock() {
+        let key = project_lifecycle_key(namespace, project_id);
+        let Some(admission) = admissions.get_mut(&key) else {
+            return;
+        };
+        if admission.creation_reservations == 0 {
+            return;
+        }
+        admission.creation_reservations -= 1;
+        if admission.creation_reservations == 0 && !admission.destructive {
+            admissions.remove(&key);
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn project_creation_reservation_active(project_id: &str) -> bool {
+    project_creation_reservation_active_in_namespace("legacy", project_id)
+}
+
+pub(crate) fn project_creation_reservation_active_for_database(
+    db: &Database,
+    project_id: &str,
+) -> anyhow::Result<bool> {
+    let namespace = project_lifecycle_namespace_for_database(db)?;
+    Ok(project_creation_reservation_active_in_namespace(
+        &namespace,
+        project_id,
+    ))
+}
+
+fn project_creation_reservation_active_in_namespace(namespace: &str, project_id: &str) -> bool {
+    project_lifecycle_admissions()
+        .lock()
+        .ok()
+        .and_then(|admissions| {
+            admissions
+                .get(&project_lifecycle_key(namespace, project_id))
+                .map(|entry| entry.creation_reservations > 0)
+        })
+        .unwrap_or(false)
+}
 /// Canonical Review-resumability predicate shared by bounded discovery and
 /// the exact, limit-free authority query. Keep the Run alias fixed as `r` so
 /// both call sites consume the same SQL rather than parallel vocabularies.
@@ -943,6 +1191,40 @@ pub(crate) fn create_system_run_in_tx(
     reuse: SystemRunWorkKeyReuse,
     request: Option<&RunRequestIdentity<'_>>,
 ) -> anyhow::Result<Value> {
+    create_system_run_in_tx_with_reserved_id(
+        conn,
+        project_id,
+        run_kind,
+        semantic_epoch_id,
+        work_key,
+        spec_json,
+        spec_digest,
+        reuse,
+        request,
+        None,
+    )
+}
+
+/// Variant used by the common lifecycle owner when it has already reserved
+/// an exact Run identity before the creation transaction starts.  Reuse is
+/// still decided first; the reservation is only consumed for a fresh tuple.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_system_run_in_tx_with_reserved_id(
+    conn: &Connection,
+    project_id: &str,
+    run_kind: &str,
+    semantic_epoch_id: &str,
+    work_key: &str,
+    spec_json: &Value,
+    spec_digest: &str,
+    reuse: SystemRunWorkKeyReuse,
+    request: Option<&RunRequestIdentity<'_>>,
+    reserved_run_id: Option<&str>,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !project_destructive_permit_active(project_id),
+        "NEX_PROJECT_DESTRUCTIVE_BUSY: project '{project_id}' is under a destructive permit"
+    );
     // Request replay is resolved before work-key equivalence, because they
     // answer different questions: "did this exact request already run?"
     // versus "is some other Run already doing this work?". A retry of an
@@ -979,7 +1261,10 @@ pub(crate) fn create_system_run_in_tx(
     let spec_json_text = serde_json::to_string(&persisted_spec_json)?;
     let scope_json_text = serde_json::to_string(&default_object_json())?;
     let coverage_json_text = serde_json::to_string(&default_object_json())?;
-    let run_id = Uuid::new_v4().to_string();
+    let run_id = reserved_run_id
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     // Run authority is a lifecycle instant, not UUID insertion order. Keep
     // automatic/system rows strictly monotonic at the persisted millisecond
     // precision so a Verify -> Rebuild -> confirmation Verify chain created
@@ -3520,6 +3805,7 @@ fn save_chronicle_plan_proposal_set_in_tx(
     conn: &Connection,
     payload: &FinishTaskPayload,
     finish: &ChroniclePlanProposalSetFinish,
+    validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
     // Match the generic ProposalSet writer's policy boundary.  A Run may have
     // begun while extraction was allowed, but its terminal review ledger must
@@ -3533,7 +3819,7 @@ fn save_chronicle_plan_proposal_set_in_tx(
         .ok_or_else(|| {
             anyhow::anyhow!("NEX_CHRONICLE_PLAN_PROPOSAL_SET_ID_INVALID: proposalSetId is required")
         })?;
-    let saved = save_proposal_set_in_tx(conn, &finish.proposal_set)?;
+    let saved = save_proposal_set_in_tx(conn, &finish.proposal_set, validation_owner)?;
     let proposal_set_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM narrative_proposal_sets WHERE run_id = ?1 AND project_id = ?2",
         params![payload.run_id, payload.project_id],
@@ -3820,6 +4106,15 @@ fn validate_chronicle_plan_proposal_set_binding_for_resume(
 }
 
 pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<Value> {
+    let mut compatibility_owner = super::source_revision::ForegroundValidationControl;
+    finish_task_with_control(db, payload, &mut compatibility_owner)
+}
+
+pub fn finish_task_with_control(
+    db: &Database,
+    payload: FinishTaskPayload,
+    validation_owner: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
     let output_value = payload
         .output_json
         .clone()
@@ -3828,6 +4123,7 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            validation_owner.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
             ensure_generic_task_api_allowed(conn, &payload.run_id)?;
             verify_task_lease(
@@ -3912,7 +4208,9 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
             let proposal_set = payload
                 .chronicle_plan_proposal_set
                 .as_ref()
-                .map(|finish| save_chronicle_plan_proposal_set_in_tx(conn, &payload, finish))
+                .map(|finish| {
+                    save_chronicle_plan_proposal_set_in_tx(conn, &payload, finish, validation_owner)
+                })
                 .transpose()?;
 
             maybe_complete_run(conn, &payload.run_id)?;
@@ -4494,26 +4792,44 @@ fn validate_chronicle_resume_artifacts(
 }
 
 pub fn save_proposal_set(db: &Database, payload: SaveProposalSetPayload) -> anyhow::Result<Value> {
-    save_proposal_set_atomic(db, payload)
+    save_proposal_set_atomic(db, payload, None)
+}
+
+/// Foreground Native entry point. The caller owns the lifecycle stop scope;
+/// envelope eligibility is evaluated through that same transaction rather
+/// than a compatibility `NeverStop` owner.
+pub fn save_proposal_set_with_control(
+    db: &Database,
+    payload: SaveProposalSetPayload,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    save_proposal_set_atomic(db, payload, Some(control))
 }
 
 fn save_proposal_set_atomic(
     db: &Database,
     payload: SaveProposalSetPayload,
+    control: Option<&mut dyn GraphWorkControl>,
 ) -> anyhow::Result<Value> {
     anyhow::ensure!(
         payload.set_kind != NIR1_ENTITY_RELATION_SET_KIND,
         "NIR1_ENTITY_RELATION_TYPED_ADAPTER_REQUIRED: use the Native typed Entity/Relation adapter"
     );
+    let mut compatibility_owner = super::source_revision::ForegroundValidationControl;
+    let validation_owner: &mut dyn GraphWorkControl = match control {
+        Some(control) => control,
+        None => &mut compatibility_owner,
+    };
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            validation_owner.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
             require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
             anyhow::ensure!(
                 !current_chronicle_run_spec_for_run(conn, &payload.project_id, &payload.run_id)?,
                 "NEX_CHRONICLE_PLAN_PROPOSAL_SET_TYPED_FINISH_REQUIRED: current Chronicle Runs may persist ProposalSets only through chronicle.plan-proposals@1 FinishTask"
             );
-            save_proposal_set_in_tx(conn, &payload)
+            save_proposal_set_in_tx(conn, &payload, validation_owner)
         })
     })
 }
@@ -4524,6 +4840,7 @@ fn save_proposal_set_atomic(
 fn save_proposal_set_in_tx(
     conn: &Connection,
     payload: &SaveProposalSetPayload,
+    validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
     anyhow::ensure!(
         payload.set_kind != NIR1_ENTITY_RELATION_SET_KIND,
@@ -4564,6 +4881,7 @@ fn save_proposal_set_in_tx(
             &payload.run_id,
             &payload.project_id,
             proposal,
+            validation_owner,
         )?);
     }
 
@@ -4579,6 +4897,7 @@ fn insert_proposal_seed(
     run_id: &str,
     project_id: &str,
     seed: &ProposalSeed,
+    validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
     let proposal_id = seed
         .proposal_id
@@ -4623,7 +4942,13 @@ fn insert_proposal_seed(
             ensure_v2_proposal_evidence_binding(envelope, &seed.payload_json)?;
         }
         ensure_v2_proposal_payload_digest(envelope, &seed.payload_json)?;
-        validate_envelope_source_tokens(conn, project_id, run_id, envelope)?;
+        let mut validation = validation_context(conn, validation_owner);
+        validate_envelope_source_tokens_with_validation_context(
+            &mut validation,
+            project_id,
+            run_id,
+            envelope,
+        )?;
     }
     let origin_kind = if validated_envelope.is_some() {
         ORIGIN_ENVELOPED
@@ -4982,10 +5307,20 @@ pub(super) fn record_revision_dependency_edges_in_tx(
 }
 
 pub fn append_revision(db: &Database, payload: AppendRevisionPayload) -> anyhow::Result<Value> {
+    let mut compatibility_owner = super::source_revision::ForegroundValidationControl;
+    append_revision_with_control(db, payload, &mut compatibility_owner)
+}
+
+pub fn append_revision_with_control(
+    db: &Database,
+    payload: AppendRevisionPayload,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
-            append_revision_on_conn(conn, &payload)
+            control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+            append_revision_on_conn(conn, &payload, control)
         })
     })
 }
@@ -4996,6 +5331,7 @@ pub fn append_revision(db: &Database, payload: AppendRevisionPayload) -> anyhow:
 fn append_revision_on_conn(
     conn: &Connection,
     payload: &AppendRevisionPayload,
+    validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
     ensure_proposal_not_applied(conn, &payload.proposal_id)?;
     ensure_current_chronicle_proposal_set_unconsumed(conn, &payload.proposal_id)?;
@@ -5117,7 +5453,13 @@ fn append_revision_on_conn(
             "NEX_NARRATIVE_V2_ACTIVATION_DISABLED: production revision append cannot activate Envelope V2"
         );
         ensure_v2_proposal_payload_digest(envelope, &payload.payload_json)?;
-        validate_envelope_source_tokens(conn, &payload.project_id, &payload.run_id, envelope)?;
+        let mut validation = validation_context(conn, validation_owner);
+        validate_envelope_source_tokens_with_validation_context(
+            &mut validation,
+            &payload.project_id,
+            &payload.run_id,
+            envelope,
+        )?;
     }
     let origin_kind = if validated_envelope.is_some() {
         ORIGIN_ENVELOPED
@@ -5516,6 +5858,25 @@ pub fn revise_and_decide(db: &Database, payload: ReviseAndDecidePayload) -> anyh
         TrustedDecisionActor::Automated {
             actor_id: "electron:automated-review".to_string(),
         },
+        &mut super::source_revision::ForegroundValidationControl,
+    )
+}
+
+/// Native foreground variant. The revision and decision stay in one
+/// transaction, while every eligibility Source read borrows the same
+/// lifecycle-owned validation control as the caller.
+pub fn revise_and_decide_with_control(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+    validation_owner: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    revise_and_decide_with_actor(
+        db,
+        payload,
+        TrustedDecisionActor::Automated {
+            actor_id: "electron:automated-review".to_string(),
+        },
+        validation_owner,
     )
 }
 
@@ -5529,6 +5890,22 @@ pub fn revise_and_decide_as_human(
         TrustedDecisionActor::Human {
             actor_id: "electron:human-review".to_string(),
         },
+        &mut super::source_revision::ForegroundValidationControl,
+    )
+}
+
+pub fn revise_and_decide_as_human_with_control(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+    validation_owner: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    revise_and_decide_with_actor(
+        db,
+        payload,
+        TrustedDecisionActor::Human {
+            actor_id: "electron:human-review".to_string(),
+        },
+        validation_owner,
     )
 }
 
@@ -5536,10 +5913,12 @@ fn revise_and_decide_with_actor(
     db: &Database,
     payload: ReviseAndDecidePayload,
     actor: TrustedDecisionActor,
+    validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
+            validation_owner.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
             let revision_payload = AppendRevisionPayload {
                 run_id: payload.run_id.clone(),
                 project_id: payload.project_id.clone(),
@@ -5550,7 +5929,7 @@ fn revise_and_decide_with_actor(
                 reconciliation_envelope: payload.reconciliation_envelope.clone(),
                 inherit_reconciliation_envelope: payload.inherit_reconciliation_envelope.clone(),
             };
-            let revision = append_revision_on_conn(conn, &revision_payload)?;
+            let revision = append_revision_on_conn(conn, &revision_payload, validation_owner)?;
             let revision_id = revision["revisionId"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("revise_and_decide: missing revisionId"))?
@@ -6039,6 +6418,36 @@ mod unit_tests {
         SetNarrativeRuntimePolicyInput,
     };
     use serde_json::json;
+
+    #[test]
+    fn project_creation_reservations_count_and_release_without_run_id_leaks() {
+        let project_id = format!("lifecycle-reservation-{}", Uuid::new_v4());
+        assert!(!project_creation_reservation_active(&project_id));
+        try_reserve_project_creation(&project_id).expect("first reservation");
+        try_reserve_project_creation(&project_id).expect("second reservation");
+        assert!(project_creation_reservation_active(&project_id));
+        release_project_creation(&project_id);
+        assert!(project_creation_reservation_active(&project_id));
+        release_project_creation(&project_id);
+        assert!(!project_creation_reservation_active(&project_id));
+        // An extra release is a no-op, which keeps error paths idempotent.
+        release_project_creation(&project_id);
+    }
+
+    #[test]
+    fn project_creation_and_destructive_admission_share_one_boundary() {
+        let project_id = format!("lifecycle-destructive-{}", Uuid::new_v4());
+        try_reserve_project_creation(&project_id).expect("creation reservation");
+        assert!(try_reserve_project_destructive_permit(&project_id).is_err());
+        release_project_creation(&project_id);
+
+        try_reserve_project_destructive_permit(&project_id)
+            .expect("destructive reservation after creation release");
+        assert!(try_reserve_project_creation(&project_id).is_err());
+        assert!(project_destructive_permit_active(&project_id));
+        release_project_destructive_permit(&project_id);
+        assert!(!project_destructive_permit_active(&project_id));
+    }
 
     #[test]
     fn v2_evidence_binding_accepts_multiple_anchors_on_one_document() {

@@ -66,6 +66,363 @@ function commandBindings(section, command, label) {
   });
 }
 
+function extractGraphProposalSections(executionPlan) {
+  const proposalSection = executionPlan
+    .split("### R0 security contract proposal (draft)\n", 2)[1]
+    ?.split("\n### R0 lane開始判定と評価manifest", 1)[0];
+  assert.ok(proposalSection, "R0 security contract proposal must be present");
+  const graphStart = proposalSection.indexOf("#### graph-limited-binding\n");
+  const graphEnd = proposalSection.indexOf(
+    "\n#### native-generation-receipt",
+    graphStart,
+  );
+  assert.ok(graphStart >= 0, "bounded Graph proposal must be present");
+  assert.ok(graphEnd > graphStart, "bounded Graph proposal must have an end");
+  const proposal = proposalSection.slice(graphStart, graphEnd);
+  const lifecycleStart = proposal.indexOf(
+    "##### B build owner/lifecycle (proposal/5 confirmed contract)",
+  );
+  const acceptanceStart = proposal.indexOf(
+    "##### Proposal/5 acceptance split (confirmed contract)",
+  );
+  assert.ok(lifecycleStart >= 0, "Graph lifecycle matrix must be present");
+  assert.ok(acceptanceStart > lifecycleStart, "Graph acceptance split must follow lifecycle");
+  const lifecycle = proposal.slice(lifecycleStart, acceptanceStart);
+  const outsideValidationStart = lifecycle.indexOf(
+    "##### Outside-initial-build full-roster validation (proposal/5 confirmed contract)",
+  );
+  const outsideValidationEnd = lifecycle.indexOf(
+    "\n\nこの表は有限",
+    outsideValidationStart,
+  );
+  assert.ok(
+    outsideValidationStart >= 0,
+    "outside-initial-build full-roster validation must be present",
+  );
+  assert.ok(
+    outsideValidationEnd > outsideValidationStart,
+    "outside-initial-build validation must have a bounded section",
+  );
+  const outsideValidation = lifecycle.slice(
+    outsideValidationStart,
+    outsideValidationEnd,
+  );
+  const acceptanceRows = proposal.slice(acceptanceStart).split("\n");
+
+  const l7Start = executionPlan.indexOf("## L7: Entity/Relation入力とGraph\n");
+  const l8Start = executionPlan.indexOf("\n## L8:", l7Start);
+  assert.ok(l7Start >= 0, "L7 Graph section must be present");
+  assert.ok(l8Start > l7Start, "L7 Graph section must have a bounded end");
+  const l7Graph = executionPlan.slice(l7Start, l8Start);
+  const resourceStart = l7Graph.indexOf("| resource unit | scope | contract |");
+  const resourceEnd = l7Graph.indexOf("\n\nworkspace authority", resourceStart);
+  assert.ok(resourceStart >= 0, "Graph resource-unit table must be present");
+  assert.ok(resourceEnd > resourceStart, "Graph resource-unit table must have a bounded end");
+  const resourceRows = l7Graph.slice(resourceStart, resourceEnd).split("\n");
+
+  const l9Start = executionPlan.indexOf("## L9: 受入れと完了判定\n");
+  const completionStart = executionPlan.indexOf("\n### 完了区分", l9Start);
+  assert.ok(l9Start >= 0, "L9 acceptance section must be present");
+  assert.ok(completionStart > l9Start, "L9 acceptance section must have a bounded end");
+  const l9Acceptance = executionPlan.slice(l9Start, completionStart);
+  const l9GraphAcceptanceStart = l9Acceptance.indexOf("whole-project B buildは");
+  assert.ok(l9GraphAcceptanceStart >= 0, "Graph acceptance narrative must cover the whole-project build");
+
+  return {
+    proposal,
+    lifecycle,
+    outsideValidation,
+    acceptanceRows,
+    resourceRows,
+    graphAcceptanceNarrative: l9Acceptance.slice(l9GraphAcceptanceStart),
+  };
+}
+
+function validateGraphProposalContract(executionPlan) {
+  const {
+    proposal,
+    lifecycle,
+    outsideValidation,
+    acceptanceRows,
+    resourceRows,
+    graphAcceptanceNarrative,
+  } = extractGraphProposalSections(executionPlan);
+  const resourceRow = (label) => {
+    const row = resourceRows.find(
+      (line) => line.startsWith("|") && line.split("|")[1]?.trim() === label,
+    );
+    assert.ok(row, `Graph resource-unit row must define ${label}`);
+    return row;
+  };
+  const revisionResourceRow = resourceRow("Entity／Relation Revision bundle");
+  assert.match(revisionResourceRow, /512 records.*2 MiB.*validation contract/);
+  assert.doesNotMatch(revisionResourceRow, /whole-project|query totals|deadline/i);
+  const queryResourceRow = resourceRow("seed-local Graph query");
+  for (const queryBound of [
+    "read／admission `512`",
+    "batch `16x32`",
+    "SQL `100,000 VM steps`",
+    "`1,000` steps",
+    "`2 MiB`",
+    "Graph `8ms`",
+    "reader／busy wait `0`",
+  ]) {
+    assert.match(queryResourceRow, new RegExp(escapeRegExp(queryBound)));
+  }
+  const buildResourceRow = resourceRow("whole-project B Index build");
+  assert.match(
+    buildResourceRow,
+    /現在のproject全体のcandidate roster.*全候補.*small／keyset pages.*qualified material.*全件atomic publish/,
+  );
+  assert.match(
+    buildResourceRow,
+    /candidate count.*compact roster count.*cumulative bytes.*cumulative SQL.*query totalsでcapしない/,
+  );
+  assert.match(
+    buildResourceRow,
+    /full-set maintenance validation.*Source re-resolution.*is_complete_registered.*restore／cold reopen/,
+    "whole-project resource unit must include full-set maintenance validation",
+  );
+  assert.match(buildResourceRow, /supported capacityの数値は第1診断stage後まで未批准/);
+  assert.doesNotMatch(
+    buildResourceRow,
+    /(?:candidate count|compact roster count|cumulative bytes|cumulative SQL)[^|]*(?:512|100,000|2 MiB|8ms|deadline\s*[:=]|\d+ms)/i,
+    "whole-project row must not impose a numeric build cap or deadline",
+  );
+  assert.doesNotMatch(
+    proposal,
+    /(?:supported capacity|whole-project B(?: Index)? build)[^\n]*(?:=\s*`?\d+|deadline\s*(?:is|=|:)\s*`?\d+\s*(?:ms|s)?)/i,
+    "Graph proposal must not ratify a numeric whole-project build cap or deadline",
+  );
+  assert.doesNotMatch(
+    proposal,
+    /(?:persistent adjacency|新しいauthority|新しいschema|新しいconsumer)(?:は|を)\s*(?:追加する|add(?:ed|ing)?|create(?:d|s)?|introduce)/i,
+    "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
+  );
+  assert.doesNotMatch(
+    lifecycle,
+    /persistent staging(?:は|を)\s*(?:作る|追加する|使用する|persist|create|use)/i,
+    "Graph lifecycle must not create or use persistent staging",
+  );
+  assert.doesNotMatch(
+    lifecycle,
+    /(?:新しいframework|new framework)(?:は|を)\s*(?:作る|追加する|create|add|introduce)/i,
+    "Graph lifecycle must not create a new framework",
+  );
+  assert.match(proposal, /新しいauthority、schema、consumer、persistent adjacencyは追加しない/);
+  assert.match(lifecycle, /persistent stagingは作らない/);
+  assert.match(lifecycle, /新しいframework、authority、schema、consumer、persistent adjacencyを作らない/);
+
+  const maintenancePath = (label) => {
+    const row = outsideValidation
+      .split("\n")
+      .find((line) => line.startsWith(`- ${label}:`));
+    assert.ok(row, `outside full-roster validation must define ${label}`);
+    return row;
+  };
+  const sourceValidation = maintenancePath("Source re-resolution");
+  const coverageValidation = maintenancePath(
+    "complete registration/coverage verification (`is_complete_registered`)",
+  );
+  const reopenValidation = maintenancePath("restore/cold reopen verification");
+  const queryValidation = maintenancePath("future seed-local query admission");
+  const commonValidation = maintenancePath("Common cancellation／cleanup");
+  assert.match(
+    outsideValidation,
+    /各既存Native／DB maintenance entryがcaller connection、read transaction、progress hook、ownerを持ち、各full validation attemptをend-to-endでmeasurementする/,
+    "every outside-build validation path must have an existing owner, connection, transaction, and hook",
+  );
+  for (const [pathLabel, pathLine] of [
+    ["Source re-resolution", sourceValidation],
+    ["complete registration/coverage verification", coverageValidation],
+    ["restore/cold reopen verification", reopenValidation],
+  ]) {
+    assert.match(
+      pathLine,
+      /unowned／unbounded full-roster scanを開始しない/,
+      `${pathLabel} must reject unowned or unbounded scanning`,
+    );
+    assert.doesNotMatch(
+      pathLine,
+      /full-roster scanを開始する/,
+      `${pathLabel} must not permit an unowned or unbounded scan`,
+    );
+  }
+  assert.match(
+    sourceValidation,
+    /current Sourceを再解決/,
+    "Source re-resolution must be explicit",
+  );
+  assert.match(
+    coverageValidation,
+    /全件registration／coverageを検証/,
+    "registration and coverage verification must be complete",
+  );
+  assert.match(
+    reopenValidation,
+    /sealed generation、Source、D1、complete rosterを再検証/,
+    "restore and cold reopen must validate the complete sealed binding",
+  );
+  assert.match(
+    queryValidation,
+    /canonical seed-local queryはactiveではなく.*queryはvalidation read transactionへsynchronously入らない.*Graph unavailable／contribution `0`.*existing R\+IR／exact-R fallback.*query budget／protections.*別の既存Native／DB maintenance entryへowned validation／rebuildをrequest.*後続queryだけがcurrent sealed bindingを使う/s,
+    "query-triggered validation must be deferred to an owned maintenance entry",
+  );
+  assert.doesNotMatch(
+    queryValidation,
+    /queryはvalidation read transactionへsynchronously入る/,
+    "query must not synchronously enter a validation transaction",
+  );
+  assert.match(
+    commonValidation,
+    /admission closure.*actual statement termination／error evidence.*transaction rollback／close.*hook reset.*reader／handles／buffers release.*retry／reentrant admission/,
+    "outside full-roster validation must own terminal cleanup and retry",
+  );
+  assert.match(
+    commonValidation,
+    /bounded `1,000` VM-step cadenceとRust boundaries.*nested resolverはouter owner／connection hookを継承してhookをinstall／overwrite／resetせず、rollback／closeはouter ownerが実行しnested resolverはterminal statusをpropagateするだけ/,
+    "nested resolvers must inherit the outer hook and transaction owner",
+  );
+  assert.match(
+    commonValidation,
+    /cancel／timeout／closedはper-edge missing／diagnosticやsuccessful verificationへcoerceせずwhole attemptをterminateする/,
+    "cancellation must terminate the whole maintenance attempt",
+  );
+  assert.match(
+    proposal,
+    /Outside-initial-build full-set validation:.*Source re-resolution.*is_complete_registered.*restore／cold reopen.*caller connection／read transaction.*progress hook/is,
+    "Graph mandatory defenses must bind outside-build validation to existing owners",
+  );
+  assert.match(
+    proposal,
+    /final-publication commit cutoff is separate from run creation and intermediate report commits.*FinalizeGranted.*final Graph generation publish commit.*final Verify／Rebuild success transaction.*late cancel cannot rewrite success/is,
+    "final publication must close cancellation separately from run commits",
+  );
+  assert.match(
+    proposal,
+    /background no-wait try-lock.*continuous shared-connection occupation.*foreground request arriving.*next page／row／A2／D1-edge／digest／serialization boundary.*ends the transaction and releases the connection.*Rust loops.*without waiting for another SQL statement/s,
+    "acquired connection occupation and Rust-loop cancellation must be bounded",
+  );
+  assert.match(
+    proposal,
+    /Cleanup failure is terminal for reuse.*is_autocommit.*connectionReusable=true.*marks the process-local connection `unusable`.*no retry on that connection.*existing workspace reopen path.*auto-rollback.*autocommit/s,
+    "cleanup failure must quarantine the connection",
+  );
+  assert.match(
+    proposal,
+    /測定形状は材料数だけでなくRevision数.*Evidence shared／unique.*ineligible候補.*report-heavy.*同じpreseed済みfile-backed DB copyとfresh subprocess.*warmupを既存Indexのrebuildと混ぜない/s,
+    "capacity measurement must vary input shape and isolate fresh subprocess runs",
+  );
+  assert.match(
+    proposal,
+    /Evidenceは`evidence_ref`.*`source_key`／`revision_token`.*roster→D1／V1 dependency→Freshness→Verify→Restore→cold reopen/s,
+    "Evidence identity must round-trip through downstream validation",
+  );
+  assert.match(
+    proposal,
+    /existing Full maintenance journeys.*Journey対象外.*new Journey implementation and NIR-1 product activation.*requested and effective model／effort.*effective metadata is unavailable.*`unavailable`.*never infer/i,
+    "Full maintenance journeys and effective review metadata must remain explicit",
+  );
+
+  const requiredMemoryPatterns = [
+    /buildには`mandatory end-to-end peak memory for the full build-through-publish interval`.*prepare／A2 qualificationからpublish＋cleanupまで/,
+    /各full-set maintenance pathにも個別のend-to-end peak total memory/,
+    /roster bytesとRevision-ID overheadはcomponents onlyとして別に報告する/,
+    /snapshot roster＋dependency edges/,
+    /A2 row／JSON／parsed bundle／material/,
+    /rescan roster＋edges/,
+    /digest／serialization/,
+    /D1 prepared／digest／verification collections/,
+    /edge observations／states/,
+    /DB／statement／cache/,
+    /container capacity／temp copies/,
+    /simultaneous high-water mark.*documented conservative upper bound/,
+    /method／coverage／uncertainty/,
+    /unaccounted major structureがあればcapacity decisionをしてはならない/,
+  ];
+  for (const memoryPattern of requiredMemoryPatterns) {
+    assert.match(
+      proposal,
+      memoryPattern,
+      "full build and maintenance memory accounting must cover every major retained structure",
+    );
+  }
+  assert.match(
+    graphAcceptanceNarrative,
+    /buildの`mandatory end-to-end peak memory for the full build-through-publish interval`.*各full-set maintenance validation attemptの個別end-to-end peak total memory.*roster bytesとRevision-ID overheadはcomponents only/is,
+    "L9 capacity metrics must require end-to-end memory for build and maintenance",
+  );
+  assert.match(
+    graphAcceptanceNarrative,
+    /Full-set maintenance validationも同じproposal\/5 resource／lifecycle contract.*Source re-resolution.*is_complete_registered／coverage.*restore／cold reopen.*別の既存Native／DB maintenance entry.*queryはvalidation transactionへsynchronously入らず.*Graph unavailable／contribution `0`.*cancel／timeout／closedはwhole attemptをterminateする/s,
+    "L9 acceptance must bind maintenance validation and query fallback to the same contract",
+  );
+
+  const phaseTableStart = lifecycle.indexOf("| phase | statement / read transaction |");
+  const phaseTableEnd = lifecycle.indexOf("\nこの表は有限", phaseTableStart);
+  assert.ok(phaseTableStart >= 0, "Graph phase lifecycle table must be present");
+  assert.ok(phaseTableEnd > phaseTableStart, "Graph phase lifecycle table must have a bounded end");
+  const phaseRows = lifecycle.slice(phaseTableStart, phaseTableEnd).split("\n");
+  const phaseRow = (phase) => {
+    const row = phaseRows.find(
+      (line) => line.startsWith("|") && line.split("|")[1]?.trim() === phase,
+    );
+    assert.ok(row, `Graph phase lifecycle row must define ${phase}`);
+    return row;
+  };
+  for (const [phase, statementPattern] of [
+    ["prepare", /prepare statement/],
+    ["page", /page.*statement/],
+    ["source/coverage", /Source re-resolution.*complete registration\/coverage verification/],
+    ["reopen/query", /restore／cold reopen.*full-roster verification.*query/],
+    ["publish", /complete-rescan statement/],
+  ]) {
+    const row = phaseRow(phase);
+    assert.match(row, statementPattern);
+    for (const hookRequirement of [
+      /connection-level progress hook/,
+      /bounded `1,000` VM-step cadence/,
+      /Rust boundary/,
+    ]) {
+      assert.match(row, hookRequirement);
+    }
+  }
+
+  const acceptanceRow = (label) => {
+    const normalizedLabel = label.replaceAll("`", "");
+    const row = acceptanceRows.find(
+      (line) =>
+        line.startsWith("|") &&
+        line.split("|")[1]?.replaceAll("`", "").trim() === normalizedLabel,
+    );
+    assert.ok(row, `Graph acceptance row must define ${label}`);
+    return row;
+  };
+  const materialRow = acceptanceRow(
+    ">512 qualified material records across multiple individually valid Revisions",
+  );
+  assert.match(materialRow, /entities\.len \+ relations\.len \+ material_basis\.evidence_set\.len/);
+  assert.match(materialRow, /各 Entity／Relation／Evidence entryを各1件として数える/);
+  assert.match(materialRow, /Entity-only bundleもvalid/);
+  assert.doesNotMatch(materialRow, /Entity \+ Relation \+ Evidence|record\s*=\s*|組|tuple/i);
+  assert.match(materialRow, /exact complete roster.*Entity／Relation／Evidenceの全record.*no missing／no duplicates/);
+  const decoyRow = acceptanceRow(">512 unrelated/ineligible candidate Revisions");
+  assert.match(decoyRow, /Source／Decision／Freshness／Scope不一致.*qualificationから除外/);
+  assert.match(decoyRow, /exact roster.*不変/);
+  const rosterRow = acceptanceRow("exact roster invariance");
+  assert.match(rosterRow, /Entity／Relation／Evidenceの各recordを全件・同一順序.*missing／duplicateなし/);
+  assert.match(
+    graphAcceptanceNarrative,
+    /qualified material record count = `entities\.len \+ relations\.len \+ material_basis\.evidence_set\.len`.*各 Entity／Relation／Evidence entryを各1件.*Entity-only bundleもvalid.*Revision-ID overhead.*exact complete roster.*no missing／no duplicates/,
+  );
+  assert.doesNotMatch(
+    graphAcceptanceNarrative,
+    /(?:whole-project B build|supported capacity|supported work size|build memory|build SQL|deadline)[^\n]*(?:(?:cap|limit|max(?:imum)?)\b[^\n]*\d|deadline\s*[:=]?\s*\d|(?:build memory|build SQL)\s*[:=]?\s*`?\d)/i,
+    "Graph acceptance must not ratify a numeric whole-project build cap or deadline",
+  );
+  return true;
+}
+
 function checkIgnore(filePath) {
   const result = spawnSync(
     "git",
@@ -692,15 +1049,15 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   assert.match(executionPlan, /PR-R0.*履歴台帳と評価契約の固定/is);
   assert.match(
     executionPlan,
-    /基点:\s*master@81d0390fe7a935191753b41e5673503f99d51d16/,
+    /基点:\s*master@9f6aba5f/,
   );
   assert.match(
     executionPlan,
-    /Tree:\s*0decaab5470c2408be81856ac2373b28e078b945/,
+    /Tree:\s*b7f97fc7dbbb5243da090b41dbc884ecfdc0ec2b/,
   );
   assert.match(
     executionPlan,
-    /2026-09-16現在.*PR #591.*A2.*通常準備.*Evidence.*immutable Revision.*明示Decision.*cold reopen/is,
+    /2026-09-17現在.*#596\/\#597 foundations.*#598 A3 review remediation.*masterにある.*Graph.*Packing.*AI dispatch.*未activate.*B.*capacity-remediation-in-progress.*proposal\/5.*確認済み/is,
   );
   assert.match(executionPlan, /Graph.*Packing.*未activate.*downstream threat model.*draft/is);
   assert.match(executionPlan, /NIR-1全体.*未完了/);
@@ -779,6 +1136,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
 
   const proposal3Ref = "nir1-l6-l9-contract-proposal/3";
   const typedDraftRef = "nir1-l6-l9-contract-proposal/4";
+  const graphDraftRef = "nir1-l6-l9-contract-proposal/5";
   const confirmedContractIds = [
     "scope-storage-authority",
     "caller-profile-egress",
@@ -788,7 +1146,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     "history-reauthorization",
   ];
   const confirmedRefFor = (contractId) =>
-    `${contractId === "typed-revision-material" ? typedDraftRef : proposal3Ref}#${contractId}`;
+    `${contractId === "typed-revision-material" ? typedDraftRef : contractId === "graph-limited-binding" ? graphDraftRef : proposal3Ref}#${contractId}`;
   const ledgerSection = executionPlan
     .split("### 契約別の確認台帳\n", 2)[1]
     ?.split("\n### R0 security contract proposal (draft)", 1)[0];
@@ -807,7 +1165,26 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     const confirmedRef = cells[2].replaceAll("`", "");
     if (confirmedContractIds.includes(contractId)) {
       assert.equal(confirmedRef, confirmedRefFor(contractId));
-      if (contractId === "typed-revision-material") {
+      if (contractId === "graph-limited-binding") {
+        assert.equal(draftRef, graphDraftRef);
+        assert.match(
+          cells[3],
+          /proposal\/5 confirmed scope.*(?:three resource unit|三つのresource unit).*finalized P2 boundaries/,
+        );
+        assert.match(
+          cells[4],
+          /none.*proposal\/5 is explicitly confirmed.*capacity remediation.*no supported capacity number/,
+        );
+        assert.equal(cells[6], "capacity-remediation-in-progress");
+        assert.match(
+          cells[7],
+          /exact confirmation is recorded.*B\/C remain blocked.*measurement.*product activation/,
+        );
+        assert.match(
+          cells[8],
+          /I confirm draftRef nir1-l6-l9-contract-proposal\/5 for contractId graph-limited-binding\./,
+        );
+      } else if (contractId === "typed-revision-material") {
         assert.equal(draftRef, typedDraftRef);
         assert.match(
           cells[3],
@@ -832,10 +1209,15 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         assert.match(cells[3], /proposal\/3 scope only/);
         assert.equal(cells[6], "ready-after-R0-merge");
       }
-      if (contractId !== "typed-revision-material") {
+      if (
+        contractId !== "typed-revision-material" &&
+        contractId !== "graph-limited-binding"
+      ) {
         assert.match(cells[7], /explicit user confirmation recorded/);
       }
-      assert.match(cells[8], new RegExp(escapeRegExp(confirmedRefFor(contractId))));
+      if (contractId !== "graph-limited-binding") {
+        assert.match(cells[8], new RegExp(escapeRegExp(confirmedRefFor(contractId))));
+      }
     } else {
       assert.fail(`${contractId} should be explicitly confirmed`);
     }
@@ -844,8 +1226,13 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   assert.equal(ledgerRows.length, 6);
   assert.equal(
     ledgerRows.filter((row) => row.includes("ready-after-R0-merge")).length,
-    6,
-    "all six explicitly confirmed contract rows are effective after the R0 merge",
+    5,
+    "the five confirmed baseline/typed contract rows are effective after the R0 merge",
+  );
+  assert.equal(
+    ledgerRows.filter((row) => row.includes("capacity-remediation-in-progress")).length,
+    1,
+    "the graph row remains in capacity remediation after proposal/5 confirmation",
   );
   assert.match(
     executionPlan,
@@ -857,7 +1244,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
 
   const proposalSection = executionPlan
     .split("### R0 security contract proposal (draft)\n", 2)[1]
-    ?.split("\n### lane開始判定と評価manifest", 1)[0];
+    ?.split("\n### R0 lane開始判定と評価manifest", 1)[0];
   assert.ok(proposalSection, "R0 security contract proposal must be present");
   assert.match(
     proposalSection,
@@ -866,13 +1253,14 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   for (const confirmationRule of [
     /Confirmation protocol.*only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that one row/is,
     /stable ledger form is `draftRef#contractId`/,
-    /five.*refs.*record separate confirmations.*exactly `scope-storage-authority`.*`caller-profile-egress`.*`graph-limited-binding`.*`native-generation-receipt`.*`history-reauthorization`/is,
+    /four.*refs.*record separate confirmations.*exactly `scope-storage-authority`.*`caller-profile-egress`.*`native-generation-receipt`.*`history-reauthorization`/is,
     /Plan agreement.*not a ratification/is,
     /active goal.*not a ratification/is,
     /merge instruction.*not a ratification/is,
     /this proposal is fine.*not a ratification/is,
     /Confirming one row does not confirm its dependencies/i,
     /user-selected Option B family is concrete.*independently ratified.*typed-revision-material.*nir1-l6-l9-contract-proposal\/4/is,
+    /proposal\/5 graph capacity delta requires the separate exact statement.*nir1-l6-l9-contract-proposal\/5.*graph-limited-binding/is,
     /confirmation is limited to the Entity／Relation-only family.*never widens to a generic consumer／authority/is,
   ]) {
     assert.match(proposalSection, confirmationRule);
@@ -880,6 +1268,10 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   assert.match(
     proposalSection,
     /I confirm draftRef nir1-l6-l9-contract-proposal\/4 for contractId typed-revision-material\./,
+  );
+  assert.match(
+    proposalSection,
+    /I confirm draftRef nir1-l6-l9-contract-proposal\/5 for contractId graph-limited-binding\./,
   );
   assert.match(
     proposalSection,
@@ -929,12 +1321,21 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       "Recovery",
       contractId === "typed-revision-material"
         ? "Lane unlocked after normal dependencies"
-        : "Lane unlocked if confirmed",
+        : contractId === "graph-limited-binding"
+          ? "Lane unlocked only after exact proposal/5 confirmation"
+          : "Lane unlocked if confirmed",
     ];
     for (const acceptanceField of acceptanceFields) {
       assert.match(
         proposal,
-        new RegExp(`${escapeRegExp(acceptanceField)}:`, "i"),
+        new RegExp(
+          `${escapeRegExp(acceptanceField)}${
+            acceptanceField === "Lane unlocked only after exact proposal/5 confirmation"
+              ? ""
+              : ":"
+          }`,
+          "i",
+        ),
         `${contractId} must define ${acceptanceField}`,
       );
     }
@@ -976,6 +1377,287 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         }
       }
       assert.match(proposal, /Threshold changes require reconfirmation/);
+      validateGraphProposalContract(executionPlan);
+      const mutateBoundedGraphProposal = (mutator) => {
+        const graphStart = executionPlan.indexOf("#### graph-limited-binding\n");
+        const graphEnd = executionPlan.indexOf(
+          "\n#### native-generation-receipt",
+          graphStart,
+        );
+        assert.ok(graphStart >= 0, "mutation target Graph proposal must be present");
+        assert.ok(graphEnd > graphStart, "mutation target Graph proposal must be bounded");
+        const boundedProposal = executionPlan.slice(graphStart, graphEnd);
+        const mutatedProposal = mutator(boundedProposal);
+        assert.notEqual(
+          mutatedProposal,
+          boundedProposal,
+          "Graph mutation must change the bounded proposal section",
+        );
+        return `${executionPlan.slice(0, graphStart)}${mutatedProposal}${executionPlan.slice(graphEnd)}`;
+      };
+      const graphMutationCases = [
+        {
+          label: "numeric supported capacity",
+          expected: "Graph proposal must not ratify a numeric whole-project build cap or deadline",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "\n##### Proposal/5 acceptance split (confirmed contract)",
+              "\nsupported capacity = 2048 records\n##### Proposal/5 acceptance split (confirmed contract)",
+            ),
+        },
+        {
+          label: "numeric whole-project deadline",
+          expected: "Graph proposal must not ratify a numeric whole-project build cap or deadline",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "\n##### Proposal/5 acceptance split (confirmed contract)",
+              "\nwhole-project B build deadline is 8ms\n##### Proposal/5 acceptance split (confirmed contract)",
+            ),
+        },
+        {
+          label: "persistent staging",
+          expected: "Graph lifecycle must not create or use persistent staging",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace("persistent stagingは作らない", "persistent stagingを作る"),
+        },
+        {
+          label: "persistent adjacency",
+          expected: "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace("persistent adjacencyは追加しない", "persistent adjacencyを追加する"),
+        },
+        {
+          label: "new authority",
+          expected: "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "新しいauthority、schema、consumer、persistent adjacencyは追加しない",
+              "新しいauthorityを追加する",
+            ),
+        },
+        {
+          label: "new schema",
+          expected: "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "新しいauthority、schema、consumer、persistent adjacencyは追加しない",
+              "新しいschemaを追加する",
+            ),
+        },
+        {
+          label: "new consumer",
+          expected: "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "新しいauthority、schema、consumer、persistent adjacencyは追加しない",
+              "新しいconsumerを追加する",
+            ),
+        },
+        {
+          label: "new framework",
+          expected: "Graph lifecycle must not create a new framework",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "新しいframework、authority、schema、consumer、persistent adjacencyを作らない",
+              "新しいframeworkを作る",
+            ),
+        },
+        {
+          label: "unowned Source full scan",
+          expected: "Source re-resolution must reject unowned or unbounded scanning",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "Source re-resolution: maintenance entryのowner／caller connection／read transaction／progress hookでcurrent Sourceを再解決し、unowned／unbounded full-roster scanを開始しない",
+              "Source re-resolution: maintenance entryのowner／caller connection／read transaction／progress hookでcurrent Sourceを再解決し、unowned／unbounded full-roster scanを開始する",
+            ),
+        },
+        {
+          label: "unowned coverage full scan",
+          expected: "complete registration/coverage verification must reject unowned or unbounded scanning",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "complete registration/coverage verification (`is_complete_registered`): 同じowned validation attemptで全件registration／coverageを検証し、unowned／unbounded full-roster scanを開始しない",
+              "complete registration/coverage verification (`is_complete_registered`): 同じowned validation attemptで全件registration／coverageを検証し、unowned／unbounded full-roster scanを開始する",
+            ),
+        },
+        {
+          label: "unowned reopen full scan",
+          expected: "restore/cold reopen verification must reject unowned or unbounded scanning",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "restore/cold reopen verification: 同じowned validation attemptでsealed generation、Source、D1、complete rosterを再検証し、unowned／unbounded full-roster scanを開始しない",
+              "restore/cold reopen verification: 同じowned validation attemptでsealed generation、Source、D1、complete rosterを再検証し、unowned／unbounded full-roster scanを開始する",
+            ),
+        },
+        {
+          label: "query synchronous full scan",
+          expected: "query-triggered validation must be deferred to an owned maintenance entry",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "queryはvalidation read transactionへsynchronously入らない",
+              "queryはvalidation read transactionへsynchronously入る",
+            ),
+        },
+        {
+          label: "optional whole-build peak",
+          expected: "full build and maintenance memory accounting must cover every major retained structure",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "`mandatory end-to-end peak memory for the full build-through-publish interval`",
+              "`optional end-to-end peak memory for the full build-through-publish interval`",
+            ),
+        },
+        {
+          label: "roster-only peak",
+          expected: "full build and maintenance memory accounting must cover every major retained structure",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "roster bytesとRevision-ID overheadはcomponents onlyとして別に報告する",
+              "roster bytes only are reported",
+            ),
+        },
+        {
+          label: "missing major structure accounting",
+          expected: "full build and maintenance memory accounting must cover every major retained structure",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "snapshot roster＋dependency edges",
+              "snapshot roster",
+            ),
+        },
+        {
+          label: "per-edge cancellation coercion",
+          expected: "cancellation must terminate the whole maintenance attempt",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "cancel／timeout／closedはper-edge missing／diagnosticやsuccessful verificationへcoerceせずwhole attemptをterminateする",
+              "cancel／timeout／closedをper-edge missing／diagnosticへcoerceしてscanを続ける",
+            ),
+        },
+      ];
+      for (const { label, expected, mutate } of graphMutationCases) {
+        assert.throws(
+          () => validateGraphProposalContract(mutateBoundedGraphProposal(mutate)),
+          (error) => {
+            assert.match(error.message, new RegExp(escapeRegExp(expected)));
+            return true;
+          },
+          `${label} mutation must be rejected by the bounded Graph validator`,
+        );
+      }
+      assert.match(
+        proposal,
+        /No cumulative build SQL cap is ratified\.?[^\n]*Every prepare／page／publish complete-rescan statement is owned by the builder's connection-level progress hook.*bounded `1,000` VM-step cadence and at Rust boundaries/is,
+        "graph build SQL must remain uncapped while every statement observes bounded cancellation",
+      );
+      assert.match(
+        proposal,
+        /interruption／error／timeout／closed.*statement termination／error.*transaction rollback／close.*hook reset.*reader／handles／buffers release.*retry／reentrant admission/is,
+        "graph interruption cleanup must complete before retry or reentrant admission",
+      );
+      const lifecycleStart = proposal.indexOf(
+        "##### B build owner/lifecycle (proposal/5 confirmed contract)",
+      );
+      const acceptanceStart = proposal.indexOf(
+        "##### Proposal/5 acceptance split (confirmed contract)",
+      );
+      assert.ok(lifecycleStart >= 0, "graph lifecycle matrix must be present");
+      assert.ok(acceptanceStart > lifecycleStart, "graph acceptance split must follow lifecycle");
+      const lifecycle = proposal.slice(lifecycleStart, acceptanceStart);
+      assert.match(
+        lifecycle,
+        /\| lifecycle case \| entry／start \| admission closure \| pending-start work \| active handles \| cancellation／bounded wait \| actual terminal proof \| error／timeout／onClosed ownership \| persisted restart \|/,
+        "graph lifecycle matrix must expose each finite ownership field",
+      );
+      for (const lifecycleCase of [
+        "entry／start",
+        "retry／reentrant",
+        "admission closure",
+        "cancellation",
+        "error／timeout／onClosed",
+        "reopen",
+      ]) {
+        assert.match(
+          lifecycle,
+          new RegExp(`\\| ${escapeRegExp(lifecycleCase)} \\|`),
+          `graph lifecycle matrix must cover ${lifecycleCase}`,
+        );
+      }
+      assert.match(
+        lifecycle,
+        /cancel ownerはbuilder.*statement termination／error.*transaction rollback／close.*hook reset.*reader／handles／buffers release.*retry／reentrant admission/,
+        "graph cancellation row must prove owner and cleanup ordering",
+      );
+      assert.match(
+        lifecycle,
+        /cold reopen.*sealed generation.*persisted restart stateから再開しない/is,
+        "graph reopen lifecycle must use sealed generation only",
+      );
+      assert.match(
+        lifecycle,
+        /actual terminal proof.*statement termination／error.*rollback／close/is,
+        "graph lifecycle must require an observed terminal proof",
+      );
+      assert.match(
+        lifecycle,
+        /persisted restart state(?:なし|を作らず|は作らない).*sealed generation/is,
+        "graph retry and reopen must not persist restart state",
+      );
+      assert.match(
+        lifecycle,
+        /statement termination／error.*transaction rollback／close.*hook reset.*reader／handles／buffers release.*retry／reentrant admission/,
+        "phase cleanup must finish before retry or reentrant admission",
+      );
+      const acceptanceRows = acceptanceStart >= 0
+        ? proposal.slice(acceptanceStart).split("\n")
+        : [];
+      const acceptanceRow = (label) => {
+        const normalizedLabel = label.replaceAll("`", "");
+        const row = acceptanceRows.find(
+          (line) =>
+            line.startsWith("|") &&
+            line.split("|")[1]?.replaceAll("`", "").trim() === normalizedLabel,
+        );
+        assert.ok(row, `graph acceptance row must define ${label}`);
+        return row;
+      };
+      const cancellationRow = acceptanceRow("cancellation recovery");
+      assert.match(
+        cancellationRow,
+        /statement termination／error.*transaction rollback／close.*hook reset.*reader／handles／buffers release.*retry／reentrant admission/,
+      );
+      const reopenRow = acceptanceRow("cold reopen");
+      assert.match(reopenRow, /完成したsealed generationだけ.*incomplete build state.*persisted restart state/);
+      const atomicRow = acceptanceRow("atomic visibility");
+      assert.match(atomicRow, /旧sealed generationまたは全件qualified.*partial／mixed generation/);
+      assert.doesNotMatch(
+        proposal,
+        />512` valid candidates across multiple revisions/,
+        "graph acceptance must use qualified material records rather than ambiguous candidates",
+      );
+      for (const [pattern, label] of [
+        [/三つのresource unit/, "three resource units"],
+        [/512 records.*2 MiB.*validation contract/, "Revision bundle validation limits"],
+        [/read／admission `512`.*batch `16x32`.*SQL `100,000 VM steps`.*`2 MiB`.*Graph `8ms`.*reader／busy wait `0`/, "seed-local query limits"],
+        [/whole-project B Index build.*現在の全候補.*qualified material.*atomic publish/, "whole-project build scope"],
+        [/queryの合計値はbuildのcandidate count、compact roster count、cumulative bytes、cumulative SQLをcapしない/, "query totals must not cap build totals"],
+        [/small／keyset pages.*一度に一つのA2 Revision/, "paged one-revision-at-a-time build"],
+        [/allocation前にsizeを検査.*JSON／material processing中にもcancellation/, "pre-allocation and material cancellation guards"],
+        [/publish直前にexact complete roster、Source、D1を再検証.*partial generationを残さず/, "publish barrier and no partial generation"],
+        [/caller-ownedな単一read transaction.*pin/, "single caller-owned read transaction"],
+        [/pinした同一read transaction内.*page間でtransaction／mutexを解放しない/, "page statements stay inside the pinned read transaction"],
+        [/page途中のretryは行わず.*snapshot全体を破棄/, "retry restarts from a fresh snapshot"],
+        [/source／decision／scope drift at barriers.*cancellation recovery.*cold reopen.*atomic visibility.*query independence/is, "deterministic semantic gates"],
+        [/Capacity benchmark metricsは、compact full rosterとpublish-time complete rescanを含めて第1診断stage.*numeric build capacityの批准ではない.*mandatory end-to-end peak memory.*full-set maintenance path/is, "measurement precedes build capacity"],
+        [/roster bytesとRevision-ID overheadはcomponents only.*snapshot roster＋dependency edges.*method／coverage／uncertainty/, "capacity benchmark memory accounting"],
+        [/supported work size／build memory／SQL／deadlineはその結果から後で選ぶ/, "supported build values are selected after measurement"],
+      ]) {
+        assert.match(
+          proposal,
+          pattern,
+          `graph binding must define ${label}`,
+        );
+      }
     }
     if (contractId === "native-generation-receipt") {
       for (const terminalCase of [
@@ -1125,6 +1807,22 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     a2LaneRow,
     /\| A2 \|[^|]*\| complete-limited \|/,
     "current A2 lane status must record PR #591's limited completion",
+  );
+  assert.match(executionPlan, /### Current lane snapshot \(2026-09-17\)/);
+  assert.match(
+    executionPlan,
+    /\| A3 \| #598 A3 review remediation \| completed-foundation \|[^\n]*masterへmerged[^\n]*runtime／consumer activationは未完了/,
+    "current A3 snapshot must record merged foundation without activation",
+  );
+  assert.match(
+    executionPlan,
+    /\| B \| #596 Graph foundation[^|]*\| capacity-remediation-in-progress \|[^\n]*proposal\/5のexact confirmation[^\n]*capacity remediationがpending/,
+    "current B snapshot must remain blocked on proposal/5 and capacity remediation",
+  );
+  assert.match(
+    executionPlan,
+    /\| D1 \| #599 typed Packing review remediation \| completed-foundation \|[^\n]*review remediationはmasterへmerged[^\n]*Packing product dispatch／D1 activationは未完了/,
+    "current D1 snapshot must record merged typed Packing foundation without product activation",
   );
   assert.match(
     executionPlan,

@@ -8,6 +8,7 @@ use anyhow::{ensure, Result};
 use rusqlite::Connection;
 
 use super::material_membership::{read_revision_material_membership, MaterialMembershipRead};
+use super::source_revision::ValidationContext;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RevisionFreshnessReason {
@@ -87,4 +88,29 @@ pub fn read_revision_canonical_freshness(
         }
     };
     freshness::read(conn, project_id, &membership)
+}
+
+/// Foreground/maintenance entry point for callers that may traverse an
+/// eligibility Source.  The context couples the same transaction to the
+/// caller's stop owner; the legacy convenience reader above remains valid for
+/// bounded callers that never request a whole-project eligibility roster.
+#[allow(dead_code)]
+pub(crate) fn read_revision_canonical_freshness_with_validation_context(
+    context: &mut ValidationContext<'_, '_>,
+    project_id: &str,
+    revision_id: &str,
+) -> Result<RevisionFreshnessRead> {
+    let conn = context.connection();
+    ensure!(!conn.is_autocommit(), "revision Freshness requires a read transaction");
+    ensure!(
+        !project_id.trim().is_empty() && !revision_id.trim().is_empty(),
+        "nonempty identity required"
+    );
+    let membership = match read_revision_material_membership(conn, project_id, revision_id)? {
+        MaterialMembershipRead::Complete(membership) => membership,
+        MaterialMembershipRead::Unavailable { .. } => {
+            return Ok(unavailable(RevisionFreshnessReason::MembershipUnavailable))
+        }
+    };
+    freshness::read_with_validation_context(context, project_id, &membership)
 }

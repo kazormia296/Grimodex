@@ -27,14 +27,16 @@ function deferred<T>() {
 }
 
 describe("createNarrativeFreshnessScheduler", () => {
-  const schedulers: Array<{ dispose(): void }> = [];
+  const schedulers: Array<{ dispose(): void | Promise<void> }> = [];
 
   beforeEach(() => {
     vi.useFakeTimers();
   });
 
-  afterEach(() => {
-    for (const scheduler of schedulers.splice(0)) scheduler.dispose();
+  afterEach(async () => {
+    await Promise.all(
+      schedulers.splice(0).map((scheduler) => Promise.resolve(scheduler.dispose())),
+    );
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -241,6 +243,40 @@ describe("createNarrativeFreshnessScheduler", () => {
     expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
   });
 
+  it("workspace switch quiesce waits for the in-flight cycle and resumes afterward", async () => {
+    const first = deferred<string | null>();
+    const runNarrativeFreshnessCycle = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(null);
+    const { scheduler } = createScheduler({ runNarrativeFreshnessCycle });
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledOnce();
+
+    const leasePromise = scheduler.quiesceForWorkspaceSwitch?.();
+    let leaseSettled = false;
+    void leasePromise?.then(() => {
+      leaseSettled = true;
+    });
+    await Promise.resolve();
+    expect(leaseSettled).toBe(false);
+
+    scheduler.handleBackendEvent("related-scenes:invalidated", {
+      queryBinding: "during-switch",
+    });
+    first.resolve(summary(false));
+    const lease = await leasePromise;
+    expect(lease).toBeDefined();
+    expect(leaseSettled).toBe(true);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledOnce();
+
+    await lease?.resume(true);
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
+  });
+
   it("cycle完了後かつin-flight解放後にだけmain observationを通知する", async () => {
     const first = deferred<string | null>();
     const runNarrativeFreshnessCycle = vi.fn().mockReturnValue(first.promise);
@@ -349,9 +385,17 @@ describe("createNarrativeFreshnessScheduler", () => {
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
     expect(runNarrativeFreshnessCycle).toHaveBeenCalledOnce();
 
-    scheduler.dispose();
-    scheduler.dispose();
+    const firstDispose = scheduler.dispose();
+    const secondDispose = scheduler.dispose();
+    let disposed = false;
+    void firstDispose.then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
     first.resolve(summary(true));
+    await expect(firstDispose).resolves.toBeUndefined();
+    await expect(secondDispose).resolves.toBeUndefined();
     await Promise.resolve();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS * 2);

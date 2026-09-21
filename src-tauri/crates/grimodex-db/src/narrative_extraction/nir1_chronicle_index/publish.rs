@@ -5,6 +5,7 @@ use chrono::{SecondsFormat, Utc};
 use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use rusqlite::{params, Connection};
 
+use super::super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 use super::super::{
     declaration_storage::{
         write_dependency_declaration_set_in_tx, DependencyDeclaration,
@@ -15,7 +16,7 @@ use super::super::{
     },
     evaluator::{BuildAction, EvidenceFreshness},
     publish_runtime::publish_complete_runless_freshness_in_tx,
-    restore_rebuild::evaluate_owned_edges_from_db_in_tx,
+    restore_rebuild::evaluate_owned_edges_from_db_in_tx_with_control,
     task_leases::with_immediate_transaction,
 };
 use super::{
@@ -34,29 +35,75 @@ pub fn publish_chronicle_index_build(
     plan: NirIndexBuildPlan,
     outcomes: Vec<NirEmbeddedDocument>,
 ) -> Result<NirIndexPublishRead> {
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    publish_chronicle_index_build_with_control(db, runtime, plan, outcomes, &mut control)
+}
+
+pub fn publish_chronicle_index_build_with_control(
+    db: &Database,
+    runtime: &NirChronicleIndexRuntime,
+    plan: NirIndexBuildPlan,
+    outcomes: Vec<NirEmbeddedDocument>,
+    control: &mut dyn GraphWorkControl,
+) -> Result<NirIndexPublishRead> {
+    publish_chronicle_index_build_scoped(db, runtime, plan, outcomes, control, None)
+}
+
+/// Native publication retains the already-admitted workspace participant for
+/// the outer SQLite scope. Its proof is installed only after hook/transaction
+/// cleanup succeeds; nested eligibility readers retain the same control.
+pub fn publish_chronicle_index_build_with_participant(
+    db: &Database,
+    runtime: &NirChronicleIndexRuntime,
+    plan: NirIndexBuildPlan,
+    outcomes: Vec<NirEmbeddedDocument>,
+    control: &mut dyn GraphWorkControl,
+    participant: &crate::workspace_lifecycle::WorkspaceParticipant,
+) -> Result<NirIndexPublishRead> {
+    publish_chronicle_index_build_scoped(db, runtime, plan, outcomes, control, Some(participant))
+}
+
+fn publish_chronicle_index_build_scoped(
+    db: &Database,
+    runtime: &NirChronicleIndexRuntime,
+    plan: NirIndexBuildPlan,
+    outcomes: Vec<NirEmbeddedDocument>,
+    control: &mut dyn GraphWorkControl,
+    participant: Option<&crate::workspace_lifecycle::WorkspaceParticipant>,
+) -> Result<NirIndexPublishRead> {
+    control.check(GraphWorkStage::Publish)?;
     if plan.owner != runtime.owner() {
         return Ok(NirIndexPublishRead::Stale);
     }
     let runtime_epoch = plan.runtime_epoch;
-    let proof = db.with_conn(|conn| {
+    let publish = |conn: &Connection| {
         with_immediate_transaction(conn, |conn| {
+            control.check(GraphWorkStage::Publish)?;
             if runtime.current_epoch(conn)? != Ok(plan.runtime_epoch) {
                 return Ok(None);
             }
-            if !build::snapshot_current(conn, &plan.project, &plan.snapshot)? {
+            if !build::snapshot_current_with_control(conn, &plan.project, &plan.snapshot, control)?
+            {
                 return Ok(None);
             }
+            control.check(GraphWorkStage::Publish)?;
             verify_outcomes(conn, &plan.project, &plan.snapshot, &outcomes)?;
+            control.check(GraphWorkStage::Publish)?;
             publish_chronicle_index_build_in_tx(
                 conn,
                 &plan.project,
                 plan.runtime_epoch,
                 plan.snapshot,
                 outcomes,
+                control,
             )
             .map(Some)
         })
-    })?;
+    };
+    let proof = match participant {
+        Some(participant) => db.with_participant_sql_scope(participant, publish),
+        None => db.with_conn(publish),
+    }?;
     let Some(proof) = proof else {
         return Ok(NirIndexPublishRead::Stale);
     };
@@ -68,6 +115,7 @@ pub fn publish_chronicle_index_build(
         .count();
     // Stop/pause during inference or the commit window may leave valid cache
     // rows, but cannot install a live proof or emit a ready notification.
+    control.check(GraphWorkStage::Publish)?;
     let newly_usable_published = runtime.install(runtime_epoch, proof)?;
     Ok(NirIndexPublishRead::Published {
         generation,
@@ -83,6 +131,7 @@ pub(super) fn publish_chronicle_index_build_in_tx(
     runtime_epoch: u64,
     snapshot: BuildSnapshot,
     outcomes: Vec<NirEmbeddedDocument>,
+    control: &mut dyn GraphWorkControl,
 ) -> Result<IndexProof> {
     ensure!(
         !conn.is_autocommit(),
@@ -122,6 +171,7 @@ pub(super) fn publish_chronicle_index_build_in_tx(
     )?;
     delete_edges_for_consumer_in_tx(conn, project, "semantic-index", INDEX_KEY)?;
     for edge in &snapshot.edges {
+        control.check(GraphWorkStage::Edge)?;
         record_dependency_edge_in_tx(
             conn,
             project,
@@ -143,10 +193,11 @@ pub(super) fn publish_chronicle_index_build_in_tx(
     let input_edges = find_edges_by_consumer(conn, project, "semantic-index", INDEX_KEY)?;
     let observations = input_edges
         .iter()
-        .zip(evaluate_owned_edges_from_db_in_tx(
+        .zip(evaluate_owned_edges_from_db_in_tx_with_control(
             conn,
             project,
             &input_edges,
+            control,
         )?)
         .map(|(edge, observation)| {
             ensure!(
@@ -178,6 +229,7 @@ pub(super) fn publish_chronicle_index_build_in_tx(
         .collect::<HashMap<_, _>>();
     let mut candidates = Vec::with_capacity(snapshot.candidates.len());
     for candidate in snapshot.candidates {
+        control.check(GraphWorkStage::Row)?;
         let outcome = outcomes
             .remove(&candidate.revision_id)
             .ok_or_else(|| anyhow::anyhow!("NIR1 planned outcome missing"))?;

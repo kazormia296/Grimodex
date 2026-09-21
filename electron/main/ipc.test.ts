@@ -6,7 +6,11 @@ import StarterKit from "@tiptap/starter-kit";
 
 import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 import { IPC } from "../shared/ipcContract.js";
-import { NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS } from "./narrativeMaintenance.js";
+import {
+  createNarrativeMaintenanceScheduler,
+  NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS,
+  NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS,
+} from "./narrativeMaintenance.js";
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
 import { createCliAiManager } from "./cliAi.js";
 import {
@@ -1967,6 +1971,349 @@ describe("registerIpcRouter workspace-open main trace", () => {
     return { openWorkspace } as unknown as NapiBackendLike;
   }
 
+  it("waits for maintenance quiescence before swapping the native workspace", async () => {
+    const order: string[] = [];
+    let releaseQuiescence!: () => void;
+    const quiesced = new Promise<void>((resolve) => {
+      releaseQuiescence = resolve;
+    });
+    const openWorkspace = vi.fn(async () => {
+      order.push("open");
+      return JSON.stringify({ status: "ready" });
+    });
+    const quiesceForWorkspaceSwitch = vi.fn(async () => {
+      order.push("quiesce");
+      await quiesced;
+    });
+    registerIpcRouter(
+      backendWithOpenWorkspace(openWorkspace),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { quiesceForWorkspaceSwitch },
+    );
+
+    const invoke = invokeHandler()({ sender: {} }, "open_workspace", {
+      path: "/workspace-next",
+    });
+    await Promise.resolve();
+    expect(quiesceForWorkspaceSwitch).toHaveBeenCalledOnce();
+    expect(openWorkspace).not.toHaveBeenCalled();
+    releaseQuiescence();
+    await expect(invoke).resolves.toMatchObject({ ok: true });
+    expect(order).toEqual(["quiesce", "open"]);
+  });
+
+  it("resumes the real scheduler after a successful Native workspace swap", async () => {
+    vi.useFakeTimers();
+    const previousBinding = { authorityId: "authority-before", generation: 1 };
+    const nextBinding = { authorityId: "authority-after", generation: 2 };
+    let currentBinding = previousBinding;
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue({ status: "accepted", hasMore: false });
+    const openWorkspace = vi.fn(async () => {
+      currentBinding = nextBinding;
+      return JSON.stringify({ status: "ready" });
+    });
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+      runNarrativeMaintenanceCycle,
+      openWorkspace,
+    };
+    const scheduler = createNarrativeMaintenanceScheduler(backend);
+    scheduler.start();
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scheduler,
+    );
+
+    try {
+      const envelope = await invokeHandler()({ sender: {} }, "open_workspace", {
+        path: "/workspace-next",
+      });
+      expect(envelope).toMatchObject({ ok: true });
+      expect(openWorkspace).toHaveBeenCalledOnce();
+
+      scheduler.requestWithBinding(
+        {
+          projectId: "project-after-open",
+          runKind: "backfill",
+          workKey: "backfill:v2",
+          reason: "workspace-opened",
+        },
+        nextBinding,
+      );
+      await vi.advanceTimersByTimeAsync(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
+
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0]).toMatchObject({
+        workspaceBinding: nextBinding,
+      });
+    } finally {
+      await scheduler.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("joins Freshness then ACKs only the Open target recovery before Native Open", async () => {
+    const order: string[] = [];
+    let releaseFreshness!: () => void;
+    const freshnessDone = new Promise<void>((resolve) => { releaseFreshness = resolve; });
+    let releaseAck!: () => void;
+    const ackDone = new Promise<void>((resolve) => { releaseAck = resolve; });
+    const binding = { authorityId: "target-authority", generation: 1 };
+    const reconcileNarrativeMaintenanceRecovery = vi.fn()
+      .mockImplementationOnce(async (path: string) => {
+        order.push(`recover:${path}`);
+        return { status: "reconciled", descriptorId: 81,
+          reason: "maintenance-recovery-complete", recoveredBinding: binding,
+          activeBinding: binding, reboundBinding: binding };
+      })
+      .mockResolvedValue({ status: "none" });
+    const ackNarrativeMaintenanceRecovery = vi.fn(async () => {
+      order.push("ack");
+      await ackDone;
+      return { status: "acknowledged", descriptorId: 81, acknowledged: true };
+    });
+    const openWorkspace = vi.fn(async () => {
+      order.push("open");
+      return JSON.stringify({ status: "ready" });
+    });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery, ackNarrativeMaintenanceRecovery,
+    });
+    const freshnessResume = vi.fn();
+    registerIpcRouter(backendWithOpenWorkspace(openWorkspace), {}, undefined,
+      undefined, undefined, undefined, undefined, scheduler, {
+        quiesceForWorkspaceSwitch: async () => {
+          order.push("freshness");
+          await freshnessDone;
+          return { resume: freshnessResume };
+        },
+      });
+    const invoke = invokeHandler()({ sender: {} }, "open_workspace", { path: "/target" });
+    await vi.waitFor(() => expect(order).toEqual(["freshness"]));
+    expect(reconcileNarrativeMaintenanceRecovery).not.toHaveBeenCalled();
+    releaseFreshness();
+    await vi.waitFor(() => expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledOnce());
+    expect(openWorkspace).not.toHaveBeenCalled();
+    expect(freshnessResume).not.toHaveBeenCalled();
+    releaseAck();
+    await expect(invoke).resolves.toMatchObject({ ok: true });
+    expect(order).toEqual(["freshness", "recover:/target", "ack", "open"]);
+    expect(reconcileNarrativeMaintenanceRecovery.mock.calls).toEqual([["/target"], ["/target"]]);
+    expect(freshnessResume).toHaveBeenCalledOnce();
+  });
+
+  it.each(["recovery", "descriptor-ack"])("does not Open when target %s fails", async (failure) => {
+    const binding = { authorityId: "target-authority", generation: 1 };
+    const reconcileNarrativeMaintenanceRecovery = vi.fn(async () => {
+      if (failure === "recovery") throw new Error("target recovery unavailable");
+      return { status: "reconciled", descriptorId: 82,
+        reason: "maintenance-recovery-complete", recoveredBinding: binding,
+        activeBinding: binding, reboundBinding: binding };
+    });
+    const ackNarrativeMaintenanceRecovery = vi.fn().mockRejectedValue(new Error("ACK unavailable"));
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery, ackNarrativeMaintenanceRecovery,
+    });
+    const openWorkspace = vi.fn();
+    registerIpcRouter(backendWithOpenWorkspace(openWorkspace), {}, undefined,
+      undefined, undefined, undefined, undefined, scheduler);
+    await expect(invokeHandler()({ sender: {} }, "open_workspace", { path: "/target" }))
+      .resolves.toMatchObject({ ok: false });
+    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledWith("/target");
+    expect(openWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("opens W2 without attempting an unavailable unrelated W1 recovery", async () => {
+    const reconcileNarrativeMaintenanceRecovery = vi.fn(async (path?: string) => {
+      if (path !== "/W2") throw new Error("W1 recovery unavailable");
+      return { status: "none" };
+    });
+    const scheduler = createNarrativeMaintenanceScheduler({ reconcileNarrativeMaintenanceRecovery });
+    const openWorkspace = vi.fn(async () => JSON.stringify({ status: "ready" }));
+    registerIpcRouter(backendWithOpenWorkspace(openWorkspace), {}, undefined,
+      undefined, undefined, undefined, undefined, scheduler);
+    await expect(invokeHandler()({ sender: {} }, "open_workspace", { path: "/W2" }))
+      .resolves.toMatchObject({ ok: true });
+    expect(reconcileNarrativeMaintenanceRecovery.mock.calls).toEqual([["/W2"]]);
+    expect(openWorkspace).toHaveBeenCalledWith("/W2");
+  });
+
+  it.each([undefined, 42, "", " ", "/target\0invalid"])(
+    "rejects invalid Open path %j before quiescence or recovery", async (path) => {
+      const quiesceForWorkspaceSwitch = vi.fn();
+      const reconcileRecoveryBeforeWorkspaceOpen = vi.fn();
+      const openWorkspace = vi.fn();
+      registerIpcRouter(backendWithOpenWorkspace(openWorkspace), {}, undefined,
+        undefined, undefined, undefined, undefined,
+        { quiesceForWorkspaceSwitch, reconcileRecoveryBeforeWorkspaceOpen });
+      await expect(invokeHandler()({ sender: {} }, "open_workspace", { path }))
+        .resolves.toMatchObject({ ok: false });
+      expect(quiesceForWorkspaceSwitch).not.toHaveBeenCalled();
+      expect(reconcileRecoveryBeforeWorkspaceOpen).not.toHaveBeenCalled();
+      expect(openWorkspace).not.toHaveBeenCalled();
+    },
+  );
+
+  it("cancels a manual Verify through the scheduler before Native workspace swap", async () => {
+    vi.useFakeTimers();
+    const binding = { authorityId: "authority-manual", generation: 4 };
+    const order: string[] = [];
+    let releaseVerify!: () => void;
+    const verifyFinished = new Promise<void>((resolve) => {
+      releaseVerify = resolve;
+    });
+    const terminalReceipt = (attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: "workspace-generation-changed",
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [],
+        cleanup: { status: "failed", error: "rollback failed" },
+        connectionReusable: false,
+      });
+    let activeAttemptId: string | null = null;
+    const verifyNarrativeDependencyGraph = vi.fn(async (payload: unknown) => {
+      order.push("verify");
+      expect(payload).toMatchObject({
+        projectId: "project-manual",
+        attemptId: expect.stringMatching(/^manual-ipc-/),
+      });
+      await verifyFinished;
+      return JSON.stringify({ runId: "run-manual", reportDigest: "digest" });
+    });
+    const cancelNarrativeMaintenanceAttempt = vi.fn(
+      async (attemptId: string) => {
+        order.push("cancel");
+        activeAttemptId = attemptId;
+        releaseVerify();
+        return terminalReceipt(attemptId);
+      },
+    );
+    const openWorkspace = vi.fn(async () => {
+      order.push("open");
+      return JSON.stringify({ status: "ready" });
+    });
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      beginNarrativeMaintenanceAttempt: vi.fn(async (attemptId: string) => {
+        activeAttemptId = attemptId;
+        return JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: binding.authorityId,
+          generation: binding.generation,
+        });
+      }),
+      cancelNarrativeMaintenanceAttempt,
+      verifyNarrativeDependencyGraph,
+      openWorkspace,
+    };
+    const scheduler = createNarrativeMaintenanceScheduler(backend);
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scheduler,
+    );
+
+    try {
+      const manual = invokeHandler()(
+        { sender: {} },
+        "verify_narrative_dependency_graph",
+        { payload: { projectId: "project-manual", attemptId: "renderer-forged" } },
+      );
+      for (let index = 0; index < 5; index += 1) {
+        await Promise.resolve();
+      }
+      expect(backend.beginNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+      expect(verifyNarrativeDependencyGraph).toHaveBeenCalledOnce();
+
+      const workspaceSwitch = invokeHandler()(
+        { sender: {} },
+        "open_workspace",
+        { path: "/workspace-manual-next" },
+      );
+      await expect(workspaceSwitch).resolves.toMatchObject({ ok: true });
+      await expect(manual).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining("CONNECTION_UNUSABLE"),
+      });
+      expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledWith(
+        activeAttemptId,
+        "workspace-generation-changed",
+      );
+      expect(order).toEqual(["verify", "cancel", "open"]);
+    } finally {
+      await scheduler.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    {
+      command: "open_workspace",
+      args: { path: "/workspace-failure" },
+      method: "openWorkspace",
+    },
+    {
+      command: "restore_backup",
+      args: { fileName: "grimodex-20260711-120000.db" },
+      method: "restoreBackup",
+    },
+    {
+      command: "restore_recovery_candidate",
+      args: { candidateId: "rc_auto_1" },
+      method: "restoreRecoveryCandidate",
+    },
+  ] as const)(
+    "resumes retained maintenance backlog when $command fails",
+    async ({ command, args, method }) => {
+      const failingOperation = vi.fn(async () => {
+        throw new Error(`failure from ${command}`);
+      });
+      const resume = vi.fn();
+      const quiesceForWorkspaceSwitch = vi.fn(async () => ({ resume }));
+      registerIpcRouter(
+        { [method]: failingOperation } as unknown as NapiBackendLike,
+        {},
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { quiesceForWorkspaceSwitch },
+      );
+
+      const envelope = await invokeHandler()({ sender: {} }, command, args);
+
+      expect(envelope.ok).toBe(false);
+      expect(quiesceForWorkspaceSwitch).toHaveBeenCalledOnce();
+      expect(failingOperation).toHaveBeenCalledOnce();
+      expect(resume).toHaveBeenCalledOnce();
+    },
+  );
+
   it("emits one safe success summary when the dev trace is enabled", async () => {
     process.env.GRIMODEX_WORKSPACE_OPEN_TRACE = "1";
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
@@ -2247,6 +2594,59 @@ describe("NIR-1 router sender binding", () => {
       expect.objectContaining({ callerIdentity: identity }),
     );
     expect(saveAiSettings).toHaveBeenCalledWith({});
+  });
+
+  it("hands a trusted unchanged restore proof to the main profile gate", async () => {
+    const outcome = {
+      status: "unchanged",
+      operationOutcome: "failed",
+      contentEffect: "none",
+      lifecycle: {
+        schemaVersion: 1,
+        revision: 3,
+        status: "ready",
+        bindingToken: "bnd-normal-ready",
+        activation: "ready",
+      },
+    } as const;
+    const restoreBackup = vi.fn(async () => JSON.stringify(outcome));
+    const observeWorkspaceLifecycleResult = vi.fn();
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => ({
+        profileId: "profile-1",
+        callerId: "main-caller-1",
+        callerEpoch: 2,
+        senderId: 42,
+        workspaceId: "/workspace-normal",
+        sessionId: "session-1",
+      })),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication: vi.fn(),
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+      observeWorkspaceLifecycleResult,
+    };
+    registerIpcRouter(
+      { restoreBackup } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "restore_backup",
+      { fileName: "grimodex-test.db" },
+    );
+
+    expect(envelope).toEqual({ ok: true, value: outcome });
+    expect(observeWorkspaceLifecycleResult).toHaveBeenCalledOnce();
+    expect(observeWorkspaceLifecycleResult).toHaveBeenCalledWith(outcome);
   });
 
   it("runs the dedicated typed cold reader through D2a at entry and return", async () => {

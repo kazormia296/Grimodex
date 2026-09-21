@@ -22,6 +22,7 @@ import {
   broadcastBackendEvent,
   broadcastMainEvent,
   registerEventBus,
+  refreshWorkspaceLifecycleView,
   setBackendEventEgressGate,
   sendBackendEventToWindow,
   sendMainEventToWindow,
@@ -33,6 +34,10 @@ import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
 import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
+import {
+  createNarrativeMaintenanceQuitFinalizer,
+  runIndependentShutdownCleanups,
+} from "./narrativeMaintenanceShutdown.js";
 import type { NarrativeMaintenanceTriggerCoordinator } from "./narrativeMaintenanceTriggers.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
@@ -534,19 +539,120 @@ if (!gotSingleInstanceLock) {
     if (!shouldDisableNarrativeFreshnessForLaunch(narrativeMaintenanceCiSeam)) {
       narrativeFreshness.start();
     }
-    app.on("will-quit", () => {
-      // close veto を通過して終了が確定してから同期 KILL する。before-quit で
-      // dispose すると、未保存確認で終了を取り消した後も全 handler が死ぬ。
-      vivliostyle.disposeAll();
-      updater.dispose();
-      licenseValidation.dispose();
-      narrativeFreshness.dispose();
-      narrativeMaintenanceTriggers?.dispose();
-      narrativeMaintenance?.dispose();
-      narrativeMaintenanceCiHeldFreshnessWriter?.dispose();
-      cliAi.disposeAll();
-      void codexApp.dispose();
-      void externalMount.disposeAll();
+    // Electron can emit `will-quit` as soon as app.close()/app.quit() is
+    // requested, before the renderer's close-veto protocol has completed its
+    // genesis prelude and strict persistence drain. Keep the promise that
+    // represents the main window's actual teardown separate from the Native
+    // lifecycle shutdown so Native cannot enter Transition while the
+    // renderer still needs its workspace authority to flush.
+    let rendererTeardown: Promise<void> = Promise.resolve();
+    const quitFinalizer = createNarrativeMaintenanceQuitFinalizer({
+      dispose: async () => {
+        // Native shutdown observes Open/Restore through the shared lifecycle
+        // owner. Always issue that idempotent request even when the scheduler
+        // cannot produce its terminal receipt; otherwise an independent
+        // scheduler failure could strand an active workspace worker outside
+        // the shutdown observation budget.
+        // Discovery may still enqueue recovery work while Freshness is
+        // joining an in-flight Native cycle. Start the independent producer
+        // shutdowns together, but make maintenance disposal wait for
+        // Freshness to join before it performs its final recovery drain.
+        // Otherwise a Freshness cycle could create a descriptor immediately
+        // after maintenance observed `none`, leaving Native close with an
+        // unpumped process-local owner.
+        const coordinatorResult = Promise.resolve()
+          .then(() => narrativeMaintenanceTriggers?.dispose())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
+        // Freshness is a separate main-owned producer, but its in-flight
+        // Native cycle is still a lifecycle participant. Join it before
+        // request_shutdown so a cooperative stop is observed as a normal
+        // terminal cycle instead of being converted into a RecoveryRequired
+        // descriptor while the application is already closing.
+        const freshnessResult = Promise.resolve()
+          .then(() => narrativeFreshness.dispose())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
+        const schedulerResult = freshnessResult
+          .then(() => narrativeMaintenance?.dispose())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
+        const nativeResult = Promise.all([
+          rendererTeardown,
+          coordinatorResult,
+          schedulerResult,
+          freshnessResult,
+        ])
+          .then(() => backend?.shutdownWorkspaceLifecycle?.())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
+        const schedulerError = await schedulerResult;
+        let nativeError = await nativeResult;
+        // Native may observe an admitted maintenance delivery before the
+        // scheduler has finished its cancellation/ACK handoff.  A failed
+        // `publish_closed` at that boundary is not terminal proof of a
+        // failed shutdown: once the scheduler has retired its exact delivery
+        // record, re-observe the same idempotent Native shutdown request.
+        // Keep this retry inside the single finalizer attempt so the bounded
+        // observation budget remains the authority for termination.
+        if (nativeError !== undefined && backend?.shutdownWorkspaceLifecycle) {
+          nativeError = await Promise.resolve()
+            .then(() => backend.shutdownWorkspaceLifecycle?.())
+            .then(
+              () => undefined,
+              (error) => error,
+            );
+        }
+        if (schedulerError !== undefined || nativeError !== undefined) {
+          const failures = [schedulerError, nativeError].filter(
+            (error): error is unknown => error !== undefined,
+          );
+          throw new AggregateError(
+            failures,
+            "workspace lifecycle shutdown did not reach a terminal receipt",
+          );
+        }
+      },
+      error: (error) => {
+        console.error(
+          "[grimodex-electron] narrative maintenance shutdown failed:",
+          error,
+        );
+      },
+      complete: () =>
+        runIndependentShutdownCleanups([
+          () => vivliostyle.disposeAll(),
+          () => updater.dispose(),
+          () => licenseValidation.dispose(),
+          () => narrativeFreshness.dispose(),
+          () => narrativeMaintenanceTriggers?.dispose(),
+          () => narrativeMaintenanceCiHeldFreshnessWriter?.dispose(),
+          () => cliAi.disposeAll(),
+          () => codexApp.dispose(),
+          () => externalMount.disposeAll(),
+        ]),
+      quit: () => app.quit(),
+      exit: (code) => {
+        console.error(
+          "[grimodex-electron] maintenance shutdown could not be proven after bounded retries; exiting fatally",
+        );
+        app.exit(code);
+      },
+    });
+    app.on("will-quit", (event) => {
+      // The finalizer vetoes the current quit synchronously, then waits for a
+      // validated Native terminal receipt before releasing the rest of the
+      // process teardown. Reentrant will-quit events only observe the same
+      // in-flight barrier.
+      void quitFinalizer(event);
     });
     // API キー保管（バッチ3a）: safeStorage 暗号化 + ai-keys.json。has/save/delete は
     // shell ハンドラ、チャット送信のキー解決は dispatchInvoke へ secrets として注入。
@@ -583,6 +689,8 @@ if (!gotSingleInstanceLock) {
       narrativeMaintenanceCiSeam,
       profileEgress,
       licenseValidation,
+      narrativeMaintenance ?? undefined,
+      narrativeFreshness,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には
@@ -601,10 +709,21 @@ if (!gotSingleInstanceLock) {
     );
     performance.mark("grimodex:electron-create-main-window");
     const mainWindow = createMainWindow();
+    rendererTeardown = new Promise<void>((resolve) => {
+      if (mainWindow.isDestroyed()) {
+        resolve();
+        return;
+      }
+      mainWindow.once("closed", resolve);
+    });
     mainWindow.webContents.once("did-finish-load", () => {
       performance.mark("grimodex:renderer-finished-load");
       mainRendererReady = true;
       flushPendingWebEditorHandoff();
+      // The event may have preceded renderer subscription.  Re-read the
+      // main-only snapshot and publish it through the same revision validator;
+      // a stale response cannot revive an old binding.
+      void refreshWorkspaceLifecycleView(backend);
     });
     if (app.isPackaged && process.platform === "linux") {
       scheduleMcpSidecarWarmup(mainWindow, resolveMcpSidecar, (error) => {

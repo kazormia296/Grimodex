@@ -67,6 +67,7 @@ use super::repository::{
 };
 use super::revision_eligibility::pending;
 use super::semantic_epoch::get_current_epoch;
+use super::source_revision::is_validation_terminated;
 use super::task_leases::with_immediate_transaction;
 use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
@@ -1271,15 +1272,16 @@ fn read_typed_canonical_freshness(
         return Ok(None);
     }
     if let Some(publisher) = publisher.as_deref() {
-        if validate_current_evaluation_run_reference(
+        if let Err(error) = validate_current_evaluation_run_reference(
             conn,
             project_id,
             &epoch.id,
             revision_id,
             publisher,
-        )
-        .is_err()
-        {
+        ) {
+            if is_validation_terminated(&error) {
+                return Err(error);
+            }
             return Ok(None);
         }
     }
@@ -2013,22 +2015,34 @@ fn read_typed_revision_core(
         Some(Ok(material)) => material,
         _ => return Ok(unavailable("revision-envelope-invalid")),
     };
-    if validate_entity_relation_bundle(&payload.bundle).is_err()
-        || validate_live_sources(conn, project_id, &payload.bundle).is_err()
-    {
+    if validate_entity_relation_bundle(&payload.bundle).is_err() {
+        return Ok(unavailable("source-revision-changed"));
+    }
+    if let Err(error) = validate_live_sources(conn, project_id, &payload.bundle) {
+        if is_validation_terminated(&error) {
+            return Err(error);
+        }
         return Ok(unavailable("source-revision-changed"));
     }
     let expected_material =
         match build_typed_material_basis(conn, project_id, &payload.bundle, &revision_created_at) {
             Ok(material) => material,
+            Err(error) if is_validation_terminated(&error) => return Err(error),
             Err(_) => return Ok(unavailable("revision-material-mismatch")),
         };
     if expected_material != material_basis {
         return Ok(unavailable("revision-material-mismatch"));
     }
-    if validate_typed_persisted_material(conn, project_id, &run_id, revision_id, &expected_material)
-        .is_err()
-    {
+    if let Err(error) = validate_typed_persisted_material(
+        conn,
+        project_id,
+        &run_id,
+        revision_id,
+        &expected_material,
+    ) {
+        if is_validation_terminated(&error) {
+            return Err(error);
+        }
         return Ok(unavailable("revision-material-authority-mismatch"));
     }
     let freshness = match read_typed_canonical_freshness(
@@ -2110,6 +2124,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
         &format!("project:scope-authority:{project_id}"),
     ) {
         Ok(authority) => authority,
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(error)
             if error.downcast_ref::<rusqlite::Error>().is_some()
                 || error.downcast_ref::<std::io::Error>().is_some() =>
@@ -2150,6 +2165,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
         query_scene_id,
     ) {
         Ok(axis) => axis,
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(_) => {
             return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
                 reason: "a3-query-axis-unavailable".into(),
@@ -2184,6 +2200,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
     let query_scope =
         match super::scene_scope::read_narrative_scene_scope(conn, project_id, query_scene_id) {
             Ok(scope) => scope,
+            Err(error) if is_validation_terminated(&error) => return Err(error),
             Err(_) => {
                 return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
                     reason: "a3-query-scope-unavailable".into(),
@@ -2201,6 +2218,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
     }
     let query_viewpoint = match read_scene_viewpoint(conn, project_id, query_scene_id) {
         Ok(viewpoint) => viewpoint,
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(error)
             if error.downcast_ref::<rusqlite::Error>().is_some()
                 || error.downcast_ref::<std::io::Error>().is_some() =>
@@ -2249,6 +2267,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
                 source_scene_id,
             ) {
                 Ok(scope) => scope,
+                Err(error) if is_validation_terminated(&error) => return Err(error),
                 Err(_) => {
                     return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
                         reason: "a3-material-scope-unavailable".into(),
@@ -6405,6 +6424,30 @@ mod tests {
         let snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
+        let source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        let evidence = source
+            .roster
+            .iter()
+            .filter(|entry| entry.material_kind == "evidence")
+            .map(|entry| {
+                (
+                    entry.material_id.as_str(),
+                    entry.source_object_identity.as_str(),
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(source.roster.len(), 5);
+        assert_eq!(
+            evidence,
+            [
+                ("nir1-evidence-alice", "codex:nir1-alice"),
+                ("nir1-evidence-bob", "codex:nir1-bob"),
+            ]
+            .into_iter()
+            .collect()
+        );
         let binding = db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
             let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
@@ -6473,6 +6516,116 @@ mod tests {
             Ok((edge_count, generation, graph_dirty, chronicle_dirty))
         })?;
         assert_eq!(counts, (4, 2, 0, 0));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_index_keyset_scans_ineligible_pages_past_512_candidates() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+
+        // These candidates intentionally have no Source basis or Decision.
+        // The first payload is syntactically malformed and the second has a
+        // non-object entity to prove that bounded ineligible rows cannot abort
+        // the scan.
+        // They are ordered before the valid UUID revision so the first eight
+        // fixed-size pages contain only ineligible rows. The final page still
+        // has to advance past them and discover the qualified revision.
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let valid_proposal_id = created["proposalId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("valid Graph proposal id missing"))?;
+            let valid_revision_id = created["revisionId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("valid Graph revision id missing"))?;
+            let valid_proposal_set_id: String = tx.query_row(
+                "SELECT proposal_set_id FROM narrative_proposals WHERE id=?1",
+                [valid_proposal_id],
+                |row| row.get(0),
+            )?;
+            for index in 0..513 {
+                let set_id = format!("graph-keyset-decoy-set-{index:03}");
+                let proposal_id = format!("graph-keyset-decoy-proposal-{index:03}");
+                let revision_id = format!("000-graph-keyset-decoy-revision-{index:03}");
+                let proposal_key = format!("graph-keyset-decoy-{index:03}");
+                tx.execute(
+                    "INSERT INTO narrative_proposal_sets
+                        (id, run_id, project_id, set_kind, status, summary_json,
+                         created_at, updated_at, version)
+                     VALUES (?1, 'nir1-run', 'default-project', ?2, 'draft', '{}',
+                             '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z', 0)",
+                    params![set_id, NIR1_ENTITY_RELATION_SET_KIND],
+                )?;
+                tx.execute(
+                    "INSERT INTO narrative_proposals
+                        (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                         current_revision_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, 'unreviewed', '{}', ?5,
+                             '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')",
+                    params![
+                        proposal_id,
+                        set_id,
+                        proposal_key,
+                        NIR1_ENTITY_RELATION_PROPOSAL_KIND,
+                        revision_id,
+                    ],
+                )?;
+                tx.execute(
+                    "INSERT INTO narrative_proposal_revisions
+                        (id, proposal_id, revision_number, payload_json, origin_kind,
+                         created_at, created_by)
+                     VALUES (?1, ?2, 1, '{}', ?3,
+                             '2026-09-17T00:00:00.000Z', 'keyset-test')",
+                    params![revision_id, proposal_id, NIR1_ENTITY_RELATION_REVISION_ORIGIN],
+                )?;
+            }
+            tx.execute(
+                "UPDATE narrative_proposal_revisions
+                    SET payload_json=?1
+                  WHERE id='000-graph-keyset-decoy-revision-000'",
+                ["{malformed"],
+            )?;
+            tx.execute(
+                "UPDATE narrative_proposal_revisions
+                    SET payload_json=?1
+                  WHERE id='000-graph-keyset-decoy-revision-001'",
+                [r#"{"bundle":{"entities":["bad"],"relations":[]}}"#],
+            )?;
+            // A second proposal may point at the same exact Revision. The
+            // proposal primary-key cursor must advance past it while the
+            // request-local roster keeps the Revision single-counted.
+            tx.execute(
+                "INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                     current_revision_id, created_at, updated_at)
+                 VALUES ('graph-keyset-duplicate-valid', ?1, 'graph-keyset-duplicate-valid', ?2,
+                         'approved', '{}', ?3,
+                         '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')",
+                params![
+                    valid_proposal_set_id,
+                    NIR1_ENTITY_RELATION_PROPOSAL_KIND,
+                    valid_revision_id,
+                ],
+            )?;
+            tx.commit()?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
+        db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        assert_eq!(source.roster.len(), 5);
+        assert!(source
+            .roster
+            .iter()
+            .all(|entry| !entry.revision_id.starts_with("000-graph-keyset-decoy")));
         Ok(())
     }
 
@@ -7183,15 +7336,26 @@ mod tests {
         let (digest_check, generation_check) = db.with_read_transaction(|conn| {
             super::super::verify_coverage::verify_semantic_index_checks(conn, "default-project")
         })?;
-        assert!(digest_check.is_consistent());
-        assert!(generation_check.is_consistent());
+        assert!(
+            !digest_check.is_consistent(),
+            "a post-Decision dirty Graph must remain visible to Verify"
+        );
+        assert!(
+            !generation_check.is_consistent(),
+            "a post-Decision dirty Graph must remain visible to Verify"
+        );
+        assert!(!digest_check.incomplete.is_empty());
+        assert!(!generation_check.incomplete.is_empty());
         let report = db.with_read_transaction(|conn| {
             super::super::restore_rebuild::verify_narrative_dependency_graph_for_project(
                 conn,
                 "default-project",
             )
         })?;
-        assert!(report.edge_ids_with_unresolvable_consumer_scope.is_empty());
+        assert!(
+            !report.edge_ids_with_unresolvable_consumer_scope.is_empty(),
+            "a dirty Graph must remain unresolved during dependency Verify"
+        );
 
         let rebuilt = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
@@ -7293,6 +7457,7 @@ mod tests {
             .map_err(Into::into)
         })?;
         assert_eq!(source_metadata, (1, 1));
+        assert_graph_verify_reports_dirty(&db)?;
         let source_error = db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
             let error = match nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
@@ -7378,6 +7543,7 @@ mod tests {
             .map_err(Into::into)
         })?;
         assert_eq!(scope_metadata, (1, 1));
+        assert_graph_verify_reports_dirty(&db)?;
         let scope_error = db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
             let error = match nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
@@ -7541,6 +7707,50 @@ mod tests {
             assert_eq!(during, before, "rejection must precede every surface write");
             assert_eq!(after, before, "rollback must preserve every Graph surface");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn graph_index_work_control_cancels_before_d1_publish() -> anyhow::Result<()> {
+        let (db, runtime, _) = published_graph_fixture()?;
+        let before = db.with_read_transaction(graph_surface_snapshot)?;
+        let snapshot = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+
+        struct StopAt(nir1_entity_relation_index::GraphWorkStage);
+
+        impl nir1_entity_relation_index::GraphWorkControl for StopAt {
+            fn check(
+                &mut self,
+                stage: nir1_entity_relation_index::GraphWorkStage,
+            ) -> anyhow::Result<()> {
+                if stage == self.0 {
+                    anyhow::bail!("NIR1_GRAPH_TEST_CANCELLED_{stage:?}");
+                }
+                Ok(())
+            }
+        }
+
+        let (error, during, after) = db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut control = StopAt(nir1_entity_relation_index::GraphWorkStage::D1);
+            let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx_with_control(
+                &tx,
+                &runtime,
+                snapshot,
+                &mut control,
+            )
+            .expect_err("D1 work cancellation must abort publication")
+            .to_string();
+            let during = graph_surface_snapshot(&tx)?;
+            tx.rollback()?;
+            let after = graph_surface_snapshot(conn)?;
+            Ok::<_, anyhow::Error>((error, during, after))
+        })?;
+        assert!(error.contains("NIR1_GRAPH_TEST_CANCELLED_D1"), "{error}");
+        assert_eq!(during, before);
+        assert_eq!(after, before);
         Ok(())
     }
 
@@ -8754,6 +8964,33 @@ mod tests {
         Ok(())
     }
 
+    fn assert_graph_verify_reports_dirty(db: &crate::Database) -> anyhow::Result<()> {
+        let (digest_check, generation_check) = db.with_read_transaction(|conn| {
+            super::super::verify_coverage::verify_semantic_index_checks(conn, "default-project")
+        })?;
+        assert!(
+            !digest_check.is_consistent(),
+            "a dirty Graph must remain visible to Verify coverage"
+        );
+        assert!(
+            !generation_check.is_consistent(),
+            "a dirty Graph must remain visible to Verify coverage"
+        );
+        assert!(!digest_check.incomplete.is_empty());
+        assert!(!generation_check.incomplete.is_empty());
+        let report = db.with_read_transaction(|conn| {
+            super::super::restore_rebuild::verify_narrative_dependency_graph_for_project(
+                conn,
+                "default-project",
+            )
+        })?;
+        assert!(
+            !report.edge_ids_with_unresolvable_consumer_scope.is_empty(),
+            "a dirty Graph must remain unresolved during dependency Verify"
+        );
+        Ok(())
+    }
+
     #[derive(Debug, PartialEq)]
     struct GraphSurfaceSnapshot(Vec<Vec<Vec<rusqlite::types::Value>>>);
 
@@ -9057,7 +9294,7 @@ mod tests {
         let approved = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
         })?;
-        assert_eq!(approved.roster.len(), 3);
+        assert_eq!(approved.roster.len(), 5);
         append_typed_decision(&db, "nir1-run", &revoked, "rejected")?;
         let revoked_source = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
@@ -9121,7 +9358,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_index_rejects_oversized_input_before_parse_and_reuses_connection() -> anyhow::Result<()>
+    fn graph_index_rejects_oversized_revision_before_parse_and_reuses_connection() -> anyhow::Result<()>
     {
         let (db, runtime, created) = published_graph_fixture()?;
         let revision_id = created["revisionId"]
@@ -9149,13 +9386,30 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })?;
 
-        let error = match db.with_read_transaction(|conn| {
+        let prepare_error = match db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         }) {
-            Ok(_) => anyhow::bail!("a valid oversized row must be rejected before JSON parsing"),
-            Err(error) => error.to_string(),
+            Ok(_) => anyhow::bail!("an oversized persisted component must abort Graph preparation"),
+            Err(error) => error,
         };
-        assert!(error.contains("NIR1_GRAPH_ROSTER_INPUT_LIMIT"), "{error}");
+        assert!(
+            prepare_error
+                .to_string()
+                .contains("NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT"),
+            "persisted-size overflow must remain distinct from ordinary ineligibility: {prepare_error}"
+        );
+        let source_error = match db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        }) {
+            Ok(_) => anyhow::bail!("an oversized persisted component must abort source reading"),
+            Err(error) => error,
+        };
+        assert!(
+            source_error
+                .to_string()
+                .contains("NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT"),
+            "source reading must not publish a partial roster: {source_error}"
+        );
         let generation: i64 = db.with_conn(|conn| {
             conn.query_row(
                 "SELECT generation FROM narrative_semantic_index_metadata
@@ -9462,8 +9716,42 @@ mod tests {
     }
 
     #[test]
-    fn graph_prepare_native_material_admission_accepts_512_and_rejects_513() -> anyhow::Result<()> {
-        for (extra_relation, should_prepare) in [(false, true), (true, false)] {
+    fn graph_index_skips_missing_basis_before_live_source_body_read() -> anyhow::Result<()> {
+        let (db, runtime, created) = published_graph_fixture()?;
+        let revision_id = created["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Graph revision id missing"))?
+            .to_owned();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries
+                    SET summary=?1
+                  WHERE id='nir1-alice' AND project_id='default-project'",
+                ["x".repeat(8 * 1024 * 1024)],
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_revision_source_basis
+                  WHERE revision_id=?1
+                    AND source_kind='codex-entry'
+                    AND source_key='codex:nir1-alice'",
+                [&revision_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        })?;
+        let source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        assert!(source.roster.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn graph_prepare_native_material_admission_is_project_wide() -> anyhow::Result<()> {
+        for extra_relation in [false, true] {
             let db = fresh_migrated_memory()?;
             seed_run_and_catalog(&db)?;
             let entity_ids = (0..254)
@@ -9534,7 +9822,7 @@ mod tests {
                     project_id: "default-project".into(),
                     scene_id: "nir1".into(),
                     proposal_key: Some(format!("nir1:graph-admission:second:{extra_relation}")),
-                    entity_ids: vec![entity_ids[0].clone()],
+                    entity_ids: entity_ids[..3].to_vec(),
                     relation_ids: vec![],
                 },
             )?;
@@ -9579,26 +9867,28 @@ mod tests {
                     "default-project",
                 )
             });
-            if should_prepare {
-                let source = db.with_read_transaction(|conn| {
-                    nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
-                })?;
-                assert!(eligible_revision_ids.iter().all(|revision_id| {
-                    source
-                        .roster
-                        .iter()
-                        .any(|entry| &entry.revision_id == revision_id)
-                }));
-                graph_result.expect("512 material records must remain within Graph admission");
-            } else {
-                let error = match graph_result {
-                    Ok(_) => anyhow::bail!(
-                        "513 material records must be rejected before snapshot creation"
-                    ),
-                    Err(error) => error.to_string(),
-                };
-                assert!(error.contains("NIR1_GRAPH_ROSTER_RECORD_LIMIT"), "{error}");
-            }
+            let snapshot = graph_result
+                .expect("project-wide valid Revisions must not use the per-Revision admission");
+            let source = db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+            })?;
+            assert!(eligible_revision_ids.iter().all(|revision_id| {
+                source
+                    .roster
+                    .iter()
+                    .any(|entry| &entry.revision_id == revision_id)
+            }));
+            assert_eq!(
+                source.roster.len(),
+                if extra_relation { 515 } else { 514 },
+                "individually valid revisions may exceed the former project-wide 512 roster cap"
+            );
+            assert_eq!(snapshot.edges_for_test().len(), 1 + source
+                .roster
+                .iter()
+                .map(|entry| entry.source_object_identity.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len());
         }
         Ok(())
     }
@@ -9661,15 +9951,13 @@ mod tests {
         append_typed_decision(&db, &ineligible_run, &ineligible, "rejected")?;
 
         let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
-        let error = match db.with_read_transaction(|conn| {
+        let _snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
-        }) {
-            Ok(_) => anyhow::bail!(
-                "ineligible Revision material must still count toward the whole Source bound"
-            ),
-            Err(error) => error.to_string(),
-        };
-        assert!(error.contains("NIR1_GRAPH_ROSTER_RECORD_LIMIT"), "{error}");
+        })?;
+        let source = db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+        })?;
+        assert_eq!(source.roster.len(), 508);
         Ok(())
     }
 
@@ -9753,15 +10041,50 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })?;
 
-        let error = match db.with_read_transaction(|conn| {
-            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        struct StopAtRow;
+
+        impl nir1_entity_relation_index::GraphWorkControl for StopAtRow {
+            fn check(
+                &mut self,
+                stage: nir1_entity_relation_index::GraphWorkStage,
+            ) -> anyhow::Result<()> {
+                if stage == nir1_entity_relation_index::GraphWorkStage::Row {
+                    return Err(crate::narrative_extraction::source_revision::validation_terminated(
+                        crate::narrative_extraction::source_revision::ValidationTerminationReason::Cancelled,
+                        "controlled stop before current revision ID allocation",
+                    ));
+                }
+                Ok(())
+            }
+        }
+
+        let control_error = match db.with_read_transaction(|conn| {
+            let mut control = StopAtRow;
+            nir1_entity_relation_index::read_eligibility_source_with_control(
+                conn,
+                "default-project",
+                &mut control,
+            )
         }) {
-            Ok(_) => anyhow::bail!("oversized current Revision identity must be rejected"),
+            Ok(_) => anyhow::bail!("Graph source read must observe the controlled Row stop"),
             Err(error) => error,
         };
         assert!(
-            error.to_string().contains("NIR1_GRAPH_ROSTER_INPUT_LIMIT"),
-            "{error}"
+            crate::narrative_extraction::source_revision::is_validation_terminated(&control_error),
+            "control cancellation must propagate before ID allocation: {control_error}"
+        );
+
+        let size_error = match db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        }) {
+            Ok(_) => anyhow::bail!("an oversized dangling revision ID must be rejected"),
+            Err(error) => error,
+        };
+        assert!(
+            size_error
+                .to_string()
+                .contains("NIR1_GRAPH_ROSTER_INPUT_LIMIT"),
+            "size admission must reject before owned read: {size_error}"
         );
         Ok(())
     }

@@ -22,10 +22,12 @@ use super::maintenance_runtime::{REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFI
 pub use super::restore_rebuild::durable_graph_state_digest;
 use super::restore_rebuild::{
     canonical_verify_outcome_digest, is_canonical_graph_state_digest,
-    validate_report_rebuild_required, validate_verify_check_coverage,
-    verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
-    RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION,
+    validate_report_rebuild_required, validate_report_rebuild_required_with_control,
+    validate_verify_check_coverage, DependencyGraphVerifyReport, RebuildDerivedStateSummary,
+    REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION,
 };
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage, NeverStopGraphWorkControl};
+use super::source_revision::is_validation_terminated;
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
 
@@ -254,6 +256,16 @@ pub fn evaluate_completed_run_skip(
     conn: &Connection,
     expected: &CompletedRunSkipExpectation,
 ) -> Result<CompletedRunSkipDecision> {
+    let mut control = NeverStopGraphWorkControl;
+    evaluate_completed_run_skip_with_control(conn, expected, &mut control)
+}
+
+pub(crate) fn evaluate_completed_run_skip_with_control(
+    conn: &Connection,
+    expected: &CompletedRunSkipExpectation,
+    control: &mut dyn GraphWorkControl,
+) -> Result<CompletedRunSkipDecision> {
+    control.check(GraphWorkStage::Restore)?;
     if validate_expectation_shape(expected).is_err() {
         return Ok(CompletedRunSkipDecision::Rerun {
             reason: CompletedRunSkipReason::EvidenceMalformed,
@@ -283,6 +295,7 @@ pub fn evaluate_completed_run_skip(
         }
         LatestRunSelection::Unique(latest) => *latest,
     };
+    control.check(GraphWorkStage::Restore)?;
 
     // A newer failed/running/cancelled Run must not be bypassed by an older
     // successful Run. `completed_at` is checked as well as status because a
@@ -456,21 +469,37 @@ pub fn evaluate_completed_run_skip(
         // evidence was sealed — including one that produces no defect the
         // report shape can see — refuses reuse with the precise reason.
         // Empty (pre-field) evidence never matches.
-        if evidence.graph_state_digest != durable_graph_state_digest(conn, &expected.project_id)? {
+        if evidence.graph_state_digest
+            != super::restore_rebuild::durable_graph_state_digest_with_control(
+                conn,
+                &expected.project_id,
+                control,
+            )?
+        {
             return Ok(CompletedRunSkipDecision::Rerun {
                 reason: CompletedRunSkipReason::GraphStateMismatch,
             });
         }
-        if validate_report_rebuild_required(conn, &expected.project_id, &report).is_err() {
-            return Ok(CompletedRunSkipDecision::Rerun {
-                reason: CompletedRunSkipReason::DerivedStateInvalid,
-            });
+        match validate_report_rebuild_required_with_control(
+            conn,
+            &expected.project_id,
+            &report,
+            control,
+        ) {
+            Ok(()) => {}
+            Err(error) if is_validation_terminated(&error) => return Err(error),
+            Err(_) => {
+                return Ok(CompletedRunSkipDecision::Rerun {
+                    reason: CompletedRunSkipReason::DerivedStateInvalid,
+                })
+            }
         }
-        if !live_verify_report_matches_sealed(
+        if !live_verify_report_matches_sealed_with_control(
             conn,
             &expected.project_id,
             &evidence.report_digest,
             &evidence.graph_state_digest,
+            control,
         )? {
             return Ok(CompletedRunSkipDecision::Rerun {
                 reason: CompletedRunSkipReason::DerivedStateInvalid,
@@ -603,18 +632,44 @@ fn live_verify_report_matches_sealed(
     sealed_report_digest: &str,
     sealed_graph_state_digest: &str,
 ) -> Result<bool> {
+    let mut control = NeverStopGraphWorkControl;
+    live_verify_report_matches_sealed_with_control(
+        conn,
+        project_id,
+        sealed_report_digest,
+        sealed_graph_state_digest,
+        &mut control,
+    )
+}
+
+fn live_verify_report_matches_sealed_with_control(
+    conn: &Connection,
+    project_id: &str,
+    sealed_report_digest: &str,
+    sealed_graph_state_digest: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
+    control.check(GraphWorkStage::Restore)?;
     if !is_canonical_graph_state_digest(sealed_graph_state_digest) {
         return Ok(false);
     }
-    let live_graph_state_digest = durable_graph_state_digest(conn, project_id)?;
+    let live_graph_state_digest =
+        super::restore_rebuild::durable_graph_state_digest_with_control(
+            conn, project_id, control,
+        )?;
     if live_graph_state_digest != sealed_graph_state_digest {
         return Ok(false);
     }
-    let report = verify_narrative_dependency_graph_for_project(conn, project_id)?;
+    let report =
+        super::restore_rebuild::verify_narrative_dependency_graph_for_project_with_control(
+            conn, project_id, control,
+        )?;
     if !report.is_clean() {
         return Ok(false);
     }
+    control.check(GraphWorkStage::Serialization)?;
     let value = serde_json::to_value(report)?;
+    control.check(GraphWorkStage::Serialization)?;
     Ok(format!("sha256:{}", digest_plan(&value)) == sealed_report_digest)
 }
 
@@ -640,6 +695,17 @@ pub fn persist_completed_run_skip_evidence_in_tx(
     run_id: &str,
     evidence: &CompletedRunSkipEvidence,
 ) -> Result<()> {
+    let mut control = NeverStopGraphWorkControl;
+    persist_completed_run_skip_evidence_in_tx_with_control(conn, run_id, evidence, &mut control)
+}
+
+pub(crate) fn persist_completed_run_skip_evidence_in_tx_with_control(
+    conn: &Connection,
+    run_id: &str,
+    evidence: &CompletedRunSkipEvidence,
+    control: &mut dyn GraphWorkControl,
+) -> Result<()> {
+    control.check(GraphWorkStage::ResultAssembly)?;
     ensure!(
         !conn.is_autocommit(),
         "NEX_MAINTENANCE_SKIP_TRANSACTION_REQUIRED: completed-run skip evidence must run inside a caller-owned transaction"
@@ -678,6 +744,7 @@ pub fn persist_completed_run_skip_evidence_in_tx(
             },
         )
         .optional()?;
+    control.check(GraphWorkStage::ResultAssembly)?;
     let Some((
         project_id,
         run_kind,
@@ -725,6 +792,7 @@ pub fn persist_completed_run_skip_evidence_in_tx(
     })?;
     let mut outcome: Value = serde_json::from_str(&outcome_json)
         .with_context(|| format!("NEX_MAINTENANCE_SKIP_OUTCOME_MALFORMED: Run '{run_id}'"))?;
+    control.check(GraphWorkStage::Serialization)?;
     let outcome_digest =
         successful_outcome_digest(&run_kind, &outcome, &evidence.semantic_epoch_id)?;
     ensure!(
@@ -744,9 +812,14 @@ pub fn persist_completed_run_skip_evidence_in_tx(
         "NEX_MAINTENANCE_SKIP_GRAPH_STATE_DIGEST_MISMATCH: evidence graph state digest does not match Run '{run_id}'"
     );
     ensure!(
-        durable_graph_state_digest(conn, &evidence.project_id)? == evidence.graph_state_digest,
+        super::restore_rebuild::durable_graph_state_digest_with_control(
+            conn,
+            &evidence.project_id,
+            control,
+        )? == evidence.graph_state_digest,
         "NEX_MAINTENANCE_SKIP_GRAPH_STATE_CHANGED: graph state changed before skip evidence was sealed"
     );
+    control.check(GraphWorkStage::Coverage)?;
     if run_kind == VERIFY_RUN_KIND {
         let report: DependencyGraphVerifyReport = serde_json::from_value(
             outcome
@@ -754,9 +827,15 @@ pub fn persist_completed_run_skip_evidence_in_tx(
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Verify outcome has no report"))?,
         )?;
-        validate_report_rebuild_required(conn, &evidence.project_id, &report)?;
+        validate_report_rebuild_required_with_control(
+            conn,
+            &evidence.project_id,
+            &report,
+            control,
+        )?;
     }
     let evidence_value = serde_json::to_value(evidence)?;
+    control.check(GraphWorkStage::Serialization)?;
     if let Some(existing) = outcome.get(COMPLETED_RUN_SKIP_EVIDENCE_FIELD) {
         let existing_semantics =
             serde_json::from_value::<CompletedRunSkipEvidence>(existing.clone())
@@ -777,6 +856,7 @@ pub fn persist_completed_run_skip_evidence_in_tx(
             evidence_value,
         );
         let serialized_outcome = serde_json::to_string(&outcome)?;
+        control.check(GraphWorkStage::Serialization)?;
         let changed = conn
             .execute(
                 "UPDATE narrative_extraction_runs
@@ -797,6 +877,7 @@ pub fn persist_completed_run_skip_evidence_in_tx(
             "NEX_MAINTENANCE_SKIP_EVIDENCE_LOST: Run '{run_id}' changed while sealing evidence"
         );
     }
+    control.check(GraphWorkStage::ResultAssembly)?;
     Ok(())
 }
 
@@ -1003,4 +1084,173 @@ fn successful_outcome_digest(
         "NEX_MAINTENANCE_SKIP_REPORT_DIGEST_MISMATCH: recorded '{recorded_digest}', expected '{expected_digest}'"
     );
     Ok(recorded_digest.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::narrative_extraction::{
+        durable_graph_state_digest, ensure_test_schema,
+        verify_narrative_dependency_graph_for_project,
+    };
+    use crate::test_support::current_schema_memory;
+    use rusqlite::params;
+    use serde_json::json;
+
+    const PROJECT_ID: &str = "skip-control-project";
+    const EPOCH_ID: &str = "skip-control-epoch";
+    const RUN_ID: &str = "skip-control-run";
+    const GRAPH_CONTRACT_DIGEST: &str =
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+    const RULE_REGISTRY_DIGEST: &str =
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+    const PRODUCER_GENERATION_DIGEST: &str =
+        "sha256:3333333333333333333333333333333333333333333333333333333333333333";
+
+    struct StopAtRebuildability {
+        digest_checks: usize,
+        stop_on_digest_check: usize,
+        restore_since_last_digest: bool,
+        reason: super::super::source_revision::ValidationTerminationReason,
+    }
+
+    impl GraphWorkControl for StopAtRebuildability {
+        fn check(&mut self, stage: GraphWorkStage) -> Result<()> {
+            match stage {
+                GraphWorkStage::Restore => self.restore_since_last_digest = true,
+                GraphWorkStage::Digest => {
+                    self.digest_checks += 1;
+                    let is_rebuildability_boundary = self.digest_checks
+                        == self.stop_on_digest_check
+                        && !self.restore_since_last_digest;
+                    self.restore_since_last_digest = false;
+                    if is_rebuildability_boundary {
+                        return Err(super::super::source_revision::validation_terminated(
+                            self.reason,
+                            "controlled stop at skip-evidence rebuildability validation",
+                        ));
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+
+    fn completed_verify_fixture() -> (crate::Database, CompletedRunSkipExpectation) {
+        let db = current_schema_memory().expect("current-schema fixture");
+        let expectation = db
+            .with_conn(|conn| {
+                ensure_test_schema(conn)?;
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES (?1, 'skip control project')",
+                    [PROJECT_ID],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_semantic_epochs
+                        (id, project_id, epoch_number, reason, created_at)
+                     VALUES (?1, ?2, 0, 'initial', '2026-09-18T00:00:00.000Z')",
+                    params![EPOCH_ID, PROJECT_ID],
+                )?;
+
+                let report = verify_narrative_dependency_graph_for_project(conn, PROJECT_ID)?;
+                ensure!(report.is_clean(), "skip control fixture Verify must be clean");
+                let report_value = serde_json::to_value(&report)?;
+                let report_digest = format!("sha256:{}", digest_plan(&report_value));
+                let graph_state_digest = durable_graph_state_digest(conn, PROJECT_ID)?;
+                let evidence = CompletedRunSkipEvidence {
+                    project_id: PROJECT_ID.to_owned(),
+                    run_kind: VERIFY_RUN_KIND.to_owned(),
+                    work_key: format!("{VERIFY_RUN_KIND}:{EPOCH_ID}"),
+                    semantic_epoch_id: EPOCH_ID.to_owned(),
+                    graph_contract_digest: GRAPH_CONTRACT_DIGEST.to_owned(),
+                    rule_registry_digest: RULE_REGISTRY_DIGEST.to_owned(),
+                    producer_generation_set_digest: PRODUCER_GENERATION_DIGEST.to_owned(),
+                    rebuild_contract_version: REBUILD_CONTRACT_VERSION.to_owned(),
+                    run_kind_contract_version: VERIFY_RUN_KIND_CONTRACT_VERSION.to_owned(),
+                    report_digest: report_digest.clone(),
+                    graph_state_digest: graph_state_digest.clone(),
+                };
+                let mut outcome = json!({
+                    "verifyContractVersion": VERIFY_CONTRACT_VERSION,
+                    "semanticEpochId": EPOCH_ID,
+                    "reportDigest": report_digest,
+                    "graphStateDigest": graph_state_digest,
+                    "report": report_value,
+                    "checkCoverage": super::super::restore_rebuild::production_verify_check_coverage(),
+                });
+                outcome[COMPLETED_RUN_SKIP_EVIDENCE_FIELD] = serde_json::to_value(evidence)?;
+                outcome["outcomeDigest"] = Value::String(canonical_verify_outcome_digest(&outcome)?);
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, outcome_summary_json, created_at, completed_at,
+                         version, run_kind, semantic_epoch_id, work_key)
+                     VALUES (?1, ?2, 'maintenance', '{}', '{}', 'spec', 'completed', '{}',
+                             ?3, '2026-09-18T00:00:00.000Z', '2026-09-18T00:00:00.000Z',
+                             0, 'dependency-verify', ?4, ?5)",
+                    params![
+                        RUN_ID,
+                        PROJECT_ID,
+                        outcome.to_string(),
+                        EPOCH_ID,
+                        format!("{VERIFY_RUN_KIND}:{EPOCH_ID}"),
+                    ],
+                )?;
+                Ok(CompletedRunSkipExpectation {
+                    project_id: PROJECT_ID.to_owned(),
+                    run_kind: VERIFY_RUN_KIND.to_owned(),
+                    work_key: format!("{VERIFY_RUN_KIND}:{EPOCH_ID}"),
+                    semantic_epoch_id: EPOCH_ID.to_owned(),
+                    graph_contract_digest: GRAPH_CONTRACT_DIGEST.to_owned(),
+                    rule_registry_digest: RULE_REGISTRY_DIGEST.to_owned(),
+                    producer_generation_set_digest: PRODUCER_GENERATION_DIGEST.to_owned(),
+                    rebuild_contract_version: REBUILD_CONTRACT_VERSION.to_owned(),
+                    run_kind_contract_version: VERIFY_RUN_KIND_CONTRACT_VERSION.to_owned(),
+                    report_digest: Some(
+                        outcome["reportDigest"]
+                            .as_str()
+                            .expect("report digest")
+                            .to_owned(),
+                    ),
+                })
+            })
+            .expect("seed completed Verify fixture");
+        (db, expectation)
+    }
+
+    #[test]
+    fn controlled_skip_cancellation_is_not_coerced_into_a_skip() {
+        let (db, expectation) = completed_verify_fixture();
+        let error = db
+            .with_conn(|conn| {
+                let mut control = StopAtRebuildability {
+                    digest_checks: 0,
+                    stop_on_digest_check: 7,
+                    restore_since_last_digest: false,
+                    reason: super::super::source_revision::ValidationTerminationReason::Cancelled,
+                };
+                evaluate_completed_run_skip_with_control(conn, &expectation, &mut control)
+            })
+            .expect_err("cancellation during rebuildability validation must not return Skip");
+        assert!(is_validation_terminated(&error));
+    }
+
+    #[test]
+    fn controlled_skip_foreground_preemption_is_not_coerced_into_a_skip() {
+        let (db, expectation) = completed_verify_fixture();
+        let error = db
+            .with_conn(|conn| {
+                let mut control = StopAtRebuildability {
+                    digest_checks: 0,
+                    stop_on_digest_check: 7,
+                    restore_since_last_digest: false,
+                    reason: super::super::source_revision::ValidationTerminationReason::
+                        ForegroundPreempted,
+                };
+                evaluate_completed_run_skip_with_control(conn, &expectation, &mut control)
+            })
+            .expect_err("foreground preemption during rebuildability validation must not return Skip");
+        assert!(is_validation_terminated(&error));
+    }
 }
