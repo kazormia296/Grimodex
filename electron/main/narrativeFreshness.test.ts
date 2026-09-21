@@ -27,14 +27,16 @@ function deferred<T>() {
 }
 
 describe("createNarrativeFreshnessScheduler", () => {
-  const schedulers: Array<{ dispose(): void }> = [];
+  const schedulers: Array<{ dispose(): void | Promise<void> }> = [];
 
   beforeEach(() => {
     vi.useFakeTimers();
   });
 
-  afterEach(() => {
-    for (const scheduler of schedulers.splice(0)) scheduler.dispose();
+  afterEach(async () => {
+    await Promise.all(
+      schedulers.splice(0).map((scheduler) => Promise.resolve(scheduler.dispose())),
+    );
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -349,9 +351,17 @@ describe("createNarrativeFreshnessScheduler", () => {
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
     expect(runNarrativeFreshnessCycle).toHaveBeenCalledOnce();
 
-    scheduler.dispose();
-    scheduler.dispose();
+    const firstDispose = scheduler.dispose();
+    const secondDispose = scheduler.dispose();
+    let disposed = false;
+    void firstDispose.then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
     first.resolve(summary(true));
+    await expect(firstDispose).resolves.toBeUndefined();
+    await expect(secondDispose).resolves.toBeUndefined();
     await Promise.resolve();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS * 2);

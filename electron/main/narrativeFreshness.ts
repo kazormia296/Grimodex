@@ -37,7 +37,8 @@ export interface NarrativeFreshnessScheduler {
     nextCycleGuardStateDigest: string | null;
     quiescenceState: unknown;
   };
-  dispose(): void;
+  /** Stop new cycles and join the currently running Native cycle. */
+  dispose(): Promise<void>;
 }
 
 interface SchedulerOptions {
@@ -157,6 +158,7 @@ export function createNarrativeFreshnessScheduler(
   let disposed = false;
   let inFlight = false;
   let wakePending = false;
+  let inFlightCompletion: Promise<void> | null = null;
   let cycleGeneration = 0;
   let mutationRevision = 0;
   let lastCompletedObservation: ReturnType<
@@ -183,7 +185,16 @@ export function createNarrativeFreshnessScheduler(
     timer = setTimeout(() => {
       noteMutation();
       timer = null;
-      void runCycle();
+      const completion = runCycle();
+      inFlightCompletion = completion;
+      void completion.then(
+        () => {
+          if (inFlightCompletion === completion) inFlightCompletion = null;
+        },
+        () => {
+          if (inFlightCompletion === completion) inFlightCompletion = null;
+        },
+      );
     }, delayMs);
   };
 
@@ -348,13 +359,17 @@ export function createNarrativeFreshnessScheduler(
       };
     },
 
-    dispose(): void {
-      if (disposed) return;
-      disposed = true;
-      wakePending = false;
-      noteMutation();
-      clearTimer();
-      // in-flight native callは強制取消しない。完了後の再scheduleだけを抑止する。
+    async dispose(): Promise<void> {
+      if (!disposed) {
+        disposed = true;
+        wakePending = false;
+        noteMutation();
+        clearTimer();
+      }
+      // Do not interrupt an in-flight Native cycle: it owns a lifecycle
+      // participant and must publish its terminal/cleanup evidence before
+      // Native shutdown can attempt to close the shared core.
+      await inFlightCompletion;
     },
   };
 }

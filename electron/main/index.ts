@@ -539,6 +539,13 @@ if (!gotSingleInstanceLock) {
     if (!shouldDisableNarrativeFreshnessForLaunch(narrativeMaintenanceCiSeam)) {
       narrativeFreshness.start();
     }
+    // Electron can emit `will-quit` as soon as app.close()/app.quit() is
+    // requested, before the renderer's close-veto protocol has completed its
+    // genesis prelude and strict persistence drain. Keep the promise that
+    // represents the main window's actual teardown separate from the Native
+    // lifecycle shutdown so Native cannot enter Transition while the
+    // renderer still needs its workspace authority to flush.
+    let rendererTeardown: Promise<void> = Promise.resolve();
     const quitFinalizer = createNarrativeMaintenanceQuitFinalizer({
       dispose: async () => {
         // Native shutdown observes Open/Restore through the shared lifecycle
@@ -555,7 +562,22 @@ if (!gotSingleInstanceLock) {
             () => undefined,
             (error) => error,
           );
-        const nativeResult = Promise.resolve()
+        // Freshness is a separate main-owned producer, but its in-flight
+        // Native cycle is still a lifecycle participant. Join it before
+        // request_shutdown so a cooperative stop is observed as a normal
+        // terminal cycle instead of being converted into a RecoveryRequired
+        // descriptor while the application is already closing.
+        const freshnessResult = Promise.resolve()
+          .then(() => narrativeFreshness.dispose())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
+        const nativeResult = Promise.all([
+          rendererTeardown,
+          schedulerResult,
+          freshnessResult,
+        ])
           .then(() => backend?.shutdownWorkspaceLifecycle?.())
           .then(
             () => undefined,
@@ -675,6 +697,13 @@ if (!gotSingleInstanceLock) {
     );
     performance.mark("grimodex:electron-create-main-window");
     const mainWindow = createMainWindow();
+    rendererTeardown = new Promise<void>((resolve) => {
+      if (mainWindow.isDestroyed()) {
+        resolve();
+        return;
+      }
+      mainWindow.once("closed", resolve);
+    });
     mainWindow.webContents.once("did-finish-load", () => {
       performance.mark("grimodex:renderer-finished-load");
       mainRendererReady = true;
