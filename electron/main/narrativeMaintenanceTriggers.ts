@@ -68,7 +68,8 @@ export interface NarrativeMaintenanceTriggerCoordinator {
     wakeOutboxDrainFailed?: boolean;
     wakeOutboxPendingRows?: boolean;
   };
-  dispose(): void;
+  /** Stop new discovery and join a discovery already admitted by this coordinator. */
+  dispose(): void | Promise<void>;
 }
 
 export interface NarrativeMaintenanceTriggerCoordinatorOptions {
@@ -328,6 +329,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   let wakeOutboxDrainFailed = false;
   let wakeOutboxPendingRows = false;
   let wakeOutboxDrainPromise: Promise<void> | null = null;
+  let discoveryPromise: Promise<void> | null = null;
   let lastSettledDiscovery: {
     generation: number;
     response: NarrativeMaintenanceDiscoveryResult;
@@ -428,12 +430,12 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     noteMutation();
     const discoveryGeneration = generation;
     let completedResponse: NarrativeMaintenanceDiscoveryResult | null = null;
-    void (async () => {
+    const operation = (async () => {
       try {
         const response = normalizeDiscoveryResponse(
           await discover.call(backend, reason),
         );
-        if (discoveryGeneration !== chainGeneration) return;
+        if (disposed || discoveryGeneration !== chainGeneration) return;
         if ("status" in response) {
           requestRediscovery();
           return;
@@ -650,6 +652,11 @@ export function createNarrativeMaintenanceTriggerCoordinator(
         }
       }
     })();
+    const trackedDiscovery = operation.finally(() => {
+      if (discoveryPromise === trackedDiscovery) discoveryPromise = null;
+    });
+    discoveryPromise = trackedDiscovery;
+    void trackedDiscovery;
   };
 
   const requestRediscovery = (): void => {
@@ -962,14 +969,21 @@ export function createNarrativeMaintenanceTriggerCoordinator(
         wakeOutboxPendingRows,
       };
     },
-    dispose(): void {
-      if (disposed) return;
+    async dispose(): Promise<void> {
+      if (disposed) {
+        await Promise.all([
+          discoveryPromise,
+          wakeOutboxDrainPromise,
+        ]);
+        return;
+      }
       disposed = true;
       noteMutation();
       clearTimer();
       pendingEvent = null;
       pendingRetryDelayMs = null;
       pendingWakeOutboxAck = null;
+      await Promise.all([discoveryPromise, wakeOutboxDrainPromise]);
     },
   };
 }

@@ -556,6 +556,12 @@ if (!gotSingleInstanceLock) {
         // Start both owners in the same turn. Scheduler disposal stops new
         // producers, while Native shutdown must not wait behind a scheduler
         // that is already stuck on an in-flight delivery.
+        const coordinatorResult = Promise.resolve()
+          .then(() => narrativeMaintenanceTriggers?.dispose())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
         const schedulerResult = Promise.resolve()
           .then(() => narrativeMaintenance?.dispose())
           .then(
@@ -575,6 +581,7 @@ if (!gotSingleInstanceLock) {
           );
         const nativeResult = Promise.all([
           rendererTeardown,
+          coordinatorResult,
           schedulerResult,
           freshnessResult,
         ])
