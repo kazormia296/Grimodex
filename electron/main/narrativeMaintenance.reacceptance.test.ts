@@ -154,6 +154,42 @@ describe("narrative maintenance reacceptance boundaries", () => {
     scheduler.dispose();
   });
 
+  it("drains a recovery descriptor before disposing for Native shutdown", async () => {
+    const recoveredBinding = {
+      authorityId: "authority-shutdown-recovery",
+      generation: 4,
+    };
+    const activeBinding = {
+      authorityId: "authority-shutdown-recovery-reopened",
+      generation: 5,
+    };
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "reconciled",
+        descriptorId: 104,
+        reason: "maintenance-recovery-complete",
+        recoveredBinding,
+        activeBinding,
+        reboundBinding: activeBinding,
+      })
+      .mockResolvedValue({ status: "none" });
+    const ackNarrativeMaintenanceRecovery = vi.fn().mockResolvedValue({
+      status: "acknowledged",
+      descriptorId: 104,
+      acknowledged: true,
+    });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery,
+      ackNarrativeMaintenanceRecovery,
+    });
+
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
+    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledTimes(2);
+    expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
+    expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledWith("104");
+  });
+
   it("reschedules work enqueued during an idle recovery preflight", async () => {
     const preflight = deferred<{ status: "none" }>();
     const reconcileNarrativeMaintenanceRecovery = vi
@@ -246,7 +282,9 @@ describe("narrative maintenance reacceptance boundaries", () => {
       removeField(recovery);
       const reconcileNarrativeMaintenanceRecovery = vi
         .fn()
-        .mockResolvedValue(recovery);
+        .mockResolvedValueOnce(recovery)
+        .mockResolvedValueOnce(recovery)
+        .mockResolvedValue({ status: "none" });
       const ackNarrativeMaintenanceRecovery = vi.fn();
       const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue(accepted());
       const scheduler = createNarrativeMaintenanceScheduler({
@@ -266,7 +304,8 @@ describe("narrative maintenance reacceptance boundaries", () => {
       expect(ackNarrativeMaintenanceRecovery).not.toHaveBeenCalled();
       expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
       expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledTimes(2);
-      await scheduler.dispose();
+      await expect(scheduler.dispose()).resolves.toBeUndefined();
+      expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledTimes(3);
     },
   );
 

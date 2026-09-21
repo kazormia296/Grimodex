@@ -84,9 +84,37 @@ thread_local! {
     /// hook and later clearing the owner's cancellation handler.
     static SCOPE_CONNECTIONS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 
+    /// Manual/foreground maintenance uses the ordinary connection wait path.
+    /// Automatic maintenance keeps the no-wait acquisition below so a live
+    /// editor writer can preempt it, while a foreground command waits behind
+    /// the exact owner instead of turning transient contention into a failed
+    /// user operation.
+    static FOREGROUND_MAINTENANCE_WAIT_DEPTH: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+
     #[cfg(test)]
     static FAILPOINTS: std::cell::RefCell<MaintenanceCleanupFailpoints> =
         const { std::cell::RefCell::new(MaintenanceCleanupFailpoints::NONE) };
+}
+
+pub(crate) fn foreground_maintenance_wait_active() -> bool {
+    FOREGROUND_MAINTENANCE_WAIT_DEPTH.with(|depth| depth.get() > 0)
+}
+
+pub(crate) fn with_foreground_maintenance_wait<T>(operation: impl FnOnce() -> T) -> T {
+    FOREGROUND_MAINTENANCE_WAIT_DEPTH.with(|depth| {
+        depth.set(depth.get().saturating_add(1));
+    });
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            FOREGROUND_MAINTENANCE_WAIT_DEPTH.with(|depth| {
+                depth.set(depth.get().saturating_sub(1));
+            });
+        }
+    }
+    let _guard = Guard;
+    operation()
 }
 
 struct ScopeConnectionGuard {
@@ -484,8 +512,17 @@ fn with_narrative_maintenance_connection_with_latch<T, F>(
 where
     F: FnOnce(&Connection) -> Result<T>,
 {
-    let Some(conn) = try_lock_narrative_maintenance(db)? else {
-        return Ok(None);
+    let conn = if foreground_maintenance_wait_active() {
+        // Foreground commands preserve the existing wait behavior.  The
+        // caller has already announced its lifecycle ownership; waiting here
+        // lets an in-flight Freshness/maintenance phase finish instead of
+        // converting normal contention into a cleanup/requeue failure.
+        db.lock_conn()?
+    } else {
+        let Some(conn) = try_lock_narrative_maintenance(db)? else {
+            return Ok(None);
+        };
+        conn
     };
     let result = match catch_unwind(AssertUnwindSafe(|| {
         with_narrative_maintenance_connection_scope_with_latch(

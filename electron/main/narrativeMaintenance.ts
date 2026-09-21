@@ -1997,6 +1997,77 @@ export function createNarrativeMaintenanceScheduler(
     }
   };
 
+  /**
+   * A shutdown quiesce can create a maintenance recovery descriptor after the
+   * ordinary scheduler has stopped admitting work.  Drain that exact root
+   * here, before `disposed` becomes true, so Native shutdown never observes a
+   * process-local Run owner that the main scheduler has simply abandoned.
+   *
+   * This path deliberately uses the same proof validator and ACK operation as
+   * the normal recovery preflight.  It does not rediscover work or reopen a
+   * workspace on its own; Native remains the authority for the descriptor and
+   * its replacement binding.
+   */
+  const drainRecoveryBeforeDispose = async (): Promise<void> => {
+    const reconcileRecovery = backend?.reconcileNarrativeMaintenanceRecovery;
+    if (typeof reconcileRecovery !== "function") return;
+
+    const maxAttempts = 4;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const raw = await reconcileRecovery.call(backend);
+      const recovery =
+        typeof raw === "string"
+          ? (JSON.parse(raw) as {
+              status?: unknown;
+              descriptorId?: unknown;
+              reason?: unknown;
+              recoveredBinding?: unknown;
+              activeBinding?: unknown;
+              reboundBinding?: unknown;
+            })
+          : (raw as {
+              status?: unknown;
+              descriptorId?: unknown;
+              reason?: unknown;
+              recoveredBinding?: unknown;
+              activeBinding?: unknown;
+              reboundBinding?: unknown;
+            } | null);
+
+      if (recovery === null || recovery?.status === "none") return;
+
+      if (
+        recovery?.status !== "reconciled" ||
+        recovery.reason !== "maintenance-recovery-complete"
+      ) {
+        // A close-pending baton can become retryable after the first failed
+        // close.  Give the Native owner a bounded number of immediate retries;
+        // if the exact root still cannot be proven, fail closed below rather
+        // than manufacturing a terminal shutdown state.
+        await Promise.resolve();
+        continue;
+      }
+
+      if (!applyRecoveredRecoveryProof(recovery)) {
+        throw new Error(
+          "NEX_MAINTENANCE_RECOVERY_PROOF_INVALID: shutdown recovery proof was not accepted",
+        );
+      }
+      if (!(await acknowledgeRecoveredRecovery(recovery))) {
+        throw new Error(
+          "NEX_MAINTENANCE_RECOVERY_ACK_PENDING: shutdown recovery receipt was not acknowledged",
+        );
+      }
+      // The ACK retires the process-local proof.  Re-query once more so a
+      // second descriptor or a replayable receipt cannot survive into Native
+      // shutdown unnoticed.
+    }
+
+    throw new Error(
+      "NEX_MAINTENANCE_RECOVERY_PENDING: descriptor recovery was not proven before shutdown",
+    );
+  };
+
   const runCycle = async (): Promise<void> => {
     // Manual Verify/Rebuild attempts reserve the same admission slot as an
     // automatic cycle.  A timer that fires while that slot is occupied must
@@ -3593,6 +3664,7 @@ export function createNarrativeMaintenanceScheduler(
       if (terminalReceiptFailure !== null) {
         throw terminalReceiptFailure.error;
       }
+      await drainRecoveryBeforeDispose();
       await retryPendingDeliveryAcks();
       if (pendingDeliveryAcks.size > 0) {
         throw new Error(

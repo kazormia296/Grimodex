@@ -3401,7 +3401,9 @@ where
     };
 
     let operation_result = match catch_unwind(AssertUnwindSafe(|| {
-        operation(authority.db(), &control, &canonical_work_key)
+        grimodex_db::with_foreground_maintenance_wait(|| {
+            operation(authority.db(), &control, &canonical_work_key)
+        })
     })) {
         Ok(result) => result,
         Err(_) => Err(anyhow::anyhow!(

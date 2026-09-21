@@ -20,6 +20,14 @@ use std::time::Duration;
 pub(crate) mod narrative_maintenance_connection;
 use narrative_maintenance_connection::ConnectionHealth;
 
+/// Run a foreground maintenance command under the ordinary blocking
+/// connection acquisition policy. Automatic maintenance remains no-wait, but
+/// user initiated Verify/Backfill/Rebuild commands must retain the existing
+/// foreground wait semantics when a background phase currently owns SQLite.
+pub fn with_foreground_maintenance_wait<T>(operation: impl FnOnce() -> T) -> T {
+    narrative_maintenance_connection::with_foreground_maintenance_wait(operation)
+}
+
 thread_local! {
     static BACKGROUND_CONNECTION_PRIORITY_DEPTH: Cell<usize> = const { Cell::new(0) };
     /// Native maintenance owns the connection in short, phase-scoped
