@@ -561,10 +561,23 @@ if (!gotSingleInstanceLock) {
             () => undefined,
             (error) => error,
           );
-        const [schedulerError, nativeError] = await Promise.all([
-          schedulerResult,
-          nativeResult,
-        ]);
+        const schedulerError = await schedulerResult;
+        let nativeError = await nativeResult;
+        // Native may observe an admitted maintenance delivery before the
+        // scheduler has finished its cancellation/ACK handoff.  A failed
+        // `publish_closed` at that boundary is not terminal proof of a
+        // failed shutdown: once the scheduler has retired its exact delivery
+        // record, re-observe the same idempotent Native shutdown request.
+        // Keep this retry inside the single finalizer attempt so the bounded
+        // observation budget remains the authority for termination.
+        if (nativeError !== undefined && backend?.shutdownWorkspaceLifecycle) {
+          nativeError = await Promise.resolve()
+            .then(() => backend.shutdownWorkspaceLifecycle?.())
+            .then(
+              () => undefined,
+              (error) => error,
+            );
+        }
         if (schedulerError !== undefined || nativeError !== undefined) {
           const failures = [schedulerError, nativeError].filter(
             (error): error is unknown => error !== undefined,
