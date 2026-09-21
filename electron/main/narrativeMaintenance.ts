@@ -2441,6 +2441,11 @@ export function createNarrativeMaintenanceScheduler(
     > | null = null;
     let deliveryRetired = false;
     let deliveryRetirement: Promise<boolean> | null = null;
+    const terminalReceiptAllowsDeliveryRetirement = (): boolean =>
+      nativeTerminalReceipt !== null && terminalReceiptFailure === null;
+    const deliveryHasNoNativeOwner = (): boolean =>
+      nativeTerminalReceipt === null &&
+      !nativeAttemptIds.has(cycleAttemptId ?? "");
     const retireCurrentDelivery = async (): Promise<void> => {
       if (deliveryRetired) return;
       deliveryRetirement ??= retireDelivery(deliveryFingerprint, deliverySequence);
@@ -2877,8 +2882,8 @@ export function createNarrativeMaintenanceScheduler(
           // Do not schedule this project again until a new explicit request
           // clears its park.  This is a typed non-ACK, not a retry failure.
           if (
-            nativeTerminalReceipt === null &&
-            !nativeAttemptIds.has(cycleAttemptId ?? "")
+            terminalReceiptAllowsDeliveryRetirement() ||
+            deliveryHasNoNativeOwner()
           ) {
             await retireCurrentDelivery();
           }
@@ -2952,8 +2957,8 @@ export function createNarrativeMaintenanceScheduler(
           // deferredWakeProjects, so other workspace scopes can continue
           // without requiring an unrelated enqueue to wake the scheduler.
           if (
-            nativeTerminalReceipt === null &&
-            !nativeAttemptIds.has(cycleAttemptId ?? "")
+            terminalReceiptAllowsDeliveryRetirement() ||
+            deliveryHasNoNativeOwner()
           ) {
             await retireCurrentDelivery();
           }
@@ -2976,8 +2981,8 @@ export function createNarrativeMaintenanceScheduler(
             "[narrative-maintenance] lifecycle request was not admitted; retaining maintenance trigger",
           );
           if (
-            nativeTerminalReceipt === null &&
-            !nativeAttemptIds.has(cycleAttemptId ?? "")
+            terminalReceiptAllowsDeliveryRetirement() ||
+            deliveryHasNoNativeOwner()
           ) {
             await retireCurrentDelivery();
           }
@@ -3000,8 +3005,8 @@ export function createNarrativeMaintenanceScheduler(
             "[narrative-maintenance] active workspace unavailable; retaining maintenance trigger",
           );
           if (
-            nativeTerminalReceipt === null &&
-            !nativeAttemptIds.has(cycleAttemptId ?? "")
+            terminalReceiptAllowsDeliveryRetirement() ||
+            deliveryHasNoNativeOwner()
           ) {
             // The workspace-unavailable result proves that this delivery did
             // not start work. Requeued work gets a fresh sequence after the

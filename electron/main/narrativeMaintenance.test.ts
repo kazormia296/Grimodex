@@ -618,6 +618,66 @@ describe("narrative maintenance scheduler", () => {
     },
   );
 
+  it("retires an unavailable delivery after a clean Native terminal receipt", async () => {
+    const binding = { authorityId: "authority-unavailable", generation: 2 };
+    const workItem = work(
+      "project-unavailable",
+      "backfill",
+      "backfill:v2",
+      "workspace-open",
+    );
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue({
+      status: "workspace-unavailable",
+    });
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [
+          {
+            workKey: canonicalNarrativeMaintenanceWorkKey(workItem),
+            status: "not-started",
+          },
+        ],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
+    const ackNarrativeMaintenanceDelivery = vi.fn().mockResolvedValue({
+      status: "retired",
+    });
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+      ackNarrativeMaintenanceDelivery,
+    });
+
+    scheduler.request(workItem);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(beginNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+    expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledOnce();
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledWith(1);
+  });
+
   it("retries the exact H+1 delivery after Native capacity frees", async () => {
     const binding = { authorityId: "authority-capacity", generation: 3 };
     const originalWork = work(
