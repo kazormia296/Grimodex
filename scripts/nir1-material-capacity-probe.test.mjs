@@ -34,7 +34,7 @@ function makeWorkspace(selectedFixture = fixtureId) {
   return { directory, fixtureDirectory, outputDirectory, sourceDb };
 }
 
-function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, fixtureShapeReportRecords = null, malformed = false, timeout = false, leakyDescendant = false, detachedDescendant = false, writeProjectMarker = false, omitMode = false, supportedCapacityClaim = false, failedMode = false, operationReportRecords = null, sourceSnapshotDependencyEdges = null } = {}) {
+function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, fixtureShapeReportRecords = null, malformed = false, timeout = false, leakyDescendant = false, detachedDescendant = false, writeProjectMarker = false, enforceSingleChildCopy = false, omitMode = false, supportedCapacityClaim = false, failedMode = false, operationReportRecords = null, sourceSnapshotDependencyEdges = null } = {}) {
   const fixtureCounts = {
     [fixtureId]: { candidateRevisions: 3, qualifiedRevisions: 3, rejectedRevisions: 0, entityRecords: 255, relationRecords: 3, evidenceRecords: 255, qualifiedMaterialRecords: 513, rosterRecords: 513, dependencyEdges: null, graphSnapshotDependencyEdges: null, reportRecords: null },
     "Q8176/R16": { candidateRevisions: 16, qualifiedRevisions: 16, rejectedRevisions: 0, entityRecords: 4080, relationRecords: 16, evidenceRecords: 4080, qualifiedMaterialRecords: 8176, rosterRecords: 8176, dependencyEdges: null, graphSnapshotDependencyEdges: null, reportRecords: null },
@@ -51,7 +51,8 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
   return [
     "#!/usr/bin/env node",
     'import { spawn } from "node:child_process";',
-    'import { writeFileSync } from "node:fs";',
+    'import { readdirSync, writeFileSync } from "node:fs";',
+    'import { dirname } from "node:path";',
     "const database = process.argv[2];",
     "const fixtureId = process.argv[3];",
     "const projectId = process.argv[4] ?? null;",
@@ -59,6 +60,7 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
     leakyDescendant ? "const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit' }); descendant.unref();" : "",
     detachedDescendant ? "const descendant = spawn('setsid', ['env', '-i', process.execPath, '-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit' }); if (projectId) writeFileSync(projectId, String(descendant.pid)); descendant.unref();" : "",
     writeProjectMarker ? "if (projectId) writeFileSync(projectId, 'child-ran');" : "",
+    enforceSingleChildCopy ? "if (readdirSync(dirname(database)).filter((name) => name.endsWith('.db')).length !== 1) { console.error('prior disposable child DB was retained'); process.exit(91); }" : "",
     mutate ? "writeFileSync(database, `mutated-main-${process.pid}`);" : "",
     mutate ? "writeFileSync(`${database}-wal`, `mutated-wal-${process.pid}`);" : "",
     mutate ? "writeFileSync(`${database}-shm`, `mutated-shm-${process.pid}`);" : "",
@@ -74,12 +76,12 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
       counts,
       fixtureShape,
       bytes: { payloadBytes: 0, envelopeBytes: 0, sourceBasisBytes: 0, liveSourceBytes: null, rosterBytes: 0, revisionIdOverheadBytes: 0 },
-      process: { elapsedMs: 1, userCpuUs: 1, systemCpuUs: 1, rssBytes: 2, hwmRssBytes: 2, ruMaxrssBytes: 2, sqliteMemoryBytes: 2, sqliteMemoryHighwaterBytes: 2, readBytes: 0, writeBytes: 0 },
+      process: { elapsedMs: 1, userCpuUs: 1, systemCpuUs: 1, rssBytes: 2, hwmRssBytes: 2, ruMaxrssBytes: 2, sqliteMemoryBytes: 2, sqliteMemoryHighwaterBytes: 2, rustHeap: null, readBytes: 0, writeBytes: 0 },
       sql: { statementVmSteps: 3, exactVmSteps: true, progressCallbacks: 0, statements: 1 },
-      occupancy: { connectionHoldMs: 1, publishTransactionMs: null, foregroundWaitMs: null },
+      occupancy: { connectionHoldMs: 1, publishTransactionMs: null, foregroundWaitMs: null, foregroundWaitScope: null, foregroundWaitMethod: null, foregroundWaitUncertainty: null },
       graphLifecycle: {},
       modeOutcome: { operation: "fake", success: true, requiredSuccess: true, operationReportRecords: null },
-      cancel: { status: "not-run", latencyMs: null },
+      cancel: { status: "not-run", latencyMs: null, scope: null, method: null, uncertainty: null },
       rejectionReasons: {},
       publishedGenerationBefore: 4,
       publishedGenerationAfter: 5,
@@ -161,6 +163,11 @@ test("capacity manifest fixes the diagnostic matrix and Graph lifecycle boundary
   assert.ok(manifest.requiredMetrics.includes("temporaryBytes"));
   assert.ok(manifest.requiredMetrics.includes("cancelLatency"));
   assert.ok(manifest.requiredMetrics.includes("totalPeakRss"));
+  assert.ok(manifest.requiredMetrics.includes("rustHeapRequestedHighWater"));
+  assert.ok(schema.$defs.observationProcess.required.includes("rustHeap"));
+  assert.equal(schema.$defs.rustHeapMeasurement.additionalProperties, false);
+  assert.ok(schema.$defs.observationCancel.required.includes("uncertainty"));
+  assert.ok(schema.$defs.observationOccupancy.required.includes("foregroundWaitScope"));
   assert.equal(manifest.runProtocol.modeIsolation.length > 0, true);
   assert.deepEqual(
     manifest.diagnosticModes.map((mode) => mode.id),
@@ -207,6 +214,7 @@ test("target fixtures execute every diagnostic mode in isolated child paths", ()
   try {
     const binary = makeChild(workspace.directory, {
       fixtureForReport: selectedFixture,
+      enforceSingleChildCopy: true,
     });
     const report = JSON.parse(
       runProbe(workspace, binary, [

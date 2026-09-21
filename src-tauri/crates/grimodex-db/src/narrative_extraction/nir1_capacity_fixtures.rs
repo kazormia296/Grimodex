@@ -92,10 +92,9 @@ pub struct CapacityFixtureBuildResult {
     pub expected: FixtureExpectedShape,
     pub observed: CapacityObservation,
     /// UTF-8 bytes in the catalog's live `name` and `summary` columns after
-    /// all fixture mutations.  The read-only capacity probe intentionally
-    /// leaves live Source bytes unmeasured; the fixture builder reports this
-    /// exact seeded input size separately rather than treating it as a probe
-    /// observation.
+    /// all fixture mutations. This mirrors the exact value measured by the
+    /// capacity observation and remains in the fixture receipt for consumers
+    /// of the existing build-result shape.
     pub seeded_live_source_bytes: u64,
     /// Number of real report entries persisted in the completed dependency
     /// Verify outcome. The diagnostic intentionally does not synthesize
@@ -303,7 +302,10 @@ pub fn build_fixture_from_manifest(
         snapshot_fixture_files(&output_path)? == source_snapshot,
         "capacity measurement changed the immutable fixture source"
     );
-    let seeded_live_source_bytes = read_live_source_bytes(&output_path)?;
+    let seeded_live_source_bytes = observed
+        .bytes
+        .live_source_bytes
+        .context("capacity observation omitted live Source bytes")?;
     let persisted_verify_report_records = read_persisted_verify_report_records_from_file(
         &output_path,
         NIR1_CAPACITY_FIXTURE_PROJECT_ID,
@@ -914,22 +916,6 @@ fn remove_fixture_copy(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn read_live_source_bytes(path: &Path) -> Result<u64> {
-    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .with_context(|| format!("open fixture for live Source byte count {}", path.display()))?;
-    let bytes: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(
-                    length(CAST(COALESCE(name, '') AS BLOB))
-                  + length(CAST(COALESCE(summary, '') AS BLOB))
-                ), 0)
-           FROM codex_entries
-          WHERE project_id=?1",
-        params![NIR1_CAPACITY_FIXTURE_PROJECT_ID],
-        |row| row.get(0),
-    )?;
-    Ok(u64::try_from(bytes)?)
-}
-
 fn read_persisted_verify_report_records_from_file(
     path: &Path,
     project_id: &str,
@@ -1186,6 +1172,15 @@ mod tests {
         assert_eq!(result.observed.counts.qualified_revisions, 3);
         assert_eq!(result.observed.counts.candidate_revisions, 3);
         assert!(result.seeded_live_source_bytes > 0);
+        assert_eq!(
+            result.observed.bytes.live_source_bytes,
+            Some(result.seeded_live_source_bytes)
+        );
+        assert!(!result
+            .observed
+            .not_measured
+            .iter()
+            .any(|metric| metric.ends_with(":live-source-content-bytes")));
         assert!(result.checkpoint.reopened_read_only);
         let original = fs::read(&output)?;
         let copy = temp_path("q513-copy");
@@ -1200,8 +1195,8 @@ mod tests {
     }
 
     #[test]
-    fn byte_heavy_fixture_keeps_each_persisted_revision_component_within_the_admission() -> Result<()>
-    {
+    fn byte_heavy_fixture_keeps_each_persisted_revision_component_within_the_admission(
+    ) -> Result<()> {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../evals/nir1-capacity/manifest.v1.json");
         let output = temp_path("byte-heavy");
@@ -1209,7 +1204,8 @@ mod tests {
         assert_eq!(result.observed.counts.qualified_material_records, 2044);
         assert_eq!(result.observed.counts.qualified_revisions, 4);
 
-        let conn = Connection::open_with_flags(&output, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let conn =
+            Connection::open_with_flags(&output, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let (payload_bytes, envelope_bytes, combined_bytes): (i64, i64, i64) = conn.query_row(
             "SELECT MAX(length(CAST(payload_json AS BLOB))),
                     MAX(length(CAST(reconciliation_envelope_json AS BLOB))),

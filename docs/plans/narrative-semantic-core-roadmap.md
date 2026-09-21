@@ -3,8 +3,8 @@
 ## Status
 
 - **Lifecycle:** Active mutable roadmap
-- **Last updated:** 2026-09-16
-- **Current focus:** NIR-1 A2 Entity／Relation review is complete in PR #591 at `master@81d0390fe7a935191753b41e5673503f99d51d16` (Tree `0decaab5470c2408be81856ac2373b28e078b945`). The completed scope is normal preparation → Evidence confirmation → explicit Decision on an immutable Revision → target-bound cold reopen. Graph, Packing, and AI dispatch remain inactive; the downstream threat model is draft and NIR-1 overall acceptance remains incomplete.
+- **Last updated:** 2026-09-22
+- **Current focus:** NIR-1の#591限定A2と#600/#601共有lifecycleはmasterへマージ済み。`master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`（Tree `959f57102e93099872cffd07ea6970e83b7952c9`）から [残工程実装計画](nir1-post-b-execution-plan.md) を実行中である。[B-close第1段階の容量matrix](nir1-b-close-capacity-observation-2026-09-22.md) は完走したが未測定項目と未批准の数値契約を残す。Graph、Packing、AI dispatchはinactive、downstream threat modelはdraft、NIR-1全体受入れは未完了。NIR-1 overall acceptance remains incomplete.
 - **North star:** **本文に追従し、根拠を示し、人間の修正を覚える Living Story Bible**
 
 This document is the canonical **mutable implementation and product roadmap** for Narrative Semantic Core, AI-assisted extraction, incremental maintenance, and the Living Story Bible product surface.

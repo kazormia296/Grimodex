@@ -225,6 +225,7 @@
     "dependencyEdgeCount",
     "reportRecordCount",
     "totalPeakMemory",
+    "rustHeapRequestedHighWater",
     "totalPeakRss",
     "rss",
     "hwmRss",

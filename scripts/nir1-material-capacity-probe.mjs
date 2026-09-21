@@ -370,6 +370,22 @@ function copyPreseedState(sourcePath, childPath) {
   }
 }
 
+function removeChildState(childPath, context) {
+  const failures = [];
+  for (const suffix of ["-wal", "-shm", "-journal", ""]) {
+    try {
+      rmSync(componentPath(childPath, suffix), { force: true });
+    } catch (error) {
+      failures.push(`${suffix || "main"}: ${error.message}`);
+    }
+  }
+  if (failures.length > 0) {
+    fail(
+      `${context} could not remove its disposable child state: ${failures.join("; ")}`,
+    );
+  }
+}
+
 function fixturePath(spec, fixtureDirectory) {
   const encoded = spec.id.replaceAll("/", "__");
   const candidates = [
@@ -1185,10 +1201,15 @@ async function runChild({
   } finally {
     // The child owner resolves only after exit confirmation (or after the
     // bounded SIGKILL escalation reports that confirmation is unavailable).
-    // Snapshot and source verification run on every path before scratch
-    // cleanup so a mutable child can never be mistaken for a stable source.
-    after = captureDatabaseState(childPath);
-    assertSourceStable(sourceDb, sourceState, context);
+    // Snapshot and source verification run on every path before this child's
+    // files are removed, so a mutable child can never be mistaken for a stable
+    // source and the full matrix does not retain every database copy.
+    try {
+      after = captureDatabaseState(childPath);
+      assertSourceStable(sourceDb, sourceState, context);
+    } finally {
+      removeChildState(childPath, context);
+    }
   }
   if (
     !child ||

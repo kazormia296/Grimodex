@@ -102,6 +102,67 @@ fn real_binary_report_heavy_crosses_build_coverage_and_restore() {
             assert_eq!(observation["status"], "measured");
             assert_eq!(observation["supportedCapacityClaim"], false);
             assert_eq!(observation["fixtureShape"]["reportRecords"], 1);
+            assert!(observation["bytes"]["liveSourceBytes"]
+                .as_u64()
+                .is_some_and(|bytes| bytes > 0));
+            let heap = &observation["process"]["rustHeap"];
+            let current_heap = heap["currentRequestedBytes"]
+                .as_u64()
+                .expect("current Rust heap bytes");
+            let peak_heap = heap["peakRequestedBytes"]
+                .as_u64()
+                .expect("peak Rust heap bytes");
+            assert!(peak_heap > 0 && peak_heap >= current_heap);
+            assert_eq!(observation["cancel"]["status"], "measured");
+            assert_eq!(
+                observation["cancel"]["scope"],
+                "isolated-whole-project-graph-prepare"
+            );
+            assert!(observation["cancel"]["latencyMs"]
+                .as_f64()
+                .is_some_and(|latency| latency >= 0.0));
+            assert!(observation["cancel"]["uncertainty"]
+                .as_str()
+                .is_some_and(|value| value.contains("selected diagnostic mode")));
+            assert!(observation["occupancy"]["foregroundWaitMs"]
+                .as_f64()
+                .is_some_and(|latency| latency >= 0.0));
+            assert_eq!(
+                observation["occupancy"]["foregroundWaitScope"],
+                "isolated-whole-project-graph-prepare"
+            );
+            for suffix in [
+                ":retained-roster-edge-high-water",
+                ":d1-declaration-retained-bytes",
+                ":declaration-tuple-hashset-retained-bytes",
+                ":edge-tuple-hashset-retained-bytes",
+                ":verify-report-retained-bytes",
+                ":durable-state-value-retained-bytes",
+                ":clone-canonical-serialization-buffer-bytes",
+            ] {
+                assert!(
+                    !observation["notMeasured"]
+                        .as_array()
+                        .expect("notMeasured array")
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|metric| metric.ends_with(suffix)),
+                    "{mode} must account for Rust heap coverage: {suffix}"
+                );
+            }
+            for metric in [
+                format!("{mode}:selected-mode-cancel-latency"),
+                format!("{mode}:selected-mode-foreground-wait"),
+            ] {
+                assert!(
+                    observation["notMeasured"]
+                        .as_array()
+                        .expect("notMeasured array")
+                        .iter()
+                        .any(|value| value.as_str() == Some(metric.as_str())),
+                    "{mode} must not widen the shared interruption probe to selected-mode evidence"
+                );
+            }
             assert_eq!(observation["modeOutcome"]["success"], true);
             assert_eq!(observation["modeOutcome"]["requiredSuccess"], true);
             assert!(

@@ -16,10 +16,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::backup_restore::{read_incomplete_restore_session, restore_backup_core};
 use crate::migration_supervisor::workspace_identity;
@@ -47,7 +47,9 @@ use super::{
         read_eligibility_source_with_control, BindingRead, GraphObjectRosterEntry,
         INDEX_KEY as ENTITY_RELATION_INDEX_KEY,
     },
-    source_revision::ForegroundValidationControl,
+    source_revision::{
+        ForegroundValidationControl, ValidationTerminated, ValidationTerminationReason,
+    },
     NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
 };
 use crate::narrative_maintenance_connection::{
@@ -172,6 +174,16 @@ pub struct CapacitySqlMetrics {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RustHeapMeasurement {
+    pub current_requested_bytes: u64,
+    pub peak_requested_bytes: u64,
+    pub method: &'static str,
+    pub coverage: &'static str,
+    pub uncertainty: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProcessMetrics {
     pub elapsed_ms: f64,
     pub user_cpu_us: Option<u64>,
@@ -185,6 +197,10 @@ pub struct ProcessMetrics {
     pub ru_maxrss_bytes: Option<u64>,
     pub sqlite_memory_bytes: Option<u64>,
     pub sqlite_memory_highwater_bytes: Option<u64>,
+    /// Process-lifetime requested Rust heap tracked by the diagnostic binary's
+    /// system allocator wrapper. `None` means the library was called without
+    /// that opt-in binary owner.
+    pub rust_heap: Option<RustHeapMeasurement>,
     pub read_bytes: Option<u64>,
     pub write_bytes: Option<u64>,
     /// SQLite temporary files are not reliably visible through `/proc` on all
@@ -203,9 +219,12 @@ pub struct CapacityOccupancy {
     pub connection_hold_ms: f64,
     /// The controlled Graph publish transaction interval.
     pub publish_transaction_ms: Option<f64>,
-    /// Foreground waiter coordination belongs to the maintenance owner and
-    /// is not observable from a standalone read-only child.
+    /// Wait from a foreground request until it acquires and verifies the
+    /// connection after preempting an isolated real Graph prepare owner.
     pub foreground_wait_ms: Option<f64>,
+    pub foreground_wait_scope: Option<&'static str>,
+    pub foreground_wait_method: Option<&'static str>,
+    pub foreground_wait_uncertainty: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -297,6 +316,16 @@ pub struct CapacityModeOutcome {
 pub struct CancelMeasurement {
     pub status: &'static str,
     pub latency_ms: Option<f64>,
+    pub scope: Option<&'static str>,
+    pub method: Option<&'static str>,
+    pub uncertainty: Option<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CapacityInterruptionMeasurements {
+    cancel_latency_ms: f64,
+    foreground_wait_ms: f64,
+    post_probe_copy_digest: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -323,6 +352,65 @@ pub struct CapacityObservation {
     pub cancel: CancelMeasurement,
     pub rejection_reasons: BTreeMap<String, usize>,
     pub not_measured: Vec<String>,
+}
+
+impl CapacityObservation {
+    /// Attach the diagnostic binary's process-wide Rust allocation high-water.
+    /// One fresh child owns one measured path, so this single high-water covers
+    /// the roster, edges, D1/declaration sets, hash sets, reports, durable
+    /// values, and serialization buffers without pretending they peak at
+    /// independent times.
+    pub fn record_rust_heap_measurement(
+        &mut self,
+        current_requested_bytes: u64,
+        peak_requested_bytes: u64,
+    ) {
+        self.process.rust_heap = Some(RustHeapMeasurement {
+            current_requested_bytes,
+            peak_requested_bytes: peak_requested_bytes.max(current_requested_bytes),
+            method: "fresh-child-system-global-allocator-requested-byte-high-water",
+            coverage: "all Rust allocations from diagnostic child start through primary path completion, before isolated interruption probes",
+            uncertainty: "excludes allocator metadata and non-Rust allocators; use totalPeakRssBytes and SQLite high-water for whole-process coverage",
+        });
+        const COVERED_SUFFIXES: [&str; 7] = [
+            ":retained-roster-edge-high-water",
+            ":d1-declaration-retained-bytes",
+            ":declaration-tuple-hashset-retained-bytes",
+            ":edge-tuple-hashset-retained-bytes",
+            ":verify-report-retained-bytes",
+            ":durable-state-value-retained-bytes",
+            ":clone-canonical-serialization-buffer-bytes",
+        ];
+        self.not_measured.retain(|metric| {
+            !COVERED_SUFFIXES
+                .iter()
+                .any(|suffix| metric.ends_with(suffix))
+        });
+    }
+
+    pub fn record_interruption_measurements(
+        &mut self,
+        measurements: CapacityInterruptionMeasurements,
+    ) {
+        const SCOPE: &str = "isolated-whole-project-graph-prepare";
+        self.cancel = CancelMeasurement {
+            status: "measured",
+            latency_ms: Some(measurements.cancel_latency_ms),
+            scope: Some(SCOPE),
+            method: Some("atomic-stop-after-first-sql-progress-callback-to-clean-owner-return"),
+            uncertainty: Some(
+                "shared prepare-owner probe; selected diagnostic mode cancellation is not measured",
+            ),
+        };
+        self.occupancy.foreground_wait_ms = Some(measurements.foreground_wait_ms);
+        self.occupancy.foreground_wait_scope = Some(SCOPE);
+        self.occupancy.foreground_wait_method =
+            Some("foreground-request-to-post-preemption-connection-query-completion");
+        self.occupancy.foreground_wait_uncertainty = Some(
+            "shared prepare-owner probe; selected diagnostic mode foreground wait is not measured",
+        );
+        self.graph_lifecycle.post_run_copy_digest = measurements.post_probe_copy_digest;
+    }
 }
 
 #[derive(Default)]
@@ -705,6 +793,36 @@ fn row_bytes(
     Ok((u64::try_from(row.0)?, u64::try_from(row.1)?))
 }
 
+fn live_source_bytes(
+    conn: &Connection,
+    project_id: Option<&str>,
+    accumulator: &mut SqlAccumulator,
+) -> Result<Option<u64>> {
+    if !table_exists(conn, "codex_entries", accumulator)? {
+        return Ok(None);
+    }
+    let sql = if project_id.is_some() {
+        "SELECT COALESCE(SUM(
+                    length(CAST(COALESCE(name, '') AS BLOB))
+                  + length(CAST(COALESCE(summary, '') AS BLOB))
+                ), 0)
+           FROM codex_entries
+          WHERE project_id=?1"
+    } else {
+        "SELECT COALESCE(SUM(
+                    length(CAST(COALESCE(name, '') AS BLOB))
+                  + length(CAST(COALESCE(summary, '') AS BLOB))
+                ), 0)
+           FROM codex_entries"
+    };
+    let bytes: i64 = if let Some(project_id) = project_id {
+        count_statement(conn, sql, &[&project_id], accumulator, |row| row.get(0))?
+    } else {
+        count_statement(conn, sql, &[], accumulator, |row| row.get(0))?
+    };
+    Ok(Some(u64::try_from(bytes)?))
+}
+
 fn decision_id(
     conn: &Connection,
     revision_id: &str,
@@ -870,8 +988,8 @@ fn mode_measurement_not_measured(
         not_measured.push(path_not_measured(mode, "restore-install"));
     }
     not_measured.push(path_not_measured(mode, "temporary-bytes"));
-    not_measured.push(path_not_measured(mode, "foreground-wait"));
-    not_measured.push(path_not_measured(mode, "cancel-latency"));
+    not_measured.push(path_not_measured(mode, "selected-mode-foreground-wait"));
+    not_measured.push(path_not_measured(mode, "selected-mode-cancel-latency"));
     not_measured
 }
 
@@ -1473,7 +1591,7 @@ fn assert_restore_old_revisions_invalidated(
 fn owned_mode_operation<T, F>(
     db: &Database,
     progress_callbacks: Option<Arc<AtomicU64>>,
-    stop: Arc<std::sync::atomic::AtomicBool>,
+    stop: Arc<AtomicBool>,
     operation: F,
 ) -> Result<Option<T>>
 where
@@ -1500,6 +1618,151 @@ where
         },
         None => Ok(None),
     }
+}
+
+#[derive(Clone, Copy)]
+enum InterruptionProbeKind {
+    Cancel,
+    Foreground,
+}
+
+fn measure_interruption_probe(
+    database_path: &Path,
+    project_id: &str,
+    kind: InterruptionProbeKind,
+) -> Result<f64> {
+    const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+    let db = Arc::new(Database::new(database_path).with_context(|| {
+        format!(
+            "open interruption diagnostic database {}",
+            database_path.display()
+        )
+    })?);
+    let stop = Arc::new(AtomicBool::new(false));
+    let progress_callbacks = Arc::new(AtomicU64::new(0));
+    let owner_finished = Arc::new(AtomicBool::new(false));
+    let trigger_db = Arc::clone(&db);
+    let trigger_stop = Arc::clone(&stop);
+    let trigger_callbacks = Arc::clone(&progress_callbacks);
+    let trigger_finished = Arc::clone(&owner_finished);
+    let trigger = std::thread::spawn(move || -> Result<(Instant, Option<f64>)> {
+        let progress_deadline = Instant::now() + PROBE_TIMEOUT;
+        while trigger_callbacks.load(Ordering::Acquire) == 0 {
+            if trigger_finished.load(Ordering::Acquire) {
+                anyhow::bail!("interruption probe owner completed before its first SQL callback");
+            }
+            if Instant::now() >= progress_deadline {
+                trigger_stop.store(true, Ordering::Release);
+                anyhow::bail!("interruption probe observed no SQL callback within 30 seconds");
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        let requested_at = Instant::now();
+        match kind {
+            InterruptionProbeKind::Cancel => {
+                trigger_stop.store(true, Ordering::Release);
+                Ok((requested_at, None))
+            }
+            InterruptionProbeKind::Foreground => {
+                let wait_deadline = requested_at + PROBE_TIMEOUT;
+                let mut check = || {
+                    anyhow::ensure!(
+                        Instant::now() < wait_deadline,
+                        "foreground interruption probe did not acquire the connection within 30 seconds"
+                    );
+                    Ok(())
+                };
+                let conn = trigger_db.lock_conn_with_check(Some(&mut check))?;
+                conn.query_row("SELECT 1", [], |_| Ok(()))?;
+                drop(conn);
+                Ok((
+                    requested_at,
+                    Some(requested_at.elapsed().as_secs_f64() * 1000.0),
+                ))
+            }
+        }
+    });
+
+    let runtime = NirChronicleIndexRuntime::new(&db, 1);
+    let operation = with_narrative_maintenance_graph_control(
+        &db,
+        PROBE_TIMEOUT,
+        PROGRESS_CADENCE_VM_STEPS,
+        Arc::clone(&stop),
+        NarrativeMaintenanceGraphControlConfig::with_progress_callbacks(Arc::clone(
+            &progress_callbacks,
+        )),
+        |conn, control| {
+            let tx = conn.unchecked_transaction()?;
+            let result = prepare_graph_index_build_with_control(&tx, &runtime, project_id, control)
+                .map(|_| ());
+            match (result, tx.rollback()) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) => Err(error),
+                (Ok(()), Err(rollback_error)) => Err(rollback_error.into()),
+                (Err(error), Err(rollback_error)) => Err(error.context(format!(
+                    "rollback interruption diagnostic transaction: {rollback_error}"
+                ))),
+            }
+        },
+    );
+    owner_finished.store(true, Ordering::Release);
+    let trigger_result = trigger
+        .join()
+        .map_err(|_| anyhow::anyhow!("interruption probe trigger thread panicked"))??;
+    let observed_at = Instant::now();
+    let owner = operation?.context("interruption probe maintenance connection was deferred")?;
+    let receipt = owner.receipt;
+    anyhow::ensure!(
+        receipt.connection_reusable
+            && receipt.transaction_clean
+            && receipt.progress_handler_cleared
+            && receipt.busy_timeout_restored,
+        "interruption probe did not release a reusable clean connection: {receipt:?}"
+    );
+    let error = owner
+        .into_result()
+        .expect_err("interruption probe unexpectedly completed Graph preparation");
+    let termination = error
+        .downcast_ref::<ValidationTerminated>()
+        .context("interruption probe did not preserve its typed termination reason")?;
+    let expected_reason = match kind {
+        InterruptionProbeKind::Cancel => ValidationTerminationReason::Cancelled,
+        InterruptionProbeKind::Foreground => ValidationTerminationReason::ForegroundPreempted,
+    };
+    anyhow::ensure!(
+        termination.reason == expected_reason,
+        "interruption probe terminated as {:?}, expected {:?}",
+        termination.reason,
+        expected_reason
+    );
+    db.with_conn(|conn| {
+        conn.query_row("SELECT 1", [], |_| Ok(()))?;
+        Ok(())
+    })
+    .context("reuse connection after interruption probe cleanup")?;
+
+    Ok(trigger_result
+        .1
+        .unwrap_or_else(|| observed_at.duration_since(trigger_result.0).as_secs_f64() * 1000.0))
+}
+
+pub fn measure_capacity_interruptions(
+    database_path: &Path,
+    project_id: Option<&str>,
+) -> Result<CapacityInterruptionMeasurements> {
+    let project_id = project_id.context("project id is required for interruption diagnostics")?;
+    let cancel_latency_ms =
+        measure_interruption_probe(database_path, project_id, InterruptionProbeKind::Cancel)?;
+    let foreground_wait_ms =
+        measure_interruption_probe(database_path, project_id, InterruptionProbeKind::Foreground)?;
+    Ok(CapacityInterruptionMeasurements {
+        cancel_latency_ms,
+        foreground_wait_ms,
+        post_probe_copy_digest: database_state_digest(database_path)?,
+    })
 }
 
 /// Run a cold-reopen check through a newly opened `Database`. Keeping this
@@ -3059,6 +3322,7 @@ pub fn measure_capacity_mode(
     let (payload_bytes, envelope_bytes) = row_bytes(&transaction, project_id, &mut sql)?;
     bytes.payload_bytes = payload_bytes;
     bytes.envelope_bytes = envelope_bytes;
+    bytes.live_source_bytes = live_source_bytes(&transaction, project_id, &mut sql)?;
     let project_for_reader = project_id.unwrap_or("");
     for revision_id in &revision_ids {
         if project_for_reader.is_empty() {
@@ -3143,7 +3407,6 @@ pub fn measure_capacity_mode(
     };
     let admission = "per-revision-512-record-and-2MiB-envelope";
     let mut not_measured = vec![
-        path_not_measured(mode, "live-source-content-bytes"),
         path_not_measured(mode, "retained-roster-edge-high-water"),
         path_not_measured(mode, "d1-declaration-retained-bytes"),
         path_not_measured(mode, "declaration-tuple-hashset-retained-bytes"),
@@ -3153,6 +3416,9 @@ pub fn measure_capacity_mode(
         path_not_measured(mode, "clone-canonical-serialization-buffer-bytes"),
     ];
     not_measured.extend(mode_measurement_not_measured(mode, &lifecycle));
+    if bytes.live_source_bytes.is_none() {
+        not_measured.push(path_not_measured(mode, "live-source-content-bytes"));
+    }
     if total_peak_rss_bytes.is_none() {
         not_measured.push(path_not_measured(mode, "total-peak-rss"));
     }
@@ -3233,6 +3499,7 @@ pub fn measure_capacity_mode(
             ru_maxrss_bytes: after_process.ru_maxrss_bytes,
             sqlite_memory_bytes: sqlite_after,
             sqlite_memory_highwater_bytes: sqlite_memory_highwater(),
+            rust_heap: None,
             read_bytes: diff_u64(after_process.read_bytes, before_process.read_bytes),
             write_bytes: diff_u64(after_process.write_bytes, before_process.write_bytes),
             temporary_bytes: None,
@@ -3247,6 +3514,9 @@ pub fn measure_capacity_mode(
             connection_hold_ms,
             publish_transaction_ms: lifecycle.publish_transaction_ms,
             foreground_wait_ms: None,
+            foreground_wait_scope: None,
+            foreground_wait_method: None,
+            foreground_wait_uncertainty: None,
         },
         graph_lifecycle: GraphLifecycleMetrics {
             prepared: lifecycle.prepared,
@@ -3288,6 +3558,9 @@ pub fn measure_capacity_mode(
         cancel: CancelMeasurement {
             status: "not-run",
             latency_ms: None,
+            scope: None,
+            method: None,
+            uncertainty: None,
         },
         rejection_reasons,
         not_measured,
@@ -3341,6 +3614,13 @@ mod tests {
                 ru_maxrss_bytes: Some(6),
                 sqlite_memory_bytes: Some(7),
                 sqlite_memory_highwater_bytes: Some(8),
+                rust_heap: Some(RustHeapMeasurement {
+                    current_requested_bytes: 9,
+                    peak_requested_bytes: 10,
+                    method: "test",
+                    coverage: "test",
+                    uncertainty: "test",
+                }),
                 read_bytes: Some(9),
                 write_bytes: Some(10),
                 temporary_bytes: None,
@@ -3355,6 +3635,9 @@ mod tests {
                 connection_hold_ms: 1.0,
                 publish_transaction_ms: Some(2.0),
                 foreground_wait_ms: None,
+                foreground_wait_scope: None,
+                foreground_wait_method: None,
+                foreground_wait_uncertainty: None,
             },
             graph_lifecycle: GraphLifecycleMetrics {
                 prepared: true,
@@ -3408,6 +3691,9 @@ mod tests {
             cancel: CancelMeasurement {
                 status: "not-run",
                 latency_ms: None,
+                scope: None,
+                method: None,
+                uncertainty: None,
             },
             rejection_reasons: BTreeMap::new(),
             not_measured: vec!["full-build:cancel-latency".to_owned()],

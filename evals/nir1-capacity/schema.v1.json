@@ -194,6 +194,12 @@
       "type": ["number", "null"],
       "minimum": 0
     },
+    "optionalNonEmptyString": {
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "null" }
+      ]
+    },
     "capacityObservation": {
       "type": "object",
       "required": [
@@ -306,6 +312,24 @@
       },
       "additionalProperties": true
     },
+    "rustHeapMeasurement": {
+      "type": "object",
+      "required": [
+        "currentRequestedBytes",
+        "peakRequestedBytes",
+        "method",
+        "coverage",
+        "uncertainty"
+      ],
+      "properties": {
+        "currentRequestedBytes": { "type": "integer", "minimum": 0 },
+        "peakRequestedBytes": { "type": "integer", "minimum": 0 },
+        "method": { "type": "string", "minLength": 1 },
+        "coverage": { "type": "string", "minLength": 1 },
+        "uncertainty": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
     "observationProcess": {
       "type": "object",
       "required": [
@@ -318,6 +342,7 @@
         "ruMaxrssBytes",
         "sqliteMemoryBytes",
         "sqliteMemoryHighwaterBytes",
+        "rustHeap",
         "readBytes",
         "writeBytes",
         "temporaryBytes"
@@ -332,6 +357,12 @@
         "ruMaxrssBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "sqliteMemoryBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "sqliteMemoryHighwaterBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "rustHeap": {
+          "anyOf": [
+            { "$ref": "#/$defs/rustHeapMeasurement" },
+            { "type": "null" }
+          ]
+        },
         "readBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "writeBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "temporaryBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" }
@@ -354,21 +385,36 @@
       "required": [
         "connectionHoldMs",
         "publishTransactionMs",
-        "foregroundWaitMs"
+        "foregroundWaitMs",
+        "foregroundWaitScope",
+        "foregroundWaitMethod",
+        "foregroundWaitUncertainty"
       ],
       "properties": {
         "connectionHoldMs": { "type": "number", "minimum": 0 },
         "publishTransactionMs": { "$ref": "#/$defs/optionalNonNegativeNumber" },
-        "foregroundWaitMs": { "$ref": "#/$defs/optionalNonNegativeNumber" }
+        "foregroundWaitMs": { "$ref": "#/$defs/optionalNonNegativeNumber" },
+        "foregroundWaitScope": { "$ref": "#/$defs/optionalNonEmptyString" },
+        "foregroundWaitMethod": { "$ref": "#/$defs/optionalNonEmptyString" },
+        "foregroundWaitUncertainty": { "$ref": "#/$defs/optionalNonEmptyString" }
       },
       "additionalProperties": true
     },
     "observationCancel": {
       "type": "object",
-      "required": ["status", "latencyMs"],
+      "required": [
+        "status",
+        "latencyMs",
+        "scope",
+        "method",
+        "uncertainty"
+      ],
       "properties": {
         "status": { "type": "string", "minLength": 1 },
-        "latencyMs": { "$ref": "#/$defs/optionalNonNegativeNumber" }
+        "latencyMs": { "$ref": "#/$defs/optionalNonNegativeNumber" },
+        "scope": { "$ref": "#/$defs/optionalNonEmptyString" },
+        "method": { "$ref": "#/$defs/optionalNonEmptyString" },
+        "uncertainty": { "$ref": "#/$defs/optionalNonEmptyString" }
       },
       "additionalProperties": true
     },
