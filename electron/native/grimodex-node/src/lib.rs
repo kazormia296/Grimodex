@@ -6608,6 +6608,25 @@ impl Backend {
     /// scheduler can bind a request before it enters its pending queue.
     #[napi]
     pub fn get_narrative_maintenance_workspace_binding(&self) -> Result<Option<String>> {
+        // A normal transition is a retryable window for the scheduler, so it
+        // may observe `None` while the authority is being drained.  A
+        // RecoveryRequired state is different: the surviving authority is
+        // restore-only and must not be exposed as an ordinary maintenance
+        // binding.  Keep this compatibility getter fail-closed in that state
+        // even though the shared snapshot helpers use the retryable
+        // WORKSPACE_SWITCHING marker for ordinary DB callers.
+        if matches!(
+            self.state
+                .workspace_lifecycle
+                .lifecycle_snapshot()
+                .map_err(|error| napi::Error::from_reason(error.to_string()))?
+                .state,
+            LifecycleState::RecoveryRequired { .. } | LifecycleState::Closed
+        ) {
+            return Err(napi::Error::from_reason(
+                "WORKSPACE_SWITCHING: workspace lifecycle is restore-only",
+            ));
+        }
         let _workspace_operation = self
             .state
             .begin_workspace_operation()
