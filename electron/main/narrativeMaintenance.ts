@@ -1444,6 +1444,31 @@ export function createNarrativeMaintenanceScheduler(
       }
       changed = true;
     }
+    if (
+      capacityBlockedDelivery !== null &&
+      workspaceBindingKey(capacityBlockedDelivery.workspaceBinding) ===
+        workspaceBindingKey(original)
+    ) {
+      // A capacity rejection owns the exact H+1 sequence and fingerprint, so
+      // it cannot be moved back through `pending` without changing the
+      // admission identity. Rebind the retained owner in place; the next
+      // retry keeps its sequence/fingerprint while carrying the proven
+      // replacement authority.
+      capacityBlockedDelivery = {
+        ...capacityBlockedDelivery,
+        work: capacityBlockedDelivery.work.map((work) => ({
+          ...work,
+          workspaceBinding: rebound,
+        })),
+        wakeEntries: capacityBlockedDelivery.wakeEntries.map((entry) => ({
+          ...entry,
+          wakeKey: scopedWakeKey(entry.projectId, rebound),
+          workspaceBinding: rebound,
+        })),
+        workspaceBinding: rebound,
+      };
+      changed = true;
+    }
     if (changed) noteMutation();
     return changed;
   };
@@ -2253,14 +2278,24 @@ export function createNarrativeMaintenanceScheduler(
       typeof backend?.resolveNarrativeMaintenanceDelivery === "function";
     const resolveDeliverySequence = (): number => {
       const mappedDeliverySequence = deliverySequences.get(deliveryFingerprint);
-      if (mappedDeliverySequence !== undefined) return mappedDeliverySequence;
+      if (mappedDeliverySequence !== undefined) {
+        // A terminal result whose transport ACK is pending belongs to an
+        // earlier occurrence. Do not let a later enqueue with the same
+        // fingerprint replay that result or consume the new queue item. The
+        // old sequence remains independently retryable in
+        // `pendingDeliveryAcks`; this occurrence receives H+1 below.
+        if (!pendingDeliveryAcks.has(mappedDeliverySequence)) {
+          return mappedDeliverySequence;
+        }
+      }
       // A fence may have been committed after Native rejected admission, and
       // the response ACK may then have been lost. Keep the exact sequence even
       // if the correlation map was not written by an older adapter: allocating
       // H+1 here would create an endless chain of recordless fences while the
       // first unknown sequence remains unacknowledged.
       const pendingSequence = [...pendingDeliveryAcks.entries()].find(
-        ([, entry]) => entry.fingerprint === deliveryFingerprint,
+        ([, entry]) =>
+          entry.fenced && entry.fingerprint === deliveryFingerprint,
       )?.[0];
       return pendingSequence ?? deliveryLedger.H + 1;
     };

@@ -708,6 +708,77 @@ describe("narrative maintenance scheduler", () => {
     expect(ackNarrativeMaintenanceDelivery).toHaveBeenLastCalledWith(1);
   });
 
+  it("applies a rebound proof to a capacity-blocked delivery before retrying it", async () => {
+    const before = { authorityId: "authority-capacity-before", generation: 1 };
+    const after = { authorityId: "authority-capacity-after", generation: 2 };
+    const originalWork = work(
+      "project-capacity-recovery",
+      "backfill",
+      "backfill:v2",
+      "capacity-recovery",
+    );
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "workspace-unavailable",
+        reason: "maintenance-delivery-capacity",
+      })
+      .mockResolvedValue(acceptedCycle());
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "none" })
+      .mockResolvedValueOnce({
+        status: "reconciled",
+        descriptorId: 71,
+        reason: "maintenance-recovery-complete",
+        recoveredBinding: before,
+        activeBinding: after,
+        reboundBinding: after,
+      })
+      .mockResolvedValue({ status: "none" });
+    const ackNarrativeMaintenanceRecovery = vi.fn().mockResolvedValue({
+      status: "acknowledged",
+      descriptorId: 71,
+      acknowledged: true,
+    });
+    const ackNarrativeMaintenanceDelivery = vi
+      .fn()
+      .mockResolvedValue({ status: "retired" });
+    const scheduler = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => after,
+      reconcileNarrativeMaintenanceRecovery,
+      ackNarrativeMaintenanceRecovery,
+      ackNarrativeMaintenanceDelivery,
+      runNarrativeMaintenanceCycle,
+    }).scheduler;
+
+    scheduler.requestWithBinding(originalWork, before);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    const firstRequest = runNarrativeMaintenanceCycle.mock.calls[0]?.[0];
+    expect(firstRequest?.workspaceBinding).toEqual(before);
+    expect(firstRequest?.deliverySequence).toBe(1);
+
+    // The first retry consumes the proof and keeps the exact capacity-owned
+    // sequence parked. The following retry must send that owner with the
+    // replacement binding rather than the stale one.
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    const retryRequest = runNarrativeMaintenanceCycle.mock.calls[1]?.[0];
+    expect(retryRequest?.workspaceBinding).toEqual(after);
+    expect(retryRequest?.deliverySequence).toBe(firstRequest?.deliverySequence);
+    expect(retryRequest?.deliveryFingerprint).toBe(
+      firstRequest?.deliveryFingerprint,
+    );
+    expect(ackNarrativeMaintenanceRecovery.mock.invocationCallOrder[0]).toBeLessThan(
+      runNarrativeMaintenanceCycle.mock.invocationCallOrder[1]!,
+    );
+  });
+
   it("keeps a capacity retry cancellable during workspace quiescence", async () => {
     const binding = {
       authorityId: "authority-capacity-quiesce",

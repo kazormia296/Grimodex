@@ -718,4 +718,54 @@ describe("narrative maintenance reacceptance boundaries", () => {
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(1);
     await scheduler.dispose();
   });
+
+  it("assigns a new sequence to a new occurrence while the prior ACK is pending", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(accepted());
+    let firstAckPending = true;
+    const ackNarrativeMaintenanceDelivery = vi
+      .fn()
+      .mockImplementation(async (sequence: number) => {
+        if (sequence === 1 && firstAckPending) {
+          firstAckPending = false;
+          throw new Error("temporary ACK transport failure");
+        }
+        return { status: "retired", sequence };
+      });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      runNarrativeMaintenanceCycle,
+      ackNarrativeMaintenanceDelivery,
+    });
+    const occurrence = backfill("ack-pending-new-occurrence", "same-key");
+
+    scheduler.request(occurrence);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0].deliverySequence).toBe(
+      1,
+    );
+
+    // A new occurrence arrives before the ACK-only retry. It must receive a
+    // fresh sequence and remain an independently dispatched queue item.
+    scheduler.request(occurrence);
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0].deliverySequence).toBe(
+      2,
+    );
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0].work).toHaveLength(
+      1,
+    );
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(ackNarrativeMaintenanceDelivery.mock.calls).toEqual([
+      [1],
+      [2],
+      [1],
+    ]);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    await scheduler.dispose();
+  });
 });
