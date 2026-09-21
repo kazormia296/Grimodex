@@ -1018,14 +1018,26 @@ fn load_selected_reuse_identity_in_tx(
                 row.get(4)?,
             ))
         },
-    )?;
+    )
+    .optional()?
+    .ok_or_else(|| {
+        ownership_error(format!(
+            "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: selected Run '{run_id}' has no exact running Task"
+        ))
+    })?;
     let (attempt_id, attempt_number, attempt_status): (String, i64, String) = conn.query_row(
         "SELECT id, attempt_number, status
            FROM narrative_extraction_attempts
           WHERE task_id = ?1",
         params![&task_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )?;
+    )
+    .optional()?
+    .ok_or_else(|| {
+        ownership_error(format!(
+            "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: selected Task '{task_id}' has no exact running Attempt"
+        ))
+    })?;
     anyhow::ensure!(
         task_kind_stored == task_kind
             && task_status == "running"

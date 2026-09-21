@@ -401,6 +401,11 @@ pub(super) fn resolve_current_source_state_in_batch(
     >,
 ) -> anyhow::Result<CurrentSourceState> {
     anyhow::ensure!(!conn.is_autocommit(), "Source batch requires a transaction");
+    // This compatibility batch already borrows the caller's transaction and
+    // cannot outlive it.  Give the bounded edge evaluator an explicit
+    // foreground owner instead of routing whole-project eligibility through
+    // the fail-closed no-context control.
+    let mut foreground = ForegroundValidationControl;
     let resolved = if source_kind == "scope-dependency-projection-v1" {
         (|| {
             if authority.is_none() {
@@ -420,7 +425,14 @@ pub(super) fn resolve_current_source_state_in_batch(
             )
         })()
     } else {
-        resolve_source_revision(conn, project_id, run_id, source_kind, source_key)
+        resolve_source_revision_with_control(
+            conn,
+            project_id,
+            run_id,
+            source_kind,
+            source_key,
+            &mut foreground,
+        )
     };
     current_source_state_from_resolution(source_kind, resolved)
 }
