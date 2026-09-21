@@ -2,12 +2,13 @@ use std::{io::Read, path::PathBuf};
 
 use flate2::read::GzDecoder;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::source::{read_eligibility_source, read_eligibility_source_with_control};
-use crate::narrative_extraction::nir1_entity_relation_index::{
-    GraphWorkControl, GraphWorkStage,
+use crate::narrative_extraction::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
+use crate::narrative_extraction::{
+    validation_terminated, ValidationTerminated, ValidationTerminationReason,
 };
-use crate::narrative_extraction::{validation_terminated, ValidationTerminationReason};
 use crate::Database;
 
 struct Fixture {
@@ -198,26 +199,93 @@ fn nir1_eligibility_source_requires_one_caller_owned_snapshot() {
 
 #[test]
 fn nir1_chronicle_source_preserves_typed_lifecycle_stop() {
-    struct Stop;
+    struct Stop {
+        stage: GraphWorkStage,
+        checks: usize,
+        stop_after: usize,
+    }
     impl GraphWorkControl for Stop {
-        fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
-            Err(validation_terminated(
-                ValidationTerminationReason::Cancelled,
-                "test stop before roster scan",
-            ))
+        fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+            if stage == self.stage {
+                self.checks += 1;
+                if self.checks == self.stop_after {
+                    return Err(validation_terminated(
+                        ValidationTerminationReason::Cancelled,
+                        "test stop inside roster work",
+                    ));
+                }
+            }
+            Ok(())
         }
     }
 
     let f = Fixture::new();
     let project_id = f.project().to_owned();
     f.db.with_read_transaction(|tx| {
-        let mut stop = Stop;
-        let error = read_eligibility_source_with_control(tx, &project_id, &mut stop)
-            .expect_err("stopped lifecycle must not produce Source");
-        assert!(crate::narrative_extraction::is_validation_terminated(&error));
+        for (stage, stop_after) in [
+            (GraphWorkStage::Source, 1),
+            (GraphWorkStage::Row, 2),
+            (GraphWorkStage::Serialization, 64),
+            (GraphWorkStage::Digest, 64),
+        ] {
+            let mut stop = Stop {
+                stage,
+                checks: 0,
+                stop_after,
+            };
+            let error = read_eligibility_source_with_control(tx, &project_id, &mut stop)
+                .expect_err("stopped lifecycle must not produce Source");
+            let termination = error
+                .downcast_ref::<ValidationTerminated>()
+                .expect("serialization must preserve the typed lifecycle stop");
+            assert_eq!(termination.reason, ValidationTerminationReason::Cancelled);
+            assert_eq!(stop.checks, stop_after, "{stage:?}");
+        }
         Ok(())
     })
     .expect("typed stop check");
+}
+
+#[test]
+fn nir1_chronicle_source_streaming_digest_matches_original_json_contract() {
+    let f = Fixture::new();
+    let project_id = f.project().to_owned();
+    f.db.with_read_transaction(|tx| {
+        let rows = tx
+            .prepare(
+                "SELECT p.id,p.current_revision_id,p.status,r.reconciliation_envelope_digest,
+                        s.run_id,d.id,d.revision_id,d.decision,d.actor_kind,d.actor_id,d.authority_scope
+                 FROM narrative_proposals p JOIN narrative_proposal_sets s ON s.id=p.proposal_set_id
+                 LEFT JOIN narrative_proposal_revisions r ON r.id=p.current_revision_id AND r.proposal_id=p.id
+                 LEFT JOIN narrative_proposal_decisions d ON d.id=(
+                   SELECT latest.id FROM narrative_proposal_decisions latest WHERE latest.proposal_id=p.id
+                   ORDER BY latest.created_at DESC,latest.id DESC LIMIT 1)
+                 WHERE s.project_id=?1 ORDER BY p.id",
+            )?
+            .query_map([&project_id], |row| {
+                (0..11)
+                    .map(|index| row.get::<_, Option<String>>(index))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert!(rows.len() >= 2, "fixture must exercise roster iteration");
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "contract":"nir1-chronicle-eligibility/1",
+            "projectId":project_id,
+            "currentRoster":rows,
+        }))?;
+        let source = read_eligibility_source(tx, &project_id)?;
+        assert_eq!(
+            source.digest,
+            format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+        );
+        assert_eq!(
+            source.revisions,
+            rows.iter().filter_map(|row| row[1].clone()).collect::<Vec<_>>()
+        );
+        Ok(())
+    })
+    .expect("unchanged Chronicle source contract");
 }
 
 #[test]

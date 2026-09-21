@@ -47,6 +47,8 @@ fn begin_blocking(
         "RELATED_SCENES_WORKSPACE_CHANGED"
     );
     let db = request.database();
+    let mut lifecycle_control =
+        build::RelatedScenesBuildControl::new(&state, &request, &participant);
     let (source, snapshot, original) = db.with_read_transaction(|conn| {
         let RetrievalSceneSourceRead::Available(source) =
             read_retrieval_scene_source(conn, &dto.project_id, &dto.current_scene_id)?
@@ -54,11 +56,12 @@ fn begin_blocking(
             return Err(anyhow!("RELATED_SCENES_QUERY_SOURCE_UNAVAILABLE"));
         };
         let source = RelatedScenesSourceContext::capture(source, &dto.query)?;
-        let status = index::read_chronicle_query_status(
+        let status = index::read_chronicle_query_status_with_control(
             conn,
             db.nir_chronicle_index_runtime(),
             &dto.project_id,
             &dto.current_scene_id,
+            &mut lifecycle_control,
         )?;
         let (snapshot, original) = match status {
             index::NirQueryStatusRead::Available {

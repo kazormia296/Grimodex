@@ -203,3 +203,33 @@ impl Drop for Fixture {
         let _ = std::fs::remove_file(&self.path);
     }
 }
+
+/// Deterministic interruption inside a requested stage, after work has begun.
+pub(super) struct StopAt(pub super::super::GraphWorkStage);
+
+impl super::super::GraphWorkControl for StopAt {
+    fn check(&mut self, stage: super::super::GraphWorkStage) -> anyhow::Result<()> {
+        if stage == self.0 {
+            return Err(super::super::validation_terminated(
+                super::super::ValidationTerminationReason::Cancelled,
+                "test Chronicle owner stopped",
+            ));
+        }
+        Ok(())
+    }
+
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
+}
+
+pub(super) fn assert_stopped<T>(result: anyhow::Result<T>) {
+    let error = result.err().expect("controlled work must observe stop");
+    assert_eq!(
+        error
+            .downcast_ref::<super::super::ValidationTerminated>()
+            .map(|error| error.reason),
+        Some(super::super::ValidationTerminationReason::Cancelled),
+        "stop must not become unavailable, stale, or Source missing: {error:#}"
+    );
+}

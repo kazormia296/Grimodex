@@ -55,7 +55,9 @@ impl<'conn, 'owner> ValidationContext<'conn, 'owner> {
         Ok(())
     }
 
-    pub(crate) fn control(&mut self) -> &mut dyn super::nir1_entity_relation_index::GraphWorkControl {
+    pub(crate) fn control(
+        &mut self,
+    ) -> &mut dyn super::nir1_entity_relation_index::GraphWorkControl {
         self.owner
     }
 
@@ -390,7 +392,7 @@ pub(crate) fn resolve_current_source_state_with_control(
 /// Only the bounded, read-only edge batch owns this temporary authority.
 /// Each versioned Scope Source still verifies its sealed Run/document binding.
 /// Do not retain this state between batches or across a write in the caller.
-pub(super) fn resolve_current_source_state_in_batch(
+pub(super) fn resolve_current_source_state_in_batch_with_control(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
@@ -399,13 +401,10 @@ pub(super) fn resolve_current_source_state_in_batch(
     authority: &mut Option<
         grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
     >,
+    control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
 ) -> anyhow::Result<CurrentSourceState> {
     anyhow::ensure!(!conn.is_autocommit(), "Source batch requires a transaction");
-    // This compatibility batch already borrows the caller's transaction and
-    // cannot outlive it.  Give the bounded edge evaluator an explicit
-    // foreground owner instead of routing whole-project eligibility through
-    // the fail-closed no-context control.
-    let mut foreground = ForegroundValidationControl;
+    control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
     let resolved = if source_kind == "scope-dependency-projection-v1" {
         (|| {
             if authority.is_none() {
@@ -431,7 +430,7 @@ pub(super) fn resolve_current_source_state_in_batch(
             run_id,
             source_kind,
             source_key,
-            &mut foreground,
+            control,
         )
     };
     current_source_state_from_resolution(source_kind, resolved)

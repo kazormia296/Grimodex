@@ -681,27 +681,40 @@ pub(crate) fn evaluate_edge_from_db_with_control(
 /// SQLite snapshot. Only the current project authority is shared; every Source
 /// binding and comparison is verified. The authority cannot escape this call,
 /// and this loop performs no writes or callbacks between its reads.
+#[cfg(test)]
 pub(crate) fn evaluate_owned_edges_from_db_in_tx(
     conn: &Connection,
     project_id: &str,
     edges: &[DependencyEdge],
+) -> anyhow::Result<Vec<EdgeObservation>> {
+    let mut control = ForegroundValidationControl;
+    evaluate_owned_edges_from_db_in_tx_with_control(conn, project_id, edges, &mut control)
+}
+
+pub(crate) fn evaluate_owned_edges_from_db_in_tx_with_control(
+    conn: &Connection,
+    project_id: &str,
+    edges: &[DependencyEdge],
+    control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Vec<EdgeObservation>> {
     anyhow::ensure!(!conn.is_autocommit(), "Edge batch requires a transaction");
     let mut authority = None;
     edges
         .iter()
         .map(|edge| {
+            control.check(GraphWorkStage::Edge)?;
             let run_id = edge.owning_run_id.as_deref().unwrap_or("");
             let Some(source_kind) = infer_source_kind(&edge.source_object_identity) else {
-                return evaluate_edge_from_db(conn, project_id, run_id, edge);
+                return evaluate_edge_from_db_with_control(conn, project_id, run_id, edge, control);
             };
-            let state = super::source_revision::resolve_current_source_state_in_batch(
+            let state = super::source_revision::resolve_current_source_state_in_batch_with_control(
                 conn,
                 project_id,
                 run_id,
                 source_kind,
                 &edge.source_object_identity,
                 &mut authority,
+                control,
             )?;
             let state = ResolvedEdgeSourceState {
                 current_source_exists: state.exists,

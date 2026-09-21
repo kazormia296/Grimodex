@@ -120,12 +120,32 @@ pub(in crate::narrative_extraction) fn preflight_build_candidate(
     }))
 }
 
+#[cfg(test)]
 pub(in crate::narrative_extraction) fn finalize_build_candidate(
     conn: &Connection,
     project: &str,
     authority: &NarrativeProjectScopeAuthorityV1,
     preflight: BuildCandidatePreflight,
     material_scope_cache: &super::super::scene_scope::MaterialSceneScopeCache,
+) -> Result<std::result::Result<BuildCandidate, Reason>> {
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    finalize_build_candidate_with_control(
+        conn,
+        project,
+        authority,
+        preflight,
+        material_scope_cache,
+        &mut control,
+    )
+}
+
+pub(in crate::narrative_extraction) fn finalize_build_candidate_with_control(
+    conn: &Connection,
+    project: &str,
+    authority: &NarrativeProjectScopeAuthorityV1,
+    preflight: BuildCandidatePreflight,
+    material_scope_cache: &super::super::scene_scope::MaterialSceneScopeCache,
+    control: &mut dyn super::super::nir1_entity_relation_index::GraphWorkControl,
 ) -> Result<std::result::Result<BuildCandidate, Reason>> {
     let material_source_keys = preflight
         .membership
@@ -140,7 +160,12 @@ pub(in crate::narrative_extraction) fn finalize_build_candidate(
         Ok(scopes) => scopes,
         Err(_) => return Ok(Err(Reason::MaterialAuthorityUnavailable)),
     };
-    let canonical = match freshness::read(conn, project, &preflight.membership)? {
+    let mut context = super::super::source_revision::validation_context(conn, control);
+    let canonical = match freshness::read_with_validation_context(
+        &mut context,
+        project,
+        &preflight.membership,
+    )? {
         RevisionFreshnessRead::Fresh(value) => value,
         RevisionFreshnessRead::Unavailable { reason } => {
             return Ok(Err(Reason::CanonicalFreshness(reason)))

@@ -292,6 +292,27 @@ struct WorkspaceParticipantLease {
     released: AtomicBool,
 }
 
+impl WorkspaceParticipant {
+    /// Observe the existing owner's stop state without admitting nested work
+    /// or acquiring the workspace/DB locks held by its caller.
+    pub fn stop_requested(&self) -> Result<bool, LifecycleError> {
+        let state = self.lease.core.lock_state()?;
+        Ok(state.shutdown_requested
+            || self
+                .lease
+                .core
+                .inner
+                .compatibility_switching
+                .load(Ordering::SeqCst)
+            || matches!(
+                state.state,
+                LifecycleState::Transition { .. }
+                    | LifecycleState::RecoveryRequired { .. }
+                    | LifecycleState::Closed
+            ))
+    }
+}
+
 /// Work-scoped publication marker. It prevents a broad transition permit from
 /// being mistaken for a final per-work commit grant.
 #[must_use]
@@ -4899,6 +4920,29 @@ mod tests {
             .expect("recovery Join");
         core.activate(&recovery, binding(2), ContentEffect::Retained)
             .expect("descriptor recovery keeps W2 active");
+    }
+
+    #[test]
+    fn participant_stop_observes_transition_and_shutdown_without_readmission() {
+        for shutdown in [false, true] {
+            let core = WorkspaceLifecycleCore::new();
+            core.set_ready(binding(1)).expect("ready");
+            let participant = core.begin_workspace_participant().expect("participant");
+            assert!(!participant.stop_requested().expect("active owner"));
+            if shutdown {
+                core.request_shutdown().expect("shutdown");
+            } else {
+                core.begin_transition(AdmissionKind::Open)
+                    .expect("transition");
+            }
+            assert!(participant.stop_requested().expect("stop existing owner"));
+            assert_eq!(core.workspace_participant_count().expect("same owner"), 1);
+            drop(participant);
+            assert_eq!(
+                core.workspace_participant_count().expect("actual release"),
+                0
+            );
+        }
     }
 
     #[test]

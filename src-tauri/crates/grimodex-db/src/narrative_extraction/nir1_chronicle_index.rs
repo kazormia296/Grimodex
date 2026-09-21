@@ -18,9 +18,12 @@ mod types;
 
 pub(crate) use binding::is_complete_registered as is_complete_registered_chronicle_index;
 pub(crate) use binding::is_registered as is_registered_chronicle_index;
-pub use build::{prepare_chronicle_index_build, NirIndexBuildPlan, NirIndexBuildRead};
+pub use build::{
+    prepare_chronicle_index_build, prepare_chronicle_index_build_with_control, NirIndexBuildPlan,
+    NirIndexBuildRead,
+};
 pub use cache::read_reusable_chronicle_embeddings;
-pub use publish::publish_chronicle_index_build;
+pub use publish::{publish_chronicle_index_build, publish_chronicle_index_build_with_control};
 pub use query::*;
 pub use runtime::NirChronicleIndexRuntime;
 pub use types::*;

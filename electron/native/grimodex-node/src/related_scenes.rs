@@ -127,6 +127,7 @@ fn current_operation(state: &AppState, lease: &Lease) -> Result<bool> {
         return Ok(false);
     }
     let db = op.request.database();
+    let mut control = build::RelatedScenesBuildControl::new(state, &op.request, &op.participant);
     db.with_read_transaction(|conn| {
         let RetrievalSceneSourceRead::Available(source) =
             read_retrieval_scene_source(conn, op.source.project_id(), op.source.scene_id())?
@@ -137,16 +138,18 @@ fn current_operation(state: &AppState, lease: &Lease) -> Result<bool> {
             return Ok(false);
         }
         match &batch {
-            Some(batch) => index::validate_chronicle_bound_batch(
+            Some(batch) => index::validate_chronicle_bound_batch_with_control(
                 conn,
                 db.nir_chronicle_index_runtime(),
                 &op.original,
                 batch,
+                &mut control,
             ),
-            None => index::validate_chronicle_query_status_snapshot(
+            None => index::validate_chronicle_query_status_snapshot_with_control(
                 conn,
                 db.nir_chronicle_index_runtime(),
                 &op.original,
+                &mut control,
             ),
         }
     })
@@ -294,11 +297,17 @@ pub(crate) fn qualify_evidence(state: &AppState, owner: &str, identity: &str) ->
             return Ok(unavailable("invalidated"));
         }
         let db = lease.data.request.database();
+        let mut control = build::RelatedScenesBuildControl::new(
+            state,
+            &lease.data.request,
+            &lease.data.participant,
+        );
         let result = db.with_read_transaction(|conn| {
-            index::read_chronicle_evidence_navigation(
+            index::read_chronicle_evidence_navigation_with_control(
                 conn,
                 db.nir_chronicle_index_runtime(),
                 &handle,
+                &mut control,
             )
         })?;
         let index::NirEvidenceNavigationRead::Available(result) = result else {
