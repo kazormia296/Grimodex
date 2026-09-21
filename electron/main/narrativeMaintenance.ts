@@ -1203,6 +1203,10 @@ export function createNarrativeMaintenanceScheduler(
   let terminalReceiptFailure: {
     error: Error;
     binding: NarrativeMaintenanceAttemptBinding | null;
+    delivery?: {
+      fingerprint: string;
+      sequence: number;
+    };
   } | null = null;
   const activeAttemptController = createNarrativeMaintenanceAttemptController();
   let cycleGeneration = 0;
@@ -2054,6 +2058,7 @@ export function createNarrativeMaintenanceScheduler(
                   activeBinding?: unknown;
                   reboundBinding?: unknown;
                 } | null);
+          const failedDelivery = terminalReceiptFailure?.delivery;
           const proofApplied = applyRecoveredRecoveryProof(recovery ?? {});
           const markerWasCleared =
             proofApplied && clearRecoveredTerminalReceiptFailure(recovery ?? {});
@@ -2068,7 +2073,15 @@ export function createNarrativeMaintenanceScheduler(
           const receiptAcked = proofApplied && shouldAckRecovery
             ? await acknowledgeRecoveredRecovery(recovery ?? {})
             : false;
-          if (terminalReceiptFailure === null && receiptAcked) {
+          const deliveryAcked =
+            terminalReceiptFailure === null &&
+            receiptAcked &&
+            (!markerWasCleared || failedDelivery === undefined ||
+              (await retireDelivery(
+                failedDelivery.fingerprint,
+                failedDelivery.sequence,
+              )));
+          if (deliveryAcked) {
             schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
           } else {
             schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
@@ -2811,8 +2824,18 @@ export function createNarrativeMaintenanceScheduler(
                   ? receiptError
                   : new Error(String(receiptError)),
               binding: cycleBinding ?? null,
+              delivery: {
+                fingerprint: deliveryFingerprint,
+                sequence: deliverySequence,
+              },
             };
           }
+        }
+        if (terminalReceiptFailure !== null && nativeTerminalReceipt !== null) {
+          terminalReceiptFailure.delivery = {
+            fingerprint: deliveryFingerprint,
+            sequence: deliverySequence,
+          };
         }
         const attemptSnapshot = cycleAttemptId
           ? activeAttemptController.snapshot(cycleAttemptId)

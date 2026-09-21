@@ -2573,6 +2573,99 @@ describe("narrative maintenance scheduler", () => {
     await expect(scheduler.dispose()).resolves.toBeUndefined();
   });
 
+  it("retires the failed delivery only after recovery proof is acknowledged", async () => {
+    const failedBinding = {
+      authorityId: "authority-failed-delivery",
+      generation: 7,
+    };
+    const recoveredBinding = {
+      authorityId: "authority-recovered-delivery",
+      generation: 8,
+    };
+    const workItem = work(
+      "project-failed-delivery",
+      "backfill",
+      "backfill:v2",
+      "open",
+    );
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue({
+      status: "workspace-unavailable",
+    });
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, binding: typeof failedBinding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: binding.authorityId,
+          generation: binding.generation,
+        }),
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: "closed",
+        generation: failedBinding.generation,
+        workspaceBinding: failedBinding,
+        publishedGeneration: null,
+        works: [
+          {
+            workKey: canonicalNarrativeMaintenanceWorkKey(workItem),
+            status: "failed",
+            error: "rollback failed",
+          },
+        ],
+        cleanup: { status: "failed", error: "rollback failed" },
+        connectionReusable: false,
+      }),
+    );
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "none" })
+      .mockResolvedValue({
+        status: "reconciled",
+        descriptorId: 91,
+        reason: "maintenance-recovery-complete",
+        recoveredBinding: failedBinding,
+        activeBinding: recoveredBinding,
+        reboundBinding: recoveredBinding,
+      });
+    const ackNarrativeMaintenanceRecovery = vi.fn().mockResolvedValue({
+      status: "acknowledged",
+      descriptorId: 91,
+      acknowledged: true,
+    });
+    const ackNarrativeMaintenanceDelivery = vi.fn().mockResolvedValue({
+      status: "retired",
+    });
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => recoveredBinding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+      reconcileNarrativeMaintenanceRecovery,
+      ackNarrativeMaintenanceRecovery,
+      ackNarrativeMaintenanceDelivery,
+    });
+
+    scheduler.requestWithBinding(workItem, failedBinding);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+    expect(ackNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledOnce();
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledWith(1);
+    expect(
+      ackNarrativeMaintenanceRecovery.mock.invocationCallOrder[0],
+    ).toBeLessThan(ackNarrativeMaintenanceDelivery.mock.invocationCallOrder[0]!);
+  });
+
   it("shares admission between a manual attempt and the automatic queue", async () => {
     const binding = { authorityId: "authority-shared-admission", generation: 4 };
     const begin = vi.fn((attemptId: string) =>
