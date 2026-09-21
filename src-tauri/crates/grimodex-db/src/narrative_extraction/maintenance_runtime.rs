@@ -6991,6 +6991,120 @@ mod tests {
     }
 
     #[test]
+    fn verify_success_survives_preempted_followup_discovery() {
+        let db = open_clean_before_cutover_db();
+        let verify_granted = AtomicBool::new(false);
+        let finalization_granted = Arc::new(AtomicBool::new(false));
+        let events = Mutex::new(Vec::new());
+        let should_stop = || {
+            if verify_granted.load(Ordering::SeqCst) && !finalization_granted.load(Ordering::SeqCst)
+            {
+                return Err(crate::narrative_extraction::validation_terminated(
+                    crate::narrative_extraction::ValidationTerminationReason::ForegroundPreempted,
+                    "foreground handoff after Verify committed, before follow-up discovery",
+                ));
+            }
+            Ok(())
+        };
+        let grant_finalize = |_work_key: &str| {
+            // Match Native's mask: the granted transaction commits even when
+            // a foreground handoff must stop its next discovery phase.
+            finalization_granted.store(true, Ordering::SeqCst);
+            verify_granted.store(true, Ordering::SeqCst);
+            Ok(())
+        };
+        let record = |event, item: &DesiredWork| {
+            events
+                .lock()
+                .expect("work events")
+                .push((event, item.run_kind));
+            Ok::<_, anyhow::Error>(())
+        };
+        let control = MaintenanceCycleControl {
+            should_stop: &should_stop,
+            stop_signal: None,
+            finalization_granted_signal: Some(Arc::clone(&finalization_granted)),
+            defer_preempted_run: &|_run_id: &str| Ok(()),
+            grant_finalize: &grant_finalize,
+            register_work: &|item| record("registered", item),
+            work_started: &|item| record("started", item),
+            work_completed: &|item| record("succeeded", item),
+            work_noop_completed: &|item| record("noop", item),
+            work_deferred: &|item| record("deferred", item),
+            attach_run: None,
+            reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
+        };
+        let request = MaintenanceCycleRequest {
+            work: vec![MaintenanceWorkRequest {
+                project_id: "project-1".to_string(),
+                run_kind: AutomaticRunKind::Verify,
+                work_key: "dependency-verify:epoch-current".to_string(),
+                semantic_epoch_id: Some("epoch-current".to_string()),
+                reasons: vec!["before-cutover".to_string()],
+            }],
+            wake_project_ids: Vec::new(),
+            delivery_sequence: None,
+            delivery_fingerprint: None,
+            workspace_binding: None,
+        };
+        let error = run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+            &db,
+            &request,
+            |_| RecoveryMode::SameProcessLive,
+            None,
+            None,
+            Some(&control),
+        )
+        .expect_err("post-commit discovery must preserve the transient foreground outcome");
+        assert!(is_validation_terminated(&error), "typed stop: {error:#}");
+        assert!(
+            is_transient_maintenance_preemption(&error),
+            "foreground stop: {error:#}"
+        );
+        assert_eq!(
+            *events.lock().expect("work events"),
+            [
+                ("registered", AutomaticRunKind::Verify),
+                ("started", AutomaticRunKind::Verify),
+                ("succeeded", AutomaticRunKind::Verify),
+            ],
+            "discovery stopped before registering any follow-up execution"
+        );
+        db.with_conn(|conn| {
+            assert!(conn.is_autocommit());
+            let (completed_verifies, rebuilds): (i64, i64) = conn.query_row(
+                "SELECT
+                    SUM(run_kind = 'dependency-verify' AND status = 'completed'),
+                    SUM(run_kind = 'semantic-index-rebuild')
+                 FROM narrative_extraction_runs WHERE project_id = 'project-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            // The fixture has one prior Verify; this invocation committed a
+            // second one despite yielding before its Rebuild was discovered.
+            assert_eq!(completed_verifies, 2);
+            assert_eq!(rebuilds, 0);
+            Ok(())
+        })
+        .expect("read committed Verify after clean discovery preemption");
+        assert!(db.connection_reusable());
+        let next = discover_durable_maintenance_work_with_coordinates(
+            &db,
+            "project-1",
+            BEFORE_CUTOVER_FOLLOW_UP_REASON,
+            None,
+        )
+        .expect("rediscover after foreground handoff")
+        .expect("the completed Verify still requires its cutover Rebuild");
+        assert_eq!(next.run_kind, AutomaticRunKind::RebuildDerived);
+    }
+
+    #[test]
     fn adapter_db_partial_success_registers_initial_batch_before_cancel() {
         let db = open_backfill_cycle_db(&["project-1", "project-2"]);
         let cancel_requested = Arc::new(AtomicBool::new(false));

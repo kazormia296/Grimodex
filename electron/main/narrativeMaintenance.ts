@@ -2612,6 +2612,30 @@ export function createNarrativeMaintenanceScheduler(
         deliveryRetirement = null;
       }
     };
+    const retainCycleContinuation = (): void => {
+      const wakeProjects = [
+        ...new Set([
+          ...sendingWakeProjects,
+          ...backendBatch.map((work) => work.projectId),
+        ]),
+      ];
+      if (wakeProjects.length === 0) {
+        warn(
+          "[narrative-maintenance] hasMore response has no project scope; stopping",
+        );
+        shouldSchedule = pending.size > 0 || durableWakeProjects.size > 0;
+      } else {
+        for (const projectId of wakeProjects) {
+          const wakeKey = scopedWakeKey(projectId, cycleBinding);
+          durableWakeProjects.set(wakeKey, {
+            projectId,
+            workspaceBinding: cycleBinding,
+          });
+          deferredWakeProjects.delete(wakeKey);
+        }
+        shouldSchedule = true;
+      }
+    };
     try {
       if (cycleAttemptId && cycleBinding) {
         await beginAttempt(cycleAttemptId, cycleBinding, backendBatch);
@@ -2829,28 +2853,7 @@ export function createNarrativeMaintenanceScheduler(
           cycleResult.status === "coalesced") &&
         cycleResult.hasMore
       ) {
-        const wakeProjects = [
-          ...new Set([
-            ...sendingWakeProjects,
-            ...backendBatch.map((work) => work.projectId),
-          ]),
-        ];
-        if (wakeProjects.length === 0) {
-          warn(
-            "[narrative-maintenance] hasMore response has no project scope; stopping",
-          );
-          shouldSchedule = pending.size > 0 || durableWakeProjects.size > 0;
-        } else {
-          for (const projectId of wakeProjects) {
-            const wakeKey = scopedWakeKey(projectId, cycleBinding);
-            durableWakeProjects.set(wakeKey, {
-              projectId,
-              workspaceBinding: cycleBinding,
-            });
-            deferredWakeProjects.delete(wakeKey);
-          }
-          shouldSchedule = true;
-        }
+        retainCycleContinuation();
       }
       if (
         cycleResult.status === "accepted" ||
@@ -3094,6 +3097,20 @@ export function createNarrativeMaintenanceScheduler(
             await retireCurrentDelivery();
           }
           shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
+          if (
+            settledCycleResult?.status === "accepted" &&
+            settledCycleResult.preempted === true &&
+            settledCycleResult.hasMore &&
+            nativeReceiptAdopted &&
+            selectivelyRequeued !== null &&
+            terminalReceiptAllowsDeliveryRetirement()
+          ) {
+            // Verify may have succeeded before its follow-up discovery was
+            // preempted. Keep the continuation under the original binding;
+            // a later accepted wake resumes the coordinator's discovery
+            // chain without rerunning succeeded work or bypassing a swap.
+            retainCycleContinuation();
+          }
         } else if (workspaceMismatch) {
           for (const work of backendBatch) {
             requeueWork(work);

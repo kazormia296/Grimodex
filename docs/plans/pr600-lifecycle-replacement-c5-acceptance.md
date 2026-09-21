@@ -289,6 +289,38 @@ contract, including changed paths, implementer/reviewers, evidence paths,
 binary hashes, unresolved findings, and completeness. Any subsequent candidate
 change invalidates its receipts.
 
-Authorized publication is PR #601 into `codex/nir1-b-capacity-implementation`
-after all final gates pass. Retargeting or direct publication to master is
-outside this scope.
+PR #601 was squash-merged into `codex/nir1-b-capacity-implementation` as
+`8052edc9cf256f31113f9f89a34470c7a7a194c8`. Its original candidate
+`4cef7a8fcffbd41a4c3d551350a882afa2f3bc43` passed both independent reviews,
+Quick/verify, and Full/verify (62 tasks and 28 clean Product Journeys).
+Those receipts remain bound to the child PR's original base/head.
+
+## Parent PR #600 follow-up
+
+The user subsequently authorized PR #600 to merge into master. Its fixed base
+is `9f6aba5f7f94df3892ef3c322f4a47a78b6928e2`; the clean final candidate,
+reviews, commands, and receipt hashes are recorded in
+`.artifacts/pr600-final-candidate.json` and the parent PR body. The child
+ledger above is historical and does not establish parent merge readiness.
+
+The first parent candidate, `8052edc9cf256f31113f9f89a34470c7a7a194c8`,
+had the same tracked content as the approved child candidate. Both independent
+parent reviews and Quick/verify passed. Full run
+`1a5b011f-2244-4eae-8bad-f42ed698283e` failed the producer-generation and
+rule-digest baseline Journeys while waiting for durable canonical cutover.
+Verify had completed, DB queries continued to return, and the preserved
+ledgers contained no Rebuild. An isolated replay passed; that does not classify
+the failure as environmental or replace a complete Full receipt.
+
+The uncovered continuation boundary is foreground preemption after an adapter
+commits successfully but before follow-up discovery completes. Native retains
+the successful work and reports an accepted, preempted cycle with more work.
+Main must preserve the existing bounded rediscovery obligation after consuming
+that receipt, even when no unfinished work remains to requeue. Successful
+work must not be replayed merely to recover that obligation. Candidate-bound
+regression, review, and full validation evidence for this correction belongs
+in the parent ledger; the failed Full remains retained separately.
+
+This parent merge does not ratify numeric supported capacity, activate Graph
+query/product dispatch or later NIR-1 lanes, certify the complete T01–T36
+matrix, or replace the release-only Windows installer gate.
