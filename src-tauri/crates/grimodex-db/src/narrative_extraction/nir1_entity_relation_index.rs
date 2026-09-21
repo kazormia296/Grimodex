@@ -587,6 +587,7 @@ fn sort_roster_with_control(
 /// the immutable revision, Decision, source, epoch and canonical Freshness
 /// checks; this layer only projects the already-qualified bundle to a sorted
 /// object/token roster.
+#[allow(dead_code)]
 pub(crate) fn read_eligibility_source(
     conn: &Connection,
     project: &str,

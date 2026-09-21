@@ -129,6 +129,7 @@ fn project_lifecycle_admissions(
 /// Process-local guard for destructive project writers.  It coordinates the
 /// lifecycle owner and the project delete path in this process only; it is
 /// deliberately not advertised as cross-process SQLite authority.
+#[allow(dead_code)]
 pub(crate) fn try_reserve_project_destructive_permit(project_id: &str) -> anyhow::Result<()> {
     try_reserve_project_destructive_permit_in_namespace("legacy", project_id)
 }
@@ -151,6 +152,7 @@ pub(crate) fn try_reserve_project_destructive_permit_in_namespace(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn release_project_destructive_permit(project_id: &str) {
     release_project_destructive_permit_in_namespace("legacy", project_id);
 }
@@ -174,6 +176,7 @@ pub(crate) fn project_destructive_permit_active(project_id: &str) -> bool {
     project_destructive_permit_active_in_namespace("legacy", project_id)
 }
 
+#[allow(dead_code)]
 pub(crate) fn project_destructive_permit_active_for_database(
     db: &Database,
     project_id: &str,
@@ -288,6 +291,7 @@ fn release_project_creation_in_namespace(namespace: &str, project_id: &str) {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn project_creation_reservation_active(project_id: &str) -> bool {
     project_creation_reservation_active_in_namespace("legacy", project_id)
 }

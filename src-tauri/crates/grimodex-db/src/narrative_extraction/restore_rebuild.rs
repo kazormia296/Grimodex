@@ -3868,6 +3868,7 @@ pub fn recover_maintenance_run_exact(
         |conn, graph| {
             graph.check(GraphWorkStage::ResultAssembly)?;
             with_immediate_transaction(conn, |conn| {
+                #[allow(clippy::type_complexity)]
                 let row: Option<(
                     String,
                     Option<String>,

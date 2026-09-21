@@ -94,6 +94,7 @@ pub fn read_revision_canonical_freshness(
 /// eligibility Source.  The context couples the same transaction to the
 /// caller's stop owner; the legacy convenience reader above remains valid for
 /// bounded callers that never request a whole-project eligibility roster.
+#[allow(dead_code)]
 pub(crate) fn read_revision_canonical_freshness_with_validation_context(
     context: &mut ValidationContext<'_, '_>,
     project_id: &str,

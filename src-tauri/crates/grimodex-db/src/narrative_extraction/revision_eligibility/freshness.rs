@@ -48,6 +48,7 @@ pub(in crate::narrative_extraction) fn read(
 /// Eligibility edges are evaluated through the exact connection and finite
 /// stop owner borrowed by the caller; no nested admission or replacement
 /// connection is created here.
+#[allow(dead_code)]
 pub(in crate::narrative_extraction) fn read_with_validation_context(
     context: &mut ValidationContext<'_, '_>,
     project: &str,

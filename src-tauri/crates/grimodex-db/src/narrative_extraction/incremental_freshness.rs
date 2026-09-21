@@ -2111,6 +2111,7 @@ fn ensure_batch_task_in_tx(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<EvaluationPlan> {
     let mut control = None;
     evaluate_batch_with_control(db, batch, &mut control)
@@ -3015,6 +3016,7 @@ fn check_v2_declaration_inputs_in_tx(
     Ok(None)
 }
 
+#[allow(dead_code)]
 fn publish_batch_in_tx(
     conn: &Connection,
     batch: &ClaimedBatch,

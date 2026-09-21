@@ -1317,10 +1317,12 @@ pub struct MaintenanceCycleControl<'a> {
     /// Promote the exact reservation immediately before the first Run DML.
     /// This keeps a partial insert from remaining indistinguishable from a
     /// pre-transaction reservation.
+    #[allow(clippy::type_complexity)]
     pub mark_run_creation_started: Option<&'a dyn Fn(&str) -> anyhow::Result<()>>,
     /// Mark a reuse decision whose exact existing tuple has not yet been
     /// attached. Recovery must retain this root instead of resolving the
     /// reservation IDs as absent.
+    #[allow(clippy::type_complexity)]
     pub mark_run_reuse_selection_unknown:
         Option<&'a dyn Fn(&str, &str) -> anyhow::Result<()>>,
     /// Resolve the most recently reserved creation slot after the outer
@@ -1334,6 +1336,7 @@ pub struct MaintenanceCycleControl<'a> {
     /// terminal transaction has committed.  Without this proof a healthy
     /// connection is insufficient to release the lifecycle permit: a running
     /// Run would otherwise be left without a recovery descriptor.
+    #[allow(clippy::type_complexity)]
     pub mark_run_terminalized: Option<&'a dyn Fn(&str) -> anyhow::Result<()>>,
 }
 

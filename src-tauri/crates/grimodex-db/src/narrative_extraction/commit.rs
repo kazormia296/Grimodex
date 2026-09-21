@@ -198,7 +198,7 @@ pub fn narrative_extraction_prepare_commit_with_control(
     let mut lifecycle_control = control;
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            if let Some(control) = lifecycle_control.as_deref_mut() {
+            if let Some(control) = lifecycle_control.as_mut() {
                 control.check(GraphWorkStage::Source)?;
             }
             require_narrative_apply_allowed(conn)?;
@@ -294,7 +294,7 @@ pub fn narrative_extraction_prepare_commit_with_control(
                     owner,
                 )?
             };
-            if let Some(control) = lifecycle_control.as_deref_mut() {
+            if let Some(control) = lifecycle_control.as_mut() {
                 control.check(GraphWorkStage::Source)?;
             }
             validate_retraction_targets(

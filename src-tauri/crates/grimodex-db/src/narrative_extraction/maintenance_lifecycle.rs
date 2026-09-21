@@ -229,6 +229,7 @@ impl RunCreationReservation {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn for_work(
         project_id: &str,
         run_kind: &str,
@@ -337,6 +338,7 @@ pub fn resolve_creation_unknown_in_tx(
         "NEX_RUN_CREATION_UNKNOWN: durable absence evidence is incomplete"
     );
 
+    #[allow(clippy::type_complexity)]
     let run: Option<(
         String,
         Option<String>,
@@ -406,7 +408,7 @@ pub fn resolve_creation_unknown_in_tx(
     )?;
     match (run, task, attempt, hidden_children) {
         (None, None, None, 0)
-            if reservation.expected.as_ref().map_or(true, |expected| {
+            if reservation.expected.as_ref().is_none_or(|expected| {
                 project_created_at.as_deref() == Some(expected.project_created_at.as_str())
                     && database_file_identity == expected.database_file_identity
             }) =>
@@ -625,7 +627,7 @@ pub(crate) fn sqlite_database_file_identity(
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return Ok(format!("dev:{}:ino:{}", metadata.dev(), metadata.ino()));
+        Ok(format!("dev:{}:ino:{}", metadata.dev(), metadata.ino()))
     }
     #[cfg(windows)]
     {
@@ -649,10 +651,10 @@ pub(crate) fn sqlite_database_file_identity(
         let volume = information.dwVolumeSerialNumber as u64;
         let file = ((information.nFileIndexHigh as u64) << 32)
             | information.nFileIndexLow as u64;
-        return Ok(format!(
+        Ok(format!(
             "volume:{}:file:{}",
             volume, file
-        ));
+        ))
     }
     #[cfg(all(not(unix), not(windows)))]
     {

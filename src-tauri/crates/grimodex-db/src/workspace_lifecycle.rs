@@ -169,6 +169,7 @@ impl AdmissionKind {
         matches!(self, Self::Snapshot | Self::Shutdown | Self::Recover)
     }
 
+    #[allow(dead_code)]
     fn is_foreground_execution(self) -> bool {
         matches!(self, Self::Foreground)
     }
@@ -282,6 +283,7 @@ pub struct WorkspaceExclusive {
 /// its connection.
 #[derive(Clone)]
 pub struct WorkspaceParticipant {
+    #[allow(dead_code)]
     lease: Arc<WorkspaceParticipantLease>,
 }
 
@@ -413,9 +415,7 @@ impl MaintenancePermit {
         if !self.joined {
             return Err(LifecycleError::NotJoined(self.ticket.operation_id));
         }
-        if let Err(error) = self.core.complete_execution(self.execution_id) {
-            return Err(error);
-        }
+        self.core.complete_execution(self.execution_id)?;
         let result = self.core.release_admission(&self.ticket);
         self.released = true;
         result
@@ -431,13 +431,9 @@ impl MaintenancePermit {
         if !self.joined {
             return Err(LifecycleError::NotJoined(self.ticket.operation_id));
         }
-        let descriptor = match self
+        let descriptor = self
             .core
-            .transfer_execution_to_recovery(&self.ticket, self.execution_id)
-        {
-            Ok(descriptor) => descriptor,
-            Err(error) => return Err(error),
-        };
+            .transfer_execution_to_recovery(&self.ticket, self.execution_id)?;
         self.released = true;
         Ok(descriptor)
     }
@@ -1639,16 +1635,16 @@ impl WorkspaceLifecycleCore {
             return Ok(AdmissionOutcome::NotAdmitted {
                 reason: AdmissionRejection::ActiveOperation,
                 snapshot: LifecycleSnapshot::new(
-                    self.projected_state_locked(&state),
+                    self.projected_state_locked(state),
                     state.revision,
                 ),
             });
         }
-        if !is_safe_mode_root && is_retired_descriptor_locked(&state, descriptor_id) {
+        if !is_safe_mode_root && is_retired_descriptor_locked(state, descriptor_id) {
             return Ok(AdmissionOutcome::NotAdmitted {
                 reason: AdmissionRejection::Retired,
                 snapshot: LifecycleSnapshot::new(
-                    self.projected_state_locked(&state),
+                    self.projected_state_locked(state),
                     state.revision,
                 ),
             });
@@ -1672,7 +1668,7 @@ impl WorkspaceLifecycleCore {
             return Ok(AdmissionOutcome::NotAdmitted {
                 reason: AdmissionRejection::RecoveryPrerequisite,
                 snapshot: LifecycleSnapshot::new(
-                    self.projected_state_locked(&state),
+                    self.projected_state_locked(state),
                     state.revision,
                 ),
             });
@@ -1694,7 +1690,7 @@ impl WorkspaceLifecycleCore {
             return Ok(AdmissionOutcome::NotAdmitted {
                 reason: AdmissionRejection::Retired,
                 snapshot: LifecycleSnapshot::new(
-                    self.projected_state_locked(&state),
+                    self.projected_state_locked(state),
                     state.revision,
                 ),
             });
@@ -1875,7 +1871,7 @@ impl WorkspaceLifecycleCore {
         recovery_descriptor_id: Option<RecoveryDescriptorId>,
         background_recovery: bool,
     ) -> Result<AdmissionOutcome, LifecycleError> {
-        let current = self.projected_state_locked(&state);
+        let current = self.projected_state_locked(state);
         let has_live_transition = state
             .admissions
             .values()
@@ -3413,12 +3409,11 @@ impl WorkspaceLifecycleCore {
         descriptor_id: RecoveryDescriptorId,
     ) -> Result<ControlGeneration, LifecycleError> {
         let mut state = self.lock_state()?;
-        let descriptor_unresolved = state
+        let descriptor_unresolved = !state
             .descriptors
             .get(&descriptor_id)
             .ok_or(LifecycleError::UnknownDescriptor(descriptor_id))?
-            .resolved
-            == false;
+            .resolved;
         if !descriptor_unresolved {
             return Err(LifecycleError::RetiredDescriptor(descriptor_id));
         }
@@ -3758,7 +3753,7 @@ impl WorkspaceLifecycleCore {
             .descriptors
             .get(&descriptor_id)
             .ok_or_else(|| {
-                if is_retired_descriptor_locked(&state, descriptor_id) {
+                if is_retired_descriptor_locked(state, descriptor_id) {
                     LifecycleError::RetiredDescriptor(descriptor_id)
                 } else {
                     LifecycleError::UnknownDescriptor(descriptor_id)
