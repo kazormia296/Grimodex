@@ -49,10 +49,12 @@ vi.mock("@/features/semantic-search/scheduler", () => ({
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
-  listen: vi.fn(async (_channel: string, listener: (payload: unknown) => void) => {
-    lifecycleHarness.listener = listener;
-    return () => {};
-  }),
+  listen: vi.fn(
+    async (_channel: string, listener: (payload: unknown) => void) => {
+      lifecycleHarness.listener = listener;
+      return () => {};
+    },
+  ),
 }));
 
 // Import the mocked module to configure per-test

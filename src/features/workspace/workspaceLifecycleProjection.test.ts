@@ -241,7 +241,9 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
       workspaceLifecycleStatus: "ready",
       workspaceLifecycleBindingToken: "old-token",
     });
-    expect(resumeWorkspaceBindingAfterLifecycleUnchanged).toHaveBeenCalledOnce();
+    expect(
+      resumeWorkspaceBindingAfterLifecycleUnchanged,
+    ).toHaveBeenCalledOnce();
   });
 
   it("ignores a delayed older Transition after an Unchanged proof", () => {
@@ -269,6 +271,8 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
       workspaceLifecycleStatus: "ready",
       workspaceLifecycleBindingToken: "old-token",
     });
-    expect(resumeWorkspaceBindingAfterLifecycleUnchanged).toHaveBeenCalledOnce();
+    expect(
+      resumeWorkspaceBindingAfterLifecycleUnchanged,
+    ).toHaveBeenCalledOnce();
   });
 });

@@ -144,7 +144,10 @@ export async function restoreBackupWithWorkspaceAuthority(
         outcome.activation === "ready"
       ) {
         rendererTerminal = true;
-      } else if (outcome.status === "unchanged" && hasExactUnchangedProof(outcome, previousLifecycle)) {
+      } else if (
+        outcome.status === "unchanged" &&
+        hasExactUnchangedProof(outcome, previousLifecycle)
+      ) {
         // Only this strict operation-scoped proof may return the old binding.
         // The lifecycle token and revision must still match the renderer's
         // last Ready observation; a string error marker is never sufficient.
@@ -206,9 +209,7 @@ export async function restoreBackupWithWorkspaceAuthority(
     if (switchStarted) {
       endWorkspaceSwitch({
         restoreBinding:
-          !rendererTerminal &&
-          !rendererNotAdmitted &&
-          rendererUnchangedProof,
+          !rendererTerminal && !rendererNotAdmitted && rendererUnchangedProof,
       });
     }
     if (!rendererTerminal && !rendererNotAdmitted && rendererUnchangedProof) {

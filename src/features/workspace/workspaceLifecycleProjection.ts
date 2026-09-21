@@ -149,7 +149,12 @@ function applyProjection(
   // particular, do not run RecoveryRequired teardown twice: the first pass
   // intentionally clears activeWorkspacePath after copying the binding into
   // RecoveryShell, and a second pass must retain that shell and retry target.
-  if (view.revision === latestRevision && latestWire === wire && !forceUnchangedProof) return;
+  if (
+    view.revision === latestRevision &&
+    latestWire === wire &&
+    !forceUnchangedProof
+  )
+    return;
   if (
     view.revision === latestRevision &&
     latestWire !== null &&
@@ -168,9 +173,11 @@ function applyProjection(
   } satisfies Partial<WorkspaceState>;
 
   if (view.status === "ready" && view.activation === "ready") {
+    const bindingToken = view.bindingToken;
+    if (bindingToken === null) return;
     latestReadyObservation = {
       revision: view.revision,
-      bindingToken: view.bindingToken,
+      bindingToken,
     };
     const explicitOpenReady =
       pendingExplicitWorkspaceHydration !== null &&
@@ -179,8 +186,7 @@ function applyProjection(
       current.workspaceOpenRevision ===
         pendingExplicitWorkspaceHydration.openRevision &&
       view.revision === pendingExplicitWorkspaceHydration.lifecycleRevision &&
-      view.bindingToken ===
-        pendingExplicitWorkspaceHydration.lifecycleBindingToken;
+      bindingToken === pendingExplicitWorkspaceHydration.lifecycleBindingToken;
     if (explicitOpenReady && pendingExplicitWorkspaceHydration) {
       // The Open proof establishes a new authority after the normal
       // recorder/project rebind.  If a Transition raced the Open, retire only
@@ -219,7 +225,7 @@ function applyProjection(
         recoveryShell: null,
       });
       lastReadyScope = {
-        bindingToken: view.bindingToken,
+        bindingToken,
         workspacePath: pendingExplicitWorkspaceHydration.workspacePath,
         workspaceId: pendingExplicitWorkspaceHydration.workspaceId,
         workspaceName: pendingExplicitWorkspaceHydration.workspaceName,
@@ -229,7 +235,8 @@ function applyProjection(
       return;
     }
     const unchangedResume =
-      (forceUnchangedProof || current.workspaceLifecycleStatus === "transition") &&
+      (forceUnchangedProof ||
+        current.workspaceLifecycleStatus === "transition") &&
       view.bindingToken !== null &&
       lastReadyScope?.bindingToken === view.bindingToken &&
       current.activeWorkspacePath === lastReadyScope.workspacePath &&
@@ -238,7 +245,7 @@ function applyProjection(
     const sameReadyBinding =
       current.workspaceLifecycleStatus === "ready" &&
       current.workspaceLifecycleActivation === "ready" &&
-      current.workspaceLifecycleBindingToken === view.bindingToken &&
+      current.workspaceLifecycleBindingToken === bindingToken &&
       current.workspaceHydrated;
     if (unchangedResume && lastReadyScope) {
       // The Native core has proved Unchanged for the exact old LiveBinding.
@@ -268,7 +275,7 @@ function applyProjection(
       // snapshot describes the same authority.
       set(base);
       lastReadyScope = {
-        bindingToken: view.bindingToken,
+        bindingToken,
         workspacePath: current.activeWorkspacePath!,
         workspaceId: current.activeWorkspaceId,
         workspaceName: current.activeWorkspaceName,
@@ -294,17 +301,18 @@ function applyProjection(
         recoveryShell: null,
       });
     }
-    const readyScope = unchangedResume && lastReadyScope
-      ? lastReadyScope
-      : current.activeWorkspacePath
-      ? {
-          bindingToken: view.bindingToken ?? "",
-          workspacePath: current.activeWorkspacePath,
-          workspaceId: current.activeWorkspaceId,
-          workspaceName: current.activeWorkspaceName,
-          openRevision: current.workspaceOpenRevision,
-        }
-      : null;
+    const readyScope =
+      unchangedResume && lastReadyScope
+        ? lastReadyScope
+        : current.activeWorkspacePath
+          ? {
+              bindingToken: view.bindingToken ?? "",
+              workspacePath: current.activeWorkspacePath,
+              workspaceId: current.activeWorkspaceId,
+              workspaceName: current.activeWorkspaceName,
+              openRevision: current.workspaceOpenRevision,
+            }
+          : null;
     lastReadyScope = readyScope;
     return;
   }
@@ -329,9 +337,7 @@ function applyProjection(
     }
     pauseWorkspaceBindingForLifecycle();
   } else {
-    if (view.status !== "transition") {
-      pendingExplicitWorkspaceHydration = null;
-    }
+    pendingExplicitWorkspaceHydration = null;
     invalidateWorkspaceBindingForLifecycle();
     invalidateWorkspaceProjectLoads();
   }

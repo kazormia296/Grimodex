@@ -20,8 +20,8 @@ import {
   resetWorkspaceLifecycleProjectionForTest,
 } from "@/features/workspace/workspaceLifecycleProjection";
 
-const restoreMock = vi.hoisted(
-  () => vi.fn<() => Promise<WorkspaceRestoreOutcome>>(),
+const restoreMock = vi.hoisted(() =>
+  vi.fn<() => Promise<WorkspaceRestoreOutcome>>(),
 );
 const recorderMock = vi.hoisted(() => ({
   beginWorkspaceSwitch: vi.fn(),

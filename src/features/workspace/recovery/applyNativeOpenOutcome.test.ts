@@ -27,10 +27,7 @@ describe("applyNativeOpenOutcome lifecycle proof", () => {
 
   it("rejects a structured success without a valid proof", () => {
     expect(
-      applyNativeOpenOutcome(
-        { status: "ready", workspace },
-        "/workspaces/W1",
-      ),
+      applyNativeOpenOutcome({ status: "ready", workspace }, "/workspaces/W1"),
     ).toEqual({
       kind: "invalid",
       reasonCode: "NEX_WORKSPACE_OPEN_LIFECYCLE_PROOF_MISSING",
@@ -54,8 +51,9 @@ describe("applyNativeOpenOutcome lifecycle proof", () => {
   });
 
   it("keeps the explicitly marked legacy adapter separate", () => {
-    expect(
-      applyNativeOpenOutcome(workspace, "/workspaces/W1"),
-    ).toMatchObject({ kind: "ready", lifecycle: null });
+    expect(applyNativeOpenOutcome(workspace, "/workspaces/W1")).toMatchObject({
+      kind: "ready",
+      lifecycle: null,
+    });
   });
 });

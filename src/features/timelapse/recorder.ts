@@ -1227,7 +1227,10 @@ export function pauseWorkspaceBindingForLifecycle(): void {
 
 /** Resume the exact paused recorder scope after a proven Unchanged result. */
 export function resumeWorkspaceBindingAfterLifecycleUnchanged(): boolean {
-  if (lifecyclePauseEpoch === null || lifecyclePauseEpoch !== state.switchEpoch) {
+  if (
+    lifecyclePauseEpoch === null ||
+    lifecyclePauseEpoch !== state.switchEpoch
+  ) {
     return false;
   }
   lifecyclePauseEpoch = null;

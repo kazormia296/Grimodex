@@ -110,7 +110,9 @@ export function applyNativeOpenOutcome(
   return {
     kind: "ready",
     workspace: outcome.workspace,
-    lifecycle: isReadyLifecycleProof(outcome) ? outcome.lifecycle ?? null : null,
+    lifecycle: isReadyLifecycleProof(outcome)
+      ? (outcome.lifecycle ?? null)
+      : null,
   };
 }
 
