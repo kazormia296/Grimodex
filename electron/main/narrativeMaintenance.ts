@@ -2824,14 +2824,22 @@ export function createNarrativeMaintenanceScheduler(
                   ? receiptError
                   : new Error(String(receiptError)),
               binding: cycleBinding ?? null,
-              delivery: {
-                fingerprint: deliveryFingerprint,
-                sequence: deliverySequence,
-              },
+              ...(nativeDeliveryMethodsAvailable
+                ? {
+                    delivery: {
+                      fingerprint: deliveryFingerprint,
+                      sequence: deliverySequence,
+                    },
+                  }
+                : {}),
             };
           }
         }
-        if (terminalReceiptFailure !== null && nativeTerminalReceipt !== null) {
+        if (
+          nativeDeliveryMethodsAvailable &&
+          terminalReceiptFailure !== null &&
+          nativeTerminalReceipt !== null
+        ) {
           terminalReceiptFailure.delivery = {
             fingerprint: deliveryFingerprint,
             sequence: deliverySequence,
