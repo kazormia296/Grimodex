@@ -1533,6 +1533,19 @@ export function createNarrativeMaintenanceScheduler(
         if (deliverySequences.get(entry.fingerprint) === sequence) {
           deliverySequences.delete(entry.fingerprint);
         }
+        // A recovery receipt may already have been ACKed while its original
+        // delivery ACK was transiently pending.  Retiring that exact
+        // transport record completes the failed-cleanup ownership pair; keep
+        // the marker until this point, then release it so dispose() can
+        // finish without treating a fully retired recovery as unresolved.
+        if (
+          terminalReceiptFailure?.recoveryAcked === true &&
+          terminalReceiptFailure.delivery?.sequence === sequence &&
+          terminalReceiptFailure.delivery.fingerprint === entry.fingerprint
+        ) {
+          terminalReceiptFailure = null;
+          noteMutation();
+        }
       } catch (error) {
         warn(
           `[narrative-maintenance] retaining delivery ACK sequence ${sequence} for retry:`,
@@ -2053,10 +2066,30 @@ export function createNarrativeMaintenanceScheduler(
           "NEX_MAINTENANCE_RECOVERY_PROOF_INVALID: shutdown recovery proof was not accepted",
         );
       }
-      if (!(await acknowledgeRecoveredRecovery(recovery))) {
+      const recoveryMatches = recoveryReceiptMatchesFailedBinding(recovery);
+      const recoveryAlreadyAcked =
+        recoveryMatches && terminalReceiptFailure?.recoveryAcked === true;
+      if (!recoveryAlreadyAcked && !(await acknowledgeRecoveredRecovery(recovery))) {
         throw new Error(
           "NEX_MAINTENANCE_RECOVERY_ACK_PENDING: shutdown recovery receipt was not acknowledged",
         );
+      }
+      if (recoveryMatches && terminalReceiptFailure !== null) {
+        terminalReceiptFailure.recoveryAcked = true;
+        const failedDelivery = terminalReceiptFailure.delivery;
+        if (
+          failedDelivery !== undefined &&
+          !(await retireDelivery(
+            failedDelivery.fingerprint,
+            failedDelivery.sequence,
+          ))
+        ) {
+          // Keep the marker and exact delivery identity for the transport ACK
+          // retry below.  The descriptor proof itself has already been
+          // acknowledged and must not be replayed as a new recovery owner.
+          return;
+        }
+        clearRecoveredTerminalReceiptFailure(recovery);
       }
       // The ACK retires the process-local proof.  Re-query once more so a
       // second descriptor or a replayable receipt cannot survive into Native
@@ -3658,14 +3691,16 @@ export function createNarrativeMaintenanceScheduler(
     async dispose(): Promise<void> {
       if (disposed) return;
       await quiesceForWorkspaceSwitch();
+      await drainRecoveryBeforeDispose();
+      await retryPendingDeliveryAcks();
       // Shutdown has no replacement workspace that can discard a failed
       // Native connection. Keep the process fail-closed and surface the
-      // unusable terminal receipt to the quit finalizer.
+      // unusable terminal receipt to the quit finalizer.  The recovery drain
+      // and transport ACK retry run first so a receipt whose proof and exact
+      // delivery are both already acknowledged can clear its marker.
       if (terminalReceiptFailure !== null) {
         throw terminalReceiptFailure.error;
       }
-      await drainRecoveryBeforeDispose();
-      await retryPendingDeliveryAcks();
       if (pendingDeliveryAcks.size > 0) {
         throw new Error(
           "NEX_MAINTENANCE_DELIVERY_ACK_PENDING: Native transport retirement is not proven",
