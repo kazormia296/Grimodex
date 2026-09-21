@@ -104,6 +104,13 @@ function parseJsonWire(raw: unknown): unknown {
   }
 }
 
+function isWorkspaceLifecycleUnavailableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(
+    "workspace lifecycle has active owners or unacknowledged work",
+  );
+}
+
 function normalizeBinding(raw: unknown): NarrativeMaintenanceWorkspaceBinding {
   const normalized = normalizeWorkspaceBinding(raw);
   if (normalized === null) {
@@ -780,11 +787,17 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           return row.id;
         });
       } catch (error) {
-        warn("[narrative-maintenance] wake outbox listing failed:", error);
+        if (!isWorkspaceLifecycleUnavailableError(error)) {
+          warn("[narrative-maintenance] wake outbox listing failed:", error);
+        }
         setWakeOutboxState({
           inFlight: false,
           succeeded: false,
-          failed: true,
+          // A lifecycle transition is an expected temporary inability to
+          // inspect the old authority. The next opened/recovery event will
+          // retry the durable wake; it is not a malformed outbox or a lost
+          // discovery failure.
+          failed: !isWorkspaceLifecycleUnavailableError(error),
           pendingRows: false,
         });
         emitDiscoveryObservation(chainGeneration, false, workspaceBinding);

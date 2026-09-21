@@ -900,6 +900,44 @@ describe("narrative maintenance trigger coordinator", () => {
     coordinator.dispose();
   });
 
+  it("treats lifecycle transition as a deferred wake-outbox drain", async () => {
+    const scheduler = makeScheduler();
+    const warn = vi.fn();
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => ({
+          authorityId: "authority-transition",
+          generation: 4,
+        }),
+        listNarrativeMaintenanceWakeOutbox: vi
+          .fn()
+          .mockRejectedValueOnce(
+            new Error("workspace lifecycle has active owners or unacknowledged work"),
+          )
+          .mockResolvedValueOnce([]),
+        ackNarrativeMaintenanceWakeOutbox: vi.fn(),
+        discoverNarrativeMaintenanceWork: vi.fn(),
+      },
+      scheduler,
+      { warn },
+    );
+
+    await coordinator.drainWakeOutbox();
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(coordinator.getQuiescenceState?.()).toMatchObject({
+      wakeOutboxDrainFailed: false,
+      wakeOutboxPendingRows: false,
+    });
+
+    await coordinator.drainWakeOutbox();
+    expect(coordinator.getQuiescenceState?.()).toMatchObject({
+      wakeOutboxDrainSucceeded: true,
+      wakeOutboxDrainFailed: false,
+    });
+    coordinator.dispose();
+  });
+
   it("bounds an unchanged non-empty planner result instead of spinning forever", async () => {
     const scheduler = makeScheduler();
     const response = discovery("authority-stale", 1, [[backfill("p1")]]);
