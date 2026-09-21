@@ -686,6 +686,7 @@ if (!gotSingleInstanceLock) {
       profileEgress,
       licenseValidation,
       narrativeMaintenance ?? undefined,
+      narrativeFreshness,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には

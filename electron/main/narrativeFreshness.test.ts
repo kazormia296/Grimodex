@@ -243,6 +243,40 @@ describe("createNarrativeFreshnessScheduler", () => {
     expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
   });
 
+  it("workspace switch quiesce waits for the in-flight cycle and resumes afterward", async () => {
+    const first = deferred<string | null>();
+    const runNarrativeFreshnessCycle = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(null);
+    const { scheduler } = createScheduler({ runNarrativeFreshnessCycle });
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledOnce();
+
+    const leasePromise = scheduler.quiesceForWorkspaceSwitch?.();
+    let leaseSettled = false;
+    void leasePromise?.then(() => {
+      leaseSettled = true;
+    });
+    await Promise.resolve();
+    expect(leaseSettled).toBe(false);
+
+    scheduler.handleBackendEvent("related-scenes:invalidated", {
+      queryBinding: "during-switch",
+    });
+    first.resolve(summary(false));
+    const lease = await leasePromise;
+    expect(lease).toBeDefined();
+    expect(leaseSettled).toBe(true);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledOnce();
+
+    await lease?.resume(true);
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
+  });
+
   it("cycle完了後かつin-flight解放後にだけmain observationを通知する", async () => {
     const first = deferred<string | null>();
     const runNarrativeFreshnessCycle = vi.fn().mockReturnValue(first.promise);

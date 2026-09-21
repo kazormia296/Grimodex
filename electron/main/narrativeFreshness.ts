@@ -25,6 +25,8 @@ export interface NarrativeFreshnessScheduler {
   start(): void;
   /** Trusted Native event-bus notification; no renderer/preload entry point. */
   handleBackendEvent(channel: string, payload: unknown): void;
+  /** Quiesce the participant while a workspace binding is being replaced. */
+  quiesceForWorkspaceSwitch?(): Promise<NarrativeFreshnessQuiesceLease | undefined>;
   /** Main-only synchronous state recheck for the CI quiescence writer. */
   getQuiescenceState?(): {
     mutationRevision: number;
@@ -39,6 +41,10 @@ export interface NarrativeFreshnessScheduler {
   };
   /** Stop new cycles and join the currently running Native cycle. */
   dispose(): Promise<void>;
+}
+
+export interface NarrativeFreshnessQuiesceLease {
+  resume(workspaceSwitchSucceeded?: boolean): void | Promise<void>;
 }
 
 interface SchedulerOptions {
@@ -159,6 +165,9 @@ export function createNarrativeFreshnessScheduler(
   let inFlight = false;
   let wakePending = false;
   let inFlightCompletion: Promise<void> | null = null;
+  let quiescing = false;
+  const activeWorkspaceSwitchOwners = new Set<symbol>();
+  let quiesceTransition: Promise<void> | null = null;
   let cycleGeneration = 0;
   let mutationRevision = 0;
   let lastCompletedObservation: ReturnType<
@@ -185,6 +194,10 @@ export function createNarrativeFreshnessScheduler(
     timer = setTimeout(() => {
       noteMutation();
       timer = null;
+      if (quiescing) {
+        wakePending = true;
+        return;
+      }
       const completion = runCycle();
       inFlightCompletion = completion;
       void completion.then(
@@ -199,7 +212,10 @@ export function createNarrativeFreshnessScheduler(
   };
 
   const runCycle = async (): Promise<void> => {
-    if (disposed || inFlight) return;
+    if (disposed || inFlight || quiescing) {
+      if (quiescing) wakePending = true;
+      return;
+    }
     const method = backend?.runNarrativeFreshnessCycle;
     if (typeof method !== "function") return;
 
@@ -255,7 +271,9 @@ export function createNarrativeFreshnessScheduler(
       inFlight = false;
       noteMutation();
       // setIntervalを使わず、必ず前cycle完了後に次の1件だけを予約する。
-      if (!disposed) schedule(wakePending ? BACKLOG_DELAY_MS : nextDelayMs);
+      if (!disposed && !quiescing) {
+        schedule(wakePending ? BACKLOG_DELAY_MS : nextDelayMs);
+      }
       if (!disposed && completedObservation !== null) {
         cycleGeneration += 1;
         noteMutation();
@@ -341,6 +359,7 @@ export function createNarrativeFreshnessScheduler(
       lastNextCycleGuardStateDigest = null;
       // An in-flight cycle may already have captured its Feed range. Preserve
       // one follow-up after it completes; never invoke Native concurrently.
+      if (quiescing) return;
       if (!inFlight) schedule(BACKLOG_DELAY_MS);
     },
 
@@ -359,9 +378,51 @@ export function createNarrativeFreshnessScheduler(
       };
     },
 
+    async quiesceForWorkspaceSwitch(): Promise<
+      NarrativeFreshnessQuiesceLease | undefined
+    > {
+      if (disposed) return undefined;
+      const owner = Symbol("freshness-workspace-switch");
+      activeWorkspaceSwitchOwners.add(owner);
+      try {
+        if (quiesceTransition === null) {
+          quiesceTransition = (async () => {
+            quiescing = true;
+            clearTimer();
+            noteMutation();
+            await inFlightCompletion;
+          })().finally(() => {
+            quiesceTransition = null;
+          });
+        }
+        await quiesceTransition;
+      } catch (error) {
+        activeWorkspaceSwitchOwners.delete(owner);
+        throw error;
+      }
+      return {
+        resume: () => {
+          if (!activeWorkspaceSwitchOwners.delete(owner)) return;
+          if (
+            disposed ||
+            activeWorkspaceSwitchOwners.size !== 0 ||
+            !quiescing
+          ) {
+            return;
+          }
+          quiescing = false;
+          if (started && timer === null) {
+            schedule(wakePending ? BACKLOG_DELAY_MS : IDLE_POLL_INTERVAL_MS);
+          }
+        },
+      };
+    },
+
     async dispose(): Promise<void> {
       if (!disposed) {
         disposed = true;
+        quiescing = false;
+        activeWorkspaceSwitchOwners.clear();
         wakePending = false;
         noteMutation();
         clearTimer();
