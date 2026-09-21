@@ -553,17 +553,15 @@ if (!gotSingleInstanceLock) {
         // cannot produce its terminal receipt; otherwise an independent
         // scheduler failure could strand an active workspace worker outside
         // the shutdown observation budget.
-        // Start both owners in the same turn. Scheduler disposal stops new
-        // producers, while Native shutdown must not wait behind a scheduler
-        // that is already stuck on an in-flight delivery.
+        // Discovery may still enqueue recovery work while Freshness is
+        // joining an in-flight Native cycle. Start the independent producer
+        // shutdowns together, but make maintenance disposal wait for
+        // Freshness to join before it performs its final recovery drain.
+        // Otherwise a Freshness cycle could create a descriptor immediately
+        // after maintenance observed `none`, leaving Native close with an
+        // unpumped process-local owner.
         const coordinatorResult = Promise.resolve()
           .then(() => narrativeMaintenanceTriggers?.dispose())
-          .then(
-            () => undefined,
-            (error) => error,
-          );
-        const schedulerResult = Promise.resolve()
-          .then(() => narrativeMaintenance?.dispose())
           .then(
             () => undefined,
             (error) => error,
@@ -575,6 +573,12 @@ if (!gotSingleInstanceLock) {
         // descriptor while the application is already closing.
         const freshnessResult = Promise.resolve()
           .then(() => narrativeFreshness.dispose())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
+        const schedulerResult = freshnessResult
+          .then(() => narrativeMaintenance?.dispose())
           .then(
             () => undefined,
             (error) => error,
