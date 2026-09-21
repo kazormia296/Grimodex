@@ -450,10 +450,31 @@ rules:
       - scripts/electron-product-journeys.test.mjs
       - electron/main/narrativeFreshness.ts
       - electron/main/narrativeFreshness.test.ts
+      - electron/main/events.ts
+      - electron/main/index.ts
+      - electron/main/narrativeMaintenanceDelivery.ts
+      - electron/main/narrativeMaintenanceDelivery.test.ts
+      - electron/main/narrativeMaintenanceShutdown.ts
+      - electron/main/narrativeMaintenanceShutdown.test.ts
+      - electron/main/profileEgress.ts
+      - electron/main/profileEgress.test.ts
+      - electron/main/workspaceLifecycleResult.ts
+      - electron/main/workspaceLifecycleResult.test.ts
+      - electron/main/workspaceLifecycleView.ts
+      - electron/main/workspaceLifecycleView.test.ts
+      - electron/shared/ipcContract.ts
       - electron/native/grimodex-node/**
       - src-tauri/crates/grimodex-db/src/narrative_extraction/**
+      - src-tauri/crates/grimodex-db/src/workspace_lifecycle.rs
+      - src-tauri/crates/grimodex-db/src/domain_writes.rs
+      - src-tauri/crates/grimodex-db/src/narrative_maintenance_connection.rs
       - src-tauri/crates/grimodex-db/tests/narrative_*.rs
       - src/features/narrative-extraction/maintenance/**
+      - src/features/timelapse/recorder.ts
+      - src/features/workspace/store.ts
+      - src/features/workspace/workspaceState.ts
+      - src/features/workspace/workspaceLifecycleProjection.ts
+      - scripts/quality/validate-lifecycle-contract.mjs
       - policies/narrative/narrative-run-kind-policy.json
       - policies/narrative/narrative-failure-policy.json
       - scripts/c2-5b-product-journeys.test.mjs

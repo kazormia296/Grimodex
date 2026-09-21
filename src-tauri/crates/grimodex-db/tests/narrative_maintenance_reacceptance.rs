@@ -118,6 +118,8 @@ fn durable_wake_batch_is_bounded_to_the_native_cycle_limit() {
         wake_project_ids: (0..33)
             .map(|index| format!("wake-project-{index}"))
             .collect(),
+        delivery_sequence: None,
+        delivery_fingerprint: None,
         workspace_binding: None,
     };
 

@@ -83,6 +83,7 @@ use super::dependency_edges::{
 use super::digest_plan;
 use super::maintenance_lifecycle::{
     canonical_failure_message, complete_maintenance_run_in_tx, create_maintenance_run_in_tx,
+    create_maintenance_run_in_tx_with_control,
     fail_maintenance_run_in_tx, hold_maintenance_run_in_tx, load_maintenance_run_in_tx,
     MaintenanceFailureKind,
 };
@@ -98,7 +99,9 @@ use super::restore_rebuild::{
 };
 use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
-use super::task_leases::with_immediate_transaction;
+use super::task_leases::{
+    with_immediate_transaction, with_immediate_transaction_with_creation_outcome,
+};
 use super::terminal_failure::{
     project_terminal_failure_for_run_generated_in_tx,
     resolve_terminal_failure_for_run_generated_in_tx,
@@ -670,11 +673,16 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
     let spec = json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
     let spec_digest = format!("sha256:{}", digest_plan(&spec));
 
-    let (run_id, semantic_epoch_id, reused) = run_maintenance_graph_phase(
+    let (created, semantic_epoch_id, completed_marker) = run_maintenance_graph_phase(
         db,
         control,
         |conn, graph| {
-            with_immediate_transaction(conn, |conn| {
+            if let Some(reset) = control.reset_run_creation_tracking {
+                reset()?;
+            }
+            let mut created = with_immediate_transaction_with_creation_outcome(
+                conn,
+                |conn| {
                 graph.check(GraphWorkStage::Restore)?;
                 require_current_c2zb_marker(conn)?;
                 let epoch_id = match get_current_epoch(conn, project_id)? {
@@ -684,9 +692,10 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
                 if let Some(run_id) =
                     find_valid_completed_backfill_run_id_with_control(conn, project_id, graph)?
                 {
-                    return Ok((run_id, epoch_id, true));
+                    let handle = load_maintenance_run_in_tx(conn, &run_id)?;
+                    return Ok((handle, epoch_id, true));
                 }
-                let handle = create_maintenance_run_in_tx(
+                let handle = create_maintenance_run_in_tx_with_control(
                     conn,
                     project_id,
                     "backfill",
@@ -695,16 +704,34 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
                     &spec,
                     &spec_digest,
                     SystemRunWorkKeyReuse::RunningOnly,
+                    Some(control),
                 )?;
-                Ok((handle.run_id, epoch_id, handle.reused))
-            })
+                Ok((handle, epoch_id, false))
+                },
+                |outcome| {
+                    if let Some(mark_outcome) = control.mark_run_creation_outcome {
+                        mark_outcome(outcome)?;
+                    }
+                    Ok(())
+                },
+            )?;
+            if !created.2 {
+                if !created.0.reused {
+                    created.0.mark_creation_committed();
+                }
+                if let Some(attach_run) = control.attach_run {
+                    attach_run(created.0.core_ownership())?;
+                }
+            }
+            Ok(created)
         },
     )?;
+    let run_id = created.run_id.clone();
+    let reused = created.reused || completed_marker;
 
     if reused {
         return Ok(LegacyBackfillBootstrapOutcome::AlreadyRun { run_id });
     }
-
     let transform_result = run_maintenance_graph_phase_for_run(
         db,
         control,
@@ -2348,6 +2375,13 @@ mod tests {
             work_completed: &no_work,
             work_noop_completed: &no_work,
             work_deferred: &no_work,
+            attach_run: None,
+            reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
         };
         let cancellation = super::super::source_revision::validation_terminated(
             super::super::source_revision::ValidationTerminationReason::Cancelled,

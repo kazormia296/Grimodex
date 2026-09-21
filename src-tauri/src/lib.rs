@@ -96,7 +96,7 @@ pub fn run() {
             app.manage(WorkspaceState {
                 inner: Mutex::new(None),
                 safe_mode: grimodex_db::recovery::SafeModeState::default(),
-                switching: std::sync::atomic::AtomicBool::new(false),
+                switching: grimodex_db::WorkspaceLifecycleCompatibilityView::default(),
                 open_lock: Mutex::new(()),
             });
 

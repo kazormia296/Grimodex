@@ -134,7 +134,7 @@ fn dispatch_backfill(
         super::LegacyBackfillBootstrapOutcome::AlreadyRun { run_id }
         | super::LegacyBackfillBootstrapOutcome::Ran { run_id, .. } => run_id,
     };
-    foreground_dispatch_outcome(db, &run_id)
+    foreground_dispatch_outcome(db, &run_id, control)
 }
 
 fn dispatch_verify(
@@ -151,7 +151,7 @@ fn dispatch_verify(
             control,
             &item.canonical_key(),
         )?;
-    foreground_dispatch_outcome(db, &outcome.run_id)
+    foreground_dispatch_outcome(db, &outcome.run_id, control)
 }
 
 fn dispatch_rebuild_derived(
@@ -170,7 +170,7 @@ fn dispatch_rebuild_derived(
         super::restore_rebuild::RebuildDerivedStateOutcome::AlreadyRunning { run_id }
         | super::restore_rebuild::RebuildDerivedStateOutcome::Ran { run_id, .. } => run_id,
     };
-    foreground_dispatch_outcome(db, &run_id)
+    foreground_dispatch_outcome(db, &run_id, control)
 }
 
 /// Convert the durable lifecycle left by an adapter into the typed result the
@@ -181,7 +181,21 @@ fn dispatch_rebuild_derived(
 fn foreground_dispatch_outcome(
     db: &Database,
     run_id: &str,
+    control: Option<&MaintenanceCycleControl<'_>>,
 ) -> anyhow::Result<MaintenanceDispatchOutcome> {
+    if let Some(control) = control {
+        if let Some(attach_run) = control.attach_run {
+            let ownership = db.with_conn(|conn| {
+                Ok(super::maintenance_lifecycle::try_load_running_maintenance_run_in_tx(
+                    conn, run_id,
+                )?
+                .map(|handle| handle.core_ownership()))
+            })?;
+            if let Some(ownership) = ownership {
+                attach_run(ownership)?;
+            }
+        }
+    }
     if !foreground_system_work_barrier_requested() {
         return Ok(MaintenanceDispatchOutcome::Completed);
     }

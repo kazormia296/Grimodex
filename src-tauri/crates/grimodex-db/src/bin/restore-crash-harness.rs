@@ -11,7 +11,7 @@ use grimodex_db::backup_restore::{
 use grimodex_db::recovery::SafeModeSession;
 use grimodex_db::state::WorkspaceState;
 use grimodex_db::workspace_lease;
-use grimodex_db::Database;
+use grimodex_db::{Database, WorkspaceLifecycleCompatibilityView};
 
 fn main() {
     if let Err(error) = run() {
@@ -88,7 +88,7 @@ fn run() -> anyhow::Result<()> {
     let state = WorkspaceState {
         inner: Mutex::new(None),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
-        switching: std::sync::atomic::AtomicBool::new(false),
+        switching: WorkspaceLifecycleCompatibilityView::new(false),
         open_lock: Mutex::new(()),
     };
     let session = SafeModeSession::from_workspace(

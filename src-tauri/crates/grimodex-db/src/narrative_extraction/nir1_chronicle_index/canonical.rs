@@ -2,13 +2,14 @@ use anyhow::{ensure, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
+use super::super::nir1_entity_relation_index::GraphWorkControl;
 use super::super::{
     c2zc_canonical_cutover::{
         is_generic_freshness_canonical, validate_current_evaluation_run_reference,
     },
     dependency_edges::{consumer_dependency_set_digest, find_edges_by_consumer},
     evaluator::{BuildAction, EvidenceFreshness},
-    restore_rebuild::evaluate_owned_edges_from_db_in_tx,
+    restore_rebuild::evaluate_owned_edges_from_db_in_tx_with_control,
     revision_eligibility::pending,
     semantic_epoch::get_current_epoch,
 };
@@ -35,6 +36,17 @@ pub(super) fn proof_current(
     runtime: &NirChronicleIndexRuntime,
     proof: &IndexProof,
 ) -> Result<bool> {
+    let mut control = super::super::source_revision::ForegroundValidationControl;
+    proof_current_with_control(conn, runtime, proof, &mut control)
+}
+
+pub(super) fn proof_current_with_control(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    proof: &IndexProof,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
+    control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Source)?;
     ensure!(
         !conn.is_autocommit(),
         "NIR1 query validation requires a read transaction"
@@ -68,7 +80,11 @@ pub(super) fn proof_current(
     };
     if current.dirty
         || current != proof.binding
-        || source::read_eligibility_source(conn, &proof.project)?.digest != current.source_digest
+        || {
+            control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+            source::read_eligibility_source_with_control(conn, &proof.project, control)?.digest
+                != current.source_digest
+        }
         || get_current_epoch(conn, &proof.project)?
             .is_none_or(|epoch| epoch.id != proof.semantic_epoch)
     {
@@ -118,6 +134,7 @@ pub(super) fn proof_current(
     let mut statement = conn.prepare("SELECT project_id,evidence_freshness,reason_code,build_action,evaluated_at_epoch_id,evaluated_at
         FROM narrative_dependency_edge_states WHERE edge_id=?1")?;
     for edge in &edges {
+        control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Edge)?;
         let state = statement
             .query_row([&edge.id], |r| {
                 Ok((
@@ -143,7 +160,9 @@ pub(super) fn proof_current(
             return Ok(false);
         }
     }
-    for observation in evaluate_owned_edges_from_db_in_tx(conn, &proof.project, &edges)? {
+    for observation in
+        evaluate_owned_edges_from_db_in_tx_with_control(conn, &proof.project, &edges, control)?
+    {
         if observation.freshness != EvidenceFreshness::Fresh
             || observation.build_action != BuildAction::None
             || observation.reason_code.is_some()
@@ -151,7 +170,7 @@ pub(super) fn proof_current(
             return Ok(false);
         }
     }
-    if !super::revision_bindings::still_current(conn, proof)? {
+    if !super::revision_bindings::still_current(conn, proof, control)? {
         return Ok(false);
     }
     if runtime.current_epoch(conn)? != Ok(proof.runtime_epoch) {

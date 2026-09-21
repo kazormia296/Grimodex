@@ -188,6 +188,70 @@ describe("narrative maintenance main-only wiring", () => {
     scheduler.dispose();
   });
 
+  it("does not rebind W1 work to an unrelated W2 recovery snapshot", async () => {
+    const w1 = { authorityId: "authority-w1", generation: 3 };
+    const w2 = { authorityId: "authority-w2", generation: 8 };
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "reconciled",
+        descriptorId: 11,
+        reason: "maintenance-recovery-complete",
+        recoveredBinding: w1,
+        activeBinding: w2,
+        reboundBinding: null,
+      })
+      .mockResolvedValue({ status: "none" });
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue(accepted());
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery,
+      runNarrativeMaintenanceCycle,
+    }) as WiringScheduler;
+
+    scheduler.requestWithBinding(backfill("same-project-id"), w1);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(NARRATIVE_MAINTENANCE_INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0].workspaceBinding).toEqual(
+      w1,
+    );
+    scheduler.dispose();
+  });
+
+  it("rebinds retained work only when Native supplies an exact rebound proof", async () => {
+    const w1 = { authorityId: "authority-w1", generation: 3 };
+    const reopenedW1 = { authorityId: "authority-w1-reopened", generation: 9 };
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "reconciled",
+        descriptorId: 12,
+        reason: "maintenance-recovery-complete",
+        recoveredBinding: w1,
+        activeBinding: reopenedW1,
+        reboundBinding: reopenedW1,
+      })
+      .mockResolvedValue({ status: "none" });
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue(accepted());
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery,
+      runNarrativeMaintenanceCycle,
+    }) as WiringScheduler;
+
+    scheduler.requestWithBinding(backfill("reopened-project"), w1);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(NARRATIVE_MAINTENANCE_INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0].workspaceBinding).toEqual(
+      reopenedW1,
+    );
+    scheduler.dispose();
+  });
+
   it.each([
     [
       "a rejected begin binding",

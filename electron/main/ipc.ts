@@ -60,6 +60,10 @@ import type {
   NarrativeMaintenanceQuiesceLease,
   NarrativeMaintenanceScheduler,
 } from "./narrativeMaintenance.js";
+import type {
+  NarrativeFreshnessQuiesceLease,
+  NarrativeFreshnessScheduler,
+} from "./narrativeFreshness.js";
 
 const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_create",
@@ -2059,8 +2063,13 @@ export function registerIpcRouter(
   narrativeMaintenance?: Pick<
     NarrativeMaintenanceScheduler,
     | "quiesceForWorkspaceSwitch"
+    | "reconcileRecoveryBeforeWorkspaceOpen"
     | "beginNarrativeMaintenanceAttempt"
     | "cancelNarrativeMaintenanceAttempt"
+  >,
+  narrativeFreshness?: Pick<
+    NarrativeFreshnessScheduler,
+    "quiesceForWorkspaceSwitch"
   >,
 ): void {
   const relatedScenesReconciler = createRelatedScenesReconciler({
@@ -2089,7 +2098,9 @@ export function registerIpcRouter(
         ? performance.now()
         : null;
       let workspaceOpenResult: "success" | "failure" = "failure";
-      let workspaceSwitchLease: NarrativeMaintenanceQuiesceLease | undefined;
+      let workspaceSwitchLeases: Array<
+        NarrativeMaintenanceQuiesceLease | NarrativeFreshnessQuiesceLease
+      > = [];
       try {
         if (typeof cmd !== "string") {
           return {
@@ -2165,14 +2176,59 @@ export function registerIpcRouter(
         let manualMaintenanceAttemptId: string | null = null;
         try {
           if (WORKSPACE_SWITCH_COMMANDS.has(cmd)) {
-            const quiesceResult =
-              await narrativeMaintenance?.quiesceForWorkspaceSwitch?.();
-            workspaceSwitchLease =
-              quiesceResult &&
-              typeof quiesceResult === "object" &&
-              typeof quiesceResult.resume === "function"
-                ? quiesceResult
+            const requestedWorkspacePath =
+              cmd === "open_workspace" && "path" in dispatchArgs
+                ? dispatchArgs.path
                 : undefined;
+            if (
+              cmd === "open_workspace" &&
+              (typeof requestedWorkspacePath !== "string" ||
+                requestedWorkspacePath.trim().length === 0 ||
+                requestedWorkspacePath.includes("\0"))
+            ) {
+              throw new Error(
+                "invalid args `path` for command `open_workspace`: expected a non-empty path",
+              );
+            }
+            const acquired: Array<
+              NarrativeMaintenanceQuiesceLease | NarrativeFreshnessQuiesceLease
+            > = [];
+            try {
+              const maintenanceLease =
+                await narrativeMaintenance?.quiesceForWorkspaceSwitch?.();
+              if (
+                maintenanceLease &&
+                typeof maintenanceLease === "object" &&
+                typeof maintenanceLease.resume === "function"
+              ) {
+                acquired.push(maintenanceLease);
+              }
+              const freshnessLease =
+                await narrativeFreshness?.quiesceForWorkspaceSwitch?.();
+              if (
+                freshnessLease &&
+                typeof freshnessLease === "object" &&
+                typeof freshnessLease.resume === "function"
+              ) {
+                acquired.push(freshnessLease);
+              }
+              if (typeof requestedWorkspacePath === "string") {
+                // Freshness can publish a recovery descriptor while joining.
+                // Keep both producers stopped until Native has reconciled
+                // only this Open target and main has ACKed its exact proof.
+                await narrativeMaintenance?.reconcileRecoveryBeforeWorkspaceOpen?.(
+                  requestedWorkspacePath,
+                );
+              }
+              workspaceSwitchLeases = acquired;
+            } catch (error) {
+              await Promise.all(
+                acquired.map((lease) =>
+                  Promise.resolve(lease.resume(false)).catch(() => undefined),
+                ),
+              );
+              throw error;
+            }
           }
           if (
             MANUAL_NARRATIVE_MAINTENANCE_COMMANDS.has(cmd) &&
@@ -2215,6 +2271,14 @@ export function registerIpcRouter(
               : await dispatch();
         } catch (error) {
           envelope = { ok: false, error: toErrorString(error) };
+        }
+        if (cmd === "restore_backup" && envelope.ok) {
+          // The renderer also consumes this operation-scoped result, but the
+          // main profile gate must see the trusted Native proof first.  A
+          // failed Restore may return `unchanged` without another
+          // `workspace:opened`; feed that proof into the same authorization
+          // owner before the next renderer invoke can mint a caller.
+          profileEgress?.observeWorkspaceLifecycleResult?.(envelope.value);
         }
         if (
           manualMaintenanceAttemptId !== null &&
@@ -2358,20 +2422,24 @@ export function registerIpcRouter(
             );
           }
         }
-        if (workspaceSwitchLease) {
-          try {
-            // Restore retained maintenance backlog after the workspace switch
-            // attempt.  The lease itself rejects stale/overlapping resumes
-            // and remains closed after cleanup failure.  A successful Native
-            // swap needs the same resume as a failed operation; otherwise the
-            // scheduler remains quiesced after the new binding is live.
-            await workspaceSwitchLease.resume(envelope.ok);
-          } catch (resumeError) {
-            console.warn(
-              "[narrative-maintenance] failed to resume retained backlog after workspace switch:",
-              resumeError,
-            );
-          }
+        if (workspaceSwitchLeases.length > 0) {
+          const leases = workspaceSwitchLeases;
+          workspaceSwitchLeases = [];
+          await Promise.all(
+            leases.map(async (lease) => {
+              try {
+                // Restore retained maintenance/Freshness work after the
+                // workspace switch attempt. Each lease remains closed after
+                // cleanup failure and rejects stale/overlapping resumes.
+                await lease.resume(envelope.ok);
+              } catch (resumeError) {
+                console.warn(
+                  "[narrative-maintenance] failed to resume retained workspace participants:",
+                  resumeError,
+                );
+              }
+            }),
+          );
         }
         workspaceOpenResult = envelope.ok ? "success" : "failure";
         if (!envelope.ok) {

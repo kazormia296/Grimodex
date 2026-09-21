@@ -75,6 +75,17 @@ pub use nir1_entity_relation::{
 pub use nir1_graph::{read_nir1_graph, Nir1GraphRequest, Nir1GraphResponse};
 pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
+pub(crate) use repository::{
+    project_creation_reservation_active_for_database,
+    release_project_destructive_permit_in_namespace,
+    try_reserve_project_destructive_permit_in_namespace,
+};
+pub use repository::project_lifecycle_namespace_for_database;
+pub use repository::{
+    release_project_creation, release_project_creation_for_handle,
+    try_reserve_project_creation, try_reserve_project_creation_for_database,
+    try_reserve_project_creation_in_namespace,
+};
 pub(crate) use scene_scope::backfill_scene_scope_storage_in_tx;
 pub(crate) use scene_scope::ensure_scene_scope_binding_in_tx;
 pub(crate) use scene_scope::ensure_scope_registry_in_tx;
@@ -154,9 +165,7 @@ mod semantic_index_diagnostics;
 mod source_revision;
 #[allow(unused_imports)]
 pub(crate) use source_revision::{
-    is_validation_terminated, resolve_current_source_state_with_control,
-    resolve_source_revision_with_control, validation_terminated, ValidationTerminated,
-    ValidationTerminationReason,
+    resolve_current_source_state_with_control, resolve_source_revision_with_control,
 };
 mod stage_provenance;
 mod task_leases;
@@ -260,10 +269,13 @@ pub(crate) use c2zc_canonical_cutover::{
     mint_c2zc_scan_publish_project_birth_epoch_in_tx,
 };
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
+pub use incremental_freshness::FreshnessLifecycleControl;
 pub use incremental_freshness::{
     run_incremental_freshness_cycle, run_incremental_freshness_cycle_with_hold,
+    run_incremental_freshness_cycle_with_lifecycle_control,
     run_incremental_freshness_cycle_with_liveness_capability,
     run_incremental_freshness_cycle_with_liveness_capability_and_hold,
+    run_incremental_freshness_cycle_with_liveness_capability_and_hold_and_lifecycle_control,
     IncrementalFreshnessBatchSummary, IncrementalFreshnessCycleOutcome,
     IncrementalFreshnessHeldSummary, IncrementalFreshnessShadowConsumerSummary,
     IncrementalFreshnessShadowSummary, SuccessfulIncrementalFreshnessCycle,
@@ -280,7 +292,8 @@ pub use maintenance_runtime::{
     discover_before_cutover_maintenance_work_with_coordinates, discover_durable_maintenance_work,
     discover_durable_maintenance_work_with_config,
     discover_durable_maintenance_work_with_coordinates, effective_maintenance_coordinates,
-    plan_maintenance_trigger, preflight_maintenance_cycle_request, read_run_ledger,
+    is_transient_maintenance_preemption, plan_maintenance_trigger,
+    preflight_maintenance_cycle_request, read_run_ledger,
     read_run_ledger_for_epoch, recovery_canonical_key, retry_backoff_ms,
     terminalize_interrupted_runs, terminalize_interrupted_runs_for_epoch,
     terminalize_stale_interrupted_runs, terminalize_stale_interrupted_runs_for_epoch,
@@ -302,6 +315,7 @@ pub use maintenance_runtime::{
     MaintenanceCycleResult, MaintenanceCycleStatus, MaintenanceWorkRequest,
     MaintenanceWorkspaceBinding, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
 };
+pub use nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 #[allow(unused_imports)]
 pub(crate) use publish_runtime::{
     publish_freshness_evaluation_in_tx, write_consumer_freshness_in_tx, write_edge_state_in_tx,
@@ -312,6 +326,10 @@ pub(crate) use restore_rebuild::{
     rebuild_verify_dependency_edges, rotate_epoch_for_restore_in_tx,
     validate_graph_state_digest_with_control, verify_dependency_graph_snapshot_with_control,
     RebuildVerifyReport,
+};
+pub use source_revision::{
+    is_validation_terminated, validation_terminated, ValidationTerminated,
+    ValidationTerminationReason,
 };
 pub(crate) use task_leases::with_immediate_transaction;
 pub use terminal_failure::{
@@ -341,14 +359,16 @@ pub use restore_rebuild::{
     ensure_restore_epochs_for_workspace, list_pending_maintenance_wakes,
     production_verify_check_coverage, rebuild_narrative_derived_state_for_project,
     rebuild_narrative_derived_state_for_project_with_control,
-    record_maintenance_delivery_failure_wake, run_dependency_verify_for_project,
+    record_maintenance_delivery_failure_wake, recover_maintenance_run_exact,
+    resolve_maintenance_run_creation_unknown, run_dependency_verify_for_project,
     run_dependency_verify_for_project_with_coordinates,
     run_dependency_verify_for_project_with_coordinates_and_control,
-    try_cancel_preempted_maintenance_run,
-    verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
-    PendingMaintenanceWake, RebuildDerivedStateOutcome, RebuildDerivedStateSummary,
-    RebuildShadowVerificationSummary, VerifyRunOutcome,
+    try_cancel_preempted_maintenance_run, verify_narrative_dependency_graph_for_project,
+    CreationResolution, DependencyGraphVerifyReport, PendingMaintenanceWake,
+    RebuildDerivedStateOutcome, RebuildDerivedStateSummary, RebuildShadowVerificationSummary,
+    VerifyRunOutcome,
 };
+pub use maintenance_lifecycle::resolve_reused_maintenance_run;
 #[allow(unused_imports)]
 pub(crate) use semantic_epoch::{create_epoch_in_tx, list_epochs};
 // `pub`: `get_current_epoch`/`CurrentEpoch` resolve the Semantic Epoch a
@@ -539,6 +559,14 @@ pub fn narrative_extraction_finish_task(
     repository::finish_task(db, payload)
 }
 
+pub fn narrative_extraction_finish_task_with_control(
+    db: &Database,
+    payload: FinishTaskPayload,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    repository::finish_task_with_control(db, payload, control)
+}
+
 pub fn narrative_extraction_fail_task(
     db: &Database,
     payload: FailTaskPayload,
@@ -551,6 +579,14 @@ pub fn narrative_extraction_save_proposal_set(
     payload: SaveProposalSetPayload,
 ) -> anyhow::Result<Value> {
     repository::save_proposal_set(db, payload)
+}
+
+pub fn narrative_extraction_save_proposal_set_with_control(
+    db: &Database,
+    payload: SaveProposalSetPayload,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    repository::save_proposal_set_with_control(db, payload, control)
 }
 
 pub fn narrative_extraction_create_nir1_entity_relation_revision(
@@ -581,6 +617,14 @@ pub fn narrative_extraction_append_revision(
     repository::append_revision(db, payload)
 }
 
+pub fn narrative_extraction_append_revision_with_control(
+    db: &Database,
+    payload: AppendRevisionPayload,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Value> {
+    repository::append_revision_with_control(db, payload, control)
+}
+
 pub fn narrative_extraction_append_decision(
     db: &Database,
     payload: AppendDecisionPayload,
@@ -605,11 +649,27 @@ pub fn narrative_extraction_revise_and_decide(
     repository::revise_and_decide(db, payload)
 }
 
+pub fn narrative_extraction_revise_and_decide_with_control(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+    control: &mut dyn nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<Value> {
+    repository::revise_and_decide_with_control(db, payload, control)
+}
+
 pub fn narrative_extraction_revise_and_decide_as_human(
     db: &Database,
     payload: ReviseAndDecidePayload,
 ) -> anyhow::Result<Value> {
     repository::revise_and_decide_as_human(db, payload)
+}
+
+pub fn narrative_extraction_revise_and_decide_as_human_with_control(
+    db: &Database,
+    payload: ReviseAndDecidePayload,
+    control: &mut dyn nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<Value> {
+    repository::revise_and_decide_as_human_with_control(db, payload, control)
 }
 
 pub fn narrative_extraction_prepare_commit(
@@ -619,11 +679,27 @@ pub fn narrative_extraction_prepare_commit(
     commit::narrative_extraction_prepare_commit(db, payload)
 }
 
+pub fn narrative_extraction_prepare_commit_with_control(
+    db: &Database,
+    payload: PrepareCommitPayload,
+    control: &mut dyn nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<Value> {
+    commit::narrative_extraction_prepare_commit_with_control(db, payload, Some(control))
+}
+
 pub fn narrative_extraction_apply_commit(
     db: &Database,
     payload: ApplyCommitPayload,
 ) -> anyhow::Result<Value> {
     commit::narrative_extraction_apply_commit(db, payload)
+}
+
+pub fn narrative_extraction_apply_commit_with_control(
+    db: &Database,
+    payload: ApplyCommitPayload,
+    control: &mut dyn nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<Value> {
+    commit::narrative_extraction_apply_commit_with_control(db, payload, Some(control))
 }
 
 pub fn narrative_extraction_get_commit_status(

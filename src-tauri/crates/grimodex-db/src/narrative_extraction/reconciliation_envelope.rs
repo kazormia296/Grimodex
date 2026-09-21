@@ -17,7 +17,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use super::source_revision::resolve_source_revision;
+use super::nir1_entity_relation_index::{GraphWorkControl, NeverStopGraphWorkControl};
+use super::source_revision::{
+    resolve_source_revision_with_control, ValidationContext,
+};
 
 pub(crate) const ORIGIN_ENVELOPED: &str = "enveloped";
 pub(crate) const ORIGIN_LEGACY_UNBOUND: &str = "legacy-unbound";
@@ -567,11 +570,27 @@ pub(crate) fn ensure_v2_proposal_payload_digest(
 /// Validate the live revision vector at proposal/revision save time. Legacy
 /// envelopes without read-set tokens remain readable for migration, while all
 /// new product envelopes carry tokens and are checked before persistence.
+#[allow(dead_code)]
 pub(crate) fn validate_envelope_source_tokens(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
     envelope: &Value,
+) -> anyhow::Result<()> {
+    let mut control = NeverStopGraphWorkControl;
+    validate_envelope_source_tokens_with_control(conn, project_id, run_id, envelope, &mut control)
+}
+
+/// Validate source tokens while borrowing the owner of the enclosing writer
+/// transaction.  The old wrapper above remains for bounded compatibility
+/// callers, but reachable proposal/revision writers use this form so a
+/// lifecycle stop cannot be normalized into Source absence.
+pub(crate) fn validate_envelope_source_tokens_with_control(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    envelope: &Value,
+    control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<()> {
     if envelope_schema_version(envelope) == Some(2) {
         let source_basis = envelope
@@ -585,8 +604,14 @@ pub(crate) fn validate_envelope_source_tokens(
             let source_kind = required_string(object, "sourceKind")?;
             let source_key = required_string(object, "sourceKey")?;
             let expected = required_string(object, "revisionToken")?;
-            let current =
-                resolve_source_revision(conn, project_id, run_id, source_kind, source_key)?;
+            let current = resolve_source_revision_with_control(
+                conn,
+                project_id,
+                run_id,
+                source_kind,
+                source_key,
+                control,
+            )?;
             anyhow::ensure!(
                 current.revision_token == expected,
                 "NEX_READ_SET_STALE: input '{}' expected '{}' but found '{}'",
@@ -629,7 +654,14 @@ pub(crate) fn validate_envelope_source_tokens(
             _ => kind,
         });
         let expected = required_string(object, "revisionToken")?;
-        let current = resolve_source_revision(conn, project_id, run_id, source_kind, input_ref)?;
+        let current = resolve_source_revision_with_control(
+            conn,
+            project_id,
+            run_id,
+            source_kind,
+            input_ref,
+            control,
+        )?;
         anyhow::ensure!(
             current.revision_token == expected,
             "NEX_READ_SET_STALE: input '{}' expected '{}' but found '{}'",
@@ -639,6 +671,25 @@ pub(crate) fn validate_envelope_source_tokens(
         );
     }
     Ok(())
+}
+
+/// Context-coupled variant used by foreground proposal/revision writers. The
+/// caller cannot provide a second connection beside the borrowed transaction,
+/// so whole-eligibility validation and its stop owner share one scope.
+pub(crate) fn validate_envelope_source_tokens_with_validation_context(
+    context: &mut ValidationContext<'_, '_>,
+    project_id: &str,
+    run_id: &str,
+    envelope: &Value,
+) -> anyhow::Result<()> {
+    let conn = context.connection();
+    validate_envelope_source_tokens_with_control(
+        conn,
+        project_id,
+        run_id,
+        envelope,
+        context.control(),
+    )
 }
 
 fn required_string<'a>(object: &'a Map<String, Value>, field: &str) -> anyhow::Result<&'a str> {

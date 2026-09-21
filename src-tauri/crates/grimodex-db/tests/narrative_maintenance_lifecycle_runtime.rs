@@ -399,6 +399,8 @@ fn foreground_backfill_stays_running_across_followup_cycle_only_for_exact_owner(
     let followup = MaintenanceCycleRequest {
         work: Vec::new(),
         wake_project_ids: vec![PROJECT_ID.to_string()],
+        delivery_sequence: None,
+        delivery_fingerprint: None,
         workspace_binding: Some(binding.clone()),
     };
     let second = run_system_work_cycle_with_modes_and_config_and_foreground_owner(

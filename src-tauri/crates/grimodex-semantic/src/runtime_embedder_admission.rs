@@ -1,5 +1,8 @@
 use anyhow::Result;
 use std::sync::{Condvar, Mutex};
+use std::time::Duration;
+
+const BACKGROUND_CHECK_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Default)]
 struct AdmissionState {
@@ -17,43 +20,68 @@ pub(super) struct EmbedderAdmission {
 
 impl EmbedderAdmission {
     pub(super) fn foreground<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
-        let _permit = self.acquire(true);
+        let _permit = self.acquire_foreground();
         operation()
+    }
+
+    pub(super) fn background<T>(
+        &self,
+        mut check: impl FnMut() -> Result<()>,
+        operation: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        loop {
+            // Lifecycle controls may acquire their own locks. Never run them
+            // while holding admission bookkeeping or waiting for foreground.
+            check()?;
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            if !state.active && state.foreground_waiters == 0 {
+                state.active = true;
+                drop(state);
+                let _permit = AdmissionPermit { admission: self };
+                check()?;
+                return operation();
+            }
+            // ponytail: queued stop checks wait at most 50 ms; notify on
+            // cancellation if tighter latency is needed. Active inference
+            // does not have to finish before this build observes stop.
+            drop(
+                self.ready
+                    .wait_timeout(state, BACKGROUND_CHECK_INTERVAL)
+                    .unwrap_or_else(|poison| poison.into_inner()),
+            );
+        }
     }
 
     pub(super) fn map_background<I, O>(
         &self,
         inputs: &[I],
+        mut check: impl FnMut() -> Result<()>,
         mut operation: impl FnMut(&I) -> Result<O>,
     ) -> Result<Vec<O>> {
         inputs
             .iter()
-            .map(|input| {
-                let _permit = self.acquire(false);
-                operation(input)
-            })
+            .map(|input| self.background(&mut check, || operation(input)))
             .collect()
     }
 
-    fn acquire(&self, foreground: bool) -> AdmissionPermit<'_> {
+    fn acquire_foreground(&self) -> AdmissionPermit<'_> {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if foreground {
-            state.foreground_waiters += 1;
-            #[cfg(test)]
-            self.ready.notify_all();
-        }
-        while state.active || (!foreground && state.foreground_waiters > 0) {
+        state.foreground_waiters += 1;
+        #[cfg(test)]
+        self.ready.notify_all();
+        while state.active {
             state = self
                 .ready
                 .wait(state)
                 .unwrap_or_else(|poison| poison.into_inner());
         }
-        if foreground {
-            state.foreground_waiters -= 1;
-        }
+        state.foreground_waiters -= 1;
         state.active = true;
         AdmissionPermit { admission: self }
     }

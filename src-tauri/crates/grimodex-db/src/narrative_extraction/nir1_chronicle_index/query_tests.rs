@@ -673,3 +673,96 @@ fn nir1_model_generation_change_clears_proofs_and_stale_request_cannot_roll_back
     publish(&f);
     assert!(valid(&f, &batch(&f)));
 }
+
+#[test]
+fn nir1_controlled_query_paths_stop_during_roster_and_serialization() {
+    use super::test_support::{assert_stopped, StopAt};
+    use crate::narrative_extraction::GraphWorkStage;
+
+    let f = Fixture::new();
+    publish(&f);
+    let scene = f.manifest["s2"].as_str().expect("S2");
+    let (snapshot, batch, handle) = held_query(&f, scene);
+    let proof = f
+        .runtime
+        .lock()
+        .expect("runtime")
+        .proofs
+        .get(f.project())
+        .expect("proof")
+        .clone();
+    for stage in [GraphWorkStage::Row, GraphWorkStage::Serialization] {
+        f.db.with_read_transaction(|conn| {
+            macro_rules! stopped {
+                ($operation:expr) => {{
+                    *proof.validated_read.lock().expect("cached verdict") = None;
+                    assert_stopped($operation);
+                }};
+            }
+            stopped!(read_chronicle_query_status_with_control(
+                conn,
+                &f.runtime,
+                f.project(),
+                scene,
+                &mut StopAt(stage)
+            ));
+            stopped!(validate_chronicle_query_status_snapshot_with_control(
+                conn,
+                &f.runtime,
+                &snapshot,
+                &mut StopAt(stage)
+            ));
+            stopped!(qualify_chronicle_index_snapshot_with_control(
+                conn,
+                &f.runtime,
+                &snapshot,
+                &mut StopAt(stage)
+            ));
+            stopped!(validate_chronicle_query_snapshot_with_control(
+                conn,
+                &f.runtime,
+                &batch,
+                &mut StopAt(stage)
+            ));
+            stopped!(validate_chronicle_bound_batch_with_control(
+                conn,
+                &f.runtime,
+                &snapshot,
+                &batch,
+                &mut StopAt(stage)
+            ));
+            stopped!(read_chronicle_evidence_navigation_with_control(
+                conn,
+                &f.runtime,
+                &handle,
+                &mut StopAt(stage)
+            ));
+            Ok(())
+        })
+        .expect("every product query path borrows the same stop owner");
+    }
+    assert!(
+        valid(&f, &batch),
+        "interruption must not corrupt the usable proof"
+    );
+}
+
+#[test]
+fn nir1_controlled_cached_proof_still_checks_the_lifecycle_owner() {
+    use super::test_support::{assert_stopped, StopAt};
+    use crate::narrative_extraction::GraphWorkStage;
+    let f = Fixture::new();
+    publish(&f);
+    let batch = batch(&f);
+    assert!(valid(&f, &batch));
+    f.db.with_read_transaction(|conn| {
+        assert_stopped(validate_chronicle_query_snapshot_with_control(
+            conn,
+            &f.runtime,
+            &batch,
+            &mut StopAt(GraphWorkStage::Source),
+        ));
+        Ok(())
+    })
+    .expect("cached currentness does not bypass stop");
+}

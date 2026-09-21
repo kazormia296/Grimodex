@@ -540,3 +540,145 @@ fn nir1_runless_republication_rejects_corrupt_registration_before_edge_writes() 
         Ok(())
     }).expect("registration remains mandatory before batch writes");
 }
+
+#[test]
+fn nir1_controlled_build_publish_and_owned_sources_preserve_stop() {
+    use super::test_support::{assert_stopped, StopAt};
+    use crate::narrative_extraction::{
+        restore_rebuild::evaluate_owned_edges_from_db_in_tx_with_control, GraphWorkStage,
+    };
+
+    for stage in [GraphWorkStage::Row, GraphWorkStage::Serialization] {
+        let f = Fixture::new();
+        f.db.with_read_transaction(|conn| {
+            assert_stopped(prepare_chronicle_index_build_with_control(
+                conn,
+                &f.runtime,
+                f.project(),
+                &mut StopAt(stage),
+            ));
+            Ok(())
+        })
+        .expect("build interruption");
+        let (plan, documents) = f.prepare();
+        f.db.with_read_transaction(|conn| {
+            assert_stopped(evaluate_owned_edges_from_db_in_tx_with_control(
+                conn,
+                f.project(),
+                &plan.snapshot.edges,
+                &mut StopAt(stage),
+            ));
+            Ok(())
+        })
+        .expect("nested owned Source batch retains the caller control");
+        assert_stopped(publish_chronicle_index_build_with_control(
+            &f.db,
+            &f.runtime,
+            plan,
+            f.outcomes(documents),
+            &mut StopAt(stage),
+        ));
+        assert_eq!(f.published_count(), 0);
+        assert!(f.runtime.lock().expect("runtime").proofs.is_empty());
+        let (plan, documents) = f.prepare();
+        assert!(matches!(
+            publish_chronicle_index_build(&f.db, &f.runtime, plan, f.outcomes(documents))
+                .expect("retry after interrupted publish"),
+            NirIndexPublishRead::Published {
+                newly_usable_published: true,
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
+fn nir1_controlled_input_guard_stops_in_roster_and_blob_digest() {
+    use super::test_support::{assert_stopped, StopAt};
+    use crate::narrative_extraction::GraphWorkStage;
+    let f = Fixture::new();
+    f.db.with_read_transaction(|conn| {
+        for stage in [GraphWorkStage::Row, GraphWorkStage::Digest] {
+            assert_stopped(super::input_guard::read(
+                conn,
+                f.project(),
+                &mut StopAt(stage),
+            ));
+        }
+        Ok(())
+    })
+    .expect("whole-project input guard borrows the build owner");
+    let _ = f.prepare();
+}
+
+#[test]
+fn nir1_participant_sql_publication_installs_only_after_clean_success() {
+    use crate::narrative_extraction::{
+        GraphWorkControl, GraphWorkStage, ValidationTerminated, ValidationTerminationReason,
+    };
+    use crate::workspace_lifecycle::WorkspaceLifecycleCore;
+
+    struct PublicationControl {
+        core: WorkspaceLifecycleCore,
+        stop_at_source: bool,
+    }
+    impl GraphWorkControl for PublicationControl {
+        fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+            if self.stop_at_source && stage == GraphWorkStage::Source {
+                self.core.request_shutdown()?;
+            }
+            Ok(())
+        }
+        fn allows_full_eligibility(&self) -> bool {
+            true
+        }
+    }
+
+    for stopped in [false, true] {
+        let f = Fixture::new();
+        let (plan, documents) = f.prepare();
+        let core = WorkspaceLifecycleCore::new();
+        let participant = core
+            .begin_workspace_participant()
+            .expect("publication owner");
+        let mut control = PublicationControl {
+            core: core.clone(),
+            stop_at_source: stopped,
+        };
+        let result = publish_chronicle_index_build_with_participant(
+            &f.db,
+            &f.runtime,
+            plan,
+            f.outcomes(documents),
+            &mut control,
+            &participant,
+        );
+        if stopped {
+            let error = result.expect_err("SQL stop must prevent a live proof");
+            assert_eq!(
+                error
+                    .downcast_ref::<ValidationTerminated>()
+                    .map(|error| error.reason),
+                Some(ValidationTerminationReason::Cancelled)
+            );
+            assert_eq!(f.published_count(), 0);
+            assert!(f.runtime.lock().expect("runtime").proofs.is_empty());
+        } else {
+            assert!(matches!(
+                result.expect("clean scoped publication"),
+                NirIndexPublishRead::Published {
+                    newly_usable_published: true,
+                    ..
+                }
+            ));
+            assert_eq!(f.published_count(), 2);
+        }
+        assert!(f.db.connection_reusable());
+        drop(participant);
+        assert_eq!(
+            core.workspace_participant_count()
+                .expect("publication released"),
+            0
+        );
+    }
+}

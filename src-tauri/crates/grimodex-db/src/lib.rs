@@ -20,6 +20,14 @@ use std::time::Duration;
 pub(crate) mod narrative_maintenance_connection;
 use narrative_maintenance_connection::ConnectionHealth;
 
+/// Run a foreground maintenance command under the ordinary blocking
+/// connection acquisition policy. Automatic maintenance remains no-wait, but
+/// user initiated Verify/Backfill/Rebuild commands must retain the existing
+/// foreground wait semantics when a background phase currently owns SQLite.
+pub fn with_foreground_maintenance_wait<T>(operation: impl FnOnce() -> T) -> T {
+    narrative_maintenance_connection::with_foreground_maintenance_wait(operation)
+}
+
 thread_local! {
     static BACKGROUND_CONNECTION_PRIORITY_DEPTH: Cell<usize> = const { Cell::new(0) };
     /// Native maintenance owns the connection in short, phase-scoped
@@ -88,6 +96,10 @@ pub struct BatchStatement {
 
 pub struct Database {
     conn: Mutex<Connection>,
+    /// Connections whose close returned the owned handle for an explicit
+    /// retry. They never re-enter normal access; the owner keeps them here
+    /// until a close succeeds and only then emits retirement proof.
+    retired_connections: Mutex<Vec<Connection>>,
     foreground_connection_waiters: std::sync::Arc<AtomicUsize>,
     maintenance_finalization_reserved: std::sync::Arc<AtomicBool>,
     connection_health: ConnectionHealth,
@@ -241,6 +253,7 @@ impl Database {
     pub fn from_connection(conn: Connection) -> Self {
         Self {
             conn: Mutex::new(conn),
+            retired_connections: Mutex::new(Vec::new()),
             foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
             maintenance_finalization_reserved: std::sync::Arc::new(AtomicBool::new(false)),
             connection_health: ConnectionHealth::new(),
@@ -319,6 +332,7 @@ impl Database {
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            retired_connections: Mutex::new(Vec::new()),
             foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
             maintenance_finalization_reserved: std::sync::Arc::new(AtomicBool::new(false)),
             connection_health: ConnectionHealth::new(),
@@ -366,7 +380,20 @@ impl Database {
     }
 
     pub(crate) fn lock_conn(&self) -> anyhow::Result<MutexGuard<'_, Connection>> {
+        self.lock_conn_with_check(None)
+    }
+
+    /// Keep the existing priority/handoff rules while an admitted lifecycle
+    /// owner can stop before it acquires the SQLite mutex. Ordinary callers
+    /// keep their blocking acquisition rather than entering a polling loop.
+    pub(crate) fn lock_conn_with_check(
+        &self,
+        mut check: Option<&mut dyn FnMut() -> anyhow::Result<()>>,
+    ) -> anyhow::Result<MutexGuard<'_, Connection>> {
         self.ensure_connection_reusable()?;
+        if let Some(check) = check.as_deref_mut() {
+            check()?;
+        }
         if Self::maintenance_no_wait_active() {
             if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
                 anyhow::bail!(
@@ -385,6 +412,9 @@ impl Database {
                 }
             };
             self.ensure_connection_reusable()?;
+            if let Some(check) = check.as_deref_mut() {
+                check()?;
+            }
             if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
                 drop(conn);
                 anyhow::bail!(
@@ -395,6 +425,9 @@ impl Database {
         }
         if !Self::background_connection_priority_active() {
             loop {
+                if let Some(check) = check.as_deref_mut() {
+                    check()?;
+                }
                 // A final transaction reserves the handoff before acquiring
                 // its process-local grant. Do not announce a foreground
                 // waiter into that narrow window.
@@ -414,8 +447,27 @@ impl Database {
                     std::thread::sleep(Duration::from_millis(1));
                     continue;
                 }
-                let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+                let conn = if let Some(check) = check.as_deref_mut() {
+                    loop {
+                        check()?;
+                        self.ensure_connection_reusable()?;
+                        match self.conn.try_lock() {
+                            Ok(conn) => break conn,
+                            Err(TryLockError::WouldBlock) => {
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                            Err(TryLockError::Poisoned(error)) => {
+                                return Err(anyhow::anyhow!("{error}"));
+                            }
+                        }
+                    }
+                } else {
+                    self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?
+                };
                 self.ensure_connection_reusable()?;
+                if let Some(check) = check.as_deref_mut() {
+                    check()?;
+                }
                 // Keep the waiter published until this caller owns the
                 // connection. A background contender then observes either a
                 // waiting foreground caller or the foreground-owned mutex.
@@ -425,6 +477,9 @@ impl Database {
         }
 
         loop {
+            if let Some(check) = check.as_deref_mut() {
+                check()?;
+            }
             if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
                 std::thread::sleep(Duration::from_millis(1));
                 continue;
@@ -434,6 +489,9 @@ impl Database {
                     if let Err(error) = self.ensure_connection_reusable() {
                         drop(conn);
                         return Err(error);
+                    }
+                    if let Some(check) = check.as_deref_mut() {
+                        check()?;
                     }
                     // Close the observation-to-lock race. A foreground caller
                     // that announced itself while try_lock succeeded gets the
@@ -788,6 +846,7 @@ pub mod state;
 pub mod web_editor_handoff;
 pub mod workspace;
 pub mod workspace_lease;
+pub mod workspace_lifecycle;
 
 // 旧 `commands/mod.rs` から移動した state / 契約型はクレートルートでも公開する
 // (src-tauri の互換シム `pub(crate) use grimodex_db::{…}` と napi 側の両方が
@@ -817,6 +876,21 @@ pub use protected_writers::PROTECTED_WRITER_SQL_ERROR;
 pub use recovery::{
     MigrationReceipt, OpenWorkspacePayload, RecoveryCandidate, RecoveryCandidateKind,
     WorkspaceOpenOutcome,
+};
+pub use workspace_lifecycle::{
+    AdmissionKind, AdmissionOutcome, AdmissionRejection, AdmissionTicket, ActivationState,
+    ContentEffect, ControlGeneration, ControlRequest, ControlSlotOutcome, DeliveryAdmissionOutcome,
+    DeliverySequence, DurableRunHandle, ExecutionId, ExecutionMembership, ExecutionPhase,
+    FenceOutcome, LifecycleError,
+    LifecycleResult, LifecycleSnapshot, LifecycleState, LiveBinding, MaintenancePermit,
+    OperationId, PermitAdmission, PublicationPermit,
+    RecoveryDescriptor, RecoveryDescriptorId, ResponsibilityError, ResponsibilityKind,
+    ResponsibilityReservation, RunCreationState, RunCreationTransactionOutcome, RunOwnership,
+    StateRevision, TransitionStage,
+    WorkspaceExclusive, WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore,
+    WorkspaceParticipant,
+    WorkspaceTransitionPermit, WorkExecutionId, WorkExecutionMembership,
+    DELIVERY_CAPACITY, EMERGENCY_RESPONSIBILITY_CAPACITY, GENERAL_RESPONSIBILITY_CAPACITY,
 };
 pub use state::{
     with_db_state, ActiveWorkspace, GlobalSettingsPath, PinnedWorkspaceDb, WorkspaceAuthority,

@@ -413,6 +413,8 @@ export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
   "electron/main/narrativeMaintenanceCiSeam.test.ts",
   "electron/main/narrativeMaintenanceShutdown.ts",
   "electron/main/narrativeMaintenanceShutdown.test.ts",
+  "electron/main/narrativeMaintenanceDelivery.ts",
+  "electron/main/narrativeMaintenanceDelivery.test.ts",
   "electron/main/narrativeMaintenanceTriggers.ts",
   "electron/main/narrativeMaintenanceTriggers.test.ts",
 ]);

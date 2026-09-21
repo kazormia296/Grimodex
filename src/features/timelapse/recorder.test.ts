@@ -26,8 +26,11 @@ import {
   getRecorderChainHead,
   getRecorderSessionId,
   initRecorderForProject as initRecorderForProjectImpl,
+  pauseWorkspaceBindingForLifecycle,
   recordChangeEvent,
   resetRecorderChain,
+  resumeWorkspaceBindingAfterExplicitOpen,
+  resumeWorkspaceBindingAfterLifecycleUnchanged,
   setRecorderEnabled,
 } from "./recorder";
 import { acquireTimelapseReplacementFence } from "./documentCoverage";
@@ -705,6 +708,84 @@ describe("recorder", () => {
     // 破棄済みなので再 flush で再送されない
     await flushNow();
     expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("lifecycle Transition の reversible pause は queue を保持し、Unchanged 後に再開する", async () => {
+    setupTail({ value: null });
+    setupAppendCommand();
+    await initRecorderForProject("p-lifecycle-pause");
+    recordChangeEvent({
+      domain: "editor",
+      opType: "step",
+      payload: { i: 1 },
+    });
+
+    pauseWorkspaceBindingForLifecycle();
+    await flushNow();
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(collectQuiescenceProviderRecovery()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "timelapse-event",
+          projectId: "p-lifecycle-pause",
+        }),
+      ]),
+    );
+
+    expect(resumeWorkspaceBindingAfterLifecycleUnchanged()).toBe(true);
+    await flushNow();
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
+  it("explicit Open proof retires a raced lifecycle pause without claiming Unchanged", async () => {
+    await initRecorderForProject("p-explicit-open-resume");
+    pauseWorkspaceBindingForLifecycle();
+
+    expect(resumeWorkspaceBindingAfterExplicitOpen()).toBe(true);
+    // The explicit-open path has a distinct proof and must not be conflated
+    // with the old-authority Unchanged operation.  A second call is an
+    // idempotent no-op after the pause has been retired.
+    expect(resumeWorkspaceBindingAfterExplicitOpen()).toBe(true);
+    await expect(flushStrict()).resolves.toBeUndefined();
+  });
+
+  it("in-flight flush は Transition が始まっても reversible pause 中は batch を保持する", async () => {
+    let rejectAppend!: (error: unknown) => void;
+    const appendInFlight = new Promise<never>((_resolve, reject) => {
+      rejectAppend = reject;
+    });
+    invokeMock
+      .mockReturnValueOnce(appendInFlight)
+      .mockResolvedValueOnce({ tailSequence: 1 });
+    await initRecorderForProject("p-inflight-lifecycle-pause");
+    recordChangeEvent({
+      domain: "editor",
+      opType: "step",
+      payload: { i: 1 },
+    });
+
+    const flush = flushNow();
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledOnce());
+    pauseWorkspaceBindingForLifecycle();
+    rejectAppend(
+      Object.assign(
+        new Error("workspace is switching; DB access is temporarily rejected"),
+        { code: "WORKSPACE_SWITCHING" },
+      ),
+    );
+
+    await expect(flush).rejects.toMatchObject({ code: "WORKSPACE_SWITCHING" });
+    expect(collectQuiescenceProviderRecovery()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "timelapse-event",
+          projectId: "p-inflight-lifecycle-pause",
+        }),
+      ]),
+    );
+    expect(resumeWorkspaceBindingAfterLifecycleUnchanged()).toBe(true);
+    await flushNow();
+    expect(invokeMock).toHaveBeenCalledTimes(2);
   });
 
   it("strict flush は WORKSPACE_SWITCHING batch を保持して lifecycle を拒否する", async () => {

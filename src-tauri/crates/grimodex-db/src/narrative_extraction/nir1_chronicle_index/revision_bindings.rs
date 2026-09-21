@@ -6,9 +6,15 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 use rusqlite::Connection;
 
+use super::super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
+
 use super::{canonical::canonical_instant, runtime::IndexProof};
 
-pub(super) fn still_current(conn: &Connection, proof: &IndexProof) -> Result<bool> {
+pub(super) fn still_current(
+    conn: &Connection,
+    proof: &IndexProof,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
     let expected = proof
         .candidates
         .iter()
@@ -32,6 +38,7 @@ pub(super) fn still_current(conn: &Connection, proof: &IndexProof) -> Result<boo
         WHERE ps.project_id=?1 AND p.current_revision_id IS NOT NULL")?;
     let mut rows = statement.query([&proof.project])?;
     while let Some(row) = rows.next()? {
+        control.check(GraphWorkStage::Row)?;
         let revision: String = row.get(0)?;
         let Some(candidate) = expected.get(&revision) else {
             continue;
@@ -80,6 +87,7 @@ pub(super) fn still_current(conn: &Connection, proof: &IndexProof) -> Result<boo
         WHERE e.project_id=?1 AND e.consumer_kind='proposal-revision'")?;
     let mut rows = statement.query([&proof.project])?;
     while let Some(row) = rows.next()? {
+        control.check(GraphWorkStage::Row)?;
         let revision: String = row.get(0)?;
         let Some(candidate) = expected.get(&revision) else {
             continue;

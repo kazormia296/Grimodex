@@ -128,7 +128,7 @@ fn subprocess_kill_after_live_seal_then_restore_candidate_reaches_ready() {
     let ws_state = WorkspaceState {
         inner: Mutex::new(None),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
-        switching: std::sync::atomic::AtomicBool::new(false),
+        switching: grimodex_db::WorkspaceLifecycleCompatibilityView::new(false),
         open_lock: Mutex::new(()),
     };
     let gs_path = GlobalSettingsPath {
@@ -230,7 +230,7 @@ fn concurrent_shared_writer_after_handoff_survives_restore_publish() {
     let ws_state = WorkspaceState {
         inner: Mutex::new(None),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
-        switching: std::sync::atomic::AtomicBool::new(false),
+        switching: grimodex_db::WorkspaceLifecycleCompatibilityView::new(false),
         open_lock: Mutex::new(()),
     };
     let gs_path = GlobalSettingsPath {

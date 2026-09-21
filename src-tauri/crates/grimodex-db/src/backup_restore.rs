@@ -1887,7 +1887,7 @@ mod tests {
         let state = WorkspaceState {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: AtomicBool::new(false),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: std::sync::Mutex::new(()),
         };
         (dir, state)
@@ -1935,7 +1935,7 @@ mod tests {
         WorkspaceState {
             inner: std::sync::Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: AtomicBool::new(false),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: std::sync::Mutex::new(()),
         }
     }
@@ -2053,7 +2053,7 @@ mod tests {
         let state = WorkspaceState {
             inner: std::sync::Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: AtomicBool::new(false),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: std::sync::Mutex::new(()),
         };
         assert!(list_backups(&state)
@@ -2144,7 +2144,7 @@ mod tests {
         let mismatch_state = WorkspaceState {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(mismatch_authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: AtomicBool::new(false),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: std::sync::Mutex::new(()),
         };
         set_marker(&mismatch_state, "mismatch-live");

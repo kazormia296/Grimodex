@@ -2065,6 +2065,108 @@ describe("registerIpcRouter workspace-open main trace", () => {
     }
   });
 
+  it("joins Freshness then ACKs only the Open target recovery before Native Open", async () => {
+    const order: string[] = [];
+    let releaseFreshness!: () => void;
+    const freshnessDone = new Promise<void>((resolve) => { releaseFreshness = resolve; });
+    let releaseAck!: () => void;
+    const ackDone = new Promise<void>((resolve) => { releaseAck = resolve; });
+    const binding = { authorityId: "target-authority", generation: 1 };
+    const reconcileNarrativeMaintenanceRecovery = vi.fn()
+      .mockImplementationOnce(async (path: string) => {
+        order.push(`recover:${path}`);
+        return { status: "reconciled", descriptorId: 81,
+          reason: "maintenance-recovery-complete", recoveredBinding: binding,
+          activeBinding: binding, reboundBinding: binding };
+      })
+      .mockResolvedValue({ status: "none" });
+    const ackNarrativeMaintenanceRecovery = vi.fn(async () => {
+      order.push("ack");
+      await ackDone;
+      return { status: "acknowledged", descriptorId: 81, acknowledged: true };
+    });
+    const openWorkspace = vi.fn(async () => {
+      order.push("open");
+      return JSON.stringify({ status: "ready" });
+    });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery, ackNarrativeMaintenanceRecovery,
+    });
+    const freshnessResume = vi.fn();
+    registerIpcRouter(backendWithOpenWorkspace(openWorkspace), {}, undefined,
+      undefined, undefined, undefined, undefined, scheduler, {
+        quiesceForWorkspaceSwitch: async () => {
+          order.push("freshness");
+          await freshnessDone;
+          return { resume: freshnessResume };
+        },
+      });
+    const invoke = invokeHandler()({ sender: {} }, "open_workspace", { path: "/target" });
+    await vi.waitFor(() => expect(order).toEqual(["freshness"]));
+    expect(reconcileNarrativeMaintenanceRecovery).not.toHaveBeenCalled();
+    releaseFreshness();
+    await vi.waitFor(() => expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledOnce());
+    expect(openWorkspace).not.toHaveBeenCalled();
+    expect(freshnessResume).not.toHaveBeenCalled();
+    releaseAck();
+    await expect(invoke).resolves.toMatchObject({ ok: true });
+    expect(order).toEqual(["freshness", "recover:/target", "ack", "open"]);
+    expect(reconcileNarrativeMaintenanceRecovery.mock.calls).toEqual([["/target"], ["/target"]]);
+    expect(freshnessResume).toHaveBeenCalledOnce();
+  });
+
+  it.each(["recovery", "descriptor-ack"])("does not Open when target %s fails", async (failure) => {
+    const binding = { authorityId: "target-authority", generation: 1 };
+    const reconcileNarrativeMaintenanceRecovery = vi.fn(async () => {
+      if (failure === "recovery") throw new Error("target recovery unavailable");
+      return { status: "reconciled", descriptorId: 82,
+        reason: "maintenance-recovery-complete", recoveredBinding: binding,
+        activeBinding: binding, reboundBinding: binding };
+    });
+    const ackNarrativeMaintenanceRecovery = vi.fn().mockRejectedValue(new Error("ACK unavailable"));
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery, ackNarrativeMaintenanceRecovery,
+    });
+    const openWorkspace = vi.fn();
+    registerIpcRouter(backendWithOpenWorkspace(openWorkspace), {}, undefined,
+      undefined, undefined, undefined, undefined, scheduler);
+    await expect(invokeHandler()({ sender: {} }, "open_workspace", { path: "/target" }))
+      .resolves.toMatchObject({ ok: false });
+    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledWith("/target");
+    expect(openWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("opens W2 without attempting an unavailable unrelated W1 recovery", async () => {
+    const reconcileNarrativeMaintenanceRecovery = vi.fn(async (path?: string) => {
+      if (path !== "/W2") throw new Error("W1 recovery unavailable");
+      return { status: "none" };
+    });
+    const scheduler = createNarrativeMaintenanceScheduler({ reconcileNarrativeMaintenanceRecovery });
+    const openWorkspace = vi.fn(async () => JSON.stringify({ status: "ready" }));
+    registerIpcRouter(backendWithOpenWorkspace(openWorkspace), {}, undefined,
+      undefined, undefined, undefined, undefined, scheduler);
+    await expect(invokeHandler()({ sender: {} }, "open_workspace", { path: "/W2" }))
+      .resolves.toMatchObject({ ok: true });
+    expect(reconcileNarrativeMaintenanceRecovery.mock.calls).toEqual([["/W2"]]);
+    expect(openWorkspace).toHaveBeenCalledWith("/W2");
+  });
+
+  it.each([undefined, 42, "", " ", "/target\0invalid"])(
+    "rejects invalid Open path %j before quiescence or recovery", async (path) => {
+      const quiesceForWorkspaceSwitch = vi.fn();
+      const reconcileRecoveryBeforeWorkspaceOpen = vi.fn();
+      const openWorkspace = vi.fn();
+      registerIpcRouter(backendWithOpenWorkspace(openWorkspace), {}, undefined,
+        undefined, undefined, undefined, undefined,
+        { quiesceForWorkspaceSwitch, reconcileRecoveryBeforeWorkspaceOpen });
+      await expect(invokeHandler()({ sender: {} }, "open_workspace", { path }))
+        .resolves.toMatchObject({ ok: false });
+      expect(quiesceForWorkspaceSwitch).not.toHaveBeenCalled();
+      expect(reconcileRecoveryBeforeWorkspaceOpen).not.toHaveBeenCalled();
+      expect(openWorkspace).not.toHaveBeenCalled();
+    },
+  );
+
   it("cancels a manual Verify through the scheduler before Native workspace swap", async () => {
     vi.useFakeTimers();
     const binding = { authorityId: "authority-manual", generation: 4 };
@@ -2492,6 +2594,59 @@ describe("NIR-1 router sender binding", () => {
       expect.objectContaining({ callerIdentity: identity }),
     );
     expect(saveAiSettings).toHaveBeenCalledWith({});
+  });
+
+  it("hands a trusted unchanged restore proof to the main profile gate", async () => {
+    const outcome = {
+      status: "unchanged",
+      operationOutcome: "failed",
+      contentEffect: "none",
+      lifecycle: {
+        schemaVersion: 1,
+        revision: 3,
+        status: "ready",
+        bindingToken: "bnd-normal-ready",
+        activation: "ready",
+      },
+    } as const;
+    const restoreBackup = vi.fn(async () => JSON.stringify(outcome));
+    const observeWorkspaceLifecycleResult = vi.fn();
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => ({
+        profileId: "profile-1",
+        callerId: "main-caller-1",
+        callerEpoch: 2,
+        senderId: 42,
+        workspaceId: "/workspace-normal",
+        sessionId: "session-1",
+      })),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication: vi.fn(),
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+      observeWorkspaceLifecycleResult,
+    };
+    registerIpcRouter(
+      { restoreBackup } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "restore_backup",
+      { fileName: "grimodex-test.db" },
+    );
+
+    expect(envelope).toEqual({ ok: true, value: outcome });
+    expect(observeWorkspaceLifecycleResult).toHaveBeenCalledOnce();
+    expect(observeWorkspaceLifecycleResult).toHaveBeenCalledWith(outcome);
   });
 
   it("runs the dedicated typed cold reader through D2a at entry and return", async () => {

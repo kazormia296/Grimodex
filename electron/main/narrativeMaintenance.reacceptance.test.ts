@@ -112,6 +112,408 @@ describe("narrative maintenance reacceptance boundaries", () => {
     },
   );
 
+  it("runs descriptor recovery preflight before begin or delivery admission", async () => {
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "reconciled" })
+      .mockResolvedValue({ status: "none" });
+    const beginNarrativeMaintenanceAttempt = vi.fn();
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue(accepted());
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery,
+      beginNarrativeMaintenanceAttempt,
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(backfill("recovery-preflight", "first"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
+    expect(beginNarrativeMaintenanceAttempt).not.toHaveBeenCalled();
+    expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledTimes(2);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    scheduler.dispose();
+  });
+
+  it("starts the descriptor recovery pump even when ordinary delivery is idle", async () => {
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValue({ status: "none" });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery,
+    });
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
+    scheduler.dispose();
+  });
+
+  it("drains a recovery descriptor before disposing for Native shutdown", async () => {
+    const recoveredBinding = {
+      authorityId: "authority-shutdown-recovery",
+      generation: 4,
+    };
+    const activeBinding = {
+      authorityId: "authority-shutdown-recovery-reopened",
+      generation: 5,
+    };
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "reconciled",
+        descriptorId: 104,
+        reason: "maintenance-recovery-complete",
+        recoveredBinding,
+        activeBinding,
+        reboundBinding: activeBinding,
+      })
+      .mockResolvedValue({ status: "none" });
+    const ackNarrativeMaintenanceRecovery = vi.fn().mockResolvedValue({
+      status: "acknowledged",
+      descriptorId: 104,
+      acknowledged: true,
+    });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery,
+      ackNarrativeMaintenanceRecovery,
+    });
+
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
+    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledTimes(2);
+    expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
+    expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledWith("104");
+  });
+
+  it("reschedules work enqueued during an idle recovery preflight", async () => {
+    const preflight = deferred<{ status: "none" }>();
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockReturnValueOnce(preflight.promise)
+      .mockResolvedValue({ status: "none" });
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue(accepted());
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery,
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+
+    // The idle cycle still owns its slot while the preflight is pending, so
+    // this request cannot schedule a competing timer.  The cycle's release
+    // path must notice it after `none` is returned.
+    scheduler.request(backfill("idle-preflight-enqueue", "queued"));
+    preflight.resolve({ status: "none" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0].work).toEqual([
+      expect.objectContaining({
+        projectId: "idle-preflight-enqueue",
+        workKey: "legacy-dependency-backfill:queued",
+      }),
+    ]);
+    scheduler.dispose();
+  });
+
+  it("serializes Open target drains and keeps a failed target from poisoning the next", async () => {
+    const firstRecovery = deferred<{ status: "none" }>();
+    const reconcileNarrativeMaintenanceRecovery = vi.fn()
+      .mockReturnValueOnce(firstRecovery.promise)
+      .mockResolvedValue({ status: "none" });
+    const scheduler = createNarrativeMaintenanceScheduler({ reconcileNarrativeMaintenanceRecovery });
+    const lease = await scheduler.quiesceForWorkspaceSwitch?.();
+    const first = scheduler.reconcileRecoveryBeforeWorkspaceOpen?.("/W1");
+    const firstRejected = expect(first).rejects.toThrow("W1 unavailable");
+    const second = scheduler.reconcileRecoveryBeforeWorkspaceOpen?.("/W2");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reconcileNarrativeMaintenanceRecovery.mock.calls).toEqual([["/W1"]]);
+    firstRecovery.reject(new Error("W1 unavailable"));
+    await firstRejected;
+    await expect(second).resolves.toBeUndefined();
+    expect(reconcileNarrativeMaintenanceRecovery.mock.calls).toEqual([["/W1"], ["/W2"]]);
+    lease?.resume(false);
+  });
+
+  it("rediscovers the binding after descriptor reconciliation before retrying work", async () => {
+    let currentBinding = binding("authority-before-recovery", 1);
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "reconciled",
+        descriptorId: 40,
+        reason: "maintenance-recovery-complete",
+        recoveredBinding: currentBinding,
+        activeBinding: binding("authority-after-recovery", 2),
+        reboundBinding: binding("authority-after-recovery", 2),
+      })
+      .mockResolvedValue({ status: "none" });
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue(accepted());
+    const scheduler = createNarrativeMaintenanceScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+      reconcileNarrativeMaintenanceRecovery,
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(backfill("recovery-binding", "same-key"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    currentBinding = binding("authority-after-recovery", 2);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0]).toMatchObject({
+      workspaceBinding: currentBinding,
+    });
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    scheduler.dispose();
+  });
+
+  it.each([
+    ["reboundBinding", (value: Record<string, unknown>) => delete value.reboundBinding],
+    ["activeBinding", (value: Record<string, unknown>) => delete value.activeBinding],
+    ["descriptorId", (value: Record<string, unknown>) => delete value.descriptorId],
+    ["invalid descriptorId", (value: Record<string, unknown>) => { value.descriptorId = -1; }],
+  ])(
+    "keeps a completion receipt with missing %s replayable",
+    async (_missingField, removeField) => {
+      const w1 = binding("authority-before-incomplete-proof", 1);
+      const w2 = binding("authority-after-incomplete-proof", 2);
+      const recovery: Record<string, unknown> = {
+        status: "reconciled",
+        descriptorId: 43,
+        reason: "maintenance-recovery-complete",
+        recoveredBinding: w1,
+        activeBinding: w2,
+        reboundBinding: null,
+      };
+      removeField(recovery);
+      const reconcileNarrativeMaintenanceRecovery = vi
+        .fn()
+        .mockResolvedValueOnce(recovery)
+        .mockResolvedValueOnce(recovery)
+        .mockResolvedValue({ status: "none" });
+      const ackNarrativeMaintenanceRecovery = vi.fn();
+      const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue(accepted());
+      const scheduler = createNarrativeMaintenanceScheduler({
+        reconcileNarrativeMaintenanceRecovery,
+        ackNarrativeMaintenanceRecovery,
+        runNarrativeMaintenanceCycle,
+      });
+
+      scheduler.requestWithBinding(
+        backfill("incomplete-recovery-proof", String(_missingField)),
+        w1,
+      );
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+      expect(ackNarrativeMaintenanceRecovery).not.toHaveBeenCalled();
+      expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+      expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledTimes(2);
+      await expect(scheduler.dispose()).resolves.toBeUndefined();
+      expect(reconcileNarrativeMaintenanceRecovery).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it("applies recovery proof to unclaimed retained work before ACK", async () => {
+    const w1 = binding("authority-before-recovery", 1);
+    const w2 = binding("authority-after-recovery", 2);
+    const blockedCompletion = deferred<NarrativeMaintenanceCycleResult>();
+    const blockedRun = vi.fn().mockReturnValue(blockedCompletion.promise);
+    const blockedScheduler = createNarrativeMaintenanceScheduler({
+      runNarrativeMaintenanceCycle: blockedRun,
+    });
+    blockedScheduler.requestWithBinding(
+      backfill("recovery-partial-claim", "blocker"),
+      w1,
+    );
+    blockedScheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(blockedRun).toHaveBeenCalledOnce();
+
+    const events: string[] = [];
+    const ackNarrativeMaintenanceRecovery = vi.fn().mockImplementation(() => {
+      events.push("ack");
+      return { status: "acknowledged", descriptorId: 41, acknowledged: true };
+    });
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        events.push("reconcile");
+        return {
+          status: "reconciled",
+          descriptorId: 41,
+          reason: "maintenance-recovery-complete",
+          recoveredBinding: w1,
+          activeBinding: w2,
+          reboundBinding: w2,
+        };
+      })
+      .mockResolvedValue({ status: "none" });
+    const runNarrativeMaintenanceCycle = vi.fn().mockImplementation(() => {
+      events.push("run");
+      return Promise.resolve(accepted());
+    });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      reconcileNarrativeMaintenanceRecovery,
+      ackNarrativeMaintenanceRecovery,
+      runNarrativeMaintenanceCycle,
+    });
+    scheduler.requestManyWithBinding(
+      [
+        backfill("recovery-partial-claim", "blocked-retained"),
+        backfill("recovery-partial-claim-free", "free-retained"),
+      ],
+      w1,
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    // The first scheduler owns the shared project, so this scheduler can
+    // claim only the free project. Recovery must still rebind both retained
+    // entries before the Native receipt is acknowledged.
+    expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+    expect(events).toEqual(["reconcile", "ack"]);
+    expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
+
+    blockedCompletion.resolve(accepted());
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0]).toMatchObject({
+      workspaceBinding: w2,
+      work: expect.arrayContaining([
+        expect.objectContaining({
+          projectId: "recovery-partial-claim-free",
+        }),
+        expect.objectContaining({
+          projectId: "recovery-partial-claim",
+        }),
+      ]),
+    });
+    expect(events.indexOf("ack")).toBeLessThan(events.indexOf("run"));
+
+    await blockedScheduler.dispose();
+    await scheduler.dispose();
+  });
+
+  it("rebinding retained work precedes ACK in the cleanup-failed recovery pump", async () => {
+    const w1 = binding("authority-before-cleanup-failure", 1);
+    const w2 = binding("authority-after-cleanup-recovery", 2);
+    const events: string[] = [];
+    const attempts = new Map<string, typeof w1>();
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof w1) => {
+        attempts.set(attemptId, receivedBinding);
+        return JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        });
+      },
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      const receivedBinding = attempts.get(attemptId) ?? w1;
+      const cleanupFailed = cancelNarrativeMaintenanceAttempt.mock.calls.length === 1;
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: cleanupFailed ? "interrupted" : "succeeded",
+        stopReason: cleanupFailed ? "closed" : null,
+        generation: receivedBinding.generation,
+        workspaceBinding: receivedBinding,
+        publishedGeneration: null,
+        works: [],
+        cleanup: cleanupFailed
+          ? { status: "failed", error: "rollback failed" }
+          : { status: "clean" },
+        connectionReusable: !cleanupFailed,
+      });
+    });
+    let scheduler!: ReturnType<typeof createNarrativeMaintenanceScheduler>;
+    const reconcileNarrativeMaintenanceRecovery = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "none" })
+      .mockImplementationOnce(() => {
+        events.push("reconcile");
+        return {
+          status: "reconciled",
+          descriptorId: 52,
+          reason: "maintenance-recovery-complete",
+          recoveredBinding: w1,
+          activeBinding: w2,
+          reboundBinding: w2,
+        };
+      })
+      .mockResolvedValue({ status: "none" });
+    const ackNarrativeMaintenanceRecovery = vi.fn().mockImplementation(() => {
+      events.push("ack");
+      return { status: "acknowledged", descriptorId: 52, acknowledged: true };
+    });
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        events.push("run-1");
+        scheduler.requestWithBinding(
+          backfill("cleanup-recovery-retained", "queued-during-run"),
+          w1,
+        );
+        return Promise.resolve(accepted());
+      })
+      .mockImplementation(() => {
+        events.push("run-2");
+        return Promise.resolve(accepted());
+      });
+    scheduler = createNarrativeMaintenanceScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => w1,
+      reconcileNarrativeMaintenanceRecovery,
+      ackNarrativeMaintenanceRecovery,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+      runNarrativeMaintenanceCycle,
+    });
+    scheduler.requestWithBinding(
+      backfill("cleanup-recovery-initial", "initial"),
+      w1,
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(events).toEqual(["run-1"]);
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(events).toEqual(["run-1", "reconcile", "ack"]);
+
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0]).toMatchObject({
+      workspaceBinding: w2,
+      work: expect.arrayContaining([
+        expect.objectContaining({
+          projectId: "cleanup-recovery-retained",
+          workKey: "legacy-dependency-backfill:queued-during-run",
+        }),
+      ]),
+    });
+    expect(events.indexOf("ack")).toBeLessThan(events.indexOf("run-2"));
+    await scheduler.dispose();
+  });
+
   it("keeps deferred work parked while an enabled item continues forward", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()
@@ -334,5 +736,94 @@ describe("narrative maintenance reacceptance boundaries", () => {
       NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
     );
     scheduler.dispose();
+  });
+
+  it("retries a failed Native delivery ACK without redispatching the batch", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(accepted());
+    let ackCalls = 0;
+    const ackNarrativeMaintenanceDelivery = vi
+      .fn()
+      .mockImplementation(async (sequence: number) => {
+        ackCalls += 1;
+        if (ackCalls === 1) {
+          throw new Error("temporary ACK transport failure");
+        }
+        return { status: "retired", sequence };
+      });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      runNarrativeMaintenanceCycle,
+      ackNarrativeMaintenanceDelivery,
+    });
+
+    scheduler.request(backfill("ack-retry", "same-occurrence"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(1);
+    const firstSequence = runNarrativeMaintenanceCycle.mock.calls[0]?.[0]
+      .deliverySequence;
+    expect(firstSequence).toBe(1);
+
+    // The ACK-only timer wakes even though the ordinary queue is empty. It
+    // retries the exact sequence and never calls Native cycle again.
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledTimes(2);
+    expect(ackNarrativeMaintenanceDelivery.mock.calls).toEqual([
+      [firstSequence],
+      [firstSequence],
+    ]);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(1);
+    await scheduler.dispose();
+  });
+
+  it("assigns a new sequence to a new occurrence while the prior ACK is pending", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(accepted());
+    let firstAckPending = true;
+    const ackNarrativeMaintenanceDelivery = vi
+      .fn()
+      .mockImplementation(async (sequence: number) => {
+        if (sequence === 1 && firstAckPending) {
+          firstAckPending = false;
+          throw new Error("temporary ACK transport failure");
+        }
+        return { status: "retired", sequence };
+      });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      runNarrativeMaintenanceCycle,
+      ackNarrativeMaintenanceDelivery,
+    });
+    const occurrence = backfill("ack-pending-new-occurrence", "same-key");
+
+    scheduler.request(occurrence);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0].deliverySequence).toBe(
+      1,
+    );
+
+    // A new occurrence arrives before the ACK-only retry. It must receive a
+    // fresh sequence and remain an independently dispatched queue item.
+    scheduler.request(occurrence);
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0].deliverySequence).toBe(
+      2,
+    );
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0].work).toHaveLength(
+      1,
+    );
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(ackNarrativeMaintenanceDelivery.mock.calls).toEqual([
+      [1],
+      [2],
+      [1],
+    ]);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    await scheduler.dispose();
   });
 });

@@ -23,6 +23,10 @@
 // envelope
 // ─────────────────────────────────────────────────────────────────────────────
 
+import {
+  parseWorkspaceRestoreOutcome,
+} from "./workspaceRestoreOutcome.js";
+
 export type IpcErrorCode =
   | "WORKSPACE_SWITCHING"
   | "WORKSPACE_SAFE_MODE"
@@ -96,12 +100,25 @@ export interface OpenWorkspacePayload {
   workspaceId: string;
 }
 
+export interface WorkspaceLifecycleOpenProof {
+  schemaVersion: 1;
+  revision: number;
+  status: "ready";
+  bindingToken: string;
+  activation: "ready";
+}
+
 export type WorkspaceOpenOutcome =
-  | { status: "ready"; workspace: OpenWorkspacePayload }
+  | {
+      status: "ready";
+      workspace: OpenWorkspacePayload;
+      lifecycle?: WorkspaceLifecycleOpenProof;
+    }
   | {
       status: "migrated";
       workspace: OpenWorkspacePayload;
       migration: MigrationReceipt;
+      lifecycle?: WorkspaceLifecycleOpenProof;
     }
   | {
       status: "recovery-required";
@@ -301,6 +318,9 @@ export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
   // napi の TSFn end-to-end 実証チャネル（§7.1、FE 購読者なし）
   "backend:ready",
   "workspace:opened",
+  // Shared lifecycle snapshot projection.  Native emits the raw observer
+  // event; main validates and forwards only the strict opaque DTO.
+  "workspace:lifecycle-state",
   // Codex App Server main-only normalized event envelope.
   "codex-app:event",
 ] as const;
@@ -475,6 +495,10 @@ export interface NapiBackendLike {
   ): Promise<string>;
   vacuumDatabase(): Promise<void>;
   openWorkspace(path: string): Promise<string>;
+  /** Main-only lifecycle snapshot; never exposed as a renderer command. */
+  getWorkspaceLifecycleView?(): Promise<string>;
+  /** Main-only idempotent lifecycle shutdown; never exposed to renderer IPC. */
+  shutdownWorkspaceLifecycle?(): Promise<string>;
   validateWorkspacePath(path: string): boolean;
   /** Main-only one-shot bridge; intentionally absent from NAPI_COMMANDS. */
   readLegacyApiKeysForMigration?(): Promise<string>;
@@ -512,7 +536,7 @@ export interface NapiBackendLike {
     expectedWorkspacePath: string,
   ): Promise<void>;
   listBackups?(): Promise<string>;
-  restoreBackup?(fileName: string): Promise<void>;
+  restoreBackup?(fileName: string): Promise<string>;
   listRecoveryCandidates?(): Promise<string>;
   verifyRecoveryCandidate?(candidateId: string): Promise<string>;
   restoreRecoveryCandidate?(candidateId: string): Promise<void>;
@@ -966,6 +990,8 @@ export interface NapiBackendLike {
     reason: string,
   ): Promise<string>;
   runNarrativeMaintenanceCycle?(payload: unknown): Promise<string>;
+  ackNarrativeMaintenanceDelivery?(sequence: number): Promise<string>;
+  resolveNarrativeMaintenanceDelivery?(sequence: number): Promise<string>;
   // post_effect run 系（Phase 3d）。settings は dispatch が1回だけ読んだ
   // AiSettings snapshot。API key は未登録時 null、safeStorage lookup 自体が
   // 失敗した場合は apiKeyError に生メッセージを載せる。native は cache hit なら
@@ -7320,12 +7346,12 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   },
   restore_backup: {
     run: async (b, a) => {
-      await requireNapiMethod(
+      const wire = await requireNapiMethod(
         b,
         b.restoreBackup,
         "restoreBackup",
       )(requireBackupFileName(a));
-      return null;
+      return parseWorkspaceRestoreOutcome(wire);
     },
   },
   list_recovery_candidates: {

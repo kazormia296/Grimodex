@@ -1,11 +1,16 @@
+use std::io::{self, Write};
+
 use anyhow::{ensure, Result};
 use rusqlite::Connection;
-use serde_json::json;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
+
+use super::super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 
 /// A logical Source roster, not an approval, disclosure or Freshness verdict.
 /// Unapproved/currently ineligible revisions stay in its digest so a new
 /// decision or replacement can invalidate an empty derived index as well.
+#[derive(Debug)]
 pub(crate) struct EligibilitySource {
     pub digest: String,
     pub revisions: Vec<String>,
@@ -15,10 +20,66 @@ pub(crate) fn source_key(project: &str) -> String {
     format!("project:nir1-chronicle-eligibility:{project}")
 }
 
+// Field order matches the original json! object with preserve_order enabled.
+#[derive(Serialize)]
+struct SourceDigestInput<'a> {
+    contract: &'static str,
+    #[serde(rename = "projectId")]
+    project_id: &'a str,
+    #[serde(rename = "currentRoster")]
+    roster: &'a [Vec<Option<String>>],
+}
+
+struct SourceDigestSink<'a> {
+    hasher: Sha256,
+    control: &'a mut dyn GraphWorkControl,
+    error: Option<anyhow::Error>,
+}
+
+impl Write for SourceDigestSink<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Err(error) = self
+            .control
+            .check(GraphWorkStage::Serialization)
+            .and_then(|()| self.control.check(GraphWorkStage::Digest))
+        {
+            let message = error.to_string();
+            self.error = Some(error);
+            return Err(io::Error::other(message));
+        }
+        self.hasher.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn read_eligibility_source(
     conn: &Connection,
     project: &str,
 ) -> Result<EligibilitySource> {
+    let mut control = super::super::nir1_entity_relation_index::NeverStopGraphWorkControl;
+    read_eligibility_source_with_control(conn, project, &mut control)
+}
+
+/// Read the Chronicle eligibility roster under the caller's finite lifecycle
+/// owner.  Chronicle is a whole-project roster, so a plain `SELECT` is not a
+/// sufficient cancellation boundary: the owner must be able to stop row
+/// iteration and canonical serialization before the digest is published.
+///
+/// The controlled and ordinary readers deliberately share the exact SQL,
+/// ordering and wire contract.  The control object is borrowed and cannot be
+/// retained by the Source value, which prevents a stale lifecycle owner from
+/// becoming a Source authority.
+pub(crate) fn read_eligibility_source_with_control(
+    conn: &Connection,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<EligibilitySource> {
+    control.check(GraphWorkStage::Source)?;
     ensure!(
         !conn.is_autocommit(),
         "NIR1 Source requires a read transaction"
@@ -46,20 +107,39 @@ pub(crate) fn read_eligibility_source(
            ORDER BY latest.created_at DESC,latest.id DESC LIMIT 1)
          WHERE s.project_id=?1 ORDER BY p.id",
     )?;
-    let rows = statement
-        .query_map([project], |row| {
-            (0..11)
-                .map(|index| row.get::<_, Option<String>>(index))
-                .collect::<rusqlite::Result<Vec<_>>>()
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let bytes = serde_json::to_vec(&json!({
-        "contract":"nir1-chronicle-eligibility/1",
-        "projectId":project,
-        "currentRoster":rows,
-    }))?;
+    let mut cursor = statement.query([project])?;
+    let mut rows = Vec::new();
+    let mut revisions = Vec::new();
+    while let Some(row) = cursor.next()? {
+        control.check(GraphWorkStage::Row)?;
+        let row = (0..11)
+            .map(|index| row.get::<_, Option<String>>(index))
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if let Some(revision) = &row[1] {
+            revisions.push(revision.clone());
+        }
+        rows.push(row);
+    }
+    control.check(GraphWorkStage::Serialization)?;
+    let input = SourceDigestInput {
+        contract: "nir1-chronicle-eligibility/1",
+        project_id: project,
+        roster: &rows,
+    };
+    let mut sink = SourceDigestSink {
+        hasher: Sha256::new(),
+        control,
+        error: None,
+    };
+    let write_result = serde_json::to_writer(&mut sink, &input);
+    if let Some(error) = sink.error.take() {
+        return Err(error);
+    }
+    write_result?;
+    let digest = sink.hasher.finalize();
+    control.check(GraphWorkStage::Digest)?;
     Ok(EligibilitySource {
-        digest: format!("sha256:{}", hex::encode(Sha256::digest(bytes))),
-        revisions: rows.iter().filter_map(|row| row[1].clone()).collect(),
+        digest: format!("sha256:{}", hex::encode(digest)),
+        revisions,
     })
 }

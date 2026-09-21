@@ -6,7 +6,7 @@
 //! コンストラクタで明示注入される (dirs:: を napi 内で解決しない。§4.2)。
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -18,7 +18,7 @@ use grimodex_db::narrative_extraction::{
     ForegroundSystemWorkRun, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
     NarrativeMaintenanceCiFault, RecoveryMode, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
 };
-use grimodex_db::{GlobalSettingsPath, WorkspaceState};
+use grimodex_db::{GlobalSettingsPath, PinnedWorkspaceDb, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
 use crate::profile_egress::ProfileEgressState;
@@ -149,8 +149,79 @@ pub(crate) enum NarrativeMaintenanceAdmissionOwner {
     RestoreRecovery,
 }
 
+/// Process-local maintenance handoff ledger. It records quarantined Run
+/// owners and the close/reopen bookkeeping needed while the Native supervisor
+/// holds the shared workspace transition permit; it is not lifecycle
+/// admission, active membership, or a second switching state machine. The
+/// shared `WorkspaceLifecycleCore` decides every admission and terminal state.
 pub struct NarrativeMaintenanceRecoveryGate {
     state: Mutex<NarrativeMaintenanceRecoveryState>,
+}
+
+/// A replayable receipt for a descriptor that has completed exact Run
+/// reconciliation and has crossed the Ready/activation boundary.  The
+/// descriptor itself may already have released its responsibility cell, so
+/// this process-local receipt is kept until the main owner explicitly ACKs
+/// it.  It is deliberately separate from the lifecycle `LiveBinding` and
+/// carries the original maintenance binding that a cleanup-failed receipt
+/// must match before ordinary delivery may resume.
+#[derive(Clone, Debug)]
+pub(crate) struct NarrativeMaintenanceRecoveryReceipt {
+    /// Original descriptor identity, retained for target-scoped Open replay.
+    pub expected_binding: grimodex_db::LiveBinding,
+    pub recovered_binding: MaintenanceWorkspaceBinding,
+    pub active_binding: Option<MaintenanceWorkspaceBinding>,
+    /// Set only when Native proves that the descriptor's exact expected
+    /// locator/workspace/authority is the authority currently published as
+    /// Ready.  Main may rebind retained work only from this proof; an active
+    /// binding for an unrelated workspace is intentionally not sufficient.
+    pub rebound_binding: Option<MaintenanceWorkspaceBinding>,
+}
+
+/// Idempotency tombstones for recovery-receipt ACKs. Native removes the
+/// replayable receipt as soon as an ACK is accepted, but the main response may
+/// be lost and retry the same ACK long after newer receipts have completed.
+/// Descriptor IDs are monotonic and never reused, but unresolved descriptors
+/// can leave gaps. Coalesced ranges retain every acknowledged ID while the
+/// number of ranges is bounded by those outstanding gaps; evicting old
+/// tombstones would turn a lost response into a permanently false negative.
+#[derive(Default)]
+pub(crate) struct NarrativeMaintenanceRecoveryAckLedger {
+    retired_ranges: BTreeMap<u64, u64>,
+}
+
+impl NarrativeMaintenanceRecoveryAckLedger {
+    pub(crate) fn contains(&self, descriptor_id: u64) -> bool {
+        self.retired_ranges
+            .range(..=descriptor_id)
+            .next_back()
+            .is_some_and(|(_, end)| *end >= descriptor_id)
+    }
+
+    pub(crate) fn mark(&mut self, descriptor_id: u64) {
+        let mut start = descriptor_id;
+        let mut end = descriptor_id;
+        if let Some((&range_start, &range_end)) = self.retired_ranges.range(..=start).next_back() {
+            if range_end.saturating_add(1) >= start {
+                start = range_start;
+                end = end.max(range_end);
+                self.retired_ranges.remove(&range_start);
+            }
+        }
+        while let Some((range_start, range_end)) = self
+            .retired_ranges
+            .range(start..)
+            .next()
+            .map(|(range_start, range_end)| (*range_start, *range_end))
+        {
+            if range_start > end.saturating_add(1) {
+                break;
+            }
+            end = end.max(range_end);
+            self.retired_ranges.remove(&range_start);
+        }
+        self.retired_ranges.insert(start, end);
+    }
 }
 
 /// Process-local ownership for a transiently preempted maintenance Run whose
@@ -702,6 +773,56 @@ impl NarrativeMaintenanceRecoveryGate {
         state.active_attempts.remove(attempt_id);
     }
 
+    /// Retire one exact cleanup-failed attempt after its descriptor has been
+    /// reconciled. This is narrower than workspace-swap retirement: unrelated
+    /// attempts on an independent Ready workspace remain owners.
+    pub fn retire_recovered_attempt_binding(
+        &self,
+        attempt_id: &str,
+        binding: &MaintenanceWorkspaceBinding,
+    ) -> anyhow::Result<()> {
+        binding.validate()?;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(active_binding) = state.active_attempts.get(attempt_id) {
+            anyhow::ensure!(
+                active_binding == binding,
+                "NEX_MAINTENANCE_ATTEMPT_BINDING_MISMATCH: recovered descriptor binding differs from the failed attempt"
+            );
+            state.active_attempts.remove(attempt_id);
+        }
+        Ok(())
+    }
+
+    /// Rotate the maintenance generation only when the recovered descriptor
+    /// belonged to the currently bound authority. A descriptor for W1 may be
+    /// resolved while independent W2 remains Ready, so that case must not
+    /// invalidate W2's active generation.
+    pub fn rotate_generation_for_binding(
+        &self,
+        binding: &MaintenanceWorkspaceBinding,
+    ) -> Option<MaintenanceWorkspaceBinding> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.authority_id.as_deref() != Some(binding.authority_id.as_str())
+            || state.workspace_generation != binding.generation
+        {
+            return None;
+        }
+        state.workspace_generation = allocate_narrative_maintenance_generation(Some(
+            checked_next_narrative_maintenance_generation(state.workspace_generation),
+        ));
+        state.recovered_work_keys.clear();
+        Some(MaintenanceWorkspaceBinding {
+            authority_id: binding.authority_id.clone(),
+            generation: state.workspace_generation,
+        })
+    }
+
     /// Close admission while retiring only attempts whose terminal receipt
     /// already proved the old connection unusable. The caller supplies those
     /// exact IDs from [`NarrativeMaintenanceAttemptRegistry`]; a live or
@@ -1204,9 +1325,11 @@ struct NarrativeMaintenanceAttemptEntry {
     notify: Arc<Notify>,
 }
 
-/// Process-local owner for maintenance attempt cancellation and terminal
+/// Process-local execution ledger for maintenance cancellation and terminal
 /// receipts. Durable Run/Task/Attempt state remains in grimodex-db; this map
-/// only closes the main/native handoff race around one cycle.
+/// only records a Native execution's evidence after the shared lifecycle core
+/// admits it and closes the main/native handoff race around one cycle. It does
+/// not admit work or publish workspace state.
 pub struct NarrativeMaintenanceAttemptRegistry {
     state: Mutex<HashMap<String, NarrativeMaintenanceAttemptEntry>>,
     next_terminal_sequence: AtomicU64,
@@ -2341,6 +2464,10 @@ impl StreamAbortRegistry {
 /// caches を順次ここへ拡張する。
 pub struct AppState {
     pub ws: WorkspaceState,
+    /// Main-only projection of the native workspace lifecycle. This adapter
+    /// observes the compatibility `WorkspaceState` until the shared core owns
+    /// the lifecycle directly; it never exposes raw workspace identity.
+    pub workspace_lifecycle: crate::workspace_lifecycle_view::WorkspaceLifecycleViewAdapter,
     pub gs: GlobalSettingsPath,
     /// IME 連携スナップショットの共有ルート (`<userData>/ime`)。
     /// Electron main から注入された app data 配下だけを使用する。
@@ -2399,6 +2526,44 @@ pub struct AppState {
     /// and the shared-Rust transaction so exactly one first execution emits
     /// the observer-only main wake; replays/no-ops do not emit it.
     pub narrative_maintenance_mutation_lock: Mutex<()>,
+    /// Common Native shutdown owner observes Open/Restore as well as
+    /// maintenance.  The count is process-local and is never used as a
+    /// durable terminal proof after restart.
+    pub workspace_operation_active: Arc<AtomicUsize>,
+    pub workspace_operation_notify: Arc<Notify>,
+    pub workspace_shutdown_requested: Arc<AtomicBool>,
+    /// Lease-only baton for a retired maintenance authority. The SQLite
+    /// handle inside the pinned authority has already been closed and marked
+    /// unusable; retaining this Arc keeps the shared lease continuous until a
+    /// descriptor resolver has opened and verified its replacement.
+    pub(crate) narrative_maintenance_recovery_batons: Mutex<HashMap<String, PinnedWorkspaceDb>>,
+    /// Exact main-side binding for a descriptor transferred by a scheduled
+    /// maintenance attempt.  Lifecycle `LiveBinding.recovery_generation` is
+    /// a different identity from the maintenance gate generation; retain the
+    /// original wire binding explicitly for recovery receipts.
+    pub(crate) narrative_maintenance_recovery_bindings:
+        Mutex<HashMap<u64, (Option<String>, MaintenanceWorkspaceBinding)>>,
+    /// Completed descriptor receipts remain replayable until main has
+    /// observed and ACKed the exact recovery boundary.  This prevents a
+    /// Freshness-only preflight from consuming the receipt before the normal
+    /// scheduler can clear its cleanup-failed marker.
+    pub(crate) narrative_maintenance_recovery_receipts:
+        Mutex<BTreeMap<u64, NarrativeMaintenanceRecoveryReceipt>>,
+    /// Bounded-by-watermark ACK tombstones make recovery ACK retry idempotent
+    /// after the first call has already retired its process-local receipt.
+    pub(crate) narrative_maintenance_recovery_acks: Mutex<NarrativeMaintenanceRecoveryAckLedger>,
+}
+
+pub struct WorkspaceOperationGuard {
+    active: Arc<AtomicUsize>,
+    notify: Arc<Notify>,
+}
+
+impl Drop for WorkspaceOperationGuard {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+        self.notify.notify_waiters();
+    }
 }
 
 impl AppState {
@@ -2448,13 +2613,17 @@ impl AppState {
             },
             Arc::new(events.clone()),
         ));
+        let switching = grimodex_db::WorkspaceLifecycleCompatibilityView::default();
+        let lifecycle_core = switching.core();
         Ok(Self {
             ws: WorkspaceState {
                 inner: Mutex::new(None),
                 safe_mode: grimodex_db::recovery::SafeModeState::default(),
-                switching: std::sync::atomic::AtomicBool::new(false),
+                switching,
                 open_lock: Mutex::new(()),
             },
+            workspace_lifecycle:
+                crate::workspace_lifecycle_view::WorkspaceLifecycleViewAdapter::new(lifecycle_core),
             gs: GlobalSettingsPath {
                 path: dir.join("global-settings.json"),
                 write_lock: Mutex::new(()),
@@ -2486,7 +2655,54 @@ impl AppState {
             narrative_maintenance_foreground_barrier:
                 NarrativeMaintenanceForegroundBarrierState::default(),
             narrative_maintenance_mutation_lock: Mutex::new(()),
+            workspace_operation_active: Arc::new(AtomicUsize::new(0)),
+            workspace_operation_notify: Arc::new(Notify::new()),
+            workspace_shutdown_requested: Arc::new(AtomicBool::new(false)),
+            narrative_maintenance_recovery_batons: Mutex::new(HashMap::new()),
+            narrative_maintenance_recovery_bindings: Mutex::new(HashMap::new()),
+            narrative_maintenance_recovery_receipts: Mutex::new(BTreeMap::new()),
+            narrative_maintenance_recovery_acks: Mutex::new(
+                NarrativeMaintenanceRecoveryAckLedger::default(),
+            ),
         })
+    }
+
+    pub fn begin_workspace_operation(&self) -> anyhow::Result<WorkspaceOperationGuard> {
+        anyhow::ensure!(
+            !self.workspace_shutdown_requested.load(Ordering::Acquire),
+            "NEX_NATIVE_SHUTDOWN_REQUESTED: workspace operation admission is closed"
+        );
+        self.workspace_operation_active
+            .fetch_add(1, Ordering::AcqRel);
+        if self.workspace_shutdown_requested.load(Ordering::Acquire) {
+            self.workspace_operation_active
+                .fetch_sub(1, Ordering::AcqRel);
+            self.workspace_operation_notify.notify_waiters();
+            anyhow::bail!("NEX_NATIVE_SHUTDOWN_REQUESTED: workspace operation admission is closed");
+        }
+        Ok(WorkspaceOperationGuard {
+            active: Arc::clone(&self.workspace_operation_active),
+            notify: Arc::clone(&self.workspace_operation_notify),
+        })
+    }
+
+    pub fn request_workspace_shutdown(&self) {
+        self.workspace_shutdown_requested
+            .store(true, Ordering::Release);
+        self.workspace_operation_notify.notify_waiters();
+    }
+
+    pub async fn wait_workspace_operations(&self) {
+        loop {
+            // Register the waiter before the count check. Otherwise the last
+            // guard can decrement to zero and notify between the read and
+            // `notified()`, leaving shutdown asleep until its outer deadline.
+            let notified = self.workspace_operation_notify.notified();
+            if self.workspace_operation_active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
     }
 }
 
@@ -3881,6 +4097,29 @@ mod tests {
             .is_some(),
             "a failed post-claim commit must not strand the one-shot reservation"
         );
+    }
+
+    #[test]
+    fn recovery_ack_ranges_keep_lost_response_retries_after_many_acks() {
+        let mut ledger = NarrativeMaintenanceRecoveryAckLedger::default();
+        ledger.mark(1);
+        ledger.mark(3);
+        for descriptor_id in 4..=512 {
+            ledger.mark(descriptor_id);
+        }
+
+        assert!(ledger.contains(1));
+        assert!(
+            !ledger.contains(2),
+            "an unresolved descriptor remains a gap"
+        );
+        assert!(ledger.contains(3));
+        assert!(ledger.contains(512));
+
+        ledger.mark(2);
+        assert!(ledger.contains(1));
+        assert!(ledger.contains(256));
+        assert!(ledger.contains(512));
     }
 
     /// テスト用の雑な一意サフィックス (uuid 依存を増やさない)。

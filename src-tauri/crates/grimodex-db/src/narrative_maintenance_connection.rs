@@ -7,6 +7,7 @@
 //! the lifetime of the `Database` value.
 
 use super::Database;
+use crate::workspace_lifecycle::WorkspaceParticipant;
 use crate::narrative_extraction::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 use crate::narrative_extraction::{
     is_validation_terminated, validation_terminated, ValidationTerminationReason,
@@ -29,6 +30,7 @@ const TERMINATION_TIMEOUT: u8 = 2;
 const TERMINATION_CLOSED: u8 = 3;
 const TERMINATION_WORKSPACE_GENERATION: u8 = 4;
 const TERMINATION_FOREGROUND: u8 = 5;
+const TERMINATION_CONTEXT_UNAVAILABLE: u8 = 6;
 
 #[derive(Clone, Debug)]
 struct TerminationLatch(Arc<AtomicU8>);
@@ -42,6 +44,7 @@ impl Default for TerminationLatch {
 impl TerminationLatch {
     fn set(&self, reason: ValidationTerminationReason) {
         let code = match reason {
+            ValidationTerminationReason::ContextUnavailable => TERMINATION_CONTEXT_UNAVAILABLE,
             ValidationTerminationReason::Cancelled => TERMINATION_CANCELLED,
             ValidationTerminationReason::TimedOut => TERMINATION_TIMEOUT,
             ValidationTerminationReason::Closed => TERMINATION_CLOSED,
@@ -63,6 +66,7 @@ impl TerminationLatch {
 
     fn get(&self) -> Option<ValidationTerminationReason> {
         Some(match self.0.load(Ordering::Acquire) {
+            TERMINATION_CONTEXT_UNAVAILABLE => ValidationTerminationReason::ContextUnavailable,
             TERMINATION_CANCELLED => ValidationTerminationReason::Cancelled,
             TERMINATION_TIMEOUT => ValidationTerminationReason::TimedOut,
             TERMINATION_CLOSED => ValidationTerminationReason::Closed,
@@ -81,9 +85,37 @@ thread_local! {
     /// hook and later clearing the owner's cancellation handler.
     static SCOPE_CONNECTIONS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 
+    /// Manual/foreground maintenance uses the ordinary connection wait path.
+    /// Automatic maintenance keeps the no-wait acquisition below so a live
+    /// editor writer can preempt it, while a foreground command waits behind
+    /// the exact owner instead of turning transient contention into a failed
+    /// user operation.
+    static FOREGROUND_MAINTENANCE_WAIT_DEPTH: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+
     #[cfg(test)]
     static FAILPOINTS: std::cell::RefCell<MaintenanceCleanupFailpoints> =
         const { std::cell::RefCell::new(MaintenanceCleanupFailpoints::NONE) };
+}
+
+pub(crate) fn foreground_maintenance_wait_active() -> bool {
+    FOREGROUND_MAINTENANCE_WAIT_DEPTH.with(|depth| depth.get() > 0)
+}
+
+pub(crate) fn with_foreground_maintenance_wait<T>(operation: impl FnOnce() -> T) -> T {
+    FOREGROUND_MAINTENANCE_WAIT_DEPTH.with(|depth| {
+        depth.set(depth.get().saturating_add(1));
+    });
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            FOREGROUND_MAINTENANCE_WAIT_DEPTH.with(|depth| {
+                depth.set(depth.get().saturating_sub(1));
+            });
+        }
+    }
+    let _guard = Guard;
+    operation()
 }
 
 struct ScopeConnectionGuard {
@@ -199,6 +231,9 @@ pub(crate) struct NarrativeMaintenanceConnectionResult<T> {
 #[derive(Clone, Default)]
 pub(crate) struct NarrativeMaintenanceGraphControlConfig {
     pub(crate) deadline: Option<Instant>,
+    /// The existing workspace owner remains alive while SQLite executes.
+    /// This observes its stop state without admitting work or resolving a DB.
+    pub(crate) participant: Option<WorkspaceParticipant>,
     /// `(current_generation, expected_generation)` is supplied by the active
     /// workspace owner. A mismatch is a typed terminal condition and never a
     /// stale Source/missing Edge result.
@@ -231,14 +266,32 @@ impl NarrativeMaintenanceGraphControlConfig {
         }
     }
 
-    pub(crate) fn with_finalization_granted(
-        finalization_granted: Arc<AtomicBool>,
-    ) -> Self {
+    pub(crate) fn with_finalization_granted(finalization_granted: Arc<AtomicBool>) -> Self {
         Self {
             finalization_granted: Some(finalization_granted),
             ..Self::default()
         }
     }
+}
+
+fn participant_termination(
+    participant: &WorkspaceParticipant,
+) -> Option<ValidationTerminationReason> {
+    match participant.stop_requested() {
+        Ok(false) => None,
+        Ok(true) => Some(ValidationTerminationReason::Cancelled),
+        Err(_) => Some(ValidationTerminationReason::ContextUnavailable),
+    }
+}
+
+fn check_participant(participant: &WorkspaceParticipant) -> Result<()> {
+    if let Some(reason) = participant_termination(participant) {
+        return Err(validation_terminated(
+            reason,
+            "workspace participant stopped SQL work",
+        ));
+    }
+    Ok(())
 }
 
 /// Concrete GraphWorkControl owned by the outer no-wait maintenance scope.
@@ -305,6 +358,15 @@ impl GraphWorkControl for NarrativeMaintenanceGraphControl<'_> {
                 stage,
             ));
         }
+        if let Some(reason) = self
+            .config
+            .participant
+            .as_ref()
+            .and_then(participant_termination)
+        {
+            self.config.termination_latch.set(reason);
+            return Err(Self::terminal(reason, stage));
+        }
         if self
             .config
             .workspace_generation
@@ -339,6 +401,10 @@ impl GraphWorkControl for NarrativeMaintenanceGraphControl<'_> {
             ));
         }
         Ok(())
+    }
+
+    fn allows_full_eligibility(&self) -> bool {
+        true
     }
 }
 
@@ -390,9 +456,7 @@ impl<T> NarrativeMaintenanceConnectionResult<T> {
             (Some(_), None, Some(cleanup)) => Err(anyhow!(
                 "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: {cleanup}"
             )),
-            (None, None, None) => Err(anyhow!(
-                "NIR1_MAINTENANCE_CONNECTION_NO_RESULT"
-            )),
+            (None, None, None) => Err(anyhow!("NIR1_MAINTENANCE_CONNECTION_NO_RESULT")),
         }
     }
 }
@@ -481,13 +545,22 @@ fn with_narrative_maintenance_connection_with_latch<T, F>(
 where
     F: FnOnce(&Connection) -> Result<T>,
 {
-    let Some(conn) = try_lock_narrative_maintenance(db)? else {
-        return Ok(None);
+    let conn = if foreground_maintenance_wait_active() {
+        // Foreground commands preserve the existing wait behavior.  The
+        // caller has already announced its lifecycle ownership; waiting here
+        // lets an in-flight Freshness/maintenance phase finish instead of
+        // converting normal contention into a cleanup/requeue failure.
+        db.lock_conn()?
+    } else {
+        let Some(conn) = try_lock_narrative_maintenance(db)? else {
+            return Ok(None);
+        };
+        conn
     };
     let result = match catch_unwind(AssertUnwindSafe(|| {
         with_narrative_maintenance_connection_scope_with_latch(
             &conn,
-            timeout,
+            Some(timeout),
             progress_interval,
             stop,
             hook_config,
@@ -536,7 +609,7 @@ where
 {
     with_narrative_maintenance_connection_scope_with_latch(
         conn,
-        timeout,
+        Some(timeout),
         progress_interval,
         stop,
         NarrativeMaintenanceGraphControlConfig::default(),
@@ -547,7 +620,7 @@ where
 
 fn with_narrative_maintenance_connection_scope_with_latch<T, F>(
     conn: &Connection,
-    timeout: Duration,
+    timeout: Option<Duration>,
     progress_interval: i32,
     stop: Arc<AtomicBool>,
     hook_config: NarrativeMaintenanceGraphControlConfig,
@@ -590,7 +663,7 @@ where
 
 fn run_outer_scope<T, F>(
     conn: &Connection,
-    timeout: Duration,
+    timeout: Option<Duration>,
     progress_interval: i32,
     stop: Arc<AtomicBool>,
     hook_config: NarrativeMaintenanceGraphControlConfig,
@@ -617,8 +690,10 @@ where
         };
 
     if setup_error.is_none() {
-        if let Err(error) = conn.busy_timeout(timeout) {
-            setup_error = Some(error.into());
+        if let Some(timeout) = timeout {
+            if let Err(error) = conn.busy_timeout(timeout) {
+                setup_error = Some(error.into());
+            }
         }
     }
 
@@ -629,6 +704,7 @@ where
         let generation_for_hook = hook_config.workspace_generation.clone();
         let deadline_for_hook = hook_config.deadline;
         let progress_callbacks_for_hook = hook_config.progress_callbacks.clone();
+        let participant_for_hook = hook_config.participant.clone();
         let finalization_granted_for_hook = hook_config.finalization_granted.clone();
         let foreground_waiters_for_hook = foreground_waiters.clone();
         let hook_result = if progress_interval > 0 {
@@ -656,6 +732,13 @@ where
                     }
                     if stop_for_hook.load(Ordering::Acquire) {
                         latch_for_hook.set(ValidationTerminationReason::Cancelled);
+                        return true;
+                    }
+                    if let Some(reason) = participant_for_hook
+                        .as_ref()
+                        .and_then(participant_termination)
+                    {
+                        latch_for_hook.set(reason);
                         return true;
                     }
                     if generation_for_hook
@@ -744,10 +827,7 @@ where
         } else {
             let rollback_result = conn.execute_batch("ROLLBACK");
             if let Err(error) = rollback_result {
-                append_cleanup_error(
-                    &mut cleanup_error,
-                    anyhow!("rollback failed: {error}"),
-                );
+                append_cleanup_error(&mut cleanup_error, anyhow!("rollback failed: {error}"));
             }
         }
         if !conn.is_autocommit() {
@@ -825,6 +905,109 @@ fn map_interrupted_error(error: anyhow::Error, latch: &TerminationLatch) -> anyh
 }
 
 impl Database {
+    /// Observe an existing workspace participant while SQLite is executing,
+    /// including work before its first row. Ordinary mutex/busy-timeout
+    /// behavior is preserved; only the outer scope owns the progress hook.
+    pub fn with_participant_sql_scope<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        self.with_participant_sql_scope_config(
+            participant,
+            NarrativeMaintenanceGraphControlConfig::default(),
+            operation,
+        )
+    }
+
+    /// Read one SQLite snapshot under the participant's SQL cancellation
+    /// scope. The transaction cannot outlive the installed owner hook.
+    pub fn with_participant_read_transaction<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        self.with_participant_sql_scope(participant, |conn| {
+            let tx = conn.unchecked_transaction()?;
+            let value = operation(&tx)?;
+            tx.commit()?;
+            Ok(value)
+        })
+    }
+
+    fn with_participant_sql_scope_config<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        mut config: NarrativeMaintenanceGraphControlConfig,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        check_participant(participant)?;
+        config.participant = Some(participant.clone());
+        let mut check_acquisition = || check_participant(participant);
+        let conn = self.lock_conn_with_check(Some(&mut check_acquisition))?;
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            with_narrative_maintenance_connection_scope_with_latch(
+                &conn,
+                None,
+                1_000,
+                Arc::new(AtomicBool::new(false)),
+                config,
+                None,
+                |conn| {
+                    check_participant(participant)?;
+                    let value = operation(conn)?;
+                    check_participant(participant)?;
+                    Ok(value)
+                },
+            )
+        }));
+        let result = match outcome {
+            Ok(result) => result,
+            Err(payload) => {
+                self.quarantine_connection("workspace participant SQL operation panicked");
+                // Retire before resuming the original panic. Unwinding with
+                // this guard held would poison the retirement mutex itself.
+                drop(conn);
+                if let Err(error) = self.retire_connection_for_recovery() {
+                    tracing::error!(%error, "participant SQL panic connection retirement failed");
+                }
+                std::panic::resume_unwind(payload);
+            }
+        };
+        let reusable = result.receipt.connection_reusable;
+        if !reusable {
+            let reason = result
+                .cleanup_error
+                .as_ref()
+                .or(result.operation_error.as_ref())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "participant SQL connection cleanup failed".into());
+            self.quarantine_connection(reason);
+        }
+        // Quarantine is visible before a waiting ordinary caller can take
+        // the mutex; retirement consumes the old handle after releasing it.
+        drop(conn);
+        let result = result.into_result();
+        if !reusable {
+            if let Err(retirement) = self.retire_connection_for_recovery() {
+                return Err(match result {
+                    Err(operation) => combine_operation_and_cleanup_errors(operation, retirement),
+                    Ok(_) => retirement,
+                });
+            }
+        }
+        result
+    }
+
     pub(crate) fn ensure_connection_reusable(&self) -> Result<()> {
         self.connection_health.ensure_reusable()
     }
@@ -843,6 +1026,104 @@ impl Database {
 
     pub fn connection_unusable_reason(&self) -> Option<String> {
         self.connection_health.unusable_reason()
+    }
+
+    /// Retire the connection from the normal owner before a recovery
+    /// descriptor is handed to a replacement authority. The SQLite handle is
+    /// kept only as quarantined storage until its owning authority is dropped;
+    /// no later recovery path may reuse it. An open transaction is retired by
+    /// consuming the connection: SQLite rolls it back as part of `close`, so
+    /// a later commit cannot occur. The health transition is part of this
+    /// primitive, so a successful receipt always makes this authority
+    /// ineligible for normal access and resolver selection.
+    pub fn retire_connection_for_recovery(&self) -> anyhow::Result<()> {
+        // This primitive is intentionally allowed to inspect a connection
+        // that was already quarantined by cleanup. `with_conn` first checks
+        // the reusable flag and would make the cleanup-failure -> recovery
+        // path permanently unable to emit its retirement receipt.
+        let replacement = Connection::open_in_memory().map_err(|error| {
+            anyhow!(
+                "NEX_MAINTENANCE_CONNECTION_RETIREMENT_REPLACEMENT_OPEN_FAILED: {error}"
+            )
+        })?;
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|error| anyhow!("NEX_MAINTENANCE_CONNECTION_RETIREMENT_LOCKED: {error}"))?;
+        self.connection_health
+            .mark_unusable("retired for exact lifecycle recovery");
+        // Publish the unusable state while the connection mutex is still
+        // held. A waiter that already passed its first health check must not
+        // acquire this guard in the gap between the autocommit proof and the
+        // retirement receipt.
+        let retired = std::mem::replace(&mut *conn, replacement);
+        drop(conn);
+        if let Err((retired, error)) = retired.close() {
+            self.retired_connections
+                .lock()
+                .map_err(|lock_error| {
+                    anyhow!(
+                        "NEX_MAINTENANCE_CONNECTION_RETIREMENT_BATON_LOCKED: {lock_error}; close error: {error}"
+                    )
+                })?
+                .push(retired);
+            return Err(anyhow!(
+                "NEX_MAINTENANCE_CONNECTION_RETIREMENT_CLOSE_FAILED: {error}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether a retired connection still needs an explicit close retry.
+    /// Pending handles remain quarantined and are never returned by the normal
+    /// connection accessor.
+    pub fn retirement_close_pending(&self) -> bool {
+        self.retired_connections
+            .lock()
+            .map(|connections| !connections.is_empty())
+            .unwrap_or(true)
+    }
+
+    /// Retry close for a quarantined connection. A successful return is the
+    /// only point at which the caller may publish `connection_retired` proof.
+    pub fn retry_retirement_close(&self) -> anyhow::Result<()> {
+        let pending = {
+            let mut connections = self.retired_connections.lock().map_err(|error| {
+                anyhow!(
+                    "NEX_MAINTENANCE_CONNECTION_RETIREMENT_BATON_LOCKED: {error}"
+                )
+            })?;
+            std::mem::take(&mut *connections)
+        };
+        let mut remaining = Vec::new();
+        let mut first_error = None;
+        for connection in pending {
+            match connection.close() {
+                Ok(()) => {}
+                Err((connection, error)) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                    remaining.push(connection);
+                }
+            }
+        }
+        if !remaining.is_empty() {
+            self.retired_connections
+                .lock()
+                .map_err(|error| {
+                    anyhow!(
+                        "NEX_MAINTENANCE_CONNECTION_RETIREMENT_BATON_LOCKED: {error}"
+                    )
+                })?
+                .extend(remaining);
+        }
+        if let Some(error) = first_error {
+            return Err(anyhow!(
+                "NEX_MAINTENANCE_CONNECTION_RETIREMENT_CLOSE_RETRY_FAILED: {error}"
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn foreground_connection_waiter_count(&self) -> usize {
@@ -912,9 +1193,9 @@ fn set_maintenance_cleanup_failpoints_for_test(failpoints: MaintenanceCleanupFai
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ForegroundConnectionWaiter;
     use crate::narrative_extraction::nir1_entity_relation_index::GraphWorkStage;
     use crate::narrative_extraction::{is_validation_terminated, ValidationTerminated};
+    use crate::ForegroundConnectionWaiter;
     use std::sync::mpsc;
     use std::sync::Barrier;
     use std::thread;
@@ -935,6 +1216,344 @@ mod tests {
             .downcast_ref::<ValidationTerminated>()
             .expect("typed validation termination")
             .reason
+    }
+
+    fn test_participant() -> (crate::WorkspaceLifecycleCore, WorkspaceParticipant) {
+        let core = crate::WorkspaceLifecycleCore::new();
+        core.set_ready(crate::LiveBinding::new(
+            "/tmp/workspace",
+            "workspace-1",
+            1,
+            1,
+        ))
+        .expect("ready workspace");
+        let participant = core.begin_workspace_participant().expect("participant");
+        (core, participant)
+    }
+
+    #[test]
+    fn participant_sql_scope_cancels_while_queued_for_connection() {
+        let db = Arc::new(test_db());
+        let (core, participant) = test_participant();
+        let body_ran = Arc::new(AtomicBool::new(false));
+        let held = db
+            .conn
+            .lock()
+            .expect("hold connection before worker starts");
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_db = db.clone();
+        let worker_body_ran = body_ran.clone();
+        let worker = thread::spawn(move || {
+            let result = worker_db.with_participant_sql_scope(&participant, |_| {
+                worker_body_ran.store(true, Ordering::Release);
+                Ok(())
+            });
+            drop(participant);
+            let _ = done_tx.send(result);
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while db.foreground_connection_waiter_count() == 0 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        let queued = db.foreground_connection_waiter_count() == 1;
+        let shutdown = core.request_shutdown();
+        let result_while_held = done_rx.recv_timeout(Duration::from_secs(2));
+        let waiters_while_held = db.foreground_connection_waiter_count();
+        let participants_while_held = core.workspace_participant_count();
+        let reusable_while_held = db.connection_reusable();
+
+        // Release before assertions/join so the old blocking acquisition
+        // fails within the timeout instead of stranding the worker.
+        drop(held);
+        worker
+            .join()
+            .expect("queued worker joined after fallback release");
+        assert!(queued, "worker must enter the real foreground wait path");
+        shutdown.expect("shutdown requested while connection remained held");
+        let error = result_while_held
+            .expect("worker must finish before the held connection is released")
+            .expect_err("queued participant must be cancelled");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(!body_ran.load(Ordering::Acquire));
+        assert_eq!(waiters_while_held, 0);
+        assert_eq!(participants_while_held.expect("participant count"), 0);
+        assert!(reusable_while_held);
+        core.close()
+            .expect("queued participant released before shutdown completion");
+    }
+
+    #[test]
+    fn participant_connection_wait_cancels_behind_finalization_reservation() {
+        let db = Arc::new(test_db());
+        let (core, participant) = test_participant();
+        let body_ran = Arc::new(AtomicBool::new(false));
+        let reservation = db
+            .try_reserve_maintenance_finalization()
+            .expect("reserve finalization before participant acquisition");
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_db = db.clone();
+        let worker_body_ran = body_ran.clone();
+        let worker = thread::spawn(move || {
+            let result = {
+                let mut checks = 0;
+                let mut check = || {
+                    checks += 1;
+                    if checks == 3 {
+                        // Entry and the first loop check precede observing
+                        // the reservation; the third proves it waited.
+                        let _ = waiting_tx.send(());
+                    }
+                    check_participant(&participant)
+                };
+                worker_db
+                    .lock_conn_with_check(Some(&mut check))
+                    .map(|_conn| {
+                        worker_body_ran.store(true, Ordering::Release);
+                    })
+            };
+            drop(participant);
+            let _ = done_tx.send(result);
+        });
+
+        let reached_wait_loop = waiting_rx.recv_timeout(Duration::from_secs(2));
+        let waiters_at_reservation = db.foreground_connection_waiter_count();
+        let shutdown = core.request_shutdown();
+        let result_while_reserved = done_rx.recv_timeout(Duration::from_secs(2));
+        let waiters_while_reserved = db.foreground_connection_waiter_count();
+        let participants_while_reserved = core.workspace_participant_count();
+        let reusable_while_reserved = db.connection_reusable();
+
+        // A regression that ignores cancellation must still be able to
+        // acquire and return after the bounded failure observation.
+        drop(reservation);
+        worker
+            .join()
+            .expect("reserved worker joined after fallback release");
+        reached_wait_loop.expect("worker reached reserved foreground loop");
+        shutdown.expect("shutdown requested during finalization reservation");
+        let error = result_while_reserved
+            .expect("worker must finish while finalization remains reserved")
+            .expect_err("reserved participant must be cancelled");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(!body_ran.load(Ordering::Acquire));
+        assert_eq!(waiters_at_reservation, 0);
+        assert_eq!(waiters_while_reserved, 0);
+        assert_eq!(participants_while_reserved.expect("participant count"), 0);
+        assert!(reusable_while_reserved);
+        core.close()
+            .expect("reserved participant released before shutdown completion");
+    }
+
+    #[test]
+    fn participant_sql_scope_interrupts_running_vm_and_releases_hook_owner() {
+        let db = test_db();
+        let (core, participant) = test_participant();
+        let callbacks = Arc::new(AtomicU64::new(0));
+        let row_returned = AtomicBool::new(false);
+        let interrupt = db
+            .with_conn(|conn| {
+                conn.busy_timeout(Duration::from_millis(1_234))?;
+                Ok(conn.get_interrupt_handle())
+            })
+            .expect("interrupt fallback");
+        db.with_participant_read_transaction(&participant, |conn| {
+            assert!(!conn.is_autocommit());
+            Ok(())
+        })
+        .expect("participant read snapshot");
+
+        let (result, saw_progress, used_fallback) = thread::scope(|scope| {
+            let (done_tx, done_rx) = mpsc::channel();
+            let (query_started_tx, query_started_rx) = mpsc::channel();
+            let observed_callbacks = callbacks.clone();
+            let stop_core = core.clone();
+            let stopper = scope.spawn(move || {
+                let query_started = query_started_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .is_ok();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while query_started
+                    && observed_callbacks.load(Ordering::Acquire) == 0
+                    && Instant::now() < deadline
+                {
+                    thread::yield_now();
+                }
+                let saw_progress = query_started && observed_callbacks.load(Ordering::Acquire) > 0;
+                stop_core
+                    .request_shutdown()
+                    .expect("stop an executing participant");
+                let used_fallback =
+                    !saw_progress || done_rx.recv_timeout(Duration::from_secs(2)).is_err();
+                if used_fallback {
+                    // A missing hook or broken stop mapping fails this test
+                    // without leaving an unbounded SQL worker behind.
+                    interrupt.interrupt();
+                }
+                (saw_progress, used_fallback)
+            });
+            let result = db.with_participant_sql_scope_config(
+                &participant,
+                NarrativeMaintenanceGraphControlConfig {
+                    progress_callbacks: Some(callbacks.clone()),
+                    ..Default::default()
+                },
+                |conn| {
+                    // A nested reader must preserve the participant's hook
+                    // and timeout even when its own settings would cancel.
+                    let timeout = with_narrative_maintenance_connection_scope(
+                        conn,
+                        Duration::ZERO,
+                        1,
+                        Arc::new(AtomicBool::new(true)),
+                        |conn| {
+                            Ok(conn.pragma_query_value(None, "busy_timeout", |row| {
+                                row.get::<_, i64>(0)
+                            })?)
+                        },
+                    )
+                    .into_result()?;
+                    assert_eq!(timeout, 1_234);
+                    conn.execute_batch("BEGIN")?;
+                    callbacks.store(0, Ordering::Release);
+                    query_started_tx.send(())?;
+                    Ok(conn.query_row(
+                        "WITH RECURSIVE walk(value) AS (
+                            SELECT 1 UNION ALL
+                            SELECT value + 1 FROM walk WHERE value < 10000000
+                         ) SELECT sum(value) FROM walk",
+                        [],
+                        |row| {
+                            row_returned.store(true, Ordering::Release);
+                            row.get::<_, i64>(0)
+                        },
+                    )?)
+                },
+            );
+            let _ = done_tx.send(());
+            let (saw_progress, used_fallback) = stopper.join().expect("stopper joined");
+            (result, saw_progress, used_fallback)
+        });
+        assert!(
+            saw_progress,
+            "stop must arrive after SQLite begins execution"
+        );
+        assert!(!used_fallback, "participant hook must interrupt the SQL VM");
+        assert!(
+            !row_returned.load(Ordering::Acquire),
+            "aggregate must not finish"
+        );
+        let error = result.expect_err("running SQL must be cancelled");
+        assert!(error
+            .to_string()
+            .contains("SQLite progress hook interrupted"));
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(db.connection_reusable());
+        let callbacks_after_scope = callbacks.load(Ordering::Acquire);
+        db.with_conn(|conn| {
+            assert!(conn.is_autocommit());
+            let timeout: i64 = conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
+            assert_eq!(timeout, 1_234);
+            let sum: i64 = conn.query_row(
+                "WITH RECURSIVE walk(value) AS (
+                    SELECT 1 UNION ALL SELECT value + 1 FROM walk WHERE value < 1000
+                 ) SELECT sum(value) FROM walk",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(sum, 500_500);
+            Ok(())
+        })
+        .expect("cancelled hook cleared before ordinary reuse");
+        assert_eq!(callbacks.load(Ordering::Acquire), callbacks_after_scope);
+        assert_eq!(core.workspace_participant_count().expect("owner count"), 1);
+        drop(participant);
+        assert_eq!(
+            core.workspace_participant_count().expect("owner released"),
+            0
+        );
+        core.close()
+            .expect("shutdown can finish after owner release");
+    }
+
+    #[test]
+    fn participant_sql_cleanup_failure_retires_connection_and_releases_owner() {
+        let db = test_db();
+        let (core, participant) = test_participant();
+        set_maintenance_cleanup_failpoints_for_test(MaintenanceCleanupFailpoints {
+            progress_reset: true,
+            ..MaintenanceCleanupFailpoints::NONE
+        });
+        let error = db
+            .with_participant_sql_scope(&participant, |conn| {
+                conn.execute_batch("BEGIN")?;
+                core.request_shutdown().expect("shutdown");
+                Err::<(), _>(validation_terminated(
+                    ValidationTerminationReason::Cancelled,
+                    "participant cancellation",
+                ))
+            })
+            .expect_err("cleanup failure must remain an error");
+        let message = error.to_string();
+        assert!(message.contains("participant cancellation"));
+        assert!(message.contains("progress handler reset failpoint"));
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(!db.connection_reusable());
+        assert!(!db.retirement_close_pending());
+        assert!(!db.conn.is_poisoned());
+        assert!(db.with_conn(|_| Ok(())).is_err());
+        SCOPE_CONNECTIONS.with(|connections| assert!(connections.borrow().is_empty()));
+        assert_eq!(core.workspace_participant_count().expect("owner count"), 1);
+        drop(participant);
+        assert_eq!(
+            core.workspace_participant_count().expect("owner released"),
+            0
+        );
+        core.close().expect("owner released after retirement");
+    }
+
+    #[test]
+    fn participant_sql_panic_retires_without_poisoning_and_releases_owner() {
+        let db = test_db();
+        let (core, participant) = test_participant();
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            let _: Result<()> = db.with_participant_sql_scope(&participant, |conn| {
+                conn.execute_batch("BEGIN")?;
+                core.request_shutdown().expect("shutdown");
+                panic!("participant SQL panic");
+            });
+        }))
+        .expect_err("original panic must propagate");
+        assert_eq!(panic.downcast_ref::<&str>(), Some(&"participant SQL panic"));
+        assert!(!db.connection_reusable());
+        assert!(!db.retirement_close_pending());
+        assert!(!db.conn.is_poisoned());
+        assert!(db
+            .connection_unusable_reason()
+            .expect("quarantine reason")
+            .contains("panicked"));
+        assert!(db.with_conn(|_| Ok(())).is_err());
+        SCOPE_CONNECTIONS.with(|connections| assert!(connections.borrow().is_empty()));
+        assert_eq!(core.workspace_participant_count().expect("owner count"), 1);
+        drop(participant);
+        assert_eq!(
+            core.workspace_participant_count().expect("owner released"),
+            0
+        );
+        core.close().expect("owner released after panic retirement");
     }
 
     #[test]
@@ -1123,7 +1742,10 @@ mod tests {
                 reservation_cas_reached_for_thread.wait();
                 allow_reservation_post_check_for_thread.wait();
             });
-            assert!(reservation.is_none(), "late waiter must cancel the reservation");
+            assert!(
+                reservation.is_none(),
+                "late waiter must cancel the reservation"
+            );
         });
 
         // Pause after the reservation CAS and publish the foreground waiter
@@ -1201,20 +1823,14 @@ mod tests {
     fn latched_cancellation_clears_progress_before_rollback() {
         let db = test_db();
         let stop = Arc::new(AtomicBool::new(true));
-        let result = with_narrative_maintenance_connection(
-            &db,
-            Duration::ZERO,
-            1,
-            stop,
-            |conn| {
+        let result = with_narrative_maintenance_connection(&db, Duration::ZERO, 1, stop, |conn| {
                 conn.execute_batch("BEGIN")?;
                 assert!(!conn.is_autocommit());
                 Err::<(), _>(validation_terminated(
                     ValidationTerminationReason::Cancelled,
                     "ordinary cancellation",
                 ))
-            },
-        )
+        })
         .expect("acquisition")
         .expect("scope");
         let error = result
@@ -1261,6 +1877,71 @@ mod tests {
     }
 
     #[test]
+    fn retirement_receipt_can_be_emitted_after_cleanup_quarantine() {
+        let db = test_db();
+        db.quarantine_connection("cleanup proof unavailable");
+        assert!(!db.connection_reusable());
+
+        // Retirement must inspect the already-quarantined handle directly;
+        // routing through the normal reusable-only accessor would deadlock
+        // exact CreationUnknown recovery forever.
+        db.retire_connection_for_recovery()
+            .expect("quarantined autocommit connection is retired");
+        assert!(!db.connection_reusable());
+        assert!(db.connection_unusable_reason().is_some());
+    }
+
+    #[test]
+    fn clean_retirement_quarantines_original_connection_before_recovery() {
+        let db = test_db();
+        assert!(db.connection_reusable());
+
+        db.retire_connection_for_recovery()
+            .expect("clean autocommit connection is retired");
+
+        assert!(!db.connection_reusable());
+        assert!(db
+            .with_conn(|_| Ok::<_, anyhow::Error>(()))
+            .is_err());
+    }
+
+    #[test]
+    fn retirement_consumes_connection_with_open_transaction() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute_batch("BEGIN")?;
+            assert!(!conn.is_autocommit());
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("leave an active transaction for retirement");
+
+        db.retire_connection_for_recovery()
+            .expect("close must retire and roll back the active transaction");
+        assert!(!db.connection_reusable());
+        assert!(!db.retirement_close_pending());
+        assert!(db
+            .with_conn(|_| Ok::<_, anyhow::Error>(()))
+            .is_err());
+    }
+
+    #[test]
+    fn retirement_close_baton_retries_and_clears_before_receipt() {
+        let db = test_db();
+        db.quarantine_connection("retirement close test");
+        let quarantined = Connection::open_in_memory().expect("quarantined sqlite");
+        db.retired_connections
+            .lock()
+            .expect("retirement baton lock")
+            .push(quarantined);
+        assert!(db.retirement_close_pending());
+
+        db.retry_retirement_close()
+            .expect("explicit close retry succeeds");
+        assert!(!db.retirement_close_pending());
+        assert!(!db.connection_reusable());
+    }
+
+    #[test]
     fn typed_cancellation_and_cleanup_failure_preserve_both_and_quarantine() {
         let db = test_db();
         set_maintenance_cleanup_failpoints_for_test(MaintenanceCleanupFailpoints {
@@ -1269,19 +1950,14 @@ mod tests {
             progress_reset: true,
             busy_timeout_restore: false,
         });
-        let result = with_narrative_maintenance_connection(
-            &db,
-            Duration::ZERO,
-            1,
-            stop_flag(),
-            |conn| {
+        let result =
+            with_narrative_maintenance_connection(&db, Duration::ZERO, 1, stop_flag(), |conn| {
                 conn.execute_batch("BEGIN")?;
                 Err::<(), _>(validation_terminated(
                     ValidationTerminationReason::Cancelled,
                     "typed cancellation",
                 ))
-            },
-        )
+            })
         .expect("acquisition")
         .expect("scope");
         assert!(!result.receipt.connection_reusable);

@@ -16,17 +16,28 @@ pub(crate) async fn begin(state: Arc<AppState>, dto: BeginRequest) -> Result<Val
             && dto.query.encode_utf16().count() <= 500,
         "RELATED_SCENES_INVALID_REQUEST"
     );
+    // Keep a lifecycle participant for the registry entry and every detached
+    // scoring/build task. The short-lived pin below only validates the launch
+    // binding; the participant is the long-lived ownership proof.
+    let participant = state
+        .ws
+        .lifecycle_core()
+        .begin_workspace_participant()
+        .map_err(|error| anyhow!(error.to_string()))?;
     // Pin before entering the blocking queue, as in the existing Raw command.
     let request = crate::pin_scoped_semantic_request(&state, &dto.expected_workspace_path)
         .map_err(|_| anyhow!("RELATED_SCENES_WORKSPACE_CHANGED"))?;
     let spawn = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || begin_blocking(state, request, dto, spawn, accepted_at))
-        .await?
+    tokio::task::spawn_blocking(move || {
+        begin_blocking(state, request, participant, dto, spawn, accepted_at)
+    })
+    .await?
 }
 
 fn begin_blocking(
     state: Arc<AppState>,
     request: SemanticRequest,
+    participant: grimodex_db::workspace_lifecycle::WorkspaceParticipant,
     dto: BeginRequest,
     spawn: tokio::runtime::Handle,
     accepted_at: Instant,
@@ -36,41 +47,45 @@ fn begin_blocking(
         "RELATED_SCENES_WORKSPACE_CHANGED"
     );
     let db = request.database();
-    let (source, snapshot, original) = db.with_read_transaction(|conn| {
-        let RetrievalSceneSourceRead::Available(source) =
-            read_retrieval_scene_source(conn, &dto.project_id, &dto.current_scene_id)?
-        else {
-            return Err(anyhow!("RELATED_SCENES_QUERY_SOURCE_UNAVAILABLE"));
-        };
-        let source = RelatedScenesSourceContext::capture(source, &dto.query)?;
-        let status = index::read_chronicle_query_status(
-            conn,
-            db.nir_chronicle_index_runtime(),
-            &dto.project_id,
-            &dto.current_scene_id,
-        )?;
-        let (snapshot, original) = match status {
-            index::NirQueryStatusRead::Available {
-                index_usable,
-                snapshot,
-                ..
-            } => (
-                SnapshotEligibility {
-                    original_snapshot_usable: index_usable,
-                    supported_profile: true,
-                },
-                snapshot,
-            ),
-            index::NirQueryStatusRead::Unavailable { .. } => (
-                SnapshotEligibility {
-                    original_snapshot_usable: false,
-                    supported_profile: false,
-                },
-                None,
-            ),
-        };
-        Ok((Arc::new(source), snapshot, original))
-    })?;
+    let mut lifecycle_control =
+        build::RelatedScenesBuildControl::new(&state, &request, &participant);
+    let (source, snapshot, original) =
+        db.with_participant_read_transaction(&participant, |conn| {
+            let RetrievalSceneSourceRead::Available(source) =
+                read_retrieval_scene_source(conn, &dto.project_id, &dto.current_scene_id)?
+            else {
+                return Err(anyhow!("RELATED_SCENES_QUERY_SOURCE_UNAVAILABLE"));
+            };
+            let source = RelatedScenesSourceContext::capture(source, &dto.query)?;
+            let status = index::read_chronicle_query_status_with_control(
+                conn,
+                db.nir_chronicle_index_runtime(),
+                &dto.project_id,
+                &dto.current_scene_id,
+                &mut lifecycle_control,
+            )?;
+            let (snapshot, original) = match status {
+                index::NirQueryStatusRead::Available {
+                    index_usable,
+                    snapshot,
+                    ..
+                } => (
+                    SnapshotEligibility {
+                        original_snapshot_usable: index_usable,
+                        supported_profile: true,
+                    },
+                    snapshot,
+                ),
+                index::NirQueryStatusRead::Unavailable { .. } => (
+                    SnapshotEligibility {
+                        original_snapshot_usable: false,
+                        supported_profile: false,
+                    },
+                    None,
+                ),
+            };
+            Ok((Arc::new(source), snapshot, original))
+        })?;
     let first_snapshot_elapsed_ms = accepted_at.elapsed().as_secs_f64() * 1000.0;
     let query_binding = format!("related-scenes-query:{}", uuid::Uuid::new_v4());
     let mut ir = unavailable(if snapshot.supported_profile {
@@ -89,6 +104,7 @@ fn begin_blocking(
     let ticket = if snapshot.original_snapshot_usable && snapshot.supported_profile {
         let operation = Operation {
             request: request.clone(),
+            participant: participant.clone(),
             source: source.clone(),
             query_binding: query_binding.clone(),
             original: original.ok_or_else(|| anyhow!("RELATED_SCENES_SNAPSHOT_UNAVAILABLE"))?,
@@ -152,7 +168,7 @@ fn begin_blocking(
             current_request(&state, &request)?,
             "RELATED_SCENES_WORKSPACE_CHANGED"
         );
-        let source_current = db.with_read_transaction(|conn| {
+        let source_current = db.with_participant_read_transaction(&participant, |conn| {
             let RetrievalSceneSourceRead::Available(current) =
                 read_retrieval_scene_source(conn, &dto.project_id, &dto.current_scene_id)?
             else {
@@ -175,7 +191,7 @@ fn begin_blocking(
         }
     }
     if snapshot.supported_profile && current_request(&state, &request)? {
-        build::schedule(state.clone(), request, dto.project_id)?;
+        build::schedule(state.clone(), request, participant, dto.project_id)?;
     }
     outcome
 }

@@ -3,8 +3,10 @@ use super::*;
 use crate::audit::{sha256_hex, ModelArtifactIdentity, TokenizerIdentity};
 use crate::embedding::DocumentTokenLimit;
 use crate::spec::SPEC_EN;
+use grimodex_db::workspace_lifecycle::WorkspaceLifecycleCore;
 use grimodex_db::WorkspaceAuthority;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -310,21 +312,27 @@ fn nir1_document_batch_yields_to_audited_raw_query_between_documents() {
                 fail_terminal: false,
             };
             let outcomes = runtime
-                .embed_nir1_documents_with(request, "p", documents, |document, spec| {
-                    assert_eq!(spec.dir_name, SPEC_EN.dir_name);
-                    entries
-                        .lock()
-                        .expect("entries")
-                        .push(document.revision_id.clone());
-                    let outcome = run(runtime, request, document, &mut pipeline)?;
-                    if document.revision_id == "revision-1" {
-                        first_done.send(()).expect("first document completed");
-                        resumed
-                            .recv_timeout(Duration::from_secs(5))
-                            .expect("release document");
-                    }
-                    Ok(outcome)
-                })
+                .embed_nir1_documents_with(
+                    request,
+                    "p",
+                    documents,
+                    || Ok(()),
+                    |document, spec| {
+                        assert_eq!(spec.dir_name, SPEC_EN.dir_name);
+                        entries
+                            .lock()
+                            .expect("entries")
+                            .push(document.revision_id.clone());
+                        let outcome = run(runtime, request, document, &mut pipeline)?;
+                        if document.revision_id == "revision-1" {
+                            first_done.send(()).expect("first document completed");
+                            resumed
+                                .recv_timeout(Duration::from_secs(5))
+                                .expect("release document");
+                        }
+                        Ok(outcome)
+                    },
+                )
                 .expect("all documents indexed");
             assert_eq!(pipeline.inference_calls, 3);
             outcomes
@@ -408,6 +416,156 @@ fn nir1_document_batch_yields_to_audited_raw_query_between_documents() {
 }
 
 #[test]
+fn queued_nir1_identity_and_documents_stop_before_foreground_releases_admission() {
+    for operation in ["identity", "documents"] {
+        for stop in ["epoch", "lifecycle"] {
+            let (runtime, request) = fixture();
+            let lifecycle = WorkspaceLifecycleCore::new();
+            let participant = lifecycle
+                .begin_workspace_participant()
+                .expect("build participant");
+            let foreground_finished = AtomicBool::new(false);
+            let runtime = &runtime;
+            let request = &request;
+            let foreground_finished = &foreground_finished;
+            std::thread::scope(|scope| {
+                let (entered, started) = mpsc::channel();
+                let (release, released) = mpsc::channel();
+                let foreground = scope.spawn(move || {
+                    let result = runtime.embedder_admission.foreground(|| {
+                        entered.send(()).expect("foreground admitted");
+                        released.recv().map_err(|error| anyhow!(error))
+                    });
+                    foreground_finished.store(true, Ordering::SeqCst);
+                    result
+                });
+                started
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("foreground");
+                let (queued, waiting) = mpsc::channel();
+                let (completed, completion) = mpsc::channel();
+                let background = scope.spawn(move || {
+                    let mut checks = 0;
+                    let check = || {
+                        anyhow::ensure!(!participant.stop_requested()?, "synthetic lifecycle stop");
+                        checks += 1;
+                        if checks == 2 {
+                            // The initial precheck has passed, and this check
+                            // precedes a wait behind the held foreground slot.
+                            queued.send(()).expect("background admission check");
+                        }
+                        Ok(())
+                    };
+                    let result = if operation == "identity" {
+                        runtime
+                            .nir1_document_embedding_identity_with_control(request, "p", check)
+                            .map(|_| ())
+                    } else {
+                        runtime
+                            .embed_nir1_documents_with_control(request, "p", &[input()], check)
+                            .map(|_| ())
+                    };
+                    drop(participant);
+                    completed
+                        .send(result.map_err(|error| error.to_string()))
+                        .expect("background completion");
+                });
+                waiting
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("background queued");
+                assert_eq!(
+                    lifecycle
+                        .workspace_participant_count()
+                        .expect("participant count"),
+                    1
+                );
+                if stop == "epoch" {
+                    runtime.semantic_cancel_background();
+                } else {
+                    lifecycle.request_shutdown().expect("lifecycle stop");
+                }
+                let result = completion.recv_timeout(Duration::from_secs(5));
+                let completed_while_foreground_held = !foreground_finished.load(Ordering::SeqCst);
+                let remaining_participants = lifecycle
+                    .workspace_participant_count()
+                    .expect("participant count");
+                // Always release before assertions/join, including a broken
+                // cancellation wait, so a regression fails without hanging.
+                release.send(()).expect("release foreground");
+                foreground
+                    .join()
+                    .expect("foreground worker")
+                    .expect("foreground result");
+                background.join().expect("background worker");
+                assert!(completed_while_foreground_held);
+                assert_eq!(
+                    remaining_participants, 0,
+                    "stopped build must release its participant"
+                );
+                let error = result
+                    .expect("queued work must stop without a foreground release")
+                    .expect_err("stopped work must not load the model or dispatch");
+                assert!(
+                    error.contains(if stop == "epoch" {
+                        "IPC_DERIVED_CANCELLED"
+                    } else {
+                        "synthetic lifecycle stop"
+                    }),
+                    "{operation}/{stop}: {error}"
+                );
+            });
+        }
+    }
+}
+
+#[test]
+fn nir1_document_batch_checks_lifecycle_before_dispatching_the_next_document() {
+    let (runtime, request) = fixture();
+    let stopped = AtomicBool::new(false);
+    let dispatched = AtomicUsize::new(0);
+    let mut pipeline = Pipeline {
+        request: request.clone(),
+        tokenize_calls: 0,
+        inference_calls: 0,
+        skip: false,
+        fail_terminal: false,
+    };
+    let result = runtime.embed_nir1_documents_with(
+        &request,
+        "p",
+        &[
+            input(),
+            Nir1EmbeddingDocument {
+                revision_id: "revision-2".into(),
+                ..input()
+            },
+        ],
+        || {
+            anyhow::ensure!(!stopped.load(Ordering::SeqCst), "synthetic lifecycle stop");
+            Ok(())
+        },
+        |document, _| {
+            dispatched.fetch_add(1, Ordering::SeqCst);
+            let outcome = run(&runtime, &request, document, &mut pipeline)?;
+            stopped.store(true, Ordering::SeqCst);
+            Ok(outcome)
+        },
+    );
+    assert!(result
+        .err()
+        .expect("stopped batch")
+        .to_string()
+        .contains("synthetic lifecycle stop"));
+    assert_eq!(dispatched.load(Ordering::SeqCst), 1);
+    assert_eq!(pipeline.tokenize_calls, 1);
+    assert_eq!(pipeline.inference_calls, 1);
+    runtime
+        .embedder_admission
+        .foreground(|| Ok(()))
+        .expect("cancelled batch released admission");
+}
+
+#[test]
 fn queued_nir1_document_and_raw_query_recheck_epoch_and_model_before_inference() {
     for change in ["epoch", "model"] {
         let (runtime, request) = fixture();
@@ -433,8 +591,12 @@ fn queued_nir1_document_and_raw_query_recheck_epoch_and_model_before_inference()
                     skip: false,
                     fail_terminal: false,
                 };
-                let result =
-                    runtime.embed_nir1_documents_with(request, "p", documents, |document, _| {
+                let result = runtime.embed_nir1_documents_with(
+                    request,
+                    "p",
+                    documents,
+                    || Ok(()),
+                    |document, _| {
                         let outcome = run(runtime, request, document, &mut pipeline)?;
                         if document.revision_id == "revision-1" {
                             first_done.send(()).expect("first document completed");
@@ -443,10 +605,11 @@ fn queued_nir1_document_and_raw_query_recheck_epoch_and_model_before_inference()
                                 .expect("release document");
                         }
                         Ok(outcome)
-                    });
+                    },
+                );
                 let error = result.err().expect("entire batch is rejected");
                 assert!(error.to_string().contains(if change == "epoch" {
-                    "SEMANTIC_QUERY_STALE"
+                    "IPC_DERIVED_CANCELLED"
                 } else {
                     "SEMANTIC_QUERY_MODEL_CHANGED"
                 }));

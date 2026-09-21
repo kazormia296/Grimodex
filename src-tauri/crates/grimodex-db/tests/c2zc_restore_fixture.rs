@@ -330,7 +330,7 @@ fn restore_fixture_through_production_path(
     let state = WorkspaceState {
         inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
-        switching: AtomicBool::new(false),
+        switching: grimodex_db::WorkspaceLifecycleCompatibilityView::new(false),
         open_lock: Mutex::new(()),
     };
     assert_c2zc_marker_count(&state, 0);

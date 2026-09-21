@@ -23,7 +23,9 @@ use std::time::Instant;
 
 use crate::backup_restore::{read_incomplete_restore_session, restore_backup_core};
 use crate::migration_supervisor::workspace_identity;
-use crate::{ActiveWorkspace, WorkspaceAuthority, WorkspaceState};
+use crate::{
+    ActiveWorkspace, WorkspaceAuthority, WorkspaceLifecycleCompatibilityView, WorkspaceState,
+};
 use grimodex_core::narrative_nir1::EntityRelationBundle;
 
 use super::restore_rebuild::{
@@ -45,6 +47,7 @@ use super::{
         read_eligibility_source_with_control, BindingRead, GraphObjectRosterEntry,
         INDEX_KEY as ENTITY_RELATION_INDEX_KEY,
     },
+    source_revision::ForegroundValidationControl,
     NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
 };
 use crate::narrative_maintenance_connection::{
@@ -1409,7 +1412,7 @@ fn capture_restore_revision_snapshots(
         let source = read_eligibility_source_with_control(
             conn,
             project_id,
-            &mut super::nir1_entity_relation_index::NeverStopGraphWorkControl,
+            &mut ForegroundValidationControl,
         )?;
         let mut roster_by_revision = BTreeMap::<String, Vec<GraphObjectRosterEntry>>::new();
         for entry in source.roster {
@@ -1792,7 +1795,7 @@ fn run_real_restore_mode(
                 &tx,
                 &stale_runtime,
                 project_id,
-                &mut super::nir1_entity_relation_index::NeverStopGraphWorkControl,
+                &mut ForegroundValidationControl,
             )?;
             tx.commit()?;
             Ok(snapshot)
@@ -1831,7 +1834,7 @@ fn run_real_restore_mode(
         let state = WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: std::sync::atomic::AtomicBool::new(false),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(()),
         };
         let install_started = Instant::now();
@@ -1954,13 +1957,13 @@ fn run_real_restore_mode(
             let source = read_eligibility_source_with_control(
                 &tx,
                 project_id,
-                &mut super::nir1_entity_relation_index::NeverStopGraphWorkControl,
+                &mut ForegroundValidationControl,
             )?;
             let incomplete = !is_complete_registered_with_control(
                 &tx,
                 project_id,
                 ENTITY_RELATION_INDEX_KEY,
-                &mut super::nir1_entity_relation_index::NeverStopGraphWorkControl,
+                &mut ForegroundValidationControl,
             )?;
             tx.commit()?;
             Ok((
@@ -2160,7 +2163,7 @@ fn run_real_restore_mode(
             Ok(read_eligibility_source_with_control(
                 conn,
                 project_id,
-                &mut super::nir1_entity_relation_index::NeverStopGraphWorkControl,
+                &mut ForegroundValidationControl,
             )?
             .roster
             .len())

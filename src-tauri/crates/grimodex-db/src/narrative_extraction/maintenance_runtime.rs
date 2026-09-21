@@ -51,6 +51,7 @@ use super::restore_rebuild::{
 };
 use super::source_revision::is_validation_terminated;
 use super::task_leases::with_immediate_transaction;
+use crate::workspace_lifecycle::{RunCreationTransactionOutcome, RunOwnership};
 use crate::narrative_maintenance_connection::{
     with_narrative_maintenance_graph_control, NarrativeMaintenanceGraphControlConfig,
 };
@@ -1158,6 +1159,16 @@ pub struct MaintenanceCycleRequest {
     pub work: Vec<MaintenanceWorkRequest>,
     #[serde(default)]
     pub wake_project_ids: Vec<String>,
+    /// Main's session-scoped delivery sequence. Native/shared owners may use
+    /// it to correlate receipts with the bounded delivery ledger; it is never
+    /// a durable Run identity and is reset with the Native session.
+    #[serde(default)]
+    pub delivery_sequence: Option<u64>,
+    /// Main's exact content fingerprint.  Native binds the sequence and
+    /// fingerprint to the shared lifecycle ledger before any worker or Run
+    /// side effect begins.
+    #[serde(default)]
+    pub delivery_fingerprint: Option<String>,
     /// Snapshot binding captured by the Electron main scheduler at enqueue
     /// time. Shared-crate callers may omit it because they already supply the
     /// pinned `Database`; the N-API adapter requires it before dispatch.
@@ -1294,6 +1305,39 @@ pub struct MaintenanceCycleControl<'a> {
     /// successful work item. The native owner must leave this execution
     /// requeueable until the exact foreground Run is released.
     pub work_deferred: &'a dyn Fn(&DesiredWork) -> anyhow::Result<()>,
+    /// Attach the exact durable Run/Task/Attempt tuple to the already
+    /// reserved lifecycle execution before the cycle can publish its result.
+    pub attach_run: Option<&'a dyn Fn(RunOwnership) -> anyhow::Result<()>>,
+    /// Reserve the exact Run/Task/Attempt tuple before the writer starts any
+    /// creation side effect.  The Native lifecycle owner uses this callback
+    /// to retain a CreationUnknown obligation if the transaction result is
+    /// lost; it is intentionally separate from `attach_run`, which records
+    /// the post-COMMIT Created/Reused evidence.
+    pub reserve_run: Option<&'a dyn Fn(RunOwnership) -> anyhow::Result<()>>,
+    /// Promote the exact reservation immediately before the first Run DML.
+    /// This keeps a partial insert from remaining indistinguishable from a
+    /// pre-transaction reservation.
+    #[allow(clippy::type_complexity)]
+    pub mark_run_creation_started: Option<&'a dyn Fn(&str) -> anyhow::Result<()>>,
+    /// Mark a reuse decision whose exact existing tuple has not yet been
+    /// attached. Recovery must retain this root instead of resolving the
+    /// reservation IDs as absent.
+    #[allow(clippy::type_complexity)]
+    pub mark_run_reuse_selection_unknown:
+        Option<&'a dyn Fn(&str, &str) -> anyhow::Result<()>>,
+    /// Resolve the most recently reserved creation slot after the outer
+    /// transaction reports a confirmed rollback or an ambiguous failure.
+    pub mark_run_creation_outcome:
+        Option<&'a dyn Fn(RunCreationTransactionOutcome) -> anyhow::Result<()>>,
+    /// Clear the process-local creation slot before beginning a new creation
+    /// transaction, so an early validation error cannot update an older Run.
+    pub reset_run_creation_tracking: Option<&'a dyn Fn() -> anyhow::Result<()>>,
+    /// Remove an exact Run ownership slot only after the surrounding durable
+    /// terminal transaction has committed.  Without this proof a healthy
+    /// connection is insufficient to release the lifecycle permit: a running
+    /// Run would otherwise be left without a recovery descriptor.
+    #[allow(clippy::type_complexity)]
+    pub mark_run_terminalized: Option<&'a dyn Fn(&str) -> anyhow::Result<()>>,
 }
 
 impl MaintenanceCycleRequest {
@@ -1389,6 +1433,10 @@ impl GraphWorkControl for MaintenanceCycleGraphControl<'_, '_> {
         }
         self.inner.check(stage)
     }
+
+    fn allows_full_eligibility(&self) -> bool {
+        self.inner.allows_full_eligibility()
+    }
 }
 
 /// RAII scope for the process-local finalization mask. The Native grant stays
@@ -1429,6 +1477,19 @@ pub(crate) fn maintenance_stop_signal(
 pub fn preflight_maintenance_cycle_request(
     request: &MaintenanceCycleRequest,
 ) -> anyhow::Result<Vec<DesiredWork>> {
+    if let Some(sequence) = request.delivery_sequence {
+        anyhow::ensure!(
+            sequence > 0,
+            "NEX_MAINTENANCE_DELIVERY_SEQUENCE_INVALID: sequence must be positive"
+        );
+        anyhow::ensure!(
+            request
+                .delivery_fingerprint
+                .as_deref()
+                .is_some_and(|fingerprint| !fingerprint.trim().is_empty()),
+            "NEX_MAINTENANCE_DELIVERY_FINGERPRINT_INVALID: sequence requires an exact fingerprint"
+        );
+    }
     let work = request.normalized_work()?;
     anyhow::ensure!(
         work.is_empty() || request.wake_project_ids.is_empty(),
@@ -3558,7 +3619,7 @@ fn dispatch_enabled_work(
 /// Classify foreground/no-wait contention as a transient queue outcome.  It
 /// must not enter the adapter-disabled Deferred lane or the delivery-failure
 /// retry budget.
-pub(crate) fn is_transient_maintenance_preemption(error: &anyhow::Error) -> bool {
+pub fn is_transient_maintenance_preemption(error: &anyhow::Error) -> bool {
     !is_maintenance_connection_cleanup_failure(error)
         && (error_chain_contains(error, "NEX_MAINTENANCE_CONNECTION_PREEMPTED")
             || error_chain_contains(error, "NEX_VALIDATION_TERMINATED:foreground-preempted"))
@@ -4862,6 +4923,8 @@ mod tests {
                 })
                 .collect(),
             wake_project_ids: Vec::new(),
+            delivery_sequence: None,
+            delivery_fingerprint: None,
             workspace_binding: None,
         }
     }
@@ -5805,6 +5868,8 @@ mod tests {
                 reasons: vec![BEFORE_CUTOVER_FOLLOW_UP_REASON.to_string()],
             }],
             wake_project_ids: Vec::new(),
+            delivery_sequence: None,
+            delivery_fingerprint: None,
             workspace_binding: None,
         };
         let error = request
@@ -6151,6 +6216,13 @@ mod tests {
                 work_completed: &work_completed,
                 work_noop_completed: &work_noop_completed,
                 work_deferred: &work_deferred,
+                attach_run: None,
+                reserve_run: None,
+                mark_run_creation_started: None,
+                mark_run_reuse_selection_unknown: None,
+                mark_run_creation_outcome: None,
+                reset_run_creation_tracking: None,
+                mark_run_terminalized: None,
             };
             let result =
                 run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
@@ -6506,6 +6578,8 @@ mod tests {
                     reasons: changed.reasons.clone(),
                 }],
                 wake_project_ids: Vec::new(),
+                delivery_sequence: None,
+                delivery_fingerprint: None,
                 workspace_binding: None,
             },
             |_| RecoveryMode::StartupRecovery,
@@ -6613,6 +6687,13 @@ mod tests {
                 work_completed: &work_completed,
                 work_noop_completed: &work_noop_completed,
                 work_deferred: &work_noop_completed,
+                attach_run: None,
+                reserve_run: None,
+                mark_run_creation_started: None,
+                mark_run_reuse_selection_unknown: None,
+                mark_run_creation_outcome: None,
+                reset_run_creation_tracking: None,
+                mark_run_terminalized: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db,
@@ -6673,6 +6754,13 @@ mod tests {
                 work_completed: &work_completed,
                 work_noop_completed: &work_completed,
                 work_deferred: &work_completed,
+                attach_run: None,
+                reserve_run: None,
+                mark_run_creation_started: None,
+                mark_run_reuse_selection_unknown: None,
+                mark_run_creation_outcome: None,
+                reset_run_creation_tracking: None,
+                mark_run_terminalized: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6745,6 +6833,13 @@ mod tests {
                 work_completed: &work_completed,
                 work_noop_completed: &work_completed,
                 work_deferred: &work_completed,
+                attach_run: None,
+                reserve_run: None,
+                mark_run_creation_started: None,
+                mark_run_reuse_selection_unknown: None,
+                mark_run_creation_outcome: None,
+                reset_run_creation_tracking: None,
+                mark_run_terminalized: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6779,6 +6874,120 @@ mod tests {
             })
             .expect("read late-cancel completion");
         assert_eq!(completed, 1, "grant-before-cancel must preserve success");
+    }
+
+    #[test]
+    fn adapter_preemption_preserves_prior_success_and_defers_followup() {
+        let db = open_backfill_cycle_db(&["project-1"]);
+        let preempt_verify = Arc::new(AtomicBool::new(false));
+        let preempted = Arc::new(AtomicBool::new(false));
+        let completed = Mutex::new(Vec::new());
+        let deferred = Mutex::new(Vec::new());
+        let preempt_verify_for_hook = Arc::clone(&preempt_verify);
+        let preempted_for_hook = Arc::clone(&preempted);
+        let waiters_for_hook = Arc::clone(&db.foreground_connection_waiters);
+        db.with_conn(|conn| {
+            conn.authorizer(Some(move |context: AuthContext<'_>| {
+                if matches!(
+                    context.action,
+                    AuthAction::Transaction {
+                        operation: rusqlite::hooks::TransactionOperation::Begin
+                    }
+                ) && preempt_verify_for_hook.load(Ordering::SeqCst)
+                    && !preempted_for_hook.swap(true, Ordering::SeqCst)
+                {
+                    // Publish a foreground waiter inside Verify's first SQL
+                    // phase, after recovery/dispatch and before its Run exists.
+                    waiters_for_hook.fetch_add(1, Ordering::SeqCst);
+                }
+                Authorization::Allow
+            }))?;
+            Ok(())
+        })
+        .expect("install deterministic foreground handoff");
+
+        let should_stop = || Ok::<_, anyhow::Error>(());
+        let no_op = |_item: &DesiredWork| Ok::<_, anyhow::Error>(());
+        let work_started = |item: &DesiredWork| {
+            preempt_verify.store(item.run_kind == AutomaticRunKind::Verify, Ordering::SeqCst);
+            Ok(())
+        };
+        let work_completed = |item: &DesiredWork| {
+            completed
+                .lock()
+                .expect("completed work")
+                .push(item.run_kind);
+            Ok(())
+        };
+        let work_deferred = |item: &DesiredWork| {
+            deferred.lock().expect("deferred work").push(item.run_kind);
+            Ok(())
+        };
+        let control = MaintenanceCycleControl {
+            should_stop: &should_stop,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &|_run_id: &str| Ok(()),
+            grant_finalize: &|_work_key: &str| Ok(()),
+            register_work: &no_op,
+            work_started: &work_started,
+            work_completed: &work_completed,
+            work_noop_completed: &no_op,
+            work_deferred: &work_deferred,
+            attach_run: None,
+            reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
+        };
+        let result = run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+            &db,
+            &backfill_cycle_request(&["project-1"]),
+            |_| RecoveryMode::SameProcessLive,
+            None,
+            None,
+            Some(&control),
+        );
+
+        // Remove the test waiter before any assertions or another DB read.
+        if preempted.load(Ordering::SeqCst) {
+            db.foreground_connection_waiters
+                .fetch_sub(1, Ordering::SeqCst);
+        }
+        let (completed_backfills, verify_runs) = db
+            .with_conn(|conn| {
+                conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+                assert!(conn.is_autocommit(), "preemption must roll back its phase");
+                conn.query_row(
+                    "SELECT
+                        SUM(run_kind = 'backfill' AND status = 'completed'),
+                        SUM(run_kind = 'dependency-verify')
+                     FROM narrative_extraction_runs WHERE project_id = 'project-1'",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read durable progress after clean preemption");
+        assert!(preempted.load(Ordering::SeqCst));
+        assert_eq!(completed_backfills, 1);
+        assert_eq!(verify_runs, 0);
+        assert_eq!(
+            *completed.lock().expect("completed work"),
+            [AutomaticRunKind::Backfill]
+        );
+        assert_eq!(
+            *deferred.lock().expect("deferred work"),
+            [AutomaticRunKind::Verify]
+        );
+        assert!(db.connection_reusable());
+        // Accepted describes this cycle's progress; the deferred work still
+        // requires Native to settle its attempt as interrupted.
+        let result = result.expect("foreground contention remains an accepted partial cycle");
+        assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+        assert!(result.has_more);
     }
 
     #[test]
@@ -6834,6 +7043,13 @@ mod tests {
                 work_completed: &work_completed,
                 work_noop_completed: &work_completed,
                 work_deferred: &work_completed,
+                attach_run: None,
+                reserve_run: None,
+                mark_run_creation_started: None,
+                mark_run_reuse_selection_unknown: None,
+                mark_run_creation_outcome: None,
+                reset_run_creation_tracking: None,
+                mark_run_terminalized: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6924,6 +7140,13 @@ mod tests {
                 work_completed: &work_completed,
                 work_noop_completed: &work_completed,
                 work_deferred: &work_completed,
+                attach_run: None,
+                reserve_run: None,
+                mark_run_creation_started: None,
+                mark_run_reuse_selection_unknown: None,
+                mark_run_creation_outcome: None,
+                reset_run_creation_tracking: None,
+                mark_run_terminalized: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -7043,6 +7266,13 @@ mod tests {
             work_completed: &no_op,
             work_noop_completed: &no_op,
             work_deferred: &no_op,
+            attach_run: None,
+            reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
         };
 
         let error = discover_durable_maintenance_work_with_coordinates_and_control(
@@ -7182,6 +7412,13 @@ mod tests {
             work_completed: &no_op,
             work_noop_completed: &no_op,
             work_deferred: &no_op,
+            attach_run: None,
+            reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
         };
         let controlled = discover_before_cutover_maintenance_work_with_coordinates_and_control(
             &db,
@@ -7319,6 +7556,8 @@ mod tests {
                     reasons: vec!["selector-error-regression".to_string()],
                 }],
                 wake_project_ids: Vec::new(),
+                delivery_sequence: None,
+                delivery_fingerprint: None,
                 workspace_binding: None,
             };
 

@@ -3,7 +3,10 @@
 use chrono::{Duration, Utc};
 use grimodex_core::canonical_json_digest;
 use rusqlite::{params, Connection, OptionalExtension};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use uuid::Uuid;
+
+use crate::workspace_lifecycle::RunCreationTransactionOutcome;
 
 use super::execution_state::next_run_lifecycle_timestamp_in_tx;
 use super::models::{ArtifactInput, ClaimTaskPayload};
@@ -502,14 +505,181 @@ pub(crate) fn with_immediate_transaction<T>(
     operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     conn.execute_batch("BEGIN IMMEDIATE")?;
-    match operation(conn) {
+    let operation_result = catch_unwind(AssertUnwindSafe(|| operation(conn)));
+    match operation_result {
         Ok(value) => {
-            grimodex_core::commit_or_rollback(conn)?;
-            Ok(value)
+            match value {
+                Ok(value) => {
+                    match conn.execute_batch("COMMIT") {
+                        Ok(()) => Ok(value),
+                        Err(error) => match conn.execute_batch("ROLLBACK") {
+                            Ok(()) if conn.is_autocommit() => Err(error.into()),
+                            Ok(()) => Err(anyhow::Error::new(error).context(
+                                "NEX_DB_TRANSACTION_CLEANUP_UNPROVEN: rollback did not restore autocommit",
+                            )),
+                            Err(rollback_error) => Err(anyhow::Error::new(error).context(format!(
+                                "NEX_DB_TRANSACTION_CLEANUP_UNPROVEN: rollback failed: {rollback_error}"
+                            ))),
+                        },
+                    }
+                }
+                Err(error) => match conn.execute_batch("ROLLBACK") {
+                    Ok(()) => Err(error),
+                    Err(rollback_error) => Err(error.context(format!(
+                        "NEX_DB_TRANSACTION_CLEANUP_UNPROVEN: rollback failed: {rollback_error}"
+                    ))),
+                },
+            }
         }
-        Err(error) => {
-            let _ = conn.execute_batch("ROLLBACK");
+        Err(panic) => {
+            if let Err(rollback_error) = conn.execute_batch("ROLLBACK") {
+                resume_unwind(Box::new(format!(
+                    "NEX_DB_TRANSACTION_CLEANUP_UNPROVEN: rollback failed while unwinding: {rollback_error}"
+                )));
+            }
+            resume_unwind(panic);
+        }
+    }
+}
+
+/// Transaction wrapper for the controlled maintenance Run-creation boundary.
+/// It reports confirmed rollback separately from an ambiguous commit/cleanup
+/// failure so the lifecycle core can retain the exact reservation correctly.
+pub(crate) fn with_immediate_transaction_with_creation_outcome<T>(
+    conn: &Connection,
+    operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
+    outcome: impl FnOnce(RunCreationTransactionOutcome) -> anyhow::Result<()>,
+) -> anyhow::Result<T> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let operation_result = catch_unwind(AssertUnwindSafe(|| operation(conn)));
+    match operation_result {
+        Ok(Ok(value)) => match conn.execute_batch("COMMIT") {
+            Ok(()) => Ok(value),
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                if let Err(outcome_error) = outcome(RunCreationTransactionOutcome::Unknown) {
+                    return Err(anyhow::Error::new(error).context(outcome_error.to_string()));
+                }
+                Err(error.into())
+            }
+        },
+        Ok(Err(error)) => {
+            let rollback = conn.execute_batch("ROLLBACK");
+            let transaction_outcome = if rollback.is_ok() && conn.is_autocommit() {
+                RunCreationTransactionOutcome::ConfirmedRollback
+            } else {
+                RunCreationTransactionOutcome::Unknown
+            };
+            if let Err(outcome_error) = outcome(transaction_outcome) {
+                return Err(error.context(outcome_error.to_string()));
+            }
             Err(error)
         }
+        Err(panic) => {
+            let rollback = conn.execute_batch("ROLLBACK");
+            let transaction_outcome = if rollback.is_ok() && conn.is_autocommit() {
+                RunCreationTransactionOutcome::ConfirmedRollback
+            } else {
+                RunCreationTransactionOutcome::Unknown
+            };
+            if let Err(outcome_error) = outcome(transaction_outcome) {
+                resume_unwind(Box::new(format!(
+                    "maintenance creation outcome callback failed while unwinding: {outcome_error}"
+                )));
+            }
+            resume_unwind(panic);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn creation_outcome_reports_confirmed_rollback_after_partial_dml() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let mut observed = None;
+        let error = with_immediate_transaction_with_creation_outcome(
+            &conn,
+            |conn| {
+                conn.execute_batch(
+                    "CREATE TABLE creation_probe (id INTEGER PRIMARY KEY);\n                     INSERT INTO creation_probe (id) VALUES (1);",
+                )?;
+                Err::<(), _>(anyhow::anyhow!("synthetic creation failure"))
+            },
+            |outcome| {
+                observed = Some(outcome);
+                Ok(())
+            },
+        )
+        .expect_err("the synthetic creation failure must be returned");
+
+        assert!(error.to_string().contains("synthetic creation failure"));
+        assert_eq!(
+            observed,
+            Some(RunCreationTransactionOutcome::ConfirmedRollback)
+        );
+        assert!(conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'creation_probe'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .expect("sqlite query")
+            .is_none());
+    }
+
+    #[test]
+    fn creation_outcome_is_unknown_when_rollback_cannot_be_confirmed() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let mut observed = None;
+        let error = with_immediate_transaction_with_creation_outcome(
+            &conn,
+            |conn| {
+                conn.execute_batch(
+                    "CREATE TABLE creation_probe (id INTEGER PRIMARY KEY);\n                     INSERT INTO creation_probe (id) VALUES (1);\n                     ROLLBACK;",
+                )?;
+                Err::<(), _>(anyhow::anyhow!("synthetic ambiguous failure"))
+            },
+            |outcome| {
+                observed = Some(outcome);
+                Ok(())
+            },
+        )
+        .expect_err("the synthetic ambiguous failure must be returned");
+
+        assert!(error.to_string().contains("synthetic ambiguous failure"));
+        assert_eq!(observed, Some(RunCreationTransactionOutcome::Unknown));
+        assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn immediate_transaction_rolls_back_before_resuming_a_panic() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = with_immediate_transaction(&conn, |conn| {
+                conn.execute_batch(
+                    "CREATE TABLE panic_probe (id INTEGER PRIMARY KEY); INSERT INTO panic_probe (id) VALUES (1);",
+                )?;
+                panic!("synthetic transaction panic");
+                #[allow(unreachable_code)]
+                Ok::<(), anyhow::Error>(())
+            });
+        }));
+
+        assert!(result.is_err());
+        assert!(conn.is_autocommit());
+        assert!(conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'panic_probe'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .expect("sqlite query")
+            .is_none());
     }
 }

@@ -1053,10 +1053,7 @@ fn apply_codex_rename_updates_in_tx(
     for scene_id in changed_scene_ids {
         feed_events.push(
             crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
-                conn,
-                project_id,
-                &scene_id,
-                updated_at,
+                conn, project_id, &scene_id, updated_at,
             )?,
         );
     }
@@ -1429,6 +1426,24 @@ pub struct ProjectCreatePayload {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectDeletePayload {
     pub project_id: String,
+}
+
+/// Own the process-local destructive permit for the complete delete attempt.
+/// The namespace check itself can fail (or the writer can unwind) after the
+/// permit is acquired, so release must be tied to scope rather than to the
+/// final `with_conn` success path.
+struct ProjectDestructivePermitGuard {
+    namespace: String,
+    project_id: String,
+}
+
+impl Drop for ProjectDestructivePermitGuard {
+    fn drop(&mut self) {
+        crate::narrative_extraction::release_project_destructive_permit_in_namespace(
+            &self.namespace,
+            &self.project_id,
+        );
+    }
 }
 
 const PROJECT_CREATE_BUILTIN_SLUGS: [&str; 4] = ["character", "location", "item", "lore"];
@@ -1960,8 +1975,41 @@ pub fn project_patch(db: &Database, payload: ProjectPatchPayload) -> anyhow::Res
 /// therefore retained.
 pub fn project_delete(db: &Database, payload: ProjectDeletePayload) -> anyhow::Result<()> {
     require_non_empty(&payload.project_id, "projectId")?;
-    db.with_conn(|conn| {
+    // This permit is process-local coordination with the shared lifecycle
+    // owner.  The durable running-Run check below remains mandatory because
+    // another process may still hold a writer or recovery responsibility.
+    let lifecycle_namespace = crate::narrative_extraction::project_lifecycle_namespace_for_database(db)?;
+    crate::narrative_extraction::try_reserve_project_destructive_permit_in_namespace(
+        &lifecycle_namespace,
+        &payload.project_id,
+    )?;
+    let _permit = ProjectDestructivePermitGuard {
+        namespace: lifecycle_namespace,
+        project_id: payload.project_id.clone(),
+    };
+    let creation_reservation_active =
+        crate::narrative_extraction::project_creation_reservation_active_for_database(
+            db,
+            &payload.project_id,
+        )?;
+    let result = db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
+        anyhow::ensure!(
+            !creation_reservation_active,
+            "project '{}' has a reserved or unresolved lifecycle Run; deletion is not admitted",
+            payload.project_id
+        );
+        let active_runs: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs
+              WHERE project_id = ?1 AND status IN ('pending', 'running')",
+            rusqlite::params![payload.project_id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            active_runs == 0,
+            "project '{}' has active lifecycle ownership; deletion is not admitted",
+            payload.project_id
+        );
         let immutable_applications: i64 = tx.query_row(
             "SELECT COUNT(*)
                FROM narrative_proposal_applications a
@@ -2111,7 +2159,8 @@ pub fn project_delete(db: &Database, payload: ProjectDeletePayload) -> anyhow::R
         anyhow::ensure!(deleted == 1, "project '{}' not found", payload.project_id);
         tx.commit()?;
         Ok(())
-    })
+    });
+    result
 }
 
 pub fn create_scan_staging_project(
@@ -7807,7 +7856,11 @@ mod tests {
                     ),
                     (
                         json!({"kind": "scene-scope", "sceneId": "moved"}),
-                        json!(["/binding/sourceToken", "/binding/updatedAt", "/binding/version"]),
+                        json!([
+                            "/binding/sourceToken",
+                            "/binding/updatedAt",
+                            "/binding/version"
+                        ]),
                         1,
                         2,
                     ),
@@ -8161,7 +8214,10 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(scope_version, 4, "forward/undo/redo refreshes scope OCC");
-            assert_eq!(scope_event_count, 3, "forward/undo/redo append scope Feed events");
+            assert_eq!(
+                scope_event_count, 3,
+                "forward/undo/redo append scope Feed events"
+            );
             Ok(())
         })
         .expect("inspect rename body snapshots");

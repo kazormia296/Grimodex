@@ -68,7 +68,8 @@ export interface NarrativeMaintenanceTriggerCoordinator {
     wakeOutboxDrainFailed?: boolean;
     wakeOutboxPendingRows?: boolean;
   };
-  dispose(): void;
+  /** Stop new discovery and join a discovery already admitted by this coordinator. */
+  dispose(): void | Promise<void>;
 }
 
 export interface NarrativeMaintenanceTriggerCoordinatorOptions {
@@ -102,6 +103,13 @@ function parseJsonWire(raw: unknown): unknown {
   } catch {
     throw new Error("native maintenance discovery returned malformed JSON");
   }
+}
+
+function isWorkspaceLifecycleUnavailableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(
+    "workspace lifecycle has active owners or unacknowledged work",
+  );
 }
 
 function normalizeBinding(raw: unknown): NarrativeMaintenanceWorkspaceBinding {
@@ -321,6 +329,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   let wakeOutboxDrainFailed = false;
   let wakeOutboxPendingRows = false;
   let wakeOutboxDrainPromise: Promise<void> | null = null;
+  let discoveryPromise: Promise<void> | null = null;
   let lastSettledDiscovery: {
     generation: number;
     response: NarrativeMaintenanceDiscoveryResult;
@@ -421,12 +430,12 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     noteMutation();
     const discoveryGeneration = generation;
     let completedResponse: NarrativeMaintenanceDiscoveryResult | null = null;
-    void (async () => {
+    const operation = (async () => {
       try {
         const response = normalizeDiscoveryResponse(
           await discover.call(backend, reason),
         );
-        if (discoveryGeneration !== chainGeneration) return;
+        if (disposed || discoveryGeneration !== chainGeneration) return;
         if ("status" in response) {
           requestRediscovery();
           return;
@@ -643,6 +652,11 @@ export function createNarrativeMaintenanceTriggerCoordinator(
         }
       }
     })();
+    const trackedDiscovery = operation.finally(() => {
+      if (discoveryPromise === trackedDiscovery) discoveryPromise = null;
+    });
+    discoveryPromise = trackedDiscovery;
+    void trackedDiscovery;
   };
 
   const requestRediscovery = (): void => {
@@ -780,11 +794,17 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           return row.id;
         });
       } catch (error) {
-        warn("[narrative-maintenance] wake outbox listing failed:", error);
+        if (!isWorkspaceLifecycleUnavailableError(error)) {
+          warn("[narrative-maintenance] wake outbox listing failed:", error);
+        }
         setWakeOutboxState({
           inFlight: false,
           succeeded: false,
-          failed: true,
+          // A lifecycle transition is an expected temporary inability to
+          // inspect the old authority. The next opened/recovery event will
+          // retry the durable wake; it is not a malformed outbox or a lost
+          // discovery failure.
+          failed: !isWorkspaceLifecycleUnavailableError(error),
           pendingRows: false,
         });
         emitDiscoveryObservation(chainGeneration, false, workspaceBinding);
@@ -949,14 +969,21 @@ export function createNarrativeMaintenanceTriggerCoordinator(
         wakeOutboxPendingRows,
       };
     },
-    dispose(): void {
-      if (disposed) return;
+    async dispose(): Promise<void> {
+      if (disposed) {
+        await Promise.all([
+          discoveryPromise,
+          wakeOutboxDrainPromise,
+        ]);
+        return;
+      }
       disposed = true;
       noteMutation();
       clearTimer();
       pendingEvent = null;
       pendingRetryDelayMs = null;
       pendingWakeOutboxAck = null;
+      await Promise.all([discoveryPromise, wakeOutboxDrainPromise]);
     },
   };
 }
