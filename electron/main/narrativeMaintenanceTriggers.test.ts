@@ -113,7 +113,7 @@ describe("narrative maintenance trigger coordinator", () => {
     await vi.runOnlyPendingTimersAsync();
     expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledOnce();
 
-    const disposal = coordinator.dispose();
+    const disposal = Promise.resolve(coordinator.dispose());
     let settled = false;
     void disposal.then(() => {
       settled = true;
