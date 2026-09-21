@@ -1,12 +1,8 @@
 ---
 name: adversarial-review
 description: >
-  コード差分を複数の独立 reviewer で多次元かつ敵対的に検証し、候補 finding を
-  別 reviewer と coordinator が反証してから、根拠のあるバグ、脆弱性、回帰、
-  テスト不足だけを報告する。reviewer ごとの model、reasoning effort、Fast service tier の
-  requested／effective 値を追跡する。「多次元敵対的レビュー」「敵対的レビュー」
-  「複眼レビュー」「red-team review」、または通常レビューより強い独立検証を求められた
-  ときに使用する。単一 pass の通常コードレビューには review-code を使用する。
+  コード差分に多次元の敵対的レビューや独立検証を求められたとき、複数 reviewer の
+  finding を相互反証して報告する。通常の単一 pass レビューは review-code を使う。
 ---
 
 # Adversarial Review

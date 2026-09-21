@@ -54,6 +54,8 @@ by an external CLI/runtime that Grimodex cannot observe. Every registered full-o
 point to an executable audit contract test. A partial-observable path must additionally declare the
 omitted value and representation retained. Owner labels without evidence do not satisfy this law.
 
+<a id="GDX-PRECHECK-001"></a>
+
 ## GDX-PRECHECK-001 — Stop on failed prechecks
 
 Load required references and verify inputs, permissions, tool availability, freshness, and output
@@ -244,12 +246,18 @@ Each case owns a unique run, conversation, workspace, and artifact namespace, de
 timezone, time, and available tool schemas, and tears down all derived state. Cases never depend on
 another case's history or files.
 
+<a id="GDX-TRACE-001"></a>
+
 ## GDX-TRACE-001 — Preserve traceability and failure state
 
 Requirement ID, canonical source, implementation, evaluation case, selected suite, command result,
 and failure class remain linked. Failures use `[routing]`, `[precheck]`, `[tool]`, `[policy]`,
 `[quality]`, or `[artifact]`. Runnable Heavy evaluations are `deferred` until executed; missing
 runners or prerequisites are `blocked`. Neither state is ever reported as `passed`.
+
+Normal PR and branch pushes do not start hosted GitHub Actions runners. The absence of hosted PR
+checks is not evidence of a passing gate. Windows NSIS final compilation remains a separate
+manual Full CI / tag-release obligation; an unavailable release-only check is never passed.
 
 When hosted PR checks are absent, focused validation finishes first. If a completion commit is in scope,
 the candidate commit is created before any PR/release evidence; the candidate must be clean. Only when PR/release evidence is requested
@@ -323,3 +331,34 @@ quality is recorded by a separate maintainer-local qualification with its own sc
 `QUALIFIED` / `HOLD` / `FAILED` / `INCOMPLETE` vocabulary. Qualification evidence cannot be reused
 as a formal certification report or decision, and its absence or failure cannot silently change a
 certification or merge verdict that explicitly excludes live model quality.
+
+<a id="agent-validation"></a>
+
+## Agent validation scope
+
+Choose validation from the requested work and the affected contracts before starting commands.
+
+- Investigation, inventory, explanation, or review only: Read-only findings; no Quick/Full solely for inspection
+- Ordinary prose, comments, or formatting: Relevant diff, formatting, and link checks
+- Implementation or bug fix: Focused checks for changed behavior and affected boundaries
+- AI instructions, skills, policy, or evaluation contracts: Related contract tests and the canonical `grimodex-impact-gate` Light evaluation
+- Commit only: Focused validation and the requested candidate commit; no Quick or merge-readiness claim
+- PR/release evidence with CI allowed: Clean candidate Quick plus immediate verify under GDX-TRACE-001
+- Merge or release tag with CI allowed: Full and verify under GDX-TRACE-001, including applicable preflight
+
+Instruction and policy changes are behavior changes, even when stored in Markdown. Reuse a successful
+command result only for the same candidate, environment, and command; rerun when those inputs change,
+a failure needs resolution, or an unresolved concern warrants it. Do not add whole-suite testing just
+because a targeted check passed. This classification does not change the impact selector's all-suite
+fallback for empty, unavailable, or unclassified diffs, nor replace a required acceptance receipt.
+
+<a id="immutable-identity"></a>
+
+## Immutable identity and bounded lookup
+
+For changes involving immutable child/revision records, bind restoration, Decision writes, rereads,
+display, and receipts to the same child/revision ID. Never reselect by parent `runId` alone, and verify
+that non-target Decision records remain unchanged. A bounded lookup must not filter an already limited
+global list and infer absence; use authority-scoped lookup or exhaust pagination. Mocks reproduce
+limit, order, cursor, and N/N+1 boundaries. Product journeys wait for the newly created durable ID and
+its corresponding UI projection before editing; selector visibility alone is not a ready signal.

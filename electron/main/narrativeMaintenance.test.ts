@@ -202,6 +202,68 @@ describe("narrative maintenance scheduler", () => {
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
   });
 
+  it("does not warn for an authorized process interruption terminal receipt", async () => {
+    const binding = { authorityId: "authority-process-interruption", generation: 4 };
+    const workItem = work(
+      "project-process-interruption",
+      "backfill",
+      "backfill:v2",
+      "open",
+    );
+    const canonicalWorkKey = canonicalNarrativeMaintenanceWorkKey(workItem);
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue({
+      status: "ci-process-interruption-pending",
+      fault: "process-interruption",
+      runId: "run-process-interruption",
+      authorityId: binding.authorityId,
+      generation: binding.generation,
+    });
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [{ workKey: canonicalWorkKey, status: "interrupted" }],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
+    const { scheduler, warn } = createScheduler(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+      },
+      vi.fn(),
+      { onCiProcessInterruption: () => true },
+    );
+
+    scheduler.request(workItem);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+    expect(
+      renderedWarnings(warn).some((message) =>
+        message.includes("background cycle failed"),
+      ),
+    ).toBe(false);
+  });
+
   it("rejects when timer-time authorization revalidation throws", async () => {
     const binding = { authorityId: "authority-1", generation: 7 };
     const ack: Parameters<

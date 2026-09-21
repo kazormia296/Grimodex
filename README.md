@@ -114,6 +114,18 @@ cargo check --manifest-path electron/native/grimodex-node/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
 ```
 
+### Working with coding agents / コーディングエージェントとの開発
+
+[AGENTS.md](AGENTS.md) is the shared project entrypoint; [CLAUDE.md](CLAUDE.md) loads it for Claude Code.
+Task-specific procedures live in [.agents/skills](.agents/skills). Read the references relevant to the
+change. Validation scope and PR/release evidence requirements are maintained in the
+[quality policy](policies/quality/iron-laws.md#agent-validation) and [local CI runbook](docs/local-ci-runner.md).
+
+共通の入口は [AGENTS.md](AGENTS.md)、個別作業の手順は [.agents/skills](.agents/skills) です。
+依頼する際は、期待する結果、変更してよい範囲、完了条件を伝えてください。
+調査・文書修正・実装・commit・PR・release は、それぞれ必要な検証と操作範囲が異なります。
+この案内は開発手順の参照であり、下記のコントリビューション条件を変更するものではありません。
+
 ### First-build setup / 初回ビルドの準備
 
 - **N-API, ONNX Runtime & UniDic** — Run `pnpm napi:build` before the first Electron launch and after native Rust changes. The first Rust build downloads the ONNX Runtime binaries (`ort`) and the UniDic dictionary (`lindera`, embedded for the Japanese prose linter). Network access is required, so the first build is slow.

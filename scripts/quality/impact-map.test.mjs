@@ -340,6 +340,33 @@ test("Narrative diagnostic fixtures route through the conservative quality gate"
   assert.equal(selection.fallback, false);
 });
 
+test("shared agent instructions and Claude adapters select all Light suites explicitly", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  for (const instructionPath of [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GLOBAL_CLAUDE.md",
+    "src-CLAUDE.md",
+    "src-tauri-CLAUDE.md",
+    "README.md",
+    ".agents/skills/implement-feature/SKILL.md",
+    ".claude/skills/implement-feature/SKILL.md",
+    ".claude/skills/update-licenses/SKILL.md",
+    "policies/quality/iron-laws.md",
+  ]) {
+    const selection = selectImpact(map, [instructionPath]);
+    assert.ok(selection.matchedRuleIds.includes("quality-foundation"), instructionPath);
+    assert.deepEqual(selection.suiteIds, map.allSuites, instructionPath);
+    assert.ok(selection.requirementIds.includes("GDX-PRECHECK-001"), instructionPath);
+    assert.ok(selection.requirementIds.includes("GDX-TRACE-001"), instructionPath);
+    assert.equal(selection.fallback, false, instructionPath);
+  }
+});
+
 test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async () => {
   const [impactSource, manifestSource] = await Promise.all([
     readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),

@@ -1,30 +1,32 @@
 ---
 name: ship-branch
 description: >
-  現在の clean かつ commit 済み作業ブランチを push し、ready PR の作成または再利用、
-  CI・レビュー・HEAD の確認、squash merge、base branch への反映確認まで進める。
-  「PR出して」「プルリク作って」「pushしてマージ」「マージまでして」
-  「shipして」「リモートに上げてPR」で使用する。commit作成自体は行わない。
-  version更新を含むリリース準備は bump-version を主フローとし、release commit後の
-  branch push、PR、mergeだけを担う。GitHub Releaseは公開しない。
+  Grimodex の clean な commit 済みブランチを、依頼された push、PR、merge の段階まで
+  進め、候補 HEAD と検証証跡を照合する。実装変更の commit 作成、version 更新、Release 公開は含めない。
 ---
 
 # Ship Branch
 
-現在の作業ブランチを `push → PR → gate確認 → merge → remote base検証` まで進める。base branch へ直接 push しない。失敗・pending・競合・未解決レビュー・HEAD 不一致がある状態ではマージしない。
+現在の作業ブランチを `push → PR → gate確認 → merge → remote base検証` のうち、依頼された段階まで進める。base branch へ直接 push しない。失敗・pending・競合・未解決レビュー・HEAD 不一致がある状態ではマージしない。
+
+merge のために遅れた branch を安全に同期する作業は含む。新たな実装修正とその completion commit は
+実装／修正 skill が担当し、候補が変われば証跡を取り直す。
 
 ## 1. ゴールと前提を確認する
 
-1. 依頼が PR 作成までか、マージまでかを依頼文から確定する。マージまで明示されている場合、そのゴールをマージ権限として扱い、green 後に聞き直さない。
+1. 依頼が push のみ、PR 作成まで、マージまでのどれかを依頼文から確定する。マージまで明示されている場合、そのゴールをマージ権限として扱い、green 後に聞き直さない。
 2. `git branch --show-current` で detached HEAD、`master`、`main` ではないことを確認する。
 3. `git status --short` が clean であることを確認する。未コミット変更があれば停止し、変更内容を保護したまま適切な実装／修正スキルへ渡す。`git add -A` は使わない。
 4. GitHub 認証は `AGENTS.md` の sandbox 手順に従って確認する。
 5. `git fetch origin master` 後、`git log origin/master..HEAD --oneline` に公開対象 commit があることを確認する。
 6. `git rev-parse HEAD` を記録し、この SHA を push と merge の期待値にする。
 7. push 前に同じ head branch の open PR を検索し、PR の base、head SHA、draft、auto-merge 状態を確認する。
-8. 既存 PR で auto-merge が有効な場合、PR 作成だけがゴールなら push せず停止する。マージまでがゴールなら、push 前に auto-merge を無効化して明示的な HEAD 固定マージへ切り替え、無効化を確認できなければ停止する。
+8. 既存 PR で auto-merge が有効な場合、push のみまたは PR 作成だけがゴールなら push せず停止する。マージまでがゴールなら、push 前に auto-merge を無効化して明示的な HEAD 固定マージへ切り替え、無効化を確認できなければ停止する。
 
 `master`／`main` に公開対象 commit がある場合、base へ直接 push せず作業ブランチへ退避する。安全な branch 名を依頼内容から決められない場合だけユーザーへ確認する。
+
+push のみでは手順2の PR／merge 用 Quick／Full を開始せず、手順3の remote HEAD 確認で完了する。
+PR 作成までなら、該当する Quick gate と手順4までで完了し、手順5以降の merge 用 gate へ進まない。
 
 ## 2. ローカルCI gateを固定する
 

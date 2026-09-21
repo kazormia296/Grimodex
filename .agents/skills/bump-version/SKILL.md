@@ -1,11 +1,8 @@
 ---
 name: bump-version
 description: >
-  Grimodex の Electron リリースバージョンを上げ、リリースノート、commit、
-  branch、PR、merge、注釈付き Release tag、GitHub Draft Release の確認まで進める。
-  Release は公開せず、Draft のまま停止する。
-  「バージョン上げて」「パッチ／マイナー／メジャーバージョン」
-  「リリースタグ」「リリース準備して」で使用する。
+  Grimodex の Electron バージョン更新とリリース準備を、依頼された段階まで進める。
+  tag 作成後の終端は GitHub Draft Release の確認とし、Release は公開しない。
 ---
 
 # Bump Version
