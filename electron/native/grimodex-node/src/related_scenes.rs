@@ -128,7 +128,7 @@ fn current_operation(state: &AppState, lease: &Lease) -> Result<bool> {
     }
     let db = op.request.database();
     let mut control = build::RelatedScenesBuildControl::new(state, &op.request, &op.participant);
-    db.with_read_transaction(|conn| {
+    db.with_participant_read_transaction(&op.participant, |conn| {
         let RetrievalSceneSourceRead::Available(source) =
             read_retrieval_scene_source(conn, op.source.project_id(), op.source.scene_id())?
         else {
@@ -302,7 +302,7 @@ pub(crate) fn qualify_evidence(state: &AppState, owner: &str, identity: &str) ->
             &lease.data.request,
             &lease.data.participant,
         );
-        let result = db.with_read_transaction(|conn| {
+        let result = db.with_participant_read_transaction(&lease.data.participant, |conn| {
             index::read_chronicle_evidence_navigation_with_control(
                 conn,
                 db.nir_chronicle_index_runtime(),

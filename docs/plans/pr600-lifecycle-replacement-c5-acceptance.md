@@ -69,21 +69,57 @@ implementation history includes the following PR #601 review corrections:
 - Project lifecycle reservations are keyed by verified database identity plus
   project id, so equal ids in independent workspace copies do not interfere.
 
-The last pre-P1 checkpoint, `261676581966cc0748e0272876e1c0a129961e69`,
-received Request changes for Related Scenes/Chronicle eligibility reads that
-could not observe lifecycle stop during SQL row scans and serialization. The
-corrective lane propagates the pinned request's `GraphWorkControl` through
-Chronicle source/build/canonical/query/publish and Related Scenes status,
-qualification, validation, and evidence navigation. The focused Rust checks
-below validate that correction; independent acceptance is recorded for the
-final commit in the external ledger.
+Checkpoint `261676581966cc0748e0272876e1c0a129961e69` received Request
+changes for Related Scenes/Chronicle eligibility reads that could not observe
+lifecycle stop during SQL row scans and serialization. The first correction
+propagated the pinned request's `GraphWorkControl` through Chronicle
+source/build/canonical/query/publish and Related Scenes status, qualification,
+validation, and evidence navigation.
+
+That first candidate, `5ef56b0763ec2b708e1d67b6d05e91c8c13f0cb4`, received
+Luna Max and Sol Request changes: P1 for SQLite VM work before the first row
+that still did not observe stop, and P2 for background embedding admission
+that could wait without observing stop. Its focused passes below are
+historical evidence, not acceptance of the current correction.
+
+The r2 working-tree correction uses the existing participant's SQL scope for
+all Related Scenes reads and publication, with SQLite progress checks every
+1,000 VM instructions and the existing cleanup, typed termination, and
+quarantine behavior. Background embedding identity/document admission uses
+50 ms waits with stop and epoch checks, including checks between documents.
+These changes do not promise hard 30-second termination of synchronous
+inference or an OS stall. Independent acceptance remains candidate-bound in
+the external ledger.
 
 After the final clean commit, `.artifacts/c5-final-candidate.json` and the
 PR #601 body record the exact base/head/tree, reviewer results, focused
 evidence, and Quick/Full plus immediate verification receipts. Earlier reviews
 and receipts do not establish acceptance of the final candidate.
 
-## Current pre-freeze focused evidence (2026-09-21)
+## Current r2 pre-freeze focused evidence (2026-09-21)
+
+- Chronicle focused suite — 56 tests passed; `.artifacts/pr601-chronicle-tests-r2.log`.
+- Maintenance connection focused suite — 22 tests passed; `.artifacts/pr601-connection-tests-r2.log`.
+- Shared semantic suite — 275 tests passed; `.artifacts/pr601-semantic-tests.log`.
+- Native full library suite — 155 tests passed, including the wrapped Verify preemption regression; `.artifacts/pr601-napi-tests-r2.log`. The regression failed before classifier reuse in `.artifacts/pr601-wrapped-preemption-before.log`.
+- `cargo check --manifest-path electron/native/grimodex-node/Cargo.toml` — passed; `.artifacts/pr601-napi-check-r2.log`.
+- Maintenance runtime focused suite — 35 tests passed; `.artifacts/pr601-maintenance-runtime-tests-r2.log`.
+- `pnpm test:narrative:lifecycle` — 38 shared-core tests, one Freshness lifecycle test, the isolated harness, 9 Native adapter tests, and 3 Native Open/Restore tests passed; `.artifacts/pr601-lifecycle-tests-r2.log`.
+
+The Native full suite compiles the final classifier correction. The earlier
+DB and semantic results cover unchanged implementation; the only later shared
+change exports the existing classifier for Native reuse. The lifecycle gate
+used the default Cargo profiles; the other r2 Rust commands used two build
+jobs and debug-free dev/test profiles.
+
+These focused results are from the corrective working tree and do not
+establish final acceptance. Their exact commands and candidate binding are
+recorded in the final ledger after the correction is complete.
+
+## First correction checkpoint evidence (2026-09-21)
+
+These results preceded the P1/P2 findings on
+`5ef56b0763ec2b708e1d67b6d05e91c8c13f0cb4` and are not r2 acceptance:
 
 - `pnpm test:electron --run electron/main/narrativeMaintenance.test.ts electron/main/narrativeMaintenanceShutdown.test.ts electron/main/narrativeMaintenanceBootstrap.test.ts electron/main/narrativeFreshness.test.ts electron/main/relatedScenesReconciler.test.ts` — 5 files, 101 tests passed.
 - `pnpm test:electron --run electron/main/narrativeMaintenanceDelivery.test.ts electron/main/narrativeMaintenance.followup.test.ts electron/main/narrativeMaintenance.review-fixes.test.ts electron/main/narrativeMaintenance.reacceptance.test.ts electron/main/narrativeMaintenance.reacceptance.wire.test.ts` — 5 files, 41 tests passed.
@@ -94,18 +130,21 @@ and receipts do not establish acceptance of the final candidate.
 - `pnpm verify:quality` — passed.
 
 The Rust commands used `CARGO_BUILD_JOBS=2`, `CARGO_PROFILE_DEV_DEBUG=0`, and
-`CARGO_PROFILE_TEST_DEBUG=0`, matching the debug-free Full profiles. Cancellation
-is observed at row and serialization boundaries; this does not assert a hard
-30-second completion bound for an individual SQLite VM operation or the
-existing audit-chain verification.
+`CARGO_PROFILE_TEST_DEBUG=0`, matching the debug-free Full profiles. The
+row/serialization checks covered here did not close the subsequently reported
+pre-first-row SQLite VM and background admission gaps.
 
-These results precede final freeze and are focused implementation evidence,
-not independent acceptance. The final ledger records the Rust results and
-their candidate binding after the correction is complete.
+A real Layer C `editor-persistence` journey failed on this first candidate
+because maintenance unexpectedly entered recovery. A focused regression
+subsequently reproduced the Native classifier losing typed foreground
+preemption behind the existing Verify validation context. The correction
+reuses the shared cause-chain classifier and preserves cleanup-failure
+precedence. The final ledger records the required rebuilt Journey result;
+the first-candidate failure is not an attributed environment limitation.
 
 ## Historical focused evidence
 
-The following results were recorded before the current P1 correction. The
+The following results predate both Related Scenes corrections. The
 checkpoint `a076389526654206fe712ae7f4bacd7ce4b42731` also received a bounded
 read-only Sol max review (`gpt-5.6-sol`, max reasoning; P1: 0, P2: 0) covering
 capacity retry, exact H+1 retention, quiescence cancellation, partial-claim
@@ -132,7 +171,7 @@ release, and Restore `Unchanged`. That approval is historical.
 | C0 contract review | historical bounded/limited | The current ledger includes the Related Scenes callsites; final review must inspect that correction. |
 | C1 core review | historical bounded/limited | Earlier core coverage does not establish acceptance of the current correction. |
 | Luna Max / Sol C5 reviews | see final candidate ledger | Read-only independent results and exact candidate identity are recorded in `.artifacts/c5-final-candidate.json` and PR #601. |
-| Layer C IPC journey | pending | A full Electron IPC → N-API → SQLite → renderer run has not been claimed. |
+| Layer C IPC journey | see final candidate ledger | The first candidate failed with unexpected maintenance recovery. The final ledger records rebuilt diagnostics and canonical Full journeys; these do not establish the complete T01–T36 fault matrix. |
 | T01–T36 matrix | pending | Focused tests cover representative cases; absence of a complete matrix is not a pass. |
 | Quick + immediate verify | see final candidate ledger | Both commands and receipt paths use the same fixed base/head in the external ledger. |
 | Full + immediate verify | see final candidate ledger | Runs after independent acceptance and resource-isolation preflight; both commands and receipts use the same fixed base/head. |
@@ -163,7 +202,7 @@ gate_status_c5=see final_candidate_ledger for candidate-bound review and receipt
 focused_commands_and_receipts=pre-freeze evidence above; final candidate binding recorded in final_candidate_ledger
 quick_and_verify=exact commands, fixed base/head, and receipt paths recorded in final_candidate_ledger
 full_and_verify=exact commands, fixed base/head, and receipt paths recorded in final_candidate_ledger
-unresolved_findings=current P1 status in final_candidate_ledger; full Layer C IPC journey and complete T01-T36 evidence remain bounded evidence limits
+unresolved_findings=r2 P1/P2 acceptance and Layer C editor-persistence recovery failure investigation; final statuses in final_candidate_ledger; complete T01-T36 evidence is not claimed
 environment_limits=Windows GNU check may require missing x86_64-w64-mingw32-gcc; Windows installer requires Windows runner; no hosted-check claim
 freeze_timestamp=recorded in final_candidate_ledger
 ```

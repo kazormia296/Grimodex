@@ -74,7 +74,8 @@ use grimodex_db::lint_terms::{
 };
 use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
-    self, AttentionDisposition, AutomaticRunKind, FreshnessLifecycleControl,
+    self, is_transient_maintenance_preemption, AttentionDisposition, AutomaticRunKind,
+    FreshnessLifecycleControl,
     GetNarrativeBackfillStatusPayload, GraphWorkControl, GraphWorkStage,
     IsRunResumableForReviewPayload, LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
     ListChronicleTaskResumeCandidatesPayload, ListResumableRunsPayload, MaintenanceCycleControl,
@@ -299,20 +300,8 @@ fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
     format!("authority:{}", authority.identity())
 }
 
-fn is_narrative_maintenance_cleanup_failure(error: &impl std::fmt::Display) -> bool {
-    let message = error.to_string();
-    message.contains("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED")
-        || message.contains("NIR1_MAINTENANCE_CONNECTION_UNUSABLE")
-        || message.contains("NEX_MAINTENANCE_CONNECTION_UNUSABLE")
-}
-
-fn is_narrative_maintenance_preemption(error: &impl std::fmt::Display) -> bool {
-    if is_narrative_maintenance_cleanup_failure(error) {
-        return false;
-    }
-    let message = error.to_string();
-    message.starts_with("NEX_MAINTENANCE_CONNECTION_PREEMPTED")
-        || message.contains("NEX_VALIDATION_TERMINATED:foreground-preempted")
+fn is_narrative_maintenance_preemption(error: &AppError) -> bool {
+    matches!(error, AppError::Anyhow(error) if is_transient_maintenance_preemption(error))
 }
 
 fn is_expected_c2zc_cutover_not_ready(error: &anyhow::Error) -> bool {
@@ -7595,7 +7584,7 @@ impl Backend {
                                     binding,
                                 ) {
                                     Ok(durable) => durable,
-                                    Err(error) if is_narrative_maintenance_preemption(&error) => {
+                                    Err(error) if is_transient_maintenance_preemption(&error) => {
                                         return deferred_narrative_maintenance_result(
                                             &state,
                                             attempt_guard.as_mut(),
@@ -7864,7 +7853,7 @@ impl Backend {
                     };
                     let result = match cycle_result {
                         Ok(result) => result,
-                        Err(error) if is_narrative_maintenance_preemption(&error) => {
+                        Err(error) if is_transient_maintenance_preemption(&error) => {
                             return if attempt_guard.is_some() {
                                 deferred_narrative_maintenance_result(
                                     &state,
@@ -7931,7 +7920,7 @@ impl Backend {
                                 request_binding,
                             ) {
                                 Ok(barrier) => barrier,
-                                Err(error) if is_narrative_maintenance_preemption(&error) => {
+                                Err(error) if is_transient_maintenance_preemption(&error) => {
                                     return deferred_narrative_maintenance_result(
                                         &state,
                                         attempt_guard.as_mut(),
@@ -7996,7 +7985,7 @@ impl Backend {
                                         );
                                 }
                                 Err(error) => {
-                                    if is_narrative_maintenance_preemption(&error) {
+                                    if is_transient_maintenance_preemption(&error) {
                                         return deferred_narrative_maintenance_result(
                                             &state,
                                             attempt_guard.as_mut(),
@@ -16005,11 +15994,61 @@ mod narrative_maintenance_epoch_event_tests {
         let cleanup = "NIR1_MAINTENANCE_CONNECTION_OPERATION_FAILED: ".to_string()
             + "NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived; "
             + "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed";
-        assert!(is_narrative_maintenance_cleanup_failure(&cleanup));
+        let cleanup = AppError::Anyhow(anyhow::anyhow!(cleanup));
         assert!(!is_narrative_maintenance_preemption(&cleanup));
         assert!(is_narrative_maintenance_preemption(
-            &"NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived".to_string()
+            &AppError::Anyhow(anyhow::anyhow!(
+                "NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived"
+            ))
         ));
+        assert!(!is_narrative_maintenance_preemption(
+            &AppError::WorkspaceSwitching
+        ));
+    }
+
+    #[test]
+    fn wrapped_verify_preemption_keeps_native_transient_classification() {
+        // validate_discovered_verify_outcome adds this context around the
+        // controlled repairability read before returning to the Native cycle.
+        let context = "NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: rebuildRequired does not match live repairability";
+        let cases = [
+            (
+                validation_terminated(
+                    ValidationTerminationReason::ForegroundPreempted,
+                    "foreground waiter arrived",
+                ),
+                true,
+            ),
+            (
+                validation_terminated(
+                    ValidationTerminationReason::Cancelled,
+                    "workspace transition requested stop",
+                ),
+                false,
+            ),
+            (
+                anyhow::anyhow!(
+                    "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: rollback failed"
+                )
+                .context("NEX_VALIDATION_TERMINATED:foreground-preempted: waiter arrived"),
+                false,
+            ),
+        ];
+        for (error, transient) in cases {
+            let error = error.context(context);
+            assert_eq!(error.to_string(), context);
+            assert_eq!(
+                is_transient_maintenance_preemption(&error),
+                transient,
+                "Native cycle must inspect the full cause chain: {error:#}"
+            );
+            let error = AppError::Anyhow(error);
+            assert_eq!(
+                is_narrative_maintenance_preemption(&error),
+                transient,
+                "Native worker finalization must preserve the same classification: {error:?}"
+            );
+        }
     }
 }
 

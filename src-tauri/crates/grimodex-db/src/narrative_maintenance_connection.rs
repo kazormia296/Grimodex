@@ -7,6 +7,7 @@
 //! the lifetime of the `Database` value.
 
 use super::Database;
+use crate::workspace_lifecycle::WorkspaceParticipant;
 use crate::narrative_extraction::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 use crate::narrative_extraction::{
     is_validation_terminated, validation_terminated, ValidationTerminationReason,
@@ -230,6 +231,9 @@ pub(crate) struct NarrativeMaintenanceConnectionResult<T> {
 #[derive(Clone, Default)]
 pub(crate) struct NarrativeMaintenanceGraphControlConfig {
     pub(crate) deadline: Option<Instant>,
+    /// The existing workspace owner remains alive while SQLite executes.
+    /// This observes its stop state without admitting work or resolving a DB.
+    pub(crate) participant: Option<WorkspaceParticipant>,
     /// `(current_generation, expected_generation)` is supplied by the active
     /// workspace owner. A mismatch is a typed terminal condition and never a
     /// stale Source/missing Edge result.
@@ -268,6 +272,26 @@ impl NarrativeMaintenanceGraphControlConfig {
             ..Self::default()
         }
     }
+}
+
+fn participant_termination(
+    participant: &WorkspaceParticipant,
+) -> Option<ValidationTerminationReason> {
+    match participant.stop_requested() {
+        Ok(false) => None,
+        Ok(true) => Some(ValidationTerminationReason::Cancelled),
+        Err(_) => Some(ValidationTerminationReason::ContextUnavailable),
+    }
+}
+
+fn check_participant(participant: &WorkspaceParticipant) -> Result<()> {
+    if let Some(reason) = participant_termination(participant) {
+        return Err(validation_terminated(
+            reason,
+            "workspace participant stopped SQL work",
+        ));
+    }
+    Ok(())
 }
 
 /// Concrete GraphWorkControl owned by the outer no-wait maintenance scope.
@@ -333,6 +357,15 @@ impl GraphWorkControl for NarrativeMaintenanceGraphControl<'_> {
                 ValidationTerminationReason::Cancelled,
                 stage,
             ));
+        }
+        if let Some(reason) = self
+            .config
+            .participant
+            .as_ref()
+            .and_then(participant_termination)
+        {
+            self.config.termination_latch.set(reason);
+            return Err(Self::terminal(reason, stage));
         }
         if self
             .config
@@ -527,7 +560,7 @@ where
     let result = match catch_unwind(AssertUnwindSafe(|| {
         with_narrative_maintenance_connection_scope_with_latch(
             &conn,
-            timeout,
+            Some(timeout),
             progress_interval,
             stop,
             hook_config,
@@ -576,7 +609,7 @@ where
 {
     with_narrative_maintenance_connection_scope_with_latch(
         conn,
-        timeout,
+        Some(timeout),
         progress_interval,
         stop,
         NarrativeMaintenanceGraphControlConfig::default(),
@@ -587,7 +620,7 @@ where
 
 fn with_narrative_maintenance_connection_scope_with_latch<T, F>(
     conn: &Connection,
-    timeout: Duration,
+    timeout: Option<Duration>,
     progress_interval: i32,
     stop: Arc<AtomicBool>,
     hook_config: NarrativeMaintenanceGraphControlConfig,
@@ -630,7 +663,7 @@ where
 
 fn run_outer_scope<T, F>(
     conn: &Connection,
-    timeout: Duration,
+    timeout: Option<Duration>,
     progress_interval: i32,
     stop: Arc<AtomicBool>,
     hook_config: NarrativeMaintenanceGraphControlConfig,
@@ -657,8 +690,10 @@ where
         };
 
     if setup_error.is_none() {
-        if let Err(error) = conn.busy_timeout(timeout) {
-            setup_error = Some(error.into());
+        if let Some(timeout) = timeout {
+            if let Err(error) = conn.busy_timeout(timeout) {
+                setup_error = Some(error.into());
+            }
         }
     }
 
@@ -669,6 +704,7 @@ where
         let generation_for_hook = hook_config.workspace_generation.clone();
         let deadline_for_hook = hook_config.deadline;
         let progress_callbacks_for_hook = hook_config.progress_callbacks.clone();
+        let participant_for_hook = hook_config.participant.clone();
         let finalization_granted_for_hook = hook_config.finalization_granted.clone();
         let foreground_waiters_for_hook = foreground_waiters.clone();
         let hook_result = if progress_interval > 0 {
@@ -696,6 +732,13 @@ where
                     }
                     if stop_for_hook.load(Ordering::Acquire) {
                         latch_for_hook.set(ValidationTerminationReason::Cancelled);
+                        return true;
+                    }
+                    if let Some(reason) = participant_for_hook
+                        .as_ref()
+                        .and_then(participant_termination)
+                    {
+                        latch_for_hook.set(reason);
                         return true;
                     }
                     if generation_for_hook
@@ -862,6 +905,108 @@ fn map_interrupted_error(error: anyhow::Error, latch: &TerminationLatch) -> anyh
 }
 
 impl Database {
+    /// Observe an existing workspace participant while SQLite is executing,
+    /// including work before its first row. Ordinary mutex/busy-timeout
+    /// behavior is preserved; only the outer scope owns the progress hook.
+    pub fn with_participant_sql_scope<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        self.with_participant_sql_scope_config(
+            participant,
+            NarrativeMaintenanceGraphControlConfig::default(),
+            operation,
+        )
+    }
+
+    /// Read one SQLite snapshot under the participant's SQL cancellation
+    /// scope. The transaction cannot outlive the installed owner hook.
+    pub fn with_participant_read_transaction<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        self.with_participant_sql_scope(participant, |conn| {
+            let tx = conn.unchecked_transaction()?;
+            let value = operation(&tx)?;
+            tx.commit()?;
+            Ok(value)
+        })
+    }
+
+    fn with_participant_sql_scope_config<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        mut config: NarrativeMaintenanceGraphControlConfig,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        check_participant(participant)?;
+        config.participant = Some(participant.clone());
+        let conn = self.lock_conn()?;
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            with_narrative_maintenance_connection_scope_with_latch(
+                &conn,
+                None,
+                1_000,
+                Arc::new(AtomicBool::new(false)),
+                config,
+                None,
+                |conn| {
+                    check_participant(participant)?;
+                    let value = operation(conn)?;
+                    check_participant(participant)?;
+                    Ok(value)
+                },
+            )
+        }));
+        let result = match outcome {
+            Ok(result) => result,
+            Err(payload) => {
+                self.quarantine_connection("workspace participant SQL operation panicked");
+                // Retire before resuming the original panic. Unwinding with
+                // this guard held would poison the retirement mutex itself.
+                drop(conn);
+                if let Err(error) = self.retire_connection_for_recovery() {
+                    tracing::error!(%error, "participant SQL panic connection retirement failed");
+                }
+                std::panic::resume_unwind(payload);
+            }
+        };
+        let reusable = result.receipt.connection_reusable;
+        if !reusable {
+            let reason = result
+                .cleanup_error
+                .as_ref()
+                .or(result.operation_error.as_ref())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "participant SQL connection cleanup failed".into());
+            self.quarantine_connection(reason);
+        }
+        // Quarantine is visible before a waiting ordinary caller can take
+        // the mutex; retirement consumes the old handle after releasing it.
+        drop(conn);
+        let result = result.into_result();
+        if !reusable {
+            if let Err(retirement) = self.retire_connection_for_recovery() {
+                return Err(match result {
+                    Err(operation) => combine_operation_and_cleanup_errors(operation, retirement),
+                    Ok(_) => retirement,
+                });
+            }
+        }
+        result
+    }
+
     pub(crate) fn ensure_connection_reusable(&self) -> Result<()> {
         self.connection_health.ensure_reusable()
     }
@@ -1070,6 +1215,223 @@ mod tests {
             .downcast_ref::<ValidationTerminated>()
             .expect("typed validation termination")
             .reason
+    }
+
+    fn test_participant() -> (crate::WorkspaceLifecycleCore, WorkspaceParticipant) {
+        let core = crate::WorkspaceLifecycleCore::new();
+        core.set_ready(crate::LiveBinding::new(
+            "/tmp/workspace",
+            "workspace-1",
+            1,
+            1,
+        ))
+        .expect("ready workspace");
+        let participant = core.begin_workspace_participant().expect("participant");
+        (core, participant)
+    }
+
+    #[test]
+    fn participant_sql_scope_interrupts_running_vm_and_releases_hook_owner() {
+        let db = test_db();
+        let (core, participant) = test_participant();
+        let callbacks = Arc::new(AtomicU64::new(0));
+        let row_returned = AtomicBool::new(false);
+        let interrupt = db
+            .with_conn(|conn| {
+                conn.busy_timeout(Duration::from_millis(1_234))?;
+                Ok(conn.get_interrupt_handle())
+            })
+            .expect("interrupt fallback");
+        db.with_participant_read_transaction(&participant, |conn| {
+            assert!(!conn.is_autocommit());
+            Ok(())
+        })
+        .expect("participant read snapshot");
+
+        let (result, saw_progress, used_fallback) = thread::scope(|scope| {
+            let (done_tx, done_rx) = mpsc::channel();
+            let (query_started_tx, query_started_rx) = mpsc::channel();
+            let observed_callbacks = callbacks.clone();
+            let stop_core = core.clone();
+            let stopper = scope.spawn(move || {
+                let query_started = query_started_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .is_ok();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while query_started
+                    && observed_callbacks.load(Ordering::Acquire) == 0
+                    && Instant::now() < deadline
+                {
+                    thread::yield_now();
+                }
+                let saw_progress = query_started && observed_callbacks.load(Ordering::Acquire) > 0;
+                stop_core
+                    .request_shutdown()
+                    .expect("stop an executing participant");
+                let used_fallback =
+                    !saw_progress || done_rx.recv_timeout(Duration::from_secs(2)).is_err();
+                if used_fallback {
+                    // A missing hook or broken stop mapping fails this test
+                    // without leaving an unbounded SQL worker behind.
+                    interrupt.interrupt();
+                }
+                (saw_progress, used_fallback)
+            });
+            let result = db.with_participant_sql_scope_config(
+                &participant,
+                NarrativeMaintenanceGraphControlConfig {
+                    progress_callbacks: Some(callbacks.clone()),
+                    ..Default::default()
+                },
+                |conn| {
+                    // A nested reader must preserve the participant's hook
+                    // and timeout even when its own settings would cancel.
+                    let timeout = with_narrative_maintenance_connection_scope(
+                        conn,
+                        Duration::ZERO,
+                        1,
+                        Arc::new(AtomicBool::new(true)),
+                        |conn| {
+                            Ok(conn.pragma_query_value(None, "busy_timeout", |row| {
+                                row.get::<_, i64>(0)
+                            })?)
+                        },
+                    )
+                    .into_result()?;
+                    assert_eq!(timeout, 1_234);
+                    conn.execute_batch("BEGIN")?;
+                    callbacks.store(0, Ordering::Release);
+                    query_started_tx.send(())?;
+                    Ok(conn.query_row(
+                        "WITH RECURSIVE walk(value) AS (
+                            SELECT 1 UNION ALL
+                            SELECT value + 1 FROM walk WHERE value < 10000000
+                         ) SELECT sum(value) FROM walk",
+                        [],
+                        |row| {
+                            row_returned.store(true, Ordering::Release);
+                            row.get::<_, i64>(0)
+                        },
+                    )?)
+                },
+            );
+            let _ = done_tx.send(());
+            let (saw_progress, used_fallback) = stopper.join().expect("stopper joined");
+            (result, saw_progress, used_fallback)
+        });
+        assert!(
+            saw_progress,
+            "stop must arrive after SQLite begins execution"
+        );
+        assert!(!used_fallback, "participant hook must interrupt the SQL VM");
+        assert!(
+            !row_returned.load(Ordering::Acquire),
+            "aggregate must not finish"
+        );
+        let error = result.expect_err("running SQL must be cancelled");
+        assert!(error
+            .to_string()
+            .contains("SQLite progress hook interrupted"));
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(db.connection_reusable());
+        let callbacks_after_scope = callbacks.load(Ordering::Acquire);
+        db.with_conn(|conn| {
+            assert!(conn.is_autocommit());
+            let timeout: i64 = conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
+            assert_eq!(timeout, 1_234);
+            let sum: i64 = conn.query_row(
+                "WITH RECURSIVE walk(value) AS (
+                    SELECT 1 UNION ALL SELECT value + 1 FROM walk WHERE value < 1000
+                 ) SELECT sum(value) FROM walk",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(sum, 500_500);
+            Ok(())
+        })
+        .expect("cancelled hook cleared before ordinary reuse");
+        assert_eq!(callbacks.load(Ordering::Acquire), callbacks_after_scope);
+        assert_eq!(core.workspace_participant_count().expect("owner count"), 1);
+        drop(participant);
+        assert_eq!(
+            core.workspace_participant_count().expect("owner released"),
+            0
+        );
+        core.close()
+            .expect("shutdown can finish after owner release");
+    }
+
+    #[test]
+    fn participant_sql_cleanup_failure_retires_connection_and_releases_owner() {
+        let db = test_db();
+        let (core, participant) = test_participant();
+        set_maintenance_cleanup_failpoints_for_test(MaintenanceCleanupFailpoints {
+            progress_reset: true,
+            ..MaintenanceCleanupFailpoints::NONE
+        });
+        let error = db
+            .with_participant_sql_scope(&participant, |conn| {
+                conn.execute_batch("BEGIN")?;
+                core.request_shutdown().expect("shutdown");
+                Err::<(), _>(validation_terminated(
+                    ValidationTerminationReason::Cancelled,
+                    "participant cancellation",
+                ))
+            })
+            .expect_err("cleanup failure must remain an error");
+        let message = error.to_string();
+        assert!(message.contains("participant cancellation"));
+        assert!(message.contains("progress handler reset failpoint"));
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(!db.connection_reusable());
+        assert!(!db.retirement_close_pending());
+        assert!(!db.conn.is_poisoned());
+        assert!(db.with_conn(|_| Ok(())).is_err());
+        SCOPE_CONNECTIONS.with(|connections| assert!(connections.borrow().is_empty()));
+        assert_eq!(core.workspace_participant_count().expect("owner count"), 1);
+        drop(participant);
+        assert_eq!(
+            core.workspace_participant_count().expect("owner released"),
+            0
+        );
+        core.close().expect("owner released after retirement");
+    }
+
+    #[test]
+    fn participant_sql_panic_retires_without_poisoning_and_releases_owner() {
+        let db = test_db();
+        let (core, participant) = test_participant();
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            let _: Result<()> = db.with_participant_sql_scope(&participant, |conn| {
+                conn.execute_batch("BEGIN")?;
+                core.request_shutdown().expect("shutdown");
+                panic!("participant SQL panic");
+            });
+        }))
+        .expect_err("original panic must propagate");
+        assert_eq!(panic.downcast_ref::<&str>(), Some(&"participant SQL panic"));
+        assert!(!db.connection_reusable());
+        assert!(!db.retirement_close_pending());
+        assert!(!db.conn.is_poisoned());
+        assert!(db
+            .connection_unusable_reason()
+            .expect("quarantine reason")
+            .contains("panicked"));
+        assert!(db.with_conn(|_| Ok(())).is_err());
+        SCOPE_CONNECTIONS.with(|connections| assert!(connections.borrow().is_empty()));
+        assert_eq!(core.workspace_participant_count().expect("owner count"), 1);
+        drop(participant);
+        assert_eq!(
+            core.workspace_participant_count().expect("owner released"),
+            0
+        );
+        core.close().expect("owner released after panic retirement");
     }
 
     #[test]

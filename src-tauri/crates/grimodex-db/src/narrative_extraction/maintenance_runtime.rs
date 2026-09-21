@@ -3619,7 +3619,7 @@ fn dispatch_enabled_work(
 /// Classify foreground/no-wait contention as a transient queue outcome.  It
 /// must not enter the adapter-disabled Deferred lane or the delivery-failure
 /// retry budget.
-pub(crate) fn is_transient_maintenance_preemption(error: &anyhow::Error) -> bool {
+pub fn is_transient_maintenance_preemption(error: &anyhow::Error) -> bool {
     !is_maintenance_connection_cleanup_failure(error)
         && (error_chain_contains(error, "NEX_MAINTENANCE_CONNECTION_PREEMPTED")
             || error_chain_contains(error, "NEX_VALIDATION_TERMINATED:foreground-preempted"))

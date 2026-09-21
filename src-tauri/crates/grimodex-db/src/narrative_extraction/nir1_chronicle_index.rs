@@ -23,7 +23,10 @@ pub use build::{
     NirIndexBuildRead,
 };
 pub use cache::read_reusable_chronicle_embeddings;
-pub use publish::{publish_chronicle_index_build, publish_chronicle_index_build_with_control};
+pub use publish::{
+    publish_chronicle_index_build, publish_chronicle_index_build_with_control,
+    publish_chronicle_index_build_with_participant,
+};
 pub use query::*;
 pub use runtime::NirChronicleIndexRuntime;
 pub use types::*;

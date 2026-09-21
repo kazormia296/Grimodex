@@ -610,3 +610,75 @@ fn nir1_controlled_input_guard_stops_in_roster_and_blob_digest() {
     .expect("whole-project input guard borrows the build owner");
     let _ = f.prepare();
 }
+
+#[test]
+fn nir1_participant_sql_publication_installs_only_after_clean_success() {
+    use crate::narrative_extraction::{
+        GraphWorkControl, GraphWorkStage, ValidationTerminated, ValidationTerminationReason,
+    };
+    use crate::workspace_lifecycle::WorkspaceLifecycleCore;
+
+    struct PublicationControl {
+        core: WorkspaceLifecycleCore,
+        stop_at_source: bool,
+    }
+    impl GraphWorkControl for PublicationControl {
+        fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+            if self.stop_at_source && stage == GraphWorkStage::Source {
+                self.core.request_shutdown()?;
+            }
+            Ok(())
+        }
+        fn allows_full_eligibility(&self) -> bool {
+            true
+        }
+    }
+
+    for stopped in [false, true] {
+        let f = Fixture::new();
+        let (plan, documents) = f.prepare();
+        let core = WorkspaceLifecycleCore::new();
+        let participant = core
+            .begin_workspace_participant()
+            .expect("publication owner");
+        let mut control = PublicationControl {
+            core: core.clone(),
+            stop_at_source: stopped,
+        };
+        let result = publish_chronicle_index_build_with_participant(
+            &f.db,
+            &f.runtime,
+            plan,
+            f.outcomes(documents),
+            &mut control,
+            &participant,
+        );
+        if stopped {
+            let error = result.expect_err("SQL stop must prevent a live proof");
+            assert_eq!(
+                error
+                    .downcast_ref::<ValidationTerminated>()
+                    .map(|error| error.reason),
+                Some(ValidationTerminationReason::Cancelled)
+            );
+            assert_eq!(f.published_count(), 0);
+            assert!(f.runtime.lock().expect("runtime").proofs.is_empty());
+        } else {
+            assert!(matches!(
+                result.expect("clean scoped publication"),
+                NirIndexPublishRead::Published {
+                    newly_usable_published: true,
+                    ..
+                }
+            ));
+            assert_eq!(f.published_count(), 2);
+        }
+        assert!(f.db.connection_reusable());
+        drop(participant);
+        assert_eq!(
+            core.workspace_participant_count()
+                .expect("publication released"),
+            0
+        );
+    }
+}

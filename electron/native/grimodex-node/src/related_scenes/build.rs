@@ -154,7 +154,7 @@ fn build_once(
         return Ok(BuildOutcome::Stopped);
     }
     let db = request.database();
-    match db.with_read_transaction(|conn| {
+    match db.with_participant_read_transaction(participant, |conn| {
         db.nir_chronicle_index_runtime()
             .rebuild_requested(conn, project)
     })? {
@@ -163,7 +163,7 @@ fn build_once(
         Some(true) => {}
     }
     let mut control = RelatedScenesBuildControl::new(state, request, participant);
-    let prepared = db.with_read_transaction(|conn| {
+    let prepared = db.with_participant_read_transaction(participant, |conn| {
         index::prepare_chronicle_index_build_with_control(
             conn,
             db.nir_chronicle_index_runtime(),
@@ -183,9 +183,11 @@ fn build_once(
     let model = identity(
         state
             .semantic
-            .nir1_document_embedding_identity(request, project)?,
+            .nir1_document_embedding_identity_with_control(request, project, || {
+                control.check(GraphWorkStage::Row)
+            })?,
     );
-    let mut outcomes = db.with_read_transaction(|conn| {
+    let mut outcomes = db.with_participant_read_transaction(participant, |conn| {
         index::read_reusable_chronicle_embeddings(
             conn,
             db.nir_chronicle_index_runtime(),
@@ -212,9 +214,12 @@ fn build_once(
             serialized_statement_digest: doc.serialized_statement_digest.clone(),
         })
         .collect::<Vec<_>>();
-    let embedded = state
-        .semantic
-        .embed_nir1_documents(request, project, &inputs)?;
+    let embedded =
+        state
+            .semantic
+            .embed_nir1_documents_with_control(request, project, &inputs, || {
+                control.check(GraphWorkStage::Row)
+            })?;
     ensure!(
         documents.len() == embedded.len(),
         "RELATED_SCENES_DOCUMENT_OUTCOME_MISSING"
@@ -269,12 +274,13 @@ fn build_once(
     if !current_request(state, request)? {
         return Ok(BuildOutcome::Stopped);
     }
-    let published = index::publish_chronicle_index_build_with_control(
+    let published = index::publish_chronicle_index_build_with_participant(
         &db,
         db.nir_chronicle_index_runtime(),
         plan,
         outcomes,
         &mut control,
+        participant,
     )?;
     tracing::debug!(target:"grimodex::nir1_index", prepare_ms=prepared_at.duration_since(started).as_millis(),
         embedding_ms=embedded_at.duration_since(prepared_at).as_millis(),

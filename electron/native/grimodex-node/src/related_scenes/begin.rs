@@ -49,42 +49,43 @@ fn begin_blocking(
     let db = request.database();
     let mut lifecycle_control =
         build::RelatedScenesBuildControl::new(&state, &request, &participant);
-    let (source, snapshot, original) = db.with_read_transaction(|conn| {
-        let RetrievalSceneSourceRead::Available(source) =
-            read_retrieval_scene_source(conn, &dto.project_id, &dto.current_scene_id)?
-        else {
-            return Err(anyhow!("RELATED_SCENES_QUERY_SOURCE_UNAVAILABLE"));
-        };
-        let source = RelatedScenesSourceContext::capture(source, &dto.query)?;
-        let status = index::read_chronicle_query_status_with_control(
-            conn,
-            db.nir_chronicle_index_runtime(),
-            &dto.project_id,
-            &dto.current_scene_id,
-            &mut lifecycle_control,
-        )?;
-        let (snapshot, original) = match status {
-            index::NirQueryStatusRead::Available {
-                index_usable,
-                snapshot,
-                ..
-            } => (
-                SnapshotEligibility {
-                    original_snapshot_usable: index_usable,
-                    supported_profile: true,
-                },
-                snapshot,
-            ),
-            index::NirQueryStatusRead::Unavailable { .. } => (
-                SnapshotEligibility {
-                    original_snapshot_usable: false,
-                    supported_profile: false,
-                },
-                None,
-            ),
-        };
-        Ok((Arc::new(source), snapshot, original))
-    })?;
+    let (source, snapshot, original) =
+        db.with_participant_read_transaction(&participant, |conn| {
+            let RetrievalSceneSourceRead::Available(source) =
+                read_retrieval_scene_source(conn, &dto.project_id, &dto.current_scene_id)?
+            else {
+                return Err(anyhow!("RELATED_SCENES_QUERY_SOURCE_UNAVAILABLE"));
+            };
+            let source = RelatedScenesSourceContext::capture(source, &dto.query)?;
+            let status = index::read_chronicle_query_status_with_control(
+                conn,
+                db.nir_chronicle_index_runtime(),
+                &dto.project_id,
+                &dto.current_scene_id,
+                &mut lifecycle_control,
+            )?;
+            let (snapshot, original) = match status {
+                index::NirQueryStatusRead::Available {
+                    index_usable,
+                    snapshot,
+                    ..
+                } => (
+                    SnapshotEligibility {
+                        original_snapshot_usable: index_usable,
+                        supported_profile: true,
+                    },
+                    snapshot,
+                ),
+                index::NirQueryStatusRead::Unavailable { .. } => (
+                    SnapshotEligibility {
+                        original_snapshot_usable: false,
+                        supported_profile: false,
+                    },
+                    None,
+                ),
+            };
+            Ok((Arc::new(source), snapshot, original))
+        })?;
     let first_snapshot_elapsed_ms = accepted_at.elapsed().as_secs_f64() * 1000.0;
     let query_binding = format!("related-scenes-query:{}", uuid::Uuid::new_v4());
     let mut ir = unavailable(if snapshot.supported_profile {
@@ -167,7 +168,7 @@ fn begin_blocking(
             current_request(&state, &request)?,
             "RELATED_SCENES_WORKSPACE_CHANGED"
         );
-        let source_current = db.with_read_transaction(|conn| {
+        let source_current = db.with_participant_read_transaction(&participant, |conn| {
             let RetrievalSceneSourceRead::Available(current) =
                 read_retrieval_scene_source(conn, &dto.project_id, &dto.current_scene_id)?
             else {

@@ -46,12 +46,37 @@ pub fn publish_chronicle_index_build_with_control(
     outcomes: Vec<NirEmbeddedDocument>,
     control: &mut dyn GraphWorkControl,
 ) -> Result<NirIndexPublishRead> {
+    publish_chronicle_index_build_scoped(db, runtime, plan, outcomes, control, None)
+}
+
+/// Native publication retains the already-admitted workspace participant for
+/// the outer SQLite scope. Its proof is installed only after hook/transaction
+/// cleanup succeeds; nested eligibility readers retain the same control.
+pub fn publish_chronicle_index_build_with_participant(
+    db: &Database,
+    runtime: &NirChronicleIndexRuntime,
+    plan: NirIndexBuildPlan,
+    outcomes: Vec<NirEmbeddedDocument>,
+    control: &mut dyn GraphWorkControl,
+    participant: &crate::workspace_lifecycle::WorkspaceParticipant,
+) -> Result<NirIndexPublishRead> {
+    publish_chronicle_index_build_scoped(db, runtime, plan, outcomes, control, Some(participant))
+}
+
+fn publish_chronicle_index_build_scoped(
+    db: &Database,
+    runtime: &NirChronicleIndexRuntime,
+    plan: NirIndexBuildPlan,
+    outcomes: Vec<NirEmbeddedDocument>,
+    control: &mut dyn GraphWorkControl,
+    participant: Option<&crate::workspace_lifecycle::WorkspaceParticipant>,
+) -> Result<NirIndexPublishRead> {
     control.check(GraphWorkStage::Publish)?;
     if plan.owner != runtime.owner() {
         return Ok(NirIndexPublishRead::Stale);
     }
     let runtime_epoch = plan.runtime_epoch;
-    let proof = db.with_conn(|conn| {
+    let publish = |conn: &Connection| {
         with_immediate_transaction(conn, |conn| {
             control.check(GraphWorkStage::Publish)?;
             if runtime.current_epoch(conn)? != Ok(plan.runtime_epoch) {
@@ -74,7 +99,11 @@ pub fn publish_chronicle_index_build_with_control(
             )
             .map(Some)
         })
-    })?;
+    };
+    let proof = match participant {
+        Some(participant) => db.with_participant_sql_scope(participant, publish),
+        None => db.with_conn(publish),
+    }?;
     let Some(proof) = proof else {
         return Ok(NirIndexPublishRead::Stale);
     };
@@ -86,6 +115,7 @@ pub fn publish_chronicle_index_build_with_control(
         .count();
     // Stop/pause during inference or the commit window may leave valid cache
     // rows, but cannot install a live proof or emit a ready notification.
+    control.check(GraphWorkStage::Publish)?;
     let newly_usable_published = runtime.install(runtime_epoch, proof)?;
     Ok(NirIndexPublishRead::Published {
         generation,

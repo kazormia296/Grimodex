@@ -99,17 +99,21 @@ fn background(
     let activity = Arc::clone(activity);
     let entries = entries.clone();
     worker(move || {
-        admission.map_background(&[1, 2], |document| {
-            let _active = activity.enter();
-            report(&entries, Entry::Background(*document))?;
-            if *document == 1 {
-                receive(&release_first)?;
-                if let Some(failure) = failure {
-                    failure.raise()?;
+        admission.map_background(
+            &[1, 2],
+            || Ok(()),
+            |document| {
+                let _active = activity.enter();
+                report(&entries, Entry::Background(*document))?;
+                if *document == 1 {
+                    receive(&release_first)?;
+                    if let Some(failure) = failure {
+                        failure.raise()?;
+                    }
                 }
-            }
-            Ok(document * 10)
-        })
+                Ok(document * 10)
+            },
+        )
     })
 }
 

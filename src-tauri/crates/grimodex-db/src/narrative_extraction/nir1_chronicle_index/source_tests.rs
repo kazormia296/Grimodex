@@ -889,3 +889,95 @@ fn nir1_scope_sql_failures_propagate_from_both_readers() {
     })
     .expect("scope-table authorizer failures");
 }
+
+#[test]
+fn nir1_chronicle_roster_sql_stops_before_its_first_sorted_row() {
+    use crate::workspace_lifecycle::WorkspaceLifecycleCore;
+
+    struct ShutdownAtSource {
+        core: WorkspaceLifecycleCore,
+        rows: usize,
+    }
+    impl GraphWorkControl for ShutdownAtSource {
+        fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+            if stage == GraphWorkStage::Source {
+                // The participant SQL scope is already active. Allow SQL to
+                // start so only its progress hook can stop before the first
+                // sorted row, rather than this Rust-side control.
+                self.core.request_shutdown()?;
+            }
+            if stage == GraphWorkStage::Row {
+                self.rows += 1;
+                return Err(validation_terminated(
+                    ValidationTerminationReason::Cancelled,
+                    "row checkpoint arrived too late",
+                ));
+            }
+            Ok(())
+        }
+        fn allows_full_eligibility(&self) -> bool {
+            true
+        }
+    }
+
+    let f = Fixture::new();
+    let project = f.project().to_owned();
+    f.db.with_read_transaction(|conn| {
+        let template: String = conn.query_row(
+            "SELECT p.id FROM narrative_proposals p JOIN narrative_proposal_sets s ON s.id=p.proposal_set_id WHERE s.project_id=?1 LIMIT 1",
+            [&project], |row| row.get(0),
+        )?;
+        let mut insert = conn.prepare(
+            "INSERT INTO narrative_proposals(id,proposal_set_id,proposal_key,kind,status,payload_json,current_revision_id,created_at,updated_at)
+             SELECT ?1,proposal_set_id,?1,kind,status,payload_json,NULL,created_at,updated_at FROM narrative_proposals WHERE id=?2",
+        )?;
+        for row in 0..4096 {
+            insert.execute(rusqlite::params![format!("first-row-stop:{row:06}"), template])?;
+        }
+        Ok(())
+    }).expect("private large eligibility roster");
+    let original_timeout: i64 =
+        f.db.with_conn(|conn| Ok(conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?))
+            .expect("original timeout");
+    let core = WorkspaceLifecycleCore::new();
+    let participant = core.begin_workspace_participant().expect("existing owner");
+    let mut control = ShutdownAtSource {
+        core: core.clone(),
+        rows: 0,
+    };
+    let error =
+        f.db.with_participant_read_transaction(&participant, |conn| {
+            read_eligibility_source_with_control(conn, &project, &mut control)
+        })
+        .expect_err("SQLite must stop before yielding the sorted roster");
+    assert_eq!(
+        control.rows, 0,
+        "row cancellation cannot bound work before the first row"
+    );
+    assert_eq!(
+        error
+            .downcast_ref::<crate::narrative_extraction::ValidationTerminated>()
+            .map(|error| error.reason),
+        Some(ValidationTerminationReason::Cancelled)
+    );
+    assert_eq!(core.workspace_participant_count().expect("same owner"), 1);
+    f.db.with_conn(|conn| {
+        assert!(conn.is_autocommit());
+        let timeout: i64 = conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
+        assert_eq!(timeout, original_timeout);
+        // The stopped owner must no longer interrupt the next unrelated SQL
+        // user after its scope has removed the progress hook.
+        let count: i64 = conn.query_row(
+            "WITH RECURSIVE n(value) AS (SELECT 1 UNION ALL SELECT value+1 FROM n WHERE value<10000) SELECT count(*) FROM n",
+            [], |row| row.get(0),
+        )?;
+        assert_eq!(count, 10000);
+        Ok(())
+    }).expect("hook and transaction cleaned before releasing the connection");
+    drop(participant);
+    assert_eq!(
+        core.workspace_participant_count().expect("owner released"),
+        0
+    );
+    core.close().expect("actual stop completion permits close");
+}
