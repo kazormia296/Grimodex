@@ -4175,7 +4175,12 @@ pub(crate) fn transfer_controlled_maintenance_run_to_owner(
     }
 
     match cancel_preempted_maintenance_run(db, run_id, &error.to_string()) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            if let Some(mark_terminalized) = control.mark_run_terminalized {
+                mark_terminalized(run_id)?;
+            }
+            Ok(())
+        }
         Err(cleanup)
             if is_transient_connection_preemption(&cleanup)
                 || is_maintenance_connection_deferred_or_cleanup(&cleanup) =>
@@ -4243,7 +4248,11 @@ fn record_rebuild_failure_controlled(
             )?;
             Ok(())
         })
-    })
+    })?;
+    if let Some(mark_terminalized) = control.mark_run_terminalized {
+        mark_terminalized(run_id)?;
+    }
+    Ok(())
 }
 
 fn record_verify_failure_controlled(
@@ -4271,7 +4280,11 @@ fn record_verify_failure_controlled(
             )?;
             Ok(())
         })
-    })
+    })?;
+    if let Some(mark_terminalized) = control.mark_run_terminalized {
+        mark_terminalized(run_id)?;
+    }
+    Ok(())
 }
 
 /// Re-read the complete Verify snapshot in the transaction that will publish
@@ -6258,6 +6271,7 @@ mod tests {
             mark_run_reuse_selection_unknown: None,
             mark_run_creation_outcome: None,
             reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
         };
 
         {
@@ -6321,6 +6335,7 @@ mod tests {
             mark_run_reuse_selection_unknown: None,
             mark_run_creation_outcome: None,
             reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
         };
 
         let error = record_verify_failure_controlled(
@@ -6393,6 +6408,7 @@ mod tests {
             mark_run_reuse_selection_unknown: None,
             mark_run_creation_outcome: None,
             reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
         };
 
         let error = record_rebuild_failure_controlled(

@@ -386,6 +386,21 @@ impl MaintenancePermit {
             .mark_run_creation_outcome(self.execution_id, run_id, outcome)
     }
 
+    /// Remove one exact Run ownership slot after its durable terminal
+    /// transaction has committed.  This is the lifecycle proof that permits
+    /// a failed maintenance operation to release normally; a healthy SQLite
+    /// connection alone does not prove that a running Run was finalized.
+    pub fn mark_run_terminalized(&self, run_id: &str) -> Result<(), LifecycleError> {
+        self.core
+            .mark_run_terminalized(self.execution_id, run_id)
+    }
+
+    /// Whether this execution still owns an unresolved exact Run tuple.
+    /// Connection health cannot replace this durable-terminalization proof.
+    pub fn has_run_ownership(&self) -> Result<bool, LifecycleError> {
+        self.core.has_run_ownership(self.execution_id)
+    }
+
     /// Record the supervisor-owned retirement receipt for every exact Run
     /// tuple attached to this execution. Join proves execution termination;
     /// this separate receipt proves the old connection cannot later commit.
@@ -2446,6 +2461,53 @@ impl WorkspaceLifecycleCore {
         Ok(())
     }
 
+    pub fn mark_run_terminalized(
+        &self,
+        execution_id: ExecutionId,
+        run_id: &str,
+    ) -> Result<(), LifecycleError> {
+        let ownership = {
+            let mut state = self.lock_state()?;
+            let execution = state
+                .executions
+                .get_mut(&execution_id)
+                .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+            if execution
+                .run
+                .as_ref()
+                .is_some_and(|owned| owned.handle.run_id == run_id)
+            {
+                execution.run.take()
+            } else if let Some(index) = execution
+                .additional_runs
+                .iter()
+                .position(|owned| owned.handle.run_id == run_id)
+            {
+                Some(execution.additional_runs.remove(index))
+            } else {
+                None
+            }
+        };
+        let Some(ownership) = ownership else {
+            return Err(LifecycleError::InvalidExecutionTransition);
+        };
+        crate::narrative_extraction::release_project_creation_for_handle(
+            &ownership.handle.project_id,
+            ownership.handle.database_path.as_deref(),
+            ownership.handle.database_file_identity.as_deref(),
+        );
+        Ok(())
+    }
+
+    pub fn has_run_ownership(&self, execution_id: ExecutionId) -> Result<bool, LifecycleError> {
+        let state = self.lock_state()?;
+        let execution = state
+            .executions
+            .get(&execution_id)
+            .ok_or(LifecycleError::UnknownExecution(execution_id))?;
+        Ok(execution.run.is_some() || !execution.additional_runs.is_empty())
+    }
+
     /// Record that the supervisor quarantined the worker-owned connection
     /// after Join. This receipt belongs to the exact execution and is copied
     /// into every recovery descriptor Run handle during transfer.
@@ -4456,6 +4518,34 @@ mod tests {
             core.admit_maintenance_permit().expect("next maintenance"),
             PermitAdmission::Admitted(_)
         ));
+    }
+
+    #[test]
+    fn durable_run_terminalization_removes_only_the_exact_owned_tuple() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let mut permit = match core.admit_maintenance_permit().expect("maintenance") {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
+        };
+        let execution_id = permit.execution_id();
+        permit.start().expect("start");
+        permit
+            .attach_run_ownership(RunOwnership {
+                state: RunCreationState::Created,
+                handle: run_handle("run-terminalized", "work-terminalized"),
+            })
+            .expect("attach run");
+        assert!(permit.has_run_ownership().expect("ownership present"));
+        permit
+            .mark_run_terminalized("run-terminalized")
+            .expect("mark exact run terminalized");
+        assert!(!permit.has_run_ownership().expect("ownership removed"));
+        assert!(core
+            .execution_membership(execution_id)
+            .expect("membership")
+            .run
+            .is_none());
     }
 
     #[test]

@@ -20,6 +20,8 @@ vi.mock("@/features/timelapse/recorder", () => ({
 import {
   applyWorkspaceLifecycleProjectionForTest,
   applyWorkspaceLifecycleUnchangedProof,
+  beginExplicitWorkspaceHydration,
+  isExplicitWorkspaceHydrationCurrent,
   noteExplicitWorkspaceHydration,
   resetWorkspaceLifecycleProjectionForTest,
 } from "./workspaceLifecycleProjection";
@@ -27,6 +29,7 @@ import {
   resumeWorkspaceBindingAfterExplicitOpen,
   resumeWorkspaceBindingAfterLifecycleUnchanged,
 } from "@/features/timelapse/recorder";
+import { invalidateWorkspaceProjectLoads } from "@/application/project/workspaceProjectCommands";
 
 type TestState = WorkspaceState & Record<string, unknown>;
 
@@ -115,6 +118,72 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
       workspaceHydrated: true,
       workspaceLifecycleStatus: "ready",
       workspaceLifecycleBindingToken: "new-token",
+    });
+    expect(resumeWorkspaceBindingAfterExplicitOpen).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an in-progress explicit Open alive when its Ready races hydration", () => {
+    state = makeState({
+      workspaceLifecycleRevision: 2,
+      workspaceLifecycleStatus: "transition",
+      workspaceLifecycleActivation: "none",
+      workspaceLifecycleBindingToken: "old-token",
+      workspaceSwitchInProgress: true,
+      workspaceHydrated: false,
+    });
+    beginExplicitWorkspaceHydration({
+      workspacePath: "W2",
+      workspaceId: "w2",
+      workspaceName: "W2",
+      openRevision: 2,
+      lifecycleRevision: 3,
+      lifecycleBindingToken: "new-token",
+    });
+
+    applyWorkspaceLifecycleProjectionForTest(
+      get,
+      set,
+      lifecycle(3, "ready", "new-token"),
+    );
+
+    expect(state).toMatchObject({
+      workspaceHydrated: false,
+      workspaceSwitchInProgress: true,
+      workspaceLifecycleStatus: "ready",
+      workspaceLifecycleBindingToken: "new-token",
+    });
+    expect(invalidateWorkspaceProjectLoads).not.toHaveBeenCalled();
+    expect(
+      isExplicitWorkspaceHydrationCurrent({
+        workspacePath: "W2",
+        workspaceId: "w2",
+        workspaceName: "W2",
+        openRevision: 2,
+        lifecycleRevision: 3,
+        lifecycleBindingToken: "new-token",
+      }),
+    ).toBe(true);
+
+    // The Open owner publishes its target scope only after the Project
+    // snapshot commits, then promotes the pending proof to complete.
+    state = makeState({
+      workspaceLifecycleRevision: 3,
+      workspaceLifecycleStatus: "ready",
+      workspaceLifecycleActivation: "ready",
+      workspaceLifecycleBindingToken: "new-token",
+      activeWorkspacePath: "W2",
+      activeWorkspaceId: "w2",
+      activeWorkspaceName: "W2",
+      workspaceOpenRevision: 2,
+      workspaceHydrated: true,
+    });
+    noteExplicitWorkspaceHydration({
+      workspacePath: "W2",
+      workspaceId: "w2",
+      workspaceName: "W2",
+      openRevision: 2,
+      lifecycleRevision: 3,
+      lifecycleBindingToken: "new-token",
     });
     expect(resumeWorkspaceBindingAfterExplicitOpen).toHaveBeenCalledOnce();
   });

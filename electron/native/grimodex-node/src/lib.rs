@@ -217,6 +217,7 @@ mod narrative_maintenance_rebound_tests {
         )
         .expect("app state");
         install_test_workspace(&state, Arc::clone(&replacement));
+        let before_rotation = narrative_maintenance_binding_for_authority(&state, &replacement);
         let descriptor = grimodex_db::workspace_lifecycle::RecoveryDescriptor {
             descriptor_id: grimodex_db::RecoveryDescriptorId::new(1),
             root_operation_id: grimodex_db::OperationId::new(1),
@@ -230,8 +231,29 @@ mod narrative_maintenance_rebound_tests {
             delivery_sequences: BTreeSet::new(),
         };
 
-        let rebound = descriptor_rebound_binding(&state, &descriptor, &replacement)
-            .expect("same-path replacement must produce a rebound proof");
+        let rotated = state
+            .narrative_maintenance_recovery_gate
+            .rotate_generation_for_binding(&before_rotation)
+            .expect("same authority rotates its recovery generation");
+        let receipt_active = narrative_maintenance_binding_for_authority(&state, &replacement);
+        let receipt_rebound = descriptor_rebound_binding_for_authority(
+            &state,
+            &descriptor,
+            &replacement,
+            &replacement,
+        )
+        .expect("same-path replacement has a rebound proof");
+        assert_eq!(receipt_active, rotated);
+        assert_eq!(receipt_rebound, receipt_active);
+        assert_ne!(receipt_active.generation, before_rotation.generation);
+
+        let rebound = descriptor_rebound_binding_for_authority(
+            &state,
+            &descriptor,
+            &replacement,
+            &replacement,
+        )
+        .expect("same-path replacement must produce a rebound proof");
         assert!(!rebound.authority_id.is_empty());
         assert!(rebound.generation > 0);
 
@@ -488,7 +510,7 @@ fn narrative_ci_quiescence_state_with_snapshot_hook(
 #[cfg(test)]
 mod narrative_extraction_workspace_binding_tests {
     use super::*;
-    use grimodex_db::state::{ActiveWorkspace, PinnedWorkspaceDb, WorkspaceAuthority};
+    use grimodex_db::state::{PinnedWorkspaceDb, WorkspaceAuthority};
     use std::sync::Arc;
 
     fn test_root() -> PathBuf {
@@ -678,7 +700,7 @@ mod narrative_extraction_workspace_binding_tests {
 #[cfg(test)]
 mod narrative_freshness_restore_lock_tests {
     use super::*;
-    use grimodex_db::state::{ActiveWorkspace, WorkspaceAuthority};
+    use grimodex_db::state::WorkspaceAuthority;
     use std::sync::{mpsc, Arc, TryLockError};
     use std::time::{Duration, Instant};
 
@@ -2295,15 +2317,6 @@ fn open_descriptor_recovery_authority(
 /// that is currently published after recovery.  A descriptor for W1 may be
 /// reconciled while W2 remains Ready; in that case the active authority is
 /// deliberately not a proof for W1 and retained W1 work must stay parked.
-fn descriptor_rebound_binding(
-    state: &AppState,
-    descriptor: &grimodex_db::workspace_lifecycle::RecoveryDescriptor,
-    recovered_authority: &PinnedWorkspaceDb,
-) -> Option<MaintenanceWorkspaceBinding> {
-    let active = active_database(&state.ws).ok()?;
-    descriptor_rebound_binding_for_authority(state, descriptor, recovered_authority, &active)
-}
-
 fn descriptor_rebound_binding_for_authority(
     state: &AppState,
     descriptor: &grimodex_db::workspace_lifecycle::RecoveryDescriptor,
@@ -2316,7 +2329,7 @@ fn descriptor_rebound_binding_for_authority(
     // the replacement's exact locator and durable workspace identity; the
     // old instance number is evidence for the old binding, not a requirement
     // on the replacement binding.
-    if !descriptor_replacement_matches_expected_workspace(expected, &active)
+    if !descriptor_replacement_matches_expected_workspace(expected, active)
         || !descriptor_replacement_retirement_proven(descriptor, expected, active)
     {
         return None;
@@ -2870,12 +2883,6 @@ fn reconcile_maintenance_recovery_descriptor(
                 .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error.to_string())))?
                 .as_ref()
                 .map(|active| Arc::clone(&active.authority));
-            let receipt_active_binding = receipt_authority
-                .as_ref()
-                .map(|authority| narrative_maintenance_binding_for_authority(state, authority));
-            let receipt_rebound_binding = receipt_authority.as_ref().and_then(|active| {
-                descriptor_rebound_binding_for_authority(state, &descriptor, &authority, active)
-            });
             // `begin_recovery_transition` must be joined before the core may
             // publish a Ready binding. The recovery worker above performs no
             // protected workspace replacement, so this is the exact native
@@ -2914,12 +2921,29 @@ fn reconcile_maintenance_recovery_descriptor(
                     if let Some((attempt_id, binding)) =
                         maintenance_recovery_binding(state, descriptor_id)
                     {
-                        let Some(active_binding) = receipt_active_binding.clone() else {
+                        // Generation rotation is part of the same activation
+                        // boundary as the replayable receipt.  Do not retain
+                        // the binding captured before `rotate_generation`:
+                        // same-workspace reopen deliberately advances the
+                        // generation while keeping the authority/path.  A
+                        // stale receipt would make the first response fail
+                        // binding validation and would let a replay carry the
+                        // same stale proof into the next delivery attempt.
+                        let Some(active_binding) = receipt_authority.as_ref().map(|authority| {
+                            narrative_maintenance_binding_for_authority(state, authority)
+                        }) else {
                             return Err(AppError::Anyhow(anyhow::anyhow!(
                                 "NEX_MAINTENANCE_RECOVERY_ACTIVE_BINDING_MISSING"
                             )));
                         };
-                        let rebound_binding = receipt_rebound_binding.clone();
+                        let rebound_binding = receipt_authority.as_ref().and_then(|active| {
+                            descriptor_rebound_binding_for_authority(
+                                state,
+                                &descriptor,
+                                &authority,
+                                active,
+                            )
+                        });
                         let receipt_stored = remember_completed_maintenance_recovery(
                             state,
                             descriptor_id,
@@ -3351,6 +3375,11 @@ where
             .map_err(|error| anyhow::anyhow!("creation tracking lock poisoned: {error}"))? = None;
         Ok(())
     };
+    let mark_run_terminalized = |run_id: &str| {
+        lifecycle_permit
+            .mark_run_terminalized(run_id)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    };
     let control = MaintenanceCycleControl {
         should_stop: &should_stop,
         stop_signal: Some(stop_signal),
@@ -3368,6 +3397,7 @@ where
         mark_run_reuse_selection_unknown: Some(&mark_run_reuse_selection_unknown),
         mark_run_creation_outcome: Some(&mark_run_creation_outcome),
         reset_run_creation_tracking: Some(&reset_run_creation_tracking),
+        mark_run_terminalized: Some(&mark_run_terminalized),
     };
 
     let operation_result = match catch_unwind(AssertUnwindSafe(|| {
@@ -3449,11 +3479,15 @@ where
             .mark_joined()
             .map_err(|error| anyhow::anyhow!("NEX_MAINTENANCE_LIFECYCLE_JOIN_FAILED: {error}"))
             .and_then(|_| {
+                let run_ownership = lifecycle_permit
+                    .has_run_ownership()
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
                 if let Some(authority) = attempt_guard.authority.take() {
-                    if authority.db().connection_reusable() {
-                        // The operation failed but the pinned connection is
-                        // healthy; the durable Run failure is already recorded
-                        // by the attempt finalizer, so normal release is safe.
+                    if authority.db().connection_reusable() && !run_ownership {
+                        // A durable terminal transaction already removed the
+                        // exact Run ownership slot.  A reusable connection is
+                        // sufficient only after that proof; cleanup health
+                        // alone must not release a still-running Run.
                         return lifecycle_permit
                             .release()
                             .map(|_| ())
@@ -7779,6 +7813,7 @@ impl Backend {
                         mark_run_reuse_selection_unknown: Some(&mark_run_reuse_selection_unknown),
                         mark_run_creation_outcome: Some(&mark_run_creation_outcome),
                         reset_run_creation_tracking: Some(&reset_run_creation_tracking),
+                        mark_run_terminalized: None,
                     };
                     let cycle_result = {
                         narrative_extraction::run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
@@ -15414,7 +15449,6 @@ mod native_ai_http_audit_tests {
 #[cfg(test)]
 mod ime_workspace_tests {
     use super::*;
-    use grimodex_db::state::ActiveWorkspace;
     use grimodex_db::Database;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -15545,7 +15579,6 @@ mod ime_workspace_tests {
 #[cfg(test)]
 mod timelapse_genesis_baseline_tests {
     use super::*;
-    use grimodex_db::state::ActiveWorkspace;
     use grimodex_db::Database;
 
     fn backend_with_scene() -> (Backend, std::path::PathBuf, std::path::PathBuf) {
@@ -15744,7 +15777,6 @@ mod timelapse_genesis_baseline_tests {
 #[cfg(test)]
 mod semantic_reranker_lane_tests {
     use super::*;
-    use grimodex_db::state::ActiveWorkspace;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Mutex};
     use std::thread;
@@ -15952,7 +15984,7 @@ mod narrative_maintenance_epoch_event_tests {
 mod narrative_maintenance_admission_unwind_tests {
     use super::*;
     use grimodex_db::narrative_extraction::LEGACY_BACKFILL_WORK_KEY;
-    use grimodex_db::state::{ActiveWorkspace, WorkspaceAuthority};
+    use grimodex_db::state::WorkspaceAuthority;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -17049,7 +17081,7 @@ mod native_open_restore_only_tests {
 mod narrative_maintenance_fault_red_tests {
     use super::*;
     use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
-    use grimodex_db::state::{ActiveWorkspace, WorkspaceAuthority};
+    use grimodex_db::state::WorkspaceAuthority;
     use serde_json::Value;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -17302,7 +17334,7 @@ mod narrative_maintenance_foreground_release_tests {
     use super::*;
     use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
     use grimodex_db::narrative_extraction::NarrativeMaintenanceCiTrigger;
-    use grimodex_db::state::{ActiveWorkspace, PinnedWorkspaceDb, WorkspaceAuthority};
+    use grimodex_db::state::{PinnedWorkspaceDb, WorkspaceAuthority};
     use serde_json::Value;
     use std::path::PathBuf;
     use std::sync::Arc;

@@ -47,6 +47,7 @@ interface ExplicitWorkspaceHydrationEvidence {
   /** Exact proof returned by the Native Open operation. */
   readonly lifecycleRevision: number;
   readonly lifecycleBindingToken: string;
+  readonly phase: "pending" | "complete";
 }
 
 interface ReadyObservation {
@@ -181,13 +182,18 @@ function applyProjection(
     };
     const explicitOpenReady =
       pendingExplicitWorkspaceHydration !== null &&
-      current.activeWorkspacePath ===
-        pendingExplicitWorkspaceHydration.workspacePath &&
-      current.workspaceOpenRevision ===
-        pendingExplicitWorkspaceHydration.openRevision &&
       view.revision === pendingExplicitWorkspaceHydration.lifecycleRevision &&
       bindingToken === pendingExplicitWorkspaceHydration.lifecycleBindingToken;
     if (explicitOpenReady && pendingExplicitWorkspaceHydration) {
+      // The Ready notification can race the Project hydration owned by this
+      // exact Open.  Keep the proof pending and preserve the load instead of
+      // invalidating it as an unrelated replacement.  The Open owner must
+      // publish editor-ready only after the load returns and promotes this
+      // evidence to `complete` below.
+      if (pendingExplicitWorkspaceHydration.phase === "pending") {
+        set(base);
+        return;
+      }
       // The Open proof establishes a new authority after the normal
       // recorder/project rebind.  If a Transition raced the Open, retire only
       // that reversible pause; do not route this through Unchanged, which has
@@ -452,9 +458,9 @@ export function applyWorkspaceLifecycleUnchangedProof(
  * to the proof returned by this Open after it crossed Native.
  */
 export function noteExplicitWorkspaceHydration(
-  evidence: ExplicitWorkspaceHydrationEvidence,
+  evidence: Omit<ExplicitWorkspaceHydrationEvidence, "phase">,
 ): void {
-  pendingExplicitWorkspaceHydration = evidence;
+  pendingExplicitWorkspaceHydration = { ...evidence, phase: "complete" };
   if (
     latestReadyObservation &&
     latestRevision === evidence.lifecycleRevision &&
@@ -469,6 +475,42 @@ export function noteExplicitWorkspaceHydration(
       workspaceName: evidence.workspaceName,
       openRevision: evidence.openRevision,
     };
+    pendingExplicitWorkspaceHydration = null;
+  }
+}
+
+/** Register the exact Native Open before its asynchronous Project hydration. */
+export function beginExplicitWorkspaceHydration(
+  evidence: Omit<ExplicitWorkspaceHydrationEvidence, "phase">,
+): void {
+  pendingExplicitWorkspaceHydration = { ...evidence, phase: "pending" };
+}
+
+/**
+ * Check that the Open-owned hydration was not invalidated by a newer lifecycle
+ * binding while its Project load was awaiting I/O.  A stale load resolves
+ * normally after generation invalidation, so the owner needs this explicit
+ * proof before publishing a successful Open result.
+ */
+export function isExplicitWorkspaceHydrationCurrent(
+  evidence: Omit<ExplicitWorkspaceHydrationEvidence, "phase">,
+): boolean {
+  const pending = pendingExplicitWorkspaceHydration;
+  return (
+    pending !== null &&
+    pending.phase === "pending" &&
+    pending.workspacePath === evidence.workspacePath &&
+    pending.workspaceId === evidence.workspaceId &&
+    pending.workspaceName === evidence.workspaceName &&
+    pending.openRevision === evidence.openRevision &&
+    pending.lifecycleRevision === evidence.lifecycleRevision &&
+    pending.lifecycleBindingToken === evidence.lifecycleBindingToken
+  );
+}
+
+/** Drop an Open proof when the owned hydration fails or is superseded. */
+export function cancelExplicitWorkspaceHydration(): void {
+  if (pendingExplicitWorkspaceHydration?.phase === "pending") {
     pendingExplicitWorkspaceHydration = null;
   }
 }

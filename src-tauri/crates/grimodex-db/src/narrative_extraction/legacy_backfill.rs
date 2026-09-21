@@ -2381,6 +2381,7 @@ mod tests {
             mark_run_reuse_selection_unknown: None,
             mark_run_creation_outcome: None,
             reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
         };
         let cancellation = super::super::source_revision::validation_terminated(
             super::super::source_revision::ValidationTerminationReason::Cancelled,

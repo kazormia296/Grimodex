@@ -50,7 +50,12 @@ import {
   type NativeWorkspaceOpenResult,
 } from "./recovery/applyNativeOpenOutcome";
 import type { WorkspaceState } from "./workspaceState";
-import { noteExplicitWorkspaceHydration } from "./workspaceLifecycleProjection";
+import {
+  beginExplicitWorkspaceHydration,
+  cancelExplicitWorkspaceHydration,
+  isExplicitWorkspaceHydrationCurrent,
+  noteExplicitWorkspaceHydration,
+} from "./workspaceLifecycleProjection";
 
 type WorkspaceStoreGetter = () => WorkspaceState;
 type WorkspaceStoreSetter = (partial: Partial<WorkspaceState>) => void;
@@ -211,6 +216,16 @@ export function createWorkspaceOpenHandler(
         openLifecycleProof = nativeOpenOutcome.lifecycle;
         swapDone = true;
         targetOpenRevision = get().workspaceOpenRevision + 1;
+        if (openLifecycleProof) {
+          beginExplicitWorkspaceHydration({
+            workspacePath: path,
+            workspaceId: openResult.workspaceId ?? path,
+            workspaceName: openResult.name,
+            openRevision: targetOpenRevision,
+            lifecycleRevision: openLifecycleProof.revision,
+            lifecycleBindingToken: openLifecycleProof.bindingToken,
+          });
+        }
         await compositionReady;
       } finally {
         // swap 未実行の失敗 = 旧 workspace 続行なので旧束縛は依然正しい →
@@ -270,6 +285,21 @@ export function createWorkspaceOpenHandler(
         nextOpenRevision,
         createWorkspaceOpenProjectLifecycleTiming(trace),
       );
+      if (
+        openLifecycleProof &&
+        !isExplicitWorkspaceHydrationCurrent({
+          workspacePath: path,
+          workspaceId: result.workspaceId ?? path,
+          workspaceName: result.name,
+          openRevision: nextOpenRevision,
+          lifecycleRevision: openLifecycleProof.revision,
+          lifecycleBindingToken: openLifecycleProof.bindingToken,
+        })
+      ) {
+        throw new Error(
+          "Workspace hydration was superseded before authority publication",
+        );
+      }
       setWorkspaceOpenTraceTarget(trace, {
         projectId,
         workspacePath: path,
@@ -341,6 +371,7 @@ export function createWorkspaceOpenHandler(
       return "opened";
     } catch (e) {
       trace.fail();
+      cancelExplicitWorkspaceHydration();
       // open 失敗時も recorder への命令的な復帰はしない (r5)。束縛の扱いは
       // swap を括る endWorkspaceSwitch({restoreBinding}) が一元的に決めた。
       // swap 後の後続処理の失敗では束縛は無効のまま = 次の正規 rebind まで

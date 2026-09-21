@@ -14,9 +14,9 @@ use grimodex_db::AppResult;
 use grimodex_db::{
     AdmissionKind, AdmissionOutcome, AdmissionTicket, ContentEffect, ControlGeneration,
     ControlRequest, ControlSlotOutcome, DeliveryAdmissionOutcome, DeliverySequence, FenceOutcome,
-    LifecycleResult, LifecycleState, LiveBinding, MaintenancePermit, OperationId, PermitAdmission,
-    RecoveryDescriptor, RecoveryDescriptorId, RunOwnership, StateRevision, TransitionStage,
-    WorkspaceExclusive, WorkspaceLifecycleCore, WorkspaceParticipant,
+    LifecycleResult, LifecycleState, LiveBinding, MaintenancePermit, PermitAdmission,
+    RecoveryDescriptor, RecoveryDescriptorId, RunOwnership, StateRevision, WorkspaceExclusive,
+    WorkspaceLifecycleCore, WorkspaceParticipant,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -131,6 +131,7 @@ impl WorkspaceLifecycleViewAdapter {
         Ok(self.core.workspace_participant_count()?)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn begin_workspace_participant(&self) -> AppResult<WorkspaceParticipant> {
         Ok(self.core.begin_workspace_participant()?)
     }
@@ -232,10 +233,12 @@ impl WorkspaceLifecycleViewAdapter {
     /// Mark the beginning of an admitted Open/Restore/Shutdown transition.
     /// A second operation is rejected by the core; it never receives an
     /// `Unchanged` result that could revive the previous renderer binding.
+    #[allow(dead_code)]
     pub(crate) fn begin_transition(&self) -> AppResult<(WorkspaceLifecycleView, bool)> {
         self.begin_transition_kind(AdmissionKind::Open)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn begin_transition_kind(
         &self,
         kind: AdmissionKind,
@@ -433,6 +436,7 @@ impl WorkspaceLifecycleViewAdapter {
     /// W1 descriptor while W2 is Ready, but it must wait until every active
     /// maintenance participant has joined; callers use `NotAdmitted` to keep
     /// the descriptor pending and retry without wedging the transition state.
+    #[allow(dead_code)]
     pub(crate) fn try_begin_recovery_transition(
         &self,
         descriptor_id: RecoveryDescriptorId,
@@ -495,6 +499,7 @@ impl WorkspaceLifecycleViewAdapter {
         Ok(self.core.admit_delivery_at(sequence, fingerprint)?)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn mark_delivery_terminal(&self, sequence: DeliverySequence) -> AppResult<bool> {
         Ok(self.core.mark_delivery_terminal(sequence)?)
     }
@@ -519,6 +524,7 @@ impl WorkspaceLifecycleViewAdapter {
 
     /// Publish a ready authority after the shared opener has completed and
     /// the authority is actually visible in `WorkspaceState`.
+    #[allow(dead_code)]
     pub(crate) fn publish_ready(
         &self,
         workspace: &WorkspaceState,
@@ -1015,6 +1021,7 @@ fn live_binding(workspace: &WorkspaceState, recovery_generation: u64) -> AppResu
     ))
 }
 
+#[allow(dead_code)]
 fn next_revision(current: u64) -> u64 {
     current.checked_add(1).unwrap_or(1)
 }
@@ -1030,6 +1037,7 @@ fn new_binding_token() -> String {
 mod tests {
     use super::*;
     use grimodex_db::state::{ActiveWorkspace, WorkspaceAuthority};
+    use grimodex_db::{OperationId, TransitionStage};
     use std::sync::atomic::Ordering;
     use std::sync::Mutex;
 

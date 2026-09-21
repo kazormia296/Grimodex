@@ -1330,6 +1330,11 @@ pub struct MaintenanceCycleControl<'a> {
     /// Clear the process-local creation slot before beginning a new creation
     /// transaction, so an early validation error cannot update an older Run.
     pub reset_run_creation_tracking: Option<&'a dyn Fn() -> anyhow::Result<()>>,
+    /// Remove an exact Run ownership slot only after the surrounding durable
+    /// terminal transaction has committed.  Without this proof a healthy
+    /// connection is insufficient to release the lifecycle permit: a running
+    /// Run would otherwise be left without a recovery descriptor.
+    pub mark_run_terminalized: Option<&'a dyn Fn(&str) -> anyhow::Result<()>>,
 }
 
 impl MaintenanceCycleRequest {
@@ -6214,6 +6219,7 @@ mod tests {
                 mark_run_reuse_selection_unknown: None,
                 mark_run_creation_outcome: None,
                 reset_run_creation_tracking: None,
+                mark_run_terminalized: None,
             };
             let result =
                 run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
@@ -6684,6 +6690,7 @@ mod tests {
                 mark_run_reuse_selection_unknown: None,
                 mark_run_creation_outcome: None,
                 reset_run_creation_tracking: None,
+                mark_run_terminalized: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db,
@@ -6750,6 +6757,7 @@ mod tests {
                 mark_run_reuse_selection_unknown: None,
                 mark_run_creation_outcome: None,
                 reset_run_creation_tracking: None,
+                mark_run_terminalized: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6828,6 +6836,7 @@ mod tests {
                 mark_run_reuse_selection_unknown: None,
                 mark_run_creation_outcome: None,
                 reset_run_creation_tracking: None,
+                mark_run_terminalized: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -6923,6 +6932,7 @@ mod tests {
                 mark_run_reuse_selection_unknown: None,
                 mark_run_creation_outcome: None,
                 reset_run_creation_tracking: None,
+                mark_run_terminalized: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -7019,6 +7029,7 @@ mod tests {
                 mark_run_reuse_selection_unknown: None,
                 mark_run_creation_outcome: None,
                 reset_run_creation_tracking: None,
+                mark_run_terminalized: None,
             };
             run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
                 &db_for_cycle,
@@ -7144,6 +7155,7 @@ mod tests {
             mark_run_reuse_selection_unknown: None,
             mark_run_creation_outcome: None,
             reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
         };
 
         let error = discover_durable_maintenance_work_with_coordinates_and_control(
@@ -7289,6 +7301,7 @@ mod tests {
             mark_run_reuse_selection_unknown: None,
             mark_run_creation_outcome: None,
             reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
         };
         let controlled = discover_before_cutover_maintenance_work_with_coordinates_and_control(
             &db,

@@ -29,7 +29,7 @@ pub(crate) struct NodePostEffectRuntime {
     /// Detached post-effect workers retain this participant for their whole
     /// lifetime.  A transition must stop/observe the worker before replacing
     /// the authority it captured at launch.
-    participant: Option<WorkspaceParticipant>,
+    _participant: Option<WorkspaceParticipant>,
     /// The permit is cloned into detached run runtimes so the profile startup
     /// barrier waits for the actual AI task, not only its fire-and-forget
     /// launch call.
@@ -41,7 +41,7 @@ impl NodePostEffectRuntime {
         Self {
             state,
             db: None,
-            participant: None,
+            _participant: None,
             dispatch: None,
         }
     }
@@ -80,7 +80,7 @@ impl NodePostEffectRuntime {
         Ok(Self {
             state,
             db: Some(Arc::clone(workspace.db())),
-            participant: Some(participant),
+            _participant: Some(participant),
             dispatch: Some(dispatch),
         })
     }
@@ -107,7 +107,7 @@ impl PostEffectRuntime for NodePostEffectRuntime {
         Ok(Self {
             state: Arc::clone(&self.state),
             db: Some(db),
-            participant: Some(participant),
+            _participant: Some(participant),
             dispatch: self.dispatch.clone(),
         })
     }
