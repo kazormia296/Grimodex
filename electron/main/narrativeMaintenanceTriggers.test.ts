@@ -98,6 +98,37 @@ describe("narrative maintenance trigger coordinator", () => {
     coordinator.dispose();
   });
 
+  it("joins an in-flight discovery without registering work after disposal", async () => {
+    const scheduler = makeScheduler();
+    const pendingDiscovery = deferred<unknown>();
+    const discoverNarrativeMaintenanceWork = vi
+      .fn()
+      .mockReturnValue(pendingDiscovery.promise);
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      { discoverNarrativeMaintenanceWork },
+      scheduler,
+    );
+
+    coordinator.handleBackendEvent("workspace:opened", {});
+    await vi.runOnlyPendingTimersAsync();
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledOnce();
+
+    const disposal = coordinator.dispose();
+    let settled = false;
+    void disposal.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    pendingDiscovery.resolve(
+      discovery("authority-after-dispose", 2, [[backfill("late-project")]]),
+    );
+    await disposal;
+
+    expect(scheduler.requestManyWithBinding).not.toHaveBeenCalled();
+  });
+
   it("routes an expected C2-ZC NOT_READY wake through BeforeCutover discovery", async () => {
     const scheduler = makeScheduler();
     const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
