@@ -330,7 +330,7 @@ test("native command feature adapters select only their matching native-command 
 test("feature UI paths stay in the planned UI backlog and do not select native journeys", () => {
   const cases = [
     ["src/features/chronicle/ChroniclePanel.tsx", "chronicle-ui"],
-    ["src/features/lint/LinterPanel.tsx", "lint-ui"],
+    ["src/features/lint/LintDisablesView.tsx", "lint-ui"],
     ["src/features/map/MapPanel.tsx", "map-ui"],
     ["src/features/revision/ProjectSnapshotModal.tsx", "snapshot-ui"],
   ];

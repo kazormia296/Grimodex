@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /**
- * ツリー perf S 三点セットの契約 gate (2026-06-10):
+ * VirtualTree と TreeNodeItem の描画コストの契約 gate:
  *   (1) フィルタ非表示ノードは TreeNodeItem を mount しない
  *       (旧実装は全 hook を回してから return null していた)
  *   (2) TreeNodeItem は memo 化され、無関係な行は親の再レンダーで再レンダー
@@ -17,19 +17,45 @@ import { DndContext, useDndContext } from "@dnd-kit/core";
 import type { DragMoveEvent, DragEndEvent } from "@dnd-kit/core";
 
 const perfCapture = vi.hoisted(() => ({ marks: [] as string[] }));
-vi.mock("@/lib/perfLog", () => ({
-  markStart: () => {},
-  markEnd: () => {},
+vi.mock("@/lib/perfLog", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/perfLog")>()),
   recordMark: (name: string) => {
     perfCapture.marks.push(name);
   },
-  enablePerfLog: () => {},
-  disablePerfLog: () => {},
-  startPerfSession: () => {},
-  endPerfSession: () => null,
 }));
 
-import { TreeRenderer } from "./TreeRenderer";
+// These small fixtures fit in one viewport. Keep the virtualizer identity
+// stable, as in production, so measureElement does not invalidate row memo.
+// VirtualTree.test.tsx and VirtualTree.browser.test.tsx cover windowing.
+vi.mock("@tanstack/react-virtual", () => {
+  type Options = {
+    count: number;
+    getItemKey: (index: number) => string | number;
+  };
+  let options: Options;
+  const virtualizer = {
+    getTotalSize: () => options.count * 28,
+    getVirtualItems: () =>
+      Array.from({ length: options.count }, (_, index) => ({
+        index,
+        key: options.getItemKey(index),
+        start: index * 28,
+        size: 28,
+      })),
+    measureElement: vi.fn(),
+    scrollToIndex: vi.fn(),
+  };
+  return {
+    useVirtualizer: (nextOptions: Options) => {
+      options = nextOptions;
+      return virtualizer;
+    },
+  };
+});
+
+import { VirtualTree } from "./VirtualTree";
+import { buildTreeIndex } from "./treeIndex";
+import { deriveVisibleTreeRows } from "./treeVisibility";
 import { useScenesDnd } from "./useScenesDnd";
 import { useTreeStore } from "./treeStore";
 import type { TreeNodeData } from "./treeStore";
@@ -60,25 +86,20 @@ function rowRenderCount(): number {
 
 // 安定参照の共有 fixture (memo を破らないようモジュールレベル const)
 const EMPTY_IDS: string[] = [];
-const EMPTY_LABELS: string[] = [];
-const EMPTY_NODE_LABELS: Record<string, string[]> = {};
-const EMPTY_LEAF_MAP: Record<string, string[]> = {};
-
-const baseRendererProps = {
-  parentId: null,
-  depth: 0,
+const baseTreeProps = {
+  scrollElement: null,
   activeSceneId: "",
-  filterQuery: "",
-  statusFilter: null,
-  labelFilter: EMPTY_LABELS,
-  nodeLabels: EMPTY_NODE_LABELS,
   viewMode: "tree",
   showWordCounts: false,
   showStatusDots: false,
   showLabelDots: false,
   showPlotThreadTrack: false,
   showAiAttribution: false,
-  leafDescendantsByFolder: EMPTY_LEAF_MAP,
+  draggingId: null,
+  autoRevealActiveScene: false,
+  pendingRevealId: null,
+  onPendingRevealHandled: () => {},
+  autoExpandFolders: false,
 } as const;
 
 beforeEach(() => {
@@ -91,14 +112,16 @@ beforeEach(() => {
   });
 });
 
-describe("TreeRenderer: フィルタ非表示ノードの mount スキップ", () => {
+describe("VirtualTree: フィルタ非表示ノードの mount スキップ", () => {
   const f1 = makeNode("f1", "folder", null, "a1");
   const s1 = makeNode("s1", "scene", "f1", "a1", "りんごのシーン");
   const s2 = makeNode("s2", "scene", "f1", "a2", "ばななのシーン");
-  const nodeMap = { f1, s1, s2 };
-  const childMap = { root: ["f1"], f1: ["s1", "s2"] };
-  const flat = [f1, s1];
   const expanded = ["f1"];
+  const rows = deriveVisibleTreeRows(buildTreeIndex([f1, s1, s2]), {
+    expandedIds: expanded,
+    query: "りんご",
+  });
+  const flat = rows.map((row) => row.node);
 
   // 「render 自体が走ったか」は recordMark では判別できない (旧実装の
   // return null は recordMark より前)。hooks が走った確かな痕跡として
@@ -119,18 +142,13 @@ describe("TreeRenderer: フィルタ非表示ノードの mount スキップ", (
     return (
       <DndContext>
         <DndProbe />
-        <ul>
-          <TreeRenderer
-            {...baseRendererProps}
-            childMap={childMap}
-            nodeMap={nodeMap}
-            selectedIds={EMPTY_IDS}
-            expandedIds={expanded}
-            filterQuery="りんご"
-            orderedNodesRef={orderedNodesRef}
-            dragInProgress={false}
-          />
-        </ul>
+        <VirtualTree
+          {...baseTreeProps}
+          rows={rows}
+          selectedIds={EMPTY_IDS}
+          expandedIds={expanded}
+          orderedNodesRef={orderedNodesRef}
+        />
       </DndContext>
     );
   }
@@ -151,25 +169,20 @@ describe("TreeNodeItem: memo による再レンダー範囲の限定", () => {
   const s1 = makeNode("s1", "scene", null, "a1");
   const s2 = makeNode("s2", "scene", null, "a2");
   const s3 = makeNode("s3", "scene", null, "a3");
-  const nodeMap = { s1, s2, s3 };
-  const childMap = { root: ["s1", "s2", "s3"] };
   const flat = [s1, s2, s3];
+  const rows = flat.map((node) => ({ node, depth: 0 }));
 
   function Harness({ selectedIds }: { selectedIds: string[] }) {
     const orderedNodesRef = useRef(flat);
     return (
       <DndContext>
-        <ul>
-          <TreeRenderer
-            {...baseRendererProps}
-            childMap={childMap}
-            nodeMap={nodeMap}
-            selectedIds={selectedIds}
-            expandedIds={EMPTY_IDS}
-            orderedNodesRef={orderedNodesRef}
-            dragInProgress={false}
-          />
-        </ul>
+        <VirtualTree
+          {...baseTreeProps}
+          rows={rows}
+          selectedIds={selectedIds}
+          expandedIds={EMPTY_IDS}
+          orderedNodesRef={orderedNodesRef}
+        />
       </DndContext>
     );
   }
@@ -212,6 +225,7 @@ describe("dropIndicator: DOM 直書き (drag over で React 再レンダー無�
   const nodeMap = { f1, s1, s2 };
   const childMap = { root: ["f1", "s1", "s2"] };
   const flat = [f1, s1, s2];
+  const rows = flat.map((node) => ({ node, depth: 0 }));
 
   // pointerYRef は初期値 0 のまま使う (useScenesDnd.test.ts と同じ手法)。
   // leaf: top=-30,h=40 → relY=30 ≥ 20 → "after"
@@ -250,17 +264,14 @@ describe("dropIndicator: DOM 直書き (drag over で React 再レンダー無�
     return (
       <DndContext sensors={dnd.sensors}>
         <div ref={containerRef}>
-          <ul>
-            <TreeRenderer
-              {...baseRendererProps}
-              childMap={childMap}
-              nodeMap={nodeMap}
-              selectedIds={EMPTY_IDS}
-              expandedIds={EMPTY_IDS}
-              orderedNodesRef={orderedNodesRef}
-              dragInProgress={dnd.draggingId !== null}
-            />
-          </ul>
+          <VirtualTree
+            {...baseTreeProps}
+            rows={rows}
+            selectedIds={EMPTY_IDS}
+            expandedIds={EMPTY_IDS}
+            orderedNodesRef={orderedNodesRef}
+            draggingId={dnd.draggingId}
+          />
         </div>
       </DndContext>
     );
