@@ -10,9 +10,8 @@ export type { Domain } from "./recorder";
 /**
  * Fetch the project's change-event tail, ordered by sequence (ascending).
  *
- * The intended use is the in-app TimelapsePlayer scrubber: load all events
- * for a project, then filter / replay client-side. For very long histories
- * this will need pagination but P5's scope is "fits in memory".
+ * Export consumers load the project tail, then filter and replay client-side.
+ * This currently requires the selected history to fit in memory.
  */
 export async function loadProjectChangeEvents(projectId: string) {
   const resetSequence = await getTimelapseResetSequence(projectId);

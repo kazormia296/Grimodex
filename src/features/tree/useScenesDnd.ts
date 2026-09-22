@@ -57,7 +57,7 @@ export function useScenesDnd({
   // 対象行の data 属性を直接書き換え、見た目は TreeNodeItem 側の
   // data-[drop-*] Tailwind variant が担う。React は li 上の data-drop-* /
   // 行 div 上の data-drop-inside を JSX で管理していないので、行が
-  // 再レンダーされても属性は消えない (gate: TreeRenderer.perf.test.tsx)。
+  // 再レンダーされても属性は消えない (gate: VirtualTree.perf.test.tsx)。
   const dropIndicatorRef = useRef<DropIndicator | null>(null);
   const applyDropIndicator = useCallback(
     (next: DropIndicator | null) => {

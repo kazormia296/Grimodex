@@ -49,7 +49,7 @@ const MAX_FLUSH_RETRIES = 10;
 
 /**
  * Canonical recorded-domain union. This is the single source of truth — the
- * player filter (`TimelapsePlayer`) and query helpers (`queryEvents`) re-use it
+ * query helpers (`queryEvents`) re-use it
  * so the set can never drift.
  *
  * Some domains are ALSO appended by the Rust `agent_writes` path (AI writes /

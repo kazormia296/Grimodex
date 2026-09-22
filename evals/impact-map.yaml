@@ -469,8 +469,6 @@ rules:
       - electron/main/narrativeMaintenanceShutdown.test.ts
       - electron/main/profileEgress.ts
       - electron/main/profileEgress.test.ts
-      - electron/main/workspaceLifecycleResult.ts
-      - electron/main/workspaceLifecycleResult.test.ts
       - electron/main/workspaceLifecycleView.ts
       - electron/main/workspaceLifecycleView.test.ts
       - electron/shared/ipcContract.ts
