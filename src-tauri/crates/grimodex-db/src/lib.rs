@@ -20,6 +20,36 @@ use std::time::Duration;
 pub(crate) mod narrative_maintenance_connection;
 use narrative_maintenance_connection::ConnectionHealth;
 
+/// Preserve the existing SQL owner while composing a full-set capacity
+/// budget and, in the opt-in binary, noncancelling diagnostic accounting.
+pub(crate) fn set_sqlite_progress_handler<F>(
+    conn: &Connection,
+    interval: i32,
+    handler: Option<F>,
+) -> rusqlite::Result<()>
+where
+    F: FnMut() -> bool + Send + 'static,
+{
+    narrative_extraction::nir1_capacity::set_progress_owner(conn, interval, handler)
+}
+
+fn install_sqlite_progress_handler<F>(
+    conn: &Connection,
+    interval: i32,
+    handler: Option<F>,
+) -> rusqlite::Result<()>
+where
+    F: FnMut() -> bool + Send + 'static,
+{
+    #[cfg(feature = "nir1-material-diagnostics")]
+    if narrative_extraction::nir1_capacity_diagnostics::sql_measurement_active() {
+        return narrative_extraction::nir1_capacity_diagnostics::set_measured_progress_handler(
+            conn, interval, handler,
+        );
+    }
+    conn.progress_handler(interval, handler)
+}
+
 /// Run a foreground maintenance command under the ordinary blocking
 /// connection acquisition policy. Automatic maintenance remains no-wait, but
 /// user initiated Verify/Backfill/Rebuild commands must retain the existing
@@ -777,7 +807,11 @@ impl Database {
         F: FnOnce(&Connection) -> anyhow::Result<T>,
     {
         let conn = self.lock_conn()?;
-        f(&conn)
+        if narrative_extraction::nir1_capacity::attempt_active() {
+            narrative_maintenance_connection::with_capacity_connection(self, &conn, f)
+        } else {
+            f(&conn)
+        }
     }
 
     /// Read several Native observations from one SQLite snapshot. The shell

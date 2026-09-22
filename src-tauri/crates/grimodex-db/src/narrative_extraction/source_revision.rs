@@ -96,6 +96,7 @@ pub enum ValidationTerminationReason {
     WorkspaceGenerationChanged,
     ForegroundPreempted,
     CleanupFailed,
+    CapacityExceeded,
 }
 
 impl ValidationTerminationReason {
@@ -108,6 +109,7 @@ impl ValidationTerminationReason {
             Self::WorkspaceGenerationChanged => "workspace-generation-changed",
             Self::ForegroundPreempted => "foreground-preempted",
             Self::CleanupFailed => "cleanup-failed",
+            Self::CapacityExceeded => "capacity-exceeded",
         }
     }
 }
@@ -157,6 +159,11 @@ pub fn validation_terminated(
 /// `anyhow` preserves this marker when callers add context.  Keep the check
 /// in one place so every reader makes the same distinction from routine
 /// Source absence/staleness.
+pub(crate) fn is_validation_capacity_exceeded(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ValidationTerminated>()
+        .is_some_and(|error| error.reason == ValidationTerminationReason::CapacityExceeded)
+}
+
 pub fn is_validation_terminated(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ValidationTerminated>().is_some()
 }

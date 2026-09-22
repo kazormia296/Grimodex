@@ -994,7 +994,9 @@ pub fn install_staged_workspace_db(
         || options.failpoint == Some(RestoreFailpoint::BeforeLiveVerify)
         || options.failpoint == Some(RestoreFailpoint::LiveVerifyFailure)
     {
-        let code = options.failpoint.expect("failpoint set").as_str();
+        let point = options.failpoint.expect("failpoint set");
+        park_restore_failpoint_if_requested(point)?;
+        let code = point.as_str();
         let primary = format!("RESTORE_FAILPOINT: {code}");
         drop(exclusive_lease);
         return restore_rollback_error(RestoreRollbackArgs {

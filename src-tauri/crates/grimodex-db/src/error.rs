@@ -58,7 +58,7 @@ impl From<crate::workspace_lease::LeaseError> for AppError {
 
 impl From<crate::workspace_lifecycle::LifecycleError> for AppError {
     fn from(value: crate::workspace_lifecycle::LifecycleError) -> Self {
-        AppError::Anyhow(anyhow::anyhow!("{value}"))
+        AppError::Anyhow(value.into())
     }
 }
 

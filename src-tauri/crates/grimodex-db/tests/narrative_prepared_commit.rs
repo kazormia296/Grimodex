@@ -998,6 +998,84 @@ fn prepare_seals_prepared_commit_row() {
 }
 
 #[test]
+fn supplied_apply_context_succeeds_and_stopped_context_preserves_prepared_commit() {
+    use narrative_extraction::{GraphWorkControl, GraphWorkStage};
+    struct Context {
+        stopped: bool,
+        full: bool,
+    }
+    impl GraphWorkControl for Context {
+        fn check(&mut self, _: GraphWorkStage) -> anyhow::Result<()> {
+            if self.stopped {
+                return Err(narrative_extraction::validation_terminated(
+                    narrative_extraction::ValidationTerminationReason::Cancelled,
+                    "stopped foreground Apply owner",
+                ));
+            }
+            Ok(())
+        }
+        fn allows_full_eligibility(&self) -> bool {
+            self.full
+        }
+    }
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_one_approved(&db);
+    enable_manual_apply(&db);
+    let mut owner = Context {
+        stopped: false,
+        full: false,
+    };
+    let error = narrative_extraction::narrative_extraction_prepare_commit_with_control(
+        &db,
+        build_prepare(&run_id, &set_id, &proposal_id, &revision_id),
+        &mut owner,
+    )
+    .expect_err("wrong context cannot enter whole-project validation");
+    assert!(narrative_extraction::is_validation_terminated(&error));
+    assert!(error.to_string().contains("context-unavailable"));
+    owner.full = true;
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit_with_control(
+        &db,
+        build_prepare(&run_id, &set_id, &proposal_id, &revision_id),
+        &mut owner,
+    )
+    .expect("live supplied Prepare owner");
+    let payload = ApplyCommitPayload {
+        project_id: "project-1".into(),
+        prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().into(),
+        request_id: "req-prepared-1".into(),
+        session_id: "sess-prepared".into(),
+        expected_version: prepared["version"].as_i64(),
+    };
+    owner.stopped = true;
+    let error = narrative_extraction::narrative_extraction_apply_commit_with_control(
+        &db,
+        payload.clone(),
+        &mut owner,
+    )
+    .expect_err("stopped owner cannot write");
+    assert!(narrative_extraction::is_validation_terminated(&error));
+    db.with_conn(|conn| {
+        let status: String = conn.query_row(
+            "SELECT status FROM narrative_apply_commits WHERE id=?1",
+            [&payload.prepared_commit_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(status, "prepared");
+        assert!(conn.is_autocommit());
+        Ok(())
+    })
+    .unwrap();
+    owner.stopped = false;
+    let result = narrative_extraction::narrative_extraction_apply_commit_with_control(
+        &db, payload, &mut owner,
+    )
+    .expect("live supplied Apply owner");
+    assert_eq!(result["status"], "applied");
+    assert_eq!(result["created"][0]["entityId"], "event-prepared-1");
+}
+
+#[test]
 fn revision_envelope_and_source_basis_contract_rows_are_immutable() -> anyhow::Result<()> {
     let db = migrated_db();
     let (run_id, set_id, proposal_id, revision_id) = seed_one_approved(&db);

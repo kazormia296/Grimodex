@@ -35,6 +35,7 @@ use super::evaluator::{
     evaluate_edge, BuildAction, EdgeComparisonInput, EdgeObservation, EvidenceFreshness,
 };
 use super::nir1_chronicle_index::NirChronicleIndexRuntime;
+use super::nir1_capacity::{self, with_capacity_scope, CapacityBudget};
 use super::nir1_entity_relation::{
     read_nir1_entity_relation_revision_current_for_graph_index, Nir1EntityRelationRevision,
 };
@@ -52,8 +53,7 @@ pub(crate) const SOURCE_KIND: &str = ENTITY_RELATION_SOURCE_KIND;
 const CONSUMER_KIND: &str = "semantic-index";
 
 // These limits remain the per-Revision validation envelope.  They are not
-// whole-project roster/build limits: one project may contain any number of
-// individually valid Revisions.
+// whole-project roster/build limits. Whole-set limits live in nir1_capacity.
 const REVISION_RECORD_ADMISSION: usize = narrative_nir1::MAX_GRAPH_RECORDS;
 const REVISION_INPUT_BYTE_LIMIT: usize = narrative_nir1::MAX_GRAPH_INPUT_BYTES;
 /// Test-only SQL cancellation cadence shared by the cancellation tests below.
@@ -97,6 +97,11 @@ pub trait GraphWorkControl {
     /// control must never silently become a full-roster authority.
     fn allows_full_eligibility(&self) -> bool {
         false
+    }
+
+    /// A capacity deadline follows the existing exact finalization grant.
+    fn finalization_signal(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        None
     }
 }
 
@@ -181,6 +186,7 @@ pub struct GraphIndexBuildSnapshot {
     edges: Vec<DependencyEdge>,
     runtime_owner: u64,
     runtime_epoch: u64,
+    capacity: Arc<CapacityBudget>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -604,7 +610,9 @@ pub(crate) fn read_eligibility_source_with_control(
     project: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<GraphEligibilitySource> {
-    read_eligibility_source_bounded(conn, project, None, Some(control))
+    with_capacity_scope(conn, None, control, |_, control| {
+        read_eligibility_source_bounded(conn, project, None, Some(control))
+    })
 }
 
 fn read_eligibility_source_for_native_build(
@@ -647,7 +655,8 @@ where
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancelled_for_hook = Arc::clone(&cancelled);
     let cancellation_epoch = Arc::clone(cancellation_epoch);
-    conn.progress_handler(
+    crate::set_sqlite_progress_handler(
+        conn,
         GRAPH_SQL_CHECK_INTERVAL,
         Some(move || {
             if cancellation_epoch.load(AtomicOrdering::Acquire) != expected_epoch {
@@ -658,7 +667,7 @@ where
         }),
     )?;
     let result = operation();
-    let reset = conn.progress_handler(0, None::<fn() -> bool>);
+    let reset = crate::set_sqlite_progress_handler(conn, 0, None::<fn() -> bool>);
     if let Err(error) = reset {
         return Err(anyhow::anyhow!(
             "NIR1_GRAPH_SQL_PROGRESS_HANDLER_RESET_FAILED: {error}"
@@ -694,7 +703,23 @@ fn read_eligibility_source_bounded(
     conn: &Connection,
     project: &str,
     admission: Option<&GraphReadAdmission<'_>>,
+    control: Option<&mut dyn GraphWorkControl>,
+) -> Result<GraphEligibilitySource> {
+    read_eligibility_source_counted(
+        conn,
+        project,
+        admission,
+        control,
+        &mut SourceCapacity::default(),
+    )
+}
+
+fn read_eligibility_source_counted(
+    conn: &Connection,
+    project: &str,
+    admission: Option<&GraphReadAdmission<'_>>,
     mut control: Option<&mut dyn GraphWorkControl>,
+    capacity: &mut SourceCapacity,
 ) -> Result<GraphEligibilitySource> {
     ensure!(
         !conn.is_autocommit(),
@@ -760,6 +785,12 @@ fn read_eligibility_source_bounded(
             if let Some(admission) = admission {
                 admission.ensure_current(conn)?;
             }
+            admit_capacity(
+                &mut capacity.candidates,
+                1,
+                nir1_capacity::CANDIDATE_LIMIT,
+                "candidate-rows",
+            )?;
             let proposal_id_bytes = usize::try_from(row.get::<_, i64>(0)?)
                 .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
             ensure!(
@@ -772,6 +803,8 @@ fn read_eligibility_source_bounded(
                 revision_id_bytes <= REVISION_INPUT_BYTE_LIMIT,
                 "NIR1_GRAPH_ROSTER_INPUT_LIMIT"
             );
+            capacity.input(proposal_id_bytes)?;
+            capacity.input(revision_id_bytes)?;
             page.push((row.get::<_, String>(2)?, row.get::<_, String>(3)?));
         }
         if page.is_empty() {
@@ -791,7 +824,7 @@ fn read_eligibility_source_bounded(
                 admission.ensure_current(conn)?;
             }
             let Some(input_stats) =
-                read_revision_input_stats(conn, project, &revision_id, admission)?
+                read_revision_input_stats(conn, project, &revision_id, admission, capacity)?
             else {
                 continue;
             };
@@ -799,9 +832,12 @@ fn read_eligibility_source_bounded(
             if !preflight_revision_source_basis(conn, project, &revision_id, admission)? {
                 continue;
             }
-            if preflight_live_source_lengths(conn, project, &revision_id, admission)?.is_none() {
+            let Some(live_bytes) =
+                preflight_live_source_lengths(conn, project, &revision_id, admission)?
+            else {
                 continue;
-            }
+            };
+            capacity.input(live_bytes)?;
             #[cfg(test)]
             if let Some(admission) = admission {
                 if take_native_prepare_test_cancellation() {
@@ -832,6 +868,19 @@ fn read_eligibility_source_bounded(
                 material_records == input_stats.material_records,
                 "NIR1_GRAPH_ROSTER_RECORD_MISMATCH"
             );
+            admit_capacity(
+                &mut capacity.qualified_revisions,
+                1,
+                nir1_capacity::REVISION_LIMIT,
+                "qualified-revisions",
+            )?;
+            admit_capacity(
+                &mut capacity.materials,
+                material_records,
+                nir1_capacity::MATERIAL_LIMIT,
+                "qualified-materials",
+            )?;
+            admit_roster_bytes(capacity, &revision, &decision_id)?;
             append_revision_roster(&mut roster, &revision, &decision_id, &mut control)?;
             if let Some(admission) = admission {
                 admission.ensure_current(conn)?;
@@ -857,14 +906,25 @@ fn read_revision_input_stats(
     project: &str,
     revision_id: &str,
     admission: Option<&GraphReadAdmission<'_>>,
+    capacity: &mut SourceCapacity,
 ) -> Result<Option<RevisionInputStats>> {
     // Lengths are deliberately selected without invoking any JSON function.
     // The size guard below therefore runs before SQLite starts parsing the
     // payload or walking its material arrays.
-    let lengths: Option<(i64, i64)> = conn
+    let lengths: Option<(i64, i64, i64)> = conn
         .query_row(
             "SELECT COALESCE(length(CAST(revision.payload_json AS BLOB)), 0),
-                    COALESCE(length(CAST(revision.reconciliation_envelope_json AS BLOB)), 0)
+                    COALESCE(length(CAST(revision.reconciliation_envelope_json AS BLOB)), 0),
+                    COALESCE(length(CAST(proposal_set.id AS BLOB)), 0) +
+                    COALESCE(length(CAST(proposal_set.run_id AS BLOB)), 0) +
+                    COALESCE(length(CAST(proposal.id AS BLOB)), 0) +
+                    COALESCE(length(CAST(proposal.current_revision_id AS BLOB)), 0) +
+                    COALESCE(length(CAST(proposal.status AS BLOB)), 0) +
+                    COALESCE(length(CAST(revision.origin_kind AS BLOB)), 0) +
+                    COALESCE(length(CAST(revision.reconciliation_envelope_digest AS BLOB)), 0) +
+                    COALESCE(length(CAST(revision.created_at AS BLOB)), 0) +
+                    COALESCE((SELECT SUM(COALESCE(length(CAST(d.id AS BLOB)), 0) + COALESCE(length(CAST(d.revision_id AS BLOB)), 0) + COALESCE(length(CAST(d.decision AS BLOB)), 0) + COALESCE(length(CAST(d.decision_json AS BLOB)), 0) + COALESCE(length(CAST(d.created_at AS BLOB)), 0) + COALESCE(length(CAST(d.created_by AS BLOB)), 0) + COALESCE(length(CAST(d.actor_kind AS BLOB)), 0) + COALESCE(length(CAST(d.actor_id AS BLOB)), 0) + COALESCE(length(CAST(d.authority_scope AS BLOB)), 0) + COALESCE(length(CAST(d.override_field_paths_json AS BLOB)), 0))
+                        FROM narrative_proposal_decisions d WHERE d.proposal_id=proposal.id AND d.revision_id=revision.id), 0)
                FROM narrative_proposal_revisions revision
                JOIN narrative_proposals proposal
                  ON proposal.id = revision.proposal_id
@@ -883,16 +943,19 @@ fn read_revision_input_stats(
                 super::nir1_entity_relation::NIR1_ENTITY_RELATION_SET_KIND,
                 super::nir1_entity_relation::NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
             ],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    let Some((payload_bytes, envelope_bytes)) = lengths else {
+    let Some((payload_bytes, envelope_bytes, metadata_bytes)) = lengths else {
         return Ok(None);
     };
     let payload_bytes = usize::try_from(payload_bytes)
         .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
     let envelope_bytes = usize::try_from(envelope_bytes)
         .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
+    capacity.input(payload_bytes)?;
+    capacity.input(envelope_bytes)?;
+    capacity.input(usize::try_from(metadata_bytes)?)?;
     // The 2 MiB contract is the semantic bundle admission enforced by the
     // A2 reader.  The persisted envelope carries basis and provenance JSON in
     // addition to that bundle, so payload and envelope may legitimately sum
@@ -1220,6 +1283,100 @@ fn preflight_live_source_lengths(
     Ok(Some(bytes))
 }
 
+#[cfg(feature = "nir1-material-diagnostics")]
+pub(crate) fn source_capacity_usage(conn: &Connection, project: &str) -> Result<(usize, usize)> {
+    let mut usage = SourceCapacity::default();
+    with_capacity_scope(
+        conn,
+        None,
+        &mut ForegroundValidationControl,
+        |_, control| {
+            read_eligibility_source_counted(conn, project, None, Some(control), &mut usage)
+        },
+    )?;
+    Ok((usage.input_bytes, usage.roster_bytes))
+}
+
+#[derive(Default)]
+struct SourceCapacity {
+    candidates: usize,
+    qualified_revisions: usize,
+    materials: usize,
+    input_bytes: usize,
+    roster_bytes: usize,
+}
+
+fn admit_capacity(value: &mut usize, additional: usize, maximum: usize, field: &str) -> Result<()> {
+    let total = value
+        .checked_add(additional)
+        .filter(|total| *total <= maximum)
+        .ok_or_else(|| {
+            super::source_revision::validation_terminated(
+                super::source_revision::ValidationTerminationReason::CapacityExceeded,
+                format!("NIR1_GRAPH_CAPACITY_EXCEEDED: {field} exceeds {maximum}"),
+            )
+        })?;
+    *value = total;
+    Ok(())
+}
+
+impl SourceCapacity {
+    fn input(&mut self, bytes: usize) -> Result<()> {
+        admit_capacity(&mut self.input_bytes, bytes, nir1_capacity::INPUT_BYTES, "input-bytes")
+    }
+}
+
+fn admit_roster_bytes(
+    capacity: &mut SourceCapacity,
+    revision: &Nir1EntityRelationRevision,
+    decision_id: &str,
+) -> Result<()> {
+    let mut admit = |kind: &str, id: &str, identity_bytes: usize, token: &str| {
+        for bytes in [
+            std::mem::size_of::<GraphObjectRosterEntry>(),
+            kind.len(),
+            id.len(),
+            identity_bytes,
+            revision.revision_id.len(),
+            decision_id.len(),
+            token.len(),
+        ] {
+            admit_capacity(
+                &mut capacity.roster_bytes,
+                bytes,
+                nir1_capacity::ROSTER_BYTES,
+                "retained-roster-bytes",
+            )?;
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+    for entity in &revision.bundle.entities {
+        admit(
+            "entity",
+            &entity.entity_id,
+            "codex:".len() + entity.entity_id.len(),
+            &entity.source_token,
+        )?;
+    }
+    for relation in &revision.bundle.relations {
+        admit(
+            "relation",
+            &relation.edge_id,
+            "codex-relation:".len() + relation.edge_id.len(),
+            &relation.source_token,
+        )?;
+    }
+    for evidence in &revision.material_basis.evidence_set {
+        admit(
+            "evidence",
+            &evidence.evidence_ref,
+            evidence.source_key.len(),
+            &evidence.revision_token,
+        )?;
+    }
+    Ok(())
+}
+
 fn append_revision_roster(
     roster: &mut Vec<GraphObjectRosterEntry>,
     revision: &Nir1EntityRelationRevision,
@@ -1294,7 +1451,79 @@ pub(crate) fn is_publish_target(conn: &Connection, project: &str, key: &str) -> 
     ))
 }
 
+/// Guard the complete stored Graph collections before any reader loads their
+/// strings. Scalar SQL work is charged to the enclosing owner budget.
+pub(crate) fn preflight_stored_graph_capacity(conn: &Connection, project: &str) -> Result<()> {
+    if conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))? < 35 {
+        return Ok(());
+    }
+    let (rows, bytes): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(COALESCE(length(CAST(id AS BLOB)),0) + COALESCE(length(CAST(project_id AS BLOB)),0) + COALESCE(length(CAST(consumer_kind AS BLOB)),0) + COALESCE(length(CAST(consumer_key AS BLOB)),0) + COALESCE(length(CAST(source_object_identity AS BLOB)),0) + COALESCE(length(CAST(read_set_json AS BLOB)),0) + COALESCE(length(CAST(generated_by_transaction_id AS BLOB)),0) + COALESCE(length(CAST(created_at AS BLOB)),0) + COALESCE(length(CAST(owning_run_id AS BLOB)),0)),0) FROM narrative_dependency_edges WHERE project_id=?1 AND consumer_kind=?2 AND consumer_key=?3", params![project, CONSUMER_KIND, INDEX_KEY],
+        |row| Ok((row.get(0)?, row.get(1)?)))?;
+    admit_capacity(
+        &mut 0,
+        usize::try_from(rows)?,
+        nir1_capacity::STORED_COLLECTION_LIMIT,
+        "stored-edge-rows",
+    )?;
+    let mut bytes = usize::try_from(bytes)?;
+    admit_capacity(
+        &mut bytes,
+        0,
+        nir1_capacity::INPUT_BYTES,
+        "stored-edge-bytes",
+    )?;
+    let (rows, bytes): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(COALESCE(length(CAST(e.id AS BLOB)),0) + COALESCE(length(CAST(e.declaration_set_id AS BLOB)),0) + COALESCE(length(CAST(e.source_object_identity AS BLOB)),0) + COALESCE(length(CAST(e.dependency_key AS BLOB)),0) + COALESCE(length(CAST(e.dependency_role AS BLOB)),0) + COALESCE(length(CAST(e.role_contract_version AS BLOB)),0) + COALESCE(length(CAST(e.selector_json AS BLOB)),0) + COALESCE(length(CAST(e.selector_digest AS BLOB)),0) + COALESCE(length(CAST(e.created_at AS BLOB)),0)),0) FROM narrative_dependency_declaration_entries e JOIN narrative_dependency_declaration_heads h ON h.active_declaration_set_id=e.declaration_set_id WHERE h.project_id=?1 AND h.consumer_kind=?2 AND h.consumer_key=?3", params![project, CONSUMER_KIND, INDEX_KEY],
+        |row| Ok((row.get(0)?, row.get(1)?)))?;
+    admit_capacity(
+        &mut 0,
+        usize::try_from(rows)?,
+        nir1_capacity::STORED_COLLECTION_LIMIT,
+        "stored-D1-rows",
+    )?;
+    let mut bytes = usize::try_from(bytes)?;
+    let headers: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(COALESCE(length(CAST(h.active_declaration_set_id AS BLOB)),0) + COALESCE(length(CAST(h.producer_id AS BLOB)),0) + COALESCE(length(CAST(h.updated_at AS BLOB)),0) + COALESCE(length(CAST(d.id AS BLOB)),0) + COALESCE(length(CAST(d.project_id AS BLOB)),0) + COALESCE(length(CAST(d.consumer_kind AS BLOB)),0) + COALESCE(length(CAST(d.consumer_key AS BLOB)),0) + COALESCE(length(CAST(d.producer_id AS BLOB)),0) + COALESCE(length(CAST(d.dependency_set_digest AS BLOB)),0) + COALESCE(length(CAST(d.state AS BLOB)),0) + COALESCE(length(CAST(d.created_at AS BLOB)),0)),0) FROM narrative_dependency_declaration_heads h
+         LEFT JOIN narrative_dependency_declaration_sets d ON d.id=h.active_declaration_set_id
+         WHERE h.project_id=?1 AND h.consumer_kind=?2 AND h.consumer_key=?3",
+        params![project, CONSUMER_KIND, INDEX_KEY], |row| row.get(0))?;
+    admit_capacity(
+        &mut bytes,
+        usize::try_from(headers)?,
+        nir1_capacity::INPUT_BYTES,
+        "stored-D1-header-bytes",
+    )?;
+    let metadata: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(COALESCE(length(CAST(source_digest AS BLOB)),0) + COALESCE(length(CAST(dependency_set_digest AS BLOB)),0) + COALESCE(length(CAST(producer_id AS BLOB)),0) + COALESCE(length(CAST(producer_version AS BLOB)),0) + COALESCE(length(CAST(built_at AS BLOB)),0)),0) FROM narrative_semantic_index_metadata WHERE project_id=?1 AND index_key=?2",
+        params![project, INDEX_KEY], |row| row.get(0))?;
+    admit_capacity(
+        &mut bytes,
+        usize::try_from(metadata)?,
+        nir1_capacity::INPUT_BYTES,
+        "stored-Graph-metadata-bytes",
+    )?;
+    admit_capacity(&mut bytes, 0, nir1_capacity::INPUT_BYTES, "stored-D1-bytes")?;
+    Ok(())
+}
+
 fn read_internal(
+    conn: &Connection,
+    project: &str,
+    require_freshness: bool,
+    require_current_freshness: bool,
+    control: Option<&mut dyn GraphWorkControl>,
+) -> Result<BindingRead> {
+    // Structural registration also loads the complete stored Graph sets.
+    // Nested publish/Verify reads inherit their budget; standalone Freshness
+    // admission gets the same bound without gaining full-Source authority.
+    let mut structural = NeverStopGraphWorkControl;
+    with_capacity_scope(conn, None, control.unwrap_or(&mut structural), |_, control| {
+        read_internal_bounded(conn, project, require_freshness, require_current_freshness, Some(control))
+    })
+}
+
+fn read_internal_bounded(
     conn: &Connection,
     project: &str,
     require_freshness: bool,
@@ -1302,6 +1531,7 @@ fn read_internal(
     mut control: Option<&mut dyn GraphWorkControl>,
 ) -> Result<BindingRead> {
     check_graph_work(&mut control, GraphWorkStage::Coverage)?;
+    preflight_stored_graph_capacity(conn, project)?;
     let row = conn
         .query_row(
             "SELECT generation,source_digest,dependency_set_digest,dirty_cache_flag,producer_id,producer_version,built_at
@@ -1528,6 +1758,21 @@ pub(crate) fn is_complete_registered_with_control(
     key: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<bool> {
+    if conn.is_autocommit() {
+        let tx = conn.unchecked_transaction()?;
+        return is_complete_registered_with_control(&tx, project, key, control);
+    }
+    with_capacity_scope(conn, None, control, |_, control| {
+        is_complete_registered_with_control_unmetered(conn, project, key, control)
+    })
+}
+
+fn is_complete_registered_with_control_unmetered(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<bool> {
     if key != INDEX_KEY {
         return Ok(false);
     }
@@ -1707,7 +1952,9 @@ pub(crate) fn prepare_graph_index_build_with_control(
     project: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<GraphIndexBuildSnapshot> {
-    prepare_graph_index_build_in_tx(conn, runtime, project, control)
+    with_capacity_scope(conn, None, control, |budget, control| {
+        prepare_graph_index_build_in_tx(conn, runtime, project, control, Arc::clone(budget))
+    })
 }
 
 fn prepare_graph_index_build_in_tx(
@@ -1715,6 +1962,7 @@ fn prepare_graph_index_build_in_tx(
     runtime: &NirChronicleIndexRuntime,
     project: &str,
     control: &mut dyn GraphWorkControl,
+    capacity: Arc<CapacityBudget>,
 ) -> Result<GraphIndexBuildSnapshot> {
     ensure!(
         !conn.is_autocommit(),
@@ -1749,6 +1997,7 @@ fn prepare_graph_index_build_in_tx(
         edges,
         runtime_owner,
         runtime_epoch,
+        capacity,
     })
 }
 
@@ -1895,70 +2144,72 @@ fn publish_nir1_entity_relation_index_in_tx_inner(
     snapshot: GraphIndexBuildSnapshot,
     control: &mut dyn GraphWorkControl,
 ) -> Result<StoredBinding> {
-    ensure!(
-        !conn.is_autocommit(),
-        "NIR1 Graph publication requires a write transaction"
-    );
-    // This is deliberately before the first D1/V1/metadata write. The
-    // snapshot is opaque in production, and the exact deterministic edge
-    // set is recomputed from its sealed roster so partial, extra, or
-    // field-tampered input cannot advance a generation.
-    control.check(GraphWorkStage::Publish)?;
-    ensure_snapshot_edges_are_sealed_with_control(&snapshot, control)?;
-    ensure!(
-        snapshot_current_with_control(conn, runtime, &snapshot, control)?,
-        "NIR1_GRAPH_SNAPSHOT_STALE"
-    );
-    let generation = snapshot
-        .prior
-        .as_ref()
-        .map_or(0, |binding| binding.generation)
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("NIR1 Graph generation exhausted"))?;
-    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-    let mut declarations = Vec::with_capacity(snapshot.edges.len());
-    for edge in &snapshot.edges {
-        control.check(GraphWorkStage::D1)?;
-        declarations.push(DependencyDeclaration {
-            source_object_identity: edge.source_object_identity.clone(),
-            role: DependencyRole::RankingOnly,
-            selector: DependencySelector::WholeSource,
-        });
-    }
-    let d1 = write_dependency_declaration_set_in_tx(
-        conn,
-        DependencyDeclarationSetRequest {
-            project_id: snapshot.project.clone(),
-            consumer_kind: CONSUMER_KIND.to_owned(),
-            consumer_key: INDEX_KEY.to_owned(),
-            producer_id: PRODUCER_ID.to_owned(),
-            producer_generation: generation,
-            expected_head_version: snapshot
-                .prior
-                .as_ref()
-                .map_or(0, |binding| binding.head_version),
-            declarations,
-            created_at: now.clone(),
-        },
-    )?;
-    control.check(GraphWorkStage::Edge)?;
-    delete_edges_for_consumer_in_tx(conn, &snapshot.project, CONSUMER_KIND, INDEX_KEY)?;
-    for edge in &snapshot.edges {
-        control.check(GraphWorkStage::Edge)?;
-        record_dependency_edge_in_tx(
+    let budget = Arc::clone(&snapshot.capacity);
+    with_capacity_scope(conn, Some(budget), control, |_, control| {
+        ensure!(
+            !conn.is_autocommit(),
+            "NIR1 Graph publication requires a write transaction"
+        );
+        // This is deliberately before the first D1/V1/metadata write. The
+        // snapshot is opaque in production, and the exact deterministic edge
+        // set is recomputed from its sealed roster so partial, extra, or
+        // field-tampered input cannot advance a generation.
+        control.check(GraphWorkStage::Publish)?;
+        ensure_snapshot_edges_are_sealed_with_control(&snapshot, control)?;
+        ensure!(
+            snapshot_current_with_control(conn, runtime, &snapshot, control)?,
+            "NIR1_GRAPH_SNAPSHOT_STALE"
+        );
+        let generation = snapshot
+            .prior
+            .as_ref()
+            .map_or(0, |binding| binding.generation)
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("NIR1 Graph generation exhausted"))?;
+        let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+        let mut declarations = Vec::with_capacity(snapshot.edges.len());
+        for edge in &snapshot.edges {
+            control.check(GraphWorkStage::D1)?;
+            declarations.push(DependencyDeclaration {
+                source_object_identity: edge.source_object_identity.clone(),
+                role: DependencyRole::RankingOnly,
+                selector: DependencySelector::WholeSource,
+            });
+        }
+        let d1 = write_dependency_declaration_set_in_tx(
             conn,
-            &snapshot.project,
-            CONSUMER_KIND,
-            INDEX_KEY,
-            &edge.source_object_identity,
-            &edge.read_set_json,
-            None,
-            None,
-            &now,
+            DependencyDeclarationSetRequest {
+                project_id: snapshot.project.clone(),
+                consumer_kind: CONSUMER_KIND.to_owned(),
+                consumer_key: INDEX_KEY.to_owned(),
+                producer_id: PRODUCER_ID.to_owned(),
+                producer_generation: generation,
+                expected_head_version: snapshot
+                    .prior
+                    .as_ref()
+                    .map_or(0, |binding| binding.head_version),
+                declarations,
+                created_at: now.clone(),
+            },
         )?;
-    }
-    control.check(GraphWorkStage::Publish)?;
-    conn.execute(
+        control.check(GraphWorkStage::Edge)?;
+        delete_edges_for_consumer_in_tx(conn, &snapshot.project, CONSUMER_KIND, INDEX_KEY)?;
+        for edge in &snapshot.edges {
+            control.check(GraphWorkStage::Edge)?;
+            record_dependency_edge_in_tx(
+                conn,
+                &snapshot.project,
+                CONSUMER_KIND,
+                INDEX_KEY,
+                &edge.source_object_identity,
+                &edge.read_set_json,
+                None,
+                None,
+                &now,
+            )?;
+        }
+        control.check(GraphWorkStage::Publish)?;
+        conn.execute(
         "INSERT INTO narrative_semantic_index_metadata
             (project_id,index_key,generation,built_at,source_digest,dependency_set_digest,dirty_cache_flag,producer_id,producer_version)
          VALUES (?1,?2,?3,?4,?5,?6,0,?7,?8)
@@ -1978,66 +2229,72 @@ fn publish_nir1_entity_relation_index_in_tx_inner(
         ],
     )?;
 
-    // The write transaction still owns the snapshot. Re-read the qualified
-    // roster immediately before Freshness publication; any mismatch aborts
-    // the caller's transaction and therefore cannot leave a partial proof.
-    control.check(GraphWorkStage::Publish)?;
-    ensure!(
-        runtime.native_build_is_current(conn, snapshot.runtime_owner, snapshot.runtime_epoch)?
-            && get_current_epoch(conn, &snapshot.project)?
-                .is_some_and(|epoch| epoch.id == snapshot.semantic_epoch)
-            && read_eligibility_source_for_native_build(
+        // The write transaction still owns the snapshot. Re-read the qualified
+        // roster immediately before Freshness publication; any mismatch aborts
+        // the caller's transaction and therefore cannot leave a partial proof.
+        control.check(GraphWorkStage::Publish)?;
+        ensure!(
+            runtime.native_build_is_current(
                 conn,
-                &snapshot.project,
-                runtime,
                 snapshot.runtime_owner,
-                snapshot.runtime_epoch,
-                control,
-            )? == snapshot.source,
-        "NIR1_GRAPH_SNAPSHOT_CHANGED_DURING_PUBLISH"
-    );
-    let edges = find_edges_by_consumer(conn, &snapshot.project, CONSUMER_KIND, INDEX_KEY)?;
-    let mut observations = Vec::with_capacity(edges.len());
-    for edge in &edges {
-        control.check(GraphWorkStage::Edge)?;
-        observations.push((
-            edge.id.clone(),
-            evaluate_graph_edge(conn, &snapshot.project, edge)?,
-        ));
-    }
-    ensure!(
-        observations.iter().all(|(_, observation)| {
-            observation.freshness == EvidenceFreshness::Fresh
-                && observation.build_action == BuildAction::None
-                && observation.reason_code.is_none()
-        }),
-        "NIR1_GRAPH_SOURCE_CHANGED_DURING_PUBLISH"
-    );
-    let freshness_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-    control.check(GraphWorkStage::Publish)?;
-    publish_complete_runless_graph_freshness_in_tx(
-        conn,
-        &snapshot.project,
-        CONSUMER_KIND,
-        INDEX_KEY,
-        &observations,
-        &snapshot.semantic_epoch,
-        &freshness_at,
-    )?;
-    conn.execute(
-        "UPDATE narrative_semantic_index_metadata
+                snapshot.runtime_epoch
+            )? && get_current_epoch(conn, &snapshot.project)?
+                .is_some_and(|epoch| epoch.id == snapshot.semantic_epoch)
+                && read_eligibility_source_for_native_build(
+                    conn,
+                    &snapshot.project,
+                    runtime,
+                    snapshot.runtime_owner,
+                    snapshot.runtime_epoch,
+                    control,
+                )? == snapshot.source,
+            "NIR1_GRAPH_SNAPSHOT_CHANGED_DURING_PUBLISH"
+        );
+        let edges = find_edges_by_consumer(conn, &snapshot.project, CONSUMER_KIND, INDEX_KEY)?;
+        let mut observations = Vec::with_capacity(edges.len());
+        for edge in &edges {
+            control.check(GraphWorkStage::Edge)?;
+            observations.push((
+                edge.id.clone(),
+                evaluate_graph_edge(conn, &snapshot.project, edge)?,
+            ));
+        }
+        ensure!(
+            observations.iter().all(|(_, observation)| {
+                observation.freshness == EvidenceFreshness::Fresh
+                    && observation.build_action == BuildAction::None
+                    && observation.reason_code.is_none()
+            }),
+            "NIR1_GRAPH_SOURCE_CHANGED_DURING_PUBLISH"
+        );
+        let freshness_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+        control.check(GraphWorkStage::Publish)?;
+        publish_complete_runless_graph_freshness_in_tx(
+            conn,
+            &snapshot.project,
+            CONSUMER_KIND,
+            INDEX_KEY,
+            &observations,
+            &snapshot.semantic_epoch,
+            &freshness_at,
+        )?;
+        conn.execute(
+            "UPDATE narrative_semantic_index_metadata
             SET dirty_cache_flag=0
           WHERE project_id=?1 AND index_key=?2 AND generation=?3",
-        params![snapshot.project, INDEX_KEY, generation],
-    )?;
-    control.check(GraphWorkStage::Publish)?;
-    let final_read = read_with_control(conn, &snapshot.project, control)?;
-    match final_read {
-        BindingRead::Registered(binding) if binding.generation == generation && !binding.dirty => {
-            Ok(binding)
+            params![snapshot.project, INDEX_KEY, generation],
+        )?;
+        control.check(GraphWorkStage::Publish)?;
+        let final_read = read_with_control(conn, &snapshot.project, control)?;
+        match final_read {
+            BindingRead::Registered(binding)
+                if binding.generation == generation && !binding.dirty =>
+            {
+                Ok(binding)
+            }
+            other => anyhow::bail!("NIR1_GRAPH_PUBLISHED_BINDING_INCOHERENT: {other:?}"),
         }
-        other => anyhow::bail!("NIR1_GRAPH_PUBLISHED_BINDING_INCOHERENT: {other:?}"),
-    }
+    })
 }
 
 fn evaluate_graph_edge(
@@ -2064,6 +2321,10 @@ fn evaluate_graph_edge(
         ..EdgeComparisonInput::default()
     }))
 }
+
+#[cfg(all(test, feature = "nir1-material-diagnostics"))]
+#[path = "nir1_capacity_boundary_tests.rs"]
+mod capacity_boundaries;
 
 #[cfg(test)]
 mod tests {
@@ -2286,6 +2547,7 @@ mod tests {
             edges: Vec::new(),
             runtime_owner: 0,
             runtime_epoch: 0,
+            capacity: CapacityBudget::supported(),
         };
         let mut serialization_control = StopAfter {
             stage: GraphWorkStage::Serialization,

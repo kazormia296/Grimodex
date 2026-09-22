@@ -4,9 +4,6 @@ import type { WorkspaceState } from "./workspaceState";
 vi.mock("@/lib/tauri", () => ({
   listen: vi.fn(),
 }));
-vi.mock("@/features/ime/workspaceScope", () => ({
-  setCurrentImeWorkspaceIdentity: vi.fn(),
-}));
 vi.mock("@/application/project/workspaceProjectCommands", () => ({
   invalidateWorkspaceProjectLoads: vi.fn(),
 }));
@@ -30,6 +27,17 @@ import {
   resumeWorkspaceBindingAfterLifecycleUnchanged,
 } from "@/features/timelapse/recorder";
 import { invalidateWorkspaceProjectLoads } from "@/application/project/workspaceProjectCommands";
+import {
+  getCurrentImeWorkspaceIdentity,
+  setCurrentImeWorkspaceIdentity,
+} from "@/features/ime/workspaceScope";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import { createEditorInstanceId } from "@/features/editor/document/documentKey";
+import {
+  collectEditorRecoveryDrafts,
+  retainEditorRecoveryDraft,
+  clearRetainedEditorRecoveryDraft,
+} from "@/features/editor/editorSaveRegistry";
 
 type TestState = WorkspaceState & Record<string, unknown>;
 
@@ -76,6 +84,50 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
     vi.clearAllMocks();
     resetWorkspaceLifecycleProjectionForTest();
     state = makeState();
+    setCurrentImeWorkspaceIdentity(null);
+    useEditorSessionStore.getState().resetForProject();
+  });
+
+  it("preserves a dirty detached draft while repeated recovery invalidates runtime and IME identity", () => {
+    const document = { kind: "scene", id: "recovery-scene" } as const;
+    const instance = createEditorInstanceId("recovery-editor");
+    const draft = {
+      plainText: "未保存の本文",
+      prosemirror: { type: "doc", content: [] },
+    };
+    useEditorSessionStore.getState().setDocumentDirty(document, true, instance);
+    retainEditorRecoveryDraft(document, instance, draft);
+    setCurrentImeWorkspaceIdentity({ path: "W1", openRevision: 1 });
+    try {
+      const recovery = {
+        schemaVersion: 1,
+        revision: 2,
+        status: "recovery-required",
+        activation: "requires-open",
+        bindingToken: "recovery-token",
+      };
+      applyWorkspaceLifecycleProjectionForTest(get, set, recovery);
+      applyWorkspaceLifecycleProjectionForTest(get, set, recovery);
+      expect(state).toMatchObject({
+        view: "recovery",
+        workspaceHydrated: false,
+        activeWorkspacePath: null,
+        activeWorkspaceId: null,
+        workspaceLifecycleBindingToken: "recovery-token",
+        recoveryShell: { workspacePath: "W1", mode: "recovery-required" },
+      });
+      expect(getCurrentImeWorkspaceIdentity()).toBeNull();
+      expect(useEditorSessionStore.getState().isDocumentDirty(document)).toBe(
+        true,
+      );
+      expect(collectEditorRecoveryDrafts()).toContainEqual(
+        expect.objectContaining(draft),
+      );
+      expect(resumeWorkspaceBindingAfterExplicitOpen).not.toHaveBeenCalled();
+    } finally {
+      clearRetainedEditorRecoveryDraft(document, instance);
+      useEditorSessionStore.getState().resetForProject();
+    }
   });
 
   it("adopts a Ready event delivered after explicit hydration", () => {

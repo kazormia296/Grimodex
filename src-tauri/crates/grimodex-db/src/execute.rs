@@ -486,7 +486,7 @@ fn restore_renderer_sql_policy(
     let mut first_error = None;
     keep_first_cleanup_error(
         &mut first_error,
-        conn.progress_handler(0, None::<fn() -> bool>),
+        crate::set_sqlite_progress_handler(conn, 0, None::<fn() -> bool>),
     );
     keep_first_cleanup_error(
         &mut first_error,
@@ -600,7 +600,8 @@ where
             }
         }))?;
         let mut callbacks = 0usize;
-        conn.progress_handler(
+        crate::set_sqlite_progress_handler(
+            conn,
             RENDERER_PROGRESS_INTERVAL,
             Some(move || {
                 callbacks += 1;

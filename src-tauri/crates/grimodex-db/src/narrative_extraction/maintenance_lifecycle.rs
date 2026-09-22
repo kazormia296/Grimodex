@@ -3050,4 +3050,78 @@ mod tests {
         })
         .expect("interruption recovery");
     }
+    #[test]
+    fn creation_unknown_reopens_exact_committed_rollback_and_partial_tuples() {
+        for committed in [false, true] {
+            let directory = std::env::temp_dir().join(format!("grimodex-creation-proof-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("workspace.db");
+            open_db().backup_to(&path).unwrap();
+            let db = Database::new(&path).unwrap();
+            let reservation = db.with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                let handle = create_canonical(&tx, "backfill")?;
+                let (task_kind, task_input): (String, String) = tx.query_row(
+                    "SELECT task_kind, input_json FROM narrative_extraction_tasks WHERE id=?1",
+                    [&handle.task_id], |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                let reservation = RunCreationReservation {
+                    run_id: handle.run_id,
+                    task_id: handle.task_id,
+                    attempt_id: handle.attempt_id,
+                    expected: Some(CreationIdentity {
+                        project_id: handle.project_id,
+                        run_kind: handle.run_kind,
+                        semantic_epoch_id: handle.semantic_epoch_id,
+                        work_key: handle.work_key,
+                        spec_digest: handle.spec_digest,
+                        task_kind, task_input,
+                        project_created_at: handle.project_created_at,
+                        database_file_identity: handle.database_file_identity,
+                    }),
+                };
+                if committed { tx.commit()?; } else { tx.rollback()?; }
+                Ok(reservation)
+            }).unwrap();
+            db.retire_connection_for_recovery().unwrap();
+            drop(db);
+            let verification = CreationVerification {
+                worker_joined: true, connection_retired: true,
+                same_database_identity: true, lineage_continuous: true,
+                no_destructive_boundary: true,
+            };
+            Database::new(&path).unwrap().with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                assert_eq!(resolve_creation_unknown_in_tx(&tx, &reservation, "project-1", verification)?,
+                    if committed { CreationResolution::Created } else { CreationResolution::NotCommitted });
+                for missing in 0..5 {
+                    let mut incomplete = verification;
+                    match missing {
+                        0 => incomplete.worker_joined = false,
+                        1 => incomplete.connection_retired = false,
+                        2 => incomplete.same_database_identity = false,
+                        3 => incomplete.lineage_continuous = false,
+                        _ => incomplete.no_destructive_boundary = false,
+                    }
+                    assert!(resolve_creation_unknown_in_tx(&tx, &reservation, "project-1", incomplete).is_err());
+                }
+                let mut wrong_identity = reservation.clone();
+                wrong_identity.expected.as_mut().unwrap().database_file_identity.push_str("-replaced");
+                assert!(resolve_creation_unknown_in_tx(&tx, &wrong_identity, "project-1", verification).is_err());
+                if committed {
+                    let reused = create_canonical(&tx, "backfill")?;
+                    assert!(reused.reused);
+                    assert_eq!((&reused.run_id, &reused.task_id, &reused.attempt_id),
+                        (&reservation.run_id, &reservation.task_id, &reservation.attempt_id));
+                    tx.execute("DELETE FROM narrative_extraction_attempts WHERE id=?1", [&reservation.attempt_id])?;
+                    assert!(resolve_creation_unknown_in_tx(&tx, &reservation, "project-1", verification).is_err());
+                }
+                tx.rollback()?;
+                Ok(())
+            }).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+
 }

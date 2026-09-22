@@ -1434,6 +1434,10 @@ impl GraphWorkControl for MaintenanceCycleGraphControl<'_, '_> {
         self.inner.check(stage)
     }
 
+    fn finalization_signal(&self) -> Option<Arc<AtomicBool>> {
+        self.inner.finalization_signal()
+    }
+
     fn allows_full_eligibility(&self) -> bool {
         self.inner.allows_full_eligibility()
     }
@@ -3633,8 +3637,9 @@ fn is_maintenance_connection_cleanup_failure(error: &anyhow::Error) -> bool {
 
 fn is_maintenance_control_or_cleanup_error(error: &anyhow::Error) -> bool {
     is_transient_maintenance_preemption(error)
-        || is_validation_terminated(error)
-        || error_chain_contains(error, "NEX_VALIDATION_TERMINATED:")
+        || (!super::source_revision::is_validation_capacity_exceeded(error)
+            && (is_validation_terminated(error)
+                || error_chain_contains(error, "NEX_VALIDATION_TERMINATED:")))
         || error_chain_contains(error, "NEX_MAINTENANCE_ATTEMPT_CANCELLED")
         || error_chain_contains(error, "NIR1_MAINTENANCE_CONNECTION_")
 }

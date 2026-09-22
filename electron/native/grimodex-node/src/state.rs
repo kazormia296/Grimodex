@@ -140,6 +140,8 @@ struct NarrativeMaintenanceRecoveryState {
     restore_recovery_binding: Option<MaintenanceWorkspaceBinding>,
     #[cfg(test)]
     panic_after_admission_close: bool,
+    #[cfg(test)]
+    workspace_worker_probe: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -694,12 +696,42 @@ impl Default for NarrativeMaintenanceRecoveryGate {
                 restore_recovery_binding: None,
                 #[cfg(test)]
                 panic_after_admission_close: false,
+                #[cfg(test)]
+                workspace_worker_probe: None,
             }),
         }
     }
 }
 
 impl NarrativeMaintenanceRecoveryGate {
+    #[cfg(test)]
+    pub fn arm_workspace_worker_probe(
+        &self,
+        reached: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        self.state
+            .lock()
+            .expect("recovery gate")
+            .workspace_worker_probe = Some((reached, release));
+    }
+
+    #[cfg(test)]
+    pub fn observe_workspace_worker_probe(&self) {
+        let probe = self
+            .state
+            .lock()
+            .expect("recovery gate")
+            .workspace_worker_probe
+            .take();
+        if let Some((reached, release)) = probe {
+            reached.send(()).expect("Restore installed observer");
+            release
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("Restore installed release");
+        }
+    }
+
     #[cfg(test)]
     pub fn arm_panic_after_admission_close_for_test(&self) {
         let mut state = self
@@ -3817,6 +3849,8 @@ mod tests {
                 restore_recovery_binding: None,
                 #[cfg(test)]
                 panic_after_admission_close: false,
+                #[cfg(test)]
+                workspace_worker_probe: None,
             }),
         };
         let first_rollover = near_max.mark_workspace_swapped();
@@ -3837,6 +3871,8 @@ mod tests {
                 restore_recovery_binding: None,
                 #[cfg(test)]
                 panic_after_admission_close: false,
+                #[cfg(test)]
+                workspace_worker_probe: None,
             }),
         };
         let at_max_rollover = at_max.mark_workspace_swapped();

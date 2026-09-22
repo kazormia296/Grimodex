@@ -23,10 +23,10 @@
     "schemaVersion": { "const": "nir1-capacity/1" },
     "schema": { "type": "string", "minLength": 1 },
     "diagnosticOnly": { "const": true },
-    "status": { "const": "measurement-only-unratified" },
+    "status": { "const": "measurement-only" },
     "scope": { "type": "string", "minLength": 1 },
     "capacityDecision": {
-      "const": "unratified-until-all-major-structures-are-measured"
+      "const": "ratified-b-full-set-v1"
     },
     "admissionBoundary": {
       "type": "object",
@@ -353,7 +353,8 @@
         "temporaryBytes",
         "temporaryBytesMethod",
         "temporaryBytesCoverage",
-        "temporaryBytesUncertainty"
+        "temporaryBytesUncertainty",
+        "temporaryDisk"
       ],
       "properties": {
         "elapsedMs": { "type": "number", "minimum": 0 },
@@ -376,13 +377,14 @@
         "temporaryBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "temporaryBytesMethod": { "type": "string", "minLength": 1 },
         "temporaryBytesCoverage": { "type": "string", "minLength": 1 },
-        "temporaryBytesUncertainty": { "type": "string", "minLength": 1 }
+        "temporaryBytesUncertainty": { "type": "string", "minLength": 1 },
+        "temporaryDisk": { "anyOf": [{ "$ref": "#/$defs/diskMeasurement" }, { "type": "null" }] }
       },
       "additionalProperties": true
     },
     "observationSql": {
       "type": "object",
-      "required": ["statementVmSteps", "exactVmSteps", "vmStepsKind", "progressCallbacks", "statements", "openedConnections", "closedConnections", "method", "coverage"],
+      "required": ["statementVmSteps", "exactVmSteps", "vmStepsKind", "progressCallbacks", "statements", "openedConnections", "closedConnections", "method", "coverage", "lifecycleVmStepsUpperBound", "lifecycleVmStepsMethod", "lifecycleVmStepsCoverage", "sqliteSourceId"],
       "properties": {
         "statementVmSteps": { "type": "integer", "minimum": 0 },
         "exactVmSteps": { "const": false },
@@ -391,10 +393,31 @@
         "statements": { "type": "integer", "minimum": 0 },
         "openedConnections": { "type": "integer", "minimum": 0 },
         "closedConnections": { "type": "integer", "minimum": 0 },
+        "lifecycleVmStepsUpperBound": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "lifecycleVmStepsMethod": { "type": "string", "minLength": 1 },
+        "lifecycleVmStepsCoverage": { "type": "string", "minLength": 1 },
+        "sqliteSourceId": { "type": "string", "minLength": 1 },
         "method": { "type": "string", "minLength": 1 },
         "coverage": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": true
+    },
+    "diskMeasurement": {
+      "type": "object",
+      "required": ["logicalHighWaterUpperBoundBytes", "initialBytes", "successfulWriteBytes", "sqliteFileGrowthBytes", "sqliteShmGrowthBytes", "openedFiles", "closedFiles", "method", "coverage", "uncertainty"],
+      "properties": {
+        "logicalHighWaterUpperBoundBytes": { "type": "integer", "minimum": 0 },
+        "initialBytes": { "type": "integer", "minimum": 0 },
+        "successfulWriteBytes": { "type": "integer", "minimum": 0 },
+        "sqliteFileGrowthBytes": { "type": "integer", "minimum": 0 },
+        "sqliteShmGrowthBytes": { "type": "integer", "minimum": 0 },
+        "openedFiles": { "type": "integer", "minimum": 1 },
+        "closedFiles": { "type": "integer", "minimum": 1 },
+        "method": { "const": "initial-plus-linux-wchar-plus-sqlite-vfs-positive-growth" },
+        "coverage": { "type": "string", "minLength": 1 },
+        "uncertainty": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
     },
     "observationOccupancy": {
       "type": "object",
@@ -426,23 +449,39 @@
         "uncertainty"
       ],
       "properties": {
-        "status": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["not-run", "measured"] },
         "latencyMs": { "$ref": "#/$defs/optionalNonNegativeNumber" },
         "scope": { "$ref": "#/$defs/optionalNonEmptyString" },
         "method": { "$ref": "#/$defs/optionalNonEmptyString" },
         "uncertainty": { "$ref": "#/$defs/optionalNonEmptyString" }
       },
+      "allOf": [{
+        "if": { "properties": { "status": { "const": "measured" } } },
+        "then": { "properties": {
+          "latencyMs": { "type": "number", "minimum": 0 },
+          "scope": { "type": "string", "minLength": 1 },
+          "method": { "type": "string", "minLength": 1 },
+          "uncertainty": { "type": "string", "minLength": 1 }
+        } },
+        "else": { "properties": {
+          "latencyMs": { "type": "null" },
+          "scope": { "type": "null" },
+          "method": { "type": "null" },
+          "uncertainty": { "type": "null" }
+        } }
+      }],
       "additionalProperties": true
     },
     "interruptionProbe": {
       "type": "object",
       "required": [
-        "phase", "kind", "latencyMs", "progressCallbacks", "connectionReusable",
+        "phase", "kind", "triggerPoint", "latencyMs", "progressCallbacks", "connectionReusable",
         "transactionClean", "progressHandlerCleared", "busyTimeoutRestored", "bindingUnchanged"
       ],
       "properties": {
-        "phase": { "enum": ["build-prepare", "build-publish", "source-reresolution", "complete-registration", "coverage-verify", "restore-full-set-validation", "cold-reopen"] },
+        "phase": { "enum": ["build-prepare", "build-publish", "source-reresolution", "complete-registration", "coverage-verify", "restore-full-set-validation", "restore-graph-prepare", "restore-graph-publish", "cold-reopen"] },
         "kind": { "enum": ["cancel", "foreground"] },
+        "triggerPoint": { "enum": ["first-sql-progress", "before-commit"] },
         "latencyMs": { "type": "number", "minimum": 0 },
         "progressCallbacks": { "type": "integer", "minimum": 1 },
         "connectionReusable": { "const": true },

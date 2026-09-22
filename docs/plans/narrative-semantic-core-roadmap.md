@@ -4,7 +4,7 @@
 
 - **Lifecycle:** Active mutable roadmap
 - **Last updated:** 2026-09-22
-- **Current focus:** NIR-1の#591限定A2と#600/#601共有lifecycleはmasterへマージ済み。`master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`（Tree `959f57102e93099872cffd07ea6970e83b7952c9`）から [残工程実装計画](nir1-post-b-execution-plan.md) を実行中である。[B-close第1段階と第2段階診断実装の容量matrix](nir1-b-close-capacity-observation-2026-09-22.md#stage-2-diagnostic-follow-up--2026-09-22) は完走したが、未測定項目・未批准の数値契約・境界受入れを残す。Graph、Packing、AI dispatchはinactive、downstream threat modelはdraft、NIR-1全体受入れは未完了。NIR-1 overall acceptance remains incomplete.
+- **Current focus:** PR #591の限定A2と#600/#601共有lifecycleはmasterへマージ済み。2026-09-22 B-close追記: #604を親とするstacked実装で、lifecycle SQL上界・WAL/journal/backup/Restore copyを含む総一時logical disk上界、必須lifecycle境界、数値容量契約とN/N+1検証を完了した。19-path / 114-childの測定と、確定値に対する8成功・4安全拒否のrelease childを分けて記録する。数値と適用範囲はユーザーが明示確認した。詳細は [B-close completion evidence](nir1-b-close-completion-2026-09-22.md)。Graph、Packing、AI dispatchは未activateで、NIR-1全体受入れは未完了。ユーザー指定により本候補のFull CI・独立受入れレビューは省略し、mergeは依頼範囲外として行っていない。 downstream threat modelはdraft。NIR-1 overall acceptance remains incomplete.
 - **North star:** **本文に追従し、根拠を示し、人間の修正を覚える Living Story Bible**
 
 This document is the canonical **mutable implementation and product roadmap** for Narrative Semantic Core, AI-assisted extraction, incremental maintenance, and the Living Story Bible product surface.

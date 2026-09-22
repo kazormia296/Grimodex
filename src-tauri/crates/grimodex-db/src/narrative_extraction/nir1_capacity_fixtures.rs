@@ -63,6 +63,9 @@ struct CapacityFixtureSpec {
     qualified_materials: Option<usize>,
     qualified_revisions: Option<usize>,
     ineligible_candidates: Option<usize>,
+    /// Boundary-only padding of already ineligible persisted JSON. Qualified
+    /// revisions still come from the Native A2 and Human Decision writers.
+    source_input_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -279,6 +282,11 @@ pub fn build_fixture_from_manifest(
                 !created.revision_id.is_empty(),
                 "typed fixture revision id is empty"
             );
+        }
+
+        if let Some(target) = spec.source_input_bytes {
+            ensure!(has_ineligible, "source byte padding requires ineligible candidates");
+            pad_ineligible_source_input(&db, target)?;
         }
 
         // Close the owning connection's write transaction state before the
@@ -847,6 +855,51 @@ struct FixtureFilesSnapshot {
     shm: Option<Vec<u8>>,
 }
 
+fn pad_ineligible_source_input(db: &Database, target: usize) -> Result<()> {
+    let (used, _) = db.with_read_transaction(|conn| {
+        super::nir1_entity_relation_index::source_capacity_usage(
+            conn,
+            NIR1_CAPACITY_FIXTURE_PROJECT_ID,
+        )
+    })?;
+    let mut remaining = target
+        .checked_sub(used)
+        .context("source byte target is below seeded input")?;
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT r.id,length(CAST(r.payload_json AS BLOB)) FROM narrative_proposal_revisions r
+             JOIN narrative_proposals p ON p.id=r.proposal_id
+             JOIN narrative_proposal_sets s ON s.id=p.proposal_set_id
+             WHERE s.run_id=?1 ORDER BY r.id",
+        )?;
+        let rows = statement
+            .query_map([NIR1_CAPACITY_RUN_ID], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        // Leave one byte of the per-component allowance available for the
+        // N+1 regression. JSON whitespace changes no qualified material.
+        for (id, bytes) in rows {
+            let padding =
+                remaining.min((2 * 1024 * 1024 - 1_usize).saturating_sub(usize::try_from(bytes)?));
+            conn.execute(
+                "UPDATE narrative_proposal_revisions SET payload_json=payload_json||?1 WHERE id=?2",
+                params![" ".repeat(padding), id],
+            )?;
+            remaining -= padding;
+            if remaining == 0 {
+                break;
+            }
+        }
+        ensure!(
+            remaining == 0,
+            "not enough ineligible components for source byte boundary"
+        );
+        Ok(())
+    })
+}
+
 fn snapshot_fixture_files(path: &Path) -> Result<FixtureFilesSnapshot> {
     let read_optional = |sidecar: PathBuf| -> Result<Option<Vec<u8>>> {
         match fs::read(&sidecar) {
@@ -977,7 +1030,7 @@ fn plan_case(case_id: &str, expected: &FixtureExpectedShape) -> Result<Vec<Revis
     let qualified = expected.qualified_materials.unwrap_or(0);
     let revisions = expected
         .qualified_revisions
-        .unwrap_or_else(|| match case_id {
+        .unwrap_or(match case_id {
             "Q2044/byte-heavy" | "Q2044/evidence-shared" | "Q2044/evidence-unique" => 4,
             _ => 0,
         });

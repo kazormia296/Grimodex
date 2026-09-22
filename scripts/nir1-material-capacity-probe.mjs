@@ -616,6 +616,8 @@ function normalizeDiagnosticReport(report, mode) {
   const missingMetrics = [
     ["total-peak-rss", processMetrics.totalPeakRssBytes],
     ["temporary-bytes", processMetrics.temporaryBytes],
+    ["total-temporary-disk-high-water-upper-bound", processMetrics.temporaryDisk?.logicalHighWaterUpperBoundBytes],
+    ["lifecycle-vm-step-upper-bound", normalized.sql?.lifecycleVmStepsUpperBound],
     ["foreground-wait", normalized.occupancy?.foregroundWaitMs],
     ["cancel-latency", normalized.cancel?.latencyMs],
     ["publish-hold", normalized.graphLifecycle?.publishOwnerMs],
@@ -729,18 +731,34 @@ function assertDiagnosticReport(
       fail(`${context} SQL/temp measurement has incomplete connection coverage`);
     }
   }
+  if (report.sql.lifecycleVmStepsUpperBound !== null) {
+    if (!Number.isSafeInteger(report.sql.lifecycleVmStepsUpperBound)
+      || report.sql.lifecycleVmStepsUpperBound < report.sql.statementVmSteps
+      || report.sql.openedConnections < 1 || report.sql.openedConnections !== report.sql.closedConnections
+      || report.sql.lifecycleVmStepsMethod !== "audited-sqlite-cadence-one-progress-including-prepare-upper-bound"
+      || report.sql.sqliteSourceId !== "2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24") {
+      fail(`${context} lifecycle SQL upper bound lacks audited complete coverage`);
+    }
+  }
+  const disk = report.process.temporaryDisk;
+  if (disk !== null) {
+    const sum = disk.initialBytes + disk.successfulWriteBytes + disk.sqliteFileGrowthBytes + disk.sqliteShmGrowthBytes;
+    if (!Number.isSafeInteger(sum) || disk.logicalHighWaterUpperBoundBytes !== sum || disk.openedFiles !== disk.closedFiles) {
+      fail(`${context} temporary disk upper bound has inconsistent accounting or open files`);
+    }
+  }
   const probes = report.interruptionProbes;
-  if (probes.length > 0 || report.cancel.status === "measured" || report.occupancy.foregroundWaitMs !== null) {
+  if (probes.length > 0 || report.cancel.status === "measured" || report.cancel.latencyMs !== null || report.occupancy.foregroundWaitMs !== null) {
     const phases = {
       "full-build": ["build-prepare", "build-publish"],
       "source-reresolution": ["source-reresolution"],
       "complete-registration": ["complete-registration"],
       coverage: ["coverage-verify"],
-      restore: ["restore-full-set-validation"],
+      restore: ["restore-full-set-validation", "restore-graph-prepare", "restore-graph-publish"],
       "cold-reopen": ["cold-reopen"],
     }[mode];
-    const expected = phases.flatMap((phase) => ["cancel", "foreground"].map((kind) => `${phase}:${kind}`)).sort();
-    const observed = probes.map((probe) => `${probe.phase}:${probe.kind}`).sort();
+    const expected = phases.flatMap((phase) => ["cancel", "foreground"].flatMap((kind) => ["first-sql-progress", "before-commit"].map((point) => `${phase}:${kind}:${point}`))).sort();
+    const observed = probes.map((probe) => `${probe.phase}:${probe.kind}:${probe.triggerPoint}`).sort();
     if (JSON.stringify(observed) !== JSON.stringify(expected)) {
       fail(`${context} interruption phases do not match the selected mode`);
     }
@@ -1339,6 +1357,8 @@ function summarize(reports) {
     vmStepsKinds: [...new Set(reports.map((report) => report.sql?.vmStepsKind))],
     medianStatementVmSteps: median(vmSteps),
     maxStatementVmSteps: vmSteps.at(-1) ?? null,
+    maxLifecycleVmStepsUpperBound: numericValues(reports, (report) => report.sql?.lifecycleVmStepsUpperBound).at(-1) ?? null,
+    maxTemporaryDiskHighWaterUpperBoundBytes: numericValues(reports, (report) => report.process?.temporaryDisk?.logicalHighWaterUpperBoundBytes).at(-1) ?? null,
     medianUserCpuUs: medianMetric((report) => report.process?.userCpuUs),
     medianSystemCpuUs: medianMetric((report) => report.process?.systemCpuUs),
     medianReadBytes: medianMetric((report) => report.process?.readBytes),
@@ -1358,7 +1378,7 @@ function summarize(reports) {
       (report) => report.occupancy?.foregroundWaitMs,
     ),
     medianCancelLatencyMs: medianMetric(
-      (report) => report.cancel?.latencyMs,
+      (report) => report.cancel?.status === "measured" ? report.cancel.latencyMs : null,
     ),
   };
 }
@@ -1578,7 +1598,7 @@ async function main() {
       schemaVersion: "nir1-capacity-report/1",
       manifestDigest,
       protocol,
-      capacityDecision: "unratified",
+      capacityDecision: manifest.capacityDecision,
       supportedCapacityClaim: false,
       graphQueryActivation: "not-activated",
       productDispatch: "not-activated",

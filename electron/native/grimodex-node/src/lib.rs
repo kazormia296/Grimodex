@@ -5726,6 +5726,11 @@ fn run_narrative_freshness_cycle_body(
         Err(AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive) => {
             return Ok(None)
         }
+        // No DB work has started: shutdown between the supervisor's pin
+        // and this admission is an ordinary stopped cycle, not recovery work.
+        Err(AppError::Anyhow(error))
+            if matches!(error.downcast_ref::<grimodex_db::LifecycleError>(),
+                Some(grimodex_db::LifecycleError::Closed)) => return Ok(None),
         Err(error) => return Err(error),
     };
     let binding = narrative_maintenance_binding_for_authority(state, &authority);
@@ -6471,6 +6476,13 @@ impl Backend {
     /// C2-ZCのexpected NOT_READYだけはmain activation owner向けの小さなJSONを返す。
     #[napi]
     pub async fn run_narrative_freshness_cycle(&self) -> Result<Option<String>> {
+        let owner = Self { state: Arc::clone(&self.state) };
+        napi::tokio::task::spawn(owner.run_narrative_freshness_cycle_supervised())
+            .await
+            .map_err(join_err_to_napi)?
+    }
+
+    async fn run_narrative_freshness_cycle_supervised(self) -> Result<Option<String>> {
         let state = Arc::clone(&self.state);
         // Freshness can be the only scheduled producer after it transfers a
         // failed execution to a descriptor. Reconcile that exact root before
@@ -6540,6 +6552,8 @@ impl Backend {
         let worker_state = Arc::clone(&state);
         let worker_join = napi::tokio::task::spawn_blocking(move || {
             catch_unwind(AssertUnwindSafe(|| {
+                #[cfg(test)]
+                worker_state.narrative_maintenance_recovery_gate.observe_workspace_worker_probe();
                 run_narrative_freshness_cycle_body(&worker_state, || {})
             }))
         });
@@ -9630,6 +9644,15 @@ impl Backend {
     /// (`ready`/`migrated`/`recovery-required`/`safe-mode`)。
     #[napi]
     pub async fn open_workspace(&self, path: String) -> Result<String> {
+        // Keep admission, worker Join and terminal publication alive if the
+        // N-API response waiter is dropped (including window teardown).
+        let owner = Self { state: Arc::clone(&self.state) };
+        napi::tokio::task::spawn(owner.open_workspace_supervised(path))
+            .await
+            .map_err(join_err_to_napi)?
+    }
+
+    async fn open_workspace_supervised(self, path: String) -> Result<String> {
         preflight_workspace_open_target(&path).map_err(app_err_to_napi)?;
         let _workspace_operation = self
             .state
@@ -9686,6 +9709,8 @@ impl Backend {
                 state_for_hook
                     .narrative_maintenance_recovery_gate
                     .mark_workspace_swapped();
+                #[cfg(test)]
+                state_for_hook.narrative_maintenance_recovery_gate.observe_workspace_worker_probe();
             };
             let mut admission_guard =
                 NarrativeMaintenanceAdmissionReopenGuard::new(Arc::clone(&state));
@@ -10030,6 +10055,15 @@ impl Backend {
     /// rotateして復元前DBへのlate writeを不可視にする。
     #[napi]
     pub async fn restore_backup(&self, file_name: String) -> Result<String> {
+        // Keep admission, worker Join and terminal publication alive if the
+        // N-API response waiter is dropped (including window teardown).
+        let owner = Self { state: Arc::clone(&self.state) };
+        napi::tokio::task::spawn(owner.restore_backup_supervised(file_name))
+            .await
+            .map_err(join_err_to_napi)?
+    }
+
+    async fn restore_backup_supervised(self, file_name: String) -> Result<String> {
         let _workspace_operation = match self.state.begin_workspace_operation() {
             Ok(operation) => operation,
             Err(error) => {
@@ -10148,6 +10182,10 @@ impl Backend {
                     state_for_hook
                         .narrative_maintenance_recovery_gate
                         .mark_workspace_swapped();
+                    #[cfg(test)]
+                    state_for_hook
+                        .narrative_maintenance_recovery_gate
+                        .observe_workspace_worker_probe();
                 })
             }));
             let restore_result = match restore_result {
@@ -10229,7 +10267,7 @@ impl Backend {
             .as_ref()
             .err()
             .is_some_and(|error| error.to_string().contains("NEX_WORKSPACE_RESTORE_PANIC"));
-        let lifecycle = if force_recovery {
+        let mut lifecycle = if force_recovery {
             publish_workspace_lifecycle_recovery_after_join(&self.state)
         } else {
             publish_workspace_lifecycle_from_workspace(&self.state)
@@ -10240,6 +10278,25 @@ impl Backend {
             .workspace_lifecycle
             .take_last_terminal_kind()
             .map_err(app_err_to_napi)?;
+
+        if lifecycle.status == WorkspaceLifecycleStatus::Transition
+            && self
+                .state
+                .workspace_lifecycle
+                .shutdown_requested()
+                .map_err(app_err_to_napi)?
+        {
+            // The worker has joined and the core has retired this transition
+            // into Finishing. Release this command's observation slot before
+            // joining the existing shutdown drain, or shutdown would wait for
+            // the Restore response that is itself waiting for Closed. Only
+            // the shared core can prove that the remaining owners are gone.
+            drop(_workspace_operation);
+            let closed = self.shutdown_workspace_lifecycle().await?;
+            lifecycle = serde_json::from_str(&closed).map_err(|error| {
+                Error::from_reason(format!("invalid shutdown lifecycle view: {error}"))
+            })?;
+        }
 
         if result.is_ok() {
             self.state.post_effect_abort.clear_abort_all();
@@ -16856,6 +16913,165 @@ mod narrative_maintenance_admission_unwind_tests {
             .narrative_maintenance_recovery_gate
             .maintenance_admission_is_closed());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn rejected_blocking_spawn_keeps_reserved_permit_until_join_is_observed() {
+        let (backend, root) = backend_with_active_workspace("rejected-spawn");
+        let permit = match backend.state.workspace_lifecycle.begin_maintenance().unwrap() {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { .. } => panic!("maintenance admission"),
+        };
+        let slot = Arc::new(Mutex::new(Some(permit)));
+        let worker_slot = Arc::clone(&slot);
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let handle = runtime.handle().clone();
+        runtime.shutdown_background();
+        let worker = handle.spawn_blocking(move || {
+            let _permit = MaintenancePermitLease::new(worker_slot);
+            panic!("a rejected spawn must never enter its worker");
+        });
+        assert!(slot.lock().unwrap().is_some());
+        assert!(worker.await.expect_err("runtime rejected spawn").is_cancelled());
+        backend.state.workspace_lifecycle.request_shutdown().unwrap();
+        slot.lock().unwrap().take().unwrap().cancel_before_start().unwrap();
+        let closed: serde_json::Value = serde_json::from_str(
+            &backend.shutdown_workspace_lifecycle().await.unwrap(),
+        ).unwrap();
+        assert_eq!(closed["status"], "closed");
+        drop(backend);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_during_installed_restore_waits_for_marker_cleanup_and_worker_join() {
+        installed_workspace_shutdown("restore", false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropped_restore_response_keeps_installed_worker_supervised_until_shutdown() {
+        installed_workspace_shutdown("restore", true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropped_open_response_keeps_installed_worker_supervised_until_shutdown() {
+        installed_workspace_shutdown("open", true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropped_freshness_response_keeps_worker_supervised_until_shutdown() {
+        installed_workspace_shutdown("freshness", true).await;
+    }
+
+    async fn installed_workspace_shutdown(operation: &'static str, drop_response: bool) {
+        let is_restore = operation == "restore";
+        let owns_open_lock = operation != "freshness";
+        let (backend, root) = backend_with_active_workspace("restore-late-shutdown");
+        let authority = active_database(&backend.state.ws).expect("authority");
+        let backups = root.join("workspace/backups");
+        std::fs::create_dir_all(&backups).expect("backups");
+        authority
+            .db()
+            .backup_to(&backups.join("grimodex-late.db"))
+            .expect("backup");
+        drop(authority);
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .arm_workspace_worker_probe(reached_tx, release_rx);
+        let backend = Arc::new(backend);
+        let restore_backend = Arc::clone(&backend);
+        let workspace_path = root.join("workspace").to_string_lossy().into_owned();
+        let restore = tokio::spawn(async move {
+            match operation {
+                "restore" => restore_backend.restore_backup("grimodex-late.db".into()).await,
+                "open" => restore_backend.open_workspace(workspace_path).await,
+                "freshness" => restore_backend.run_narrative_freshness_cycle().await.map(|value| value.unwrap_or_default()),
+                _ => unreachable!(),
+            }
+        });
+        reached_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("installed-image rendezvous");
+        assert_eq!(
+            grimodex_db::backup_restore::read_incomplete_restore_session(&root.join("workspace"))
+                .expect("marker")
+                .is_some(),
+            is_restore,
+        );
+        assert_eq!(backend.state.ws.open_lock.try_lock().is_err(), owns_open_lock);
+        if drop_response {
+            restore.abort();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !restore.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            }).await.expect("response waiter cancellation");
+        }
+        let requested_at = std::time::Instant::now();
+        let shutdown_backend = Arc::clone(&backend);
+        let shutdown =
+            tokio::spawn(async move { shutdown_backend.shutdown_workspace_lifecycle().await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !backend
+                .state
+                .workspace_lifecycle
+                .shutdown_requested()
+                .expect("shutdown state")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("shutdown admission closure");
+        assert_eq!(restore.is_finished(), drop_response);
+        assert!(
+            !shutdown.is_finished(),
+            "stop request is not proof of physical termination"
+        );
+        assert_eq!(backend.state.ws.open_lock.try_lock().is_err(), owns_open_lock,
+            "shutdown cannot steal the running worker's physical ownership");
+        release_tx.send(()).expect("finish Restore");
+        let restored = tokio::time::timeout(std::time::Duration::from_secs(30), restore)
+            .await
+            .expect("Restore response termination");
+        if drop_response {
+            assert!(restored.expect_err("dropped response").is_cancelled());
+        } else {
+            let restored: serde_json::Value = serde_json::from_str(
+                &restored.expect("Restore task").expect("Restore response"),
+            ).expect("Restore DTO");
+            assert_eq!(restored["status"], "closed");
+        }
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(30), shutdown)
+            .await
+            .expect("Shutdown termination")
+            .expect("Shutdown task")
+            .expect("Shutdown response");
+        let closed: serde_json::Value = serde_json::from_str(&closed).expect("closed DTO");
+        assert_eq!(closed["status"], "closed");
+        assert!(
+            grimodex_db::backup_restore::read_incomplete_restore_session(&root.join("workspace"))
+                .expect("marker cleanup")
+                .is_none()
+        );
+        assert_eq!(
+            backend
+                .state
+                .workspace_lifecycle
+                .workspace_participant_count()
+                .expect("released participants"),
+            0
+        );
+        assert!(backend.state.ws.open_lock.try_lock().is_ok());
+        eprintln!(
+            "BC-2 {operation} stop-to-cleanup-and-Join: {:.3} ms",
+            requested_at.elapsed().as_secs_f64() * 1000.0
+        );
+        drop(backend);
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
