@@ -2,9 +2,9 @@
   "schemaVersion": "nir1-capacity/1",
   "schema": "schema.v1.json",
   "diagnosticOnly": true,
-  "status": "measurement-only-unratified",
+  "status": "measurement-only",
   "scope": "NIR-1 B whole-project capacity observation; no Graph query or product dispatch",
-  "capacityDecision": "unratified-until-all-major-structures-are-measured",
+  "capacityDecision": "ratified-b-full-set-v1",
   "admissionBoundary": {
     "currentMaterialLimit": 512,
     "meaning": "current A2/request admission label only; not a whole-project build capacity"
@@ -26,7 +26,7 @@
     "freshProcessPerRun": true,
     "sourceState": "immutable-main-wal-shm",
     "childState": "record-before-and-after",
-    "childTimeoutMs": 30000,
+    "childTimeoutMs": 600000,
     "childTerminationGraceMs": 250
   },
   "diagnosticModes": [
@@ -234,17 +234,19 @@
     "wallTime",
     "cpuTime",
     "statementVmSteps",
+    "lifecycleVmStepsUpperBound",
     "sqlConnectionCoverage",
     "progressCallbacks",
     "readBytes",
     "writeBytes",
     "temporaryBytes",
+    "temporaryDiskLogicalHighWaterUpperBound",
     "connectionOccupancy",
     "publishOccupancy",
     "foregroundWait",
     "cancelLatency",
     "interruptionPhaseProofs"
   ],
-  "notMeasuredPolicy": "A field remains explicitly listed under notMeasured when this disposable-copy diagnostic cannot observe it; null is not a zero. statementVmSteps is a PROFILE-visible subset/lower bound, never a lifecycle SQL upper bound (SQLite suppresses VACUUM/SqlExec internal tracing). temporaryBytes counts cumulative SQLite TEMPBUF_SPILL writes, not peak filesystem occupancy. Interruption probes name their full-set phase; Restore file installation and worst-case latency are not inferred.",
-  "supportedCapacity": "No numeric capacity or deadline is ratified by this manifest or by a diagnostic result."
+  "notMeasuredPolicy": "Null is not zero. statementVmSteps remains a PROFILE-visible lower bound. lifecycleVmStepsUpperBound separately counts cadence-one callbacks on the audited SQLite source, including internal VMs and preparation; interrupted/incomplete scopes cannot claim it. temporaryDisk separately bounds total logical file high-water from initial files, Linux successful writes/copies and SQLite VFS file/SHM growth, including WAL/journals and Restore copies; it is not filesystem metadata/preallocation usage. Interruption probes require phase, kind and early/late trigger evidence. A not-run cancel has null latency and provenance; measured cancellation requires complete phase evidence. Restore file installation has no cancellation API; its shutdown/Join and crash recovery proof is recorded separately, never inferred from validation probes.",
+  "supportedCapacity": "Runtime counts/bytes/SQL/cooperative deadline are ratified in docs/plans/nir1-b-close-completion-2026-09-22.md; source constants are in nir1_capacity.rs. A diagnostic result is measurement evidence, not a capacity or activation approval."
 }

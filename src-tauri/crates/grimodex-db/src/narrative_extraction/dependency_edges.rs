@@ -627,6 +627,8 @@ pub(crate) fn find_edges_by_consumer(
     consumer_kind: &str,
     consumer_key: &str,
 ) -> anyhow::Result<Vec<DependencyEdge>> {
+    #[cfg(test)]
+    super::nir1_capacity::materialization_probe::record(conn, false, consumer_kind, consumer_key);
     let mut statement = conn.prepare(
         "SELECT id, project_id, consumer_kind, consumer_key, source_object_identity,
                 read_set_json, generated_by_transaction_id, created_at, owning_run_id

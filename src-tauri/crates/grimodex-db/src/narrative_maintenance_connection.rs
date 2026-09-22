@@ -52,7 +52,7 @@ impl TerminationLatch {
                 TERMINATION_WORKSPACE_GENERATION
             }
             ValidationTerminationReason::ForegroundPreempted => TERMINATION_FOREGROUND,
-            ValidationTerminationReason::CleanupFailed => TERMINATION_NONE,
+            ValidationTerminationReason::CleanupFailed | ValidationTerminationReason::CapacityExceeded => TERMINATION_NONE,
         };
         if code != TERMINATION_NONE {
             let _ = self.0.compare_exchange(
@@ -403,6 +403,10 @@ impl GraphWorkControl for NarrativeMaintenanceGraphControl<'_> {
         Ok(())
     }
 
+    fn finalization_signal(&self) -> Option<Arc<AtomicBool>> {
+        self.config.finalization_granted.clone()
+    }
+
     fn allows_full_eligibility(&self) -> bool {
         true
     }
@@ -589,6 +593,43 @@ where
     Ok(Some(result))
 }
 
+/// A synchronous foreground full-set owner already holds this connection.
+/// Reuse the same rollback/settings/quarantine protocol as maintenance; only
+/// its capacity budget is added, and its ordinary busy timeout is retained.
+pub(crate) fn with_capacity_connection<T>(
+    db: &Database,
+    conn: &Connection,
+    operation: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<T> {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        with_narrative_maintenance_connection_scope_with_latch(
+            conn,
+            None,
+            0,
+            Arc::new(AtomicBool::new(false)),
+            NarrativeMaintenanceGraphControlConfig::default(),
+            None,
+            |conn| {
+                crate::narrative_extraction::nir1_capacity::with_database_attempt(conn, || {
+                    operation(conn)
+                })
+            },
+        )
+    }));
+    match result {
+        Ok(result) => {
+            if !result.receipt.connection_reusable {
+                db.quarantine_connection("full-set capacity connection cleanup failed");
+            }
+            result.into_result()
+        }
+        Err(panic) => {
+            db.quarantine_connection("full-set capacity operation panicked");
+            std::panic::resume_unwind(panic)
+        }
+    }
+}
+
 /// Execute work against an already acquired connection. Only the outermost
 /// scope changes SQLite settings or installs a progress hook. Nested Native
 /// readers therefore inherit the cancellation hook and busy timeout owned by
@@ -708,7 +749,8 @@ where
         let finalization_granted_for_hook = hook_config.finalization_granted.clone();
         let foreground_waiters_for_hook = foreground_waiters.clone();
         let hook_result = if progress_interval > 0 {
-            conn.progress_handler(
+            crate::set_sqlite_progress_handler(
+                conn,
                 progress_interval,
                 Some(move || {
                     if let Some(counter) = progress_callbacks_for_hook.as_ref() {
@@ -765,7 +807,7 @@ where
                 }),
             )
         } else {
-            conn.progress_handler(0, None::<fn() -> bool>)
+            crate::set_sqlite_progress_handler(conn, 0, None::<fn() -> bool>)
         };
         if let Err(error) = hook_result {
             setup_error = Some(error.into());
@@ -801,7 +843,7 @@ where
     // running. This must precede rollback: with cadence=1, ROLLBACK itself
     // can otherwise be interrupted and leave the shared connection in a
     // transaction.
-    let progress_reset_result = conn.progress_handler(0, None::<fn() -> bool>);
+    let progress_reset_result = crate::set_sqlite_progress_handler(conn, 0, None::<fn() -> bool>);
     if let Err(error) = progress_reset_result {
         append_cleanup_error(&mut cleanup_error, error.into());
         receipt.progress_handler_cleared = false;
@@ -838,6 +880,11 @@ where
         }
     }
     receipt.transaction_clean = conn.is_autocommit();
+    if operation_error.as_ref().is_some_and(|error| error.chain().any(|cause|
+        cause.to_string().contains("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: capacity hook restore"))) {
+        receipt.progress_handler_cleared = false;
+    }
+
 
     let restored_timeout = conn.busy_timeout(Duration::from_millis(original_timeout_ms as u64));
     if let Err(error) = restored_timeout {
@@ -2087,4 +2134,41 @@ mod tests {
             .contains("panicked"));
         assert!(db.with_conn(|_| Ok(())).is_err());
     }
+    #[test]
+    fn committed_write_survives_cleanup_failure_and_verified_reopen() {
+        let directory = std::env::temp_dir().join(format!("grimodex-committed-cleanup-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("workspace.db");
+        let db = Database::new(&path).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TABLE committed_result (value TEXT NOT NULL)")?;
+            Ok(())
+        }).unwrap();
+        set_maintenance_cleanup_failpoints_for_test(MaintenanceCleanupFailpoints {
+            rollback: false, autocommit_check: false,
+            progress_reset: false, busy_timeout_restore: true,
+        });
+        let result = with_narrative_maintenance_connection(&db, Duration::ZERO, 1, stop_flag(), |conn| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute("INSERT INTO committed_result VALUES ('success')", [])?;
+            tx.commit()?;
+            Ok::<_, anyhow::Error>(())
+        }).unwrap().unwrap();
+        assert!(result.operation_error.is_none());
+        assert!(result.receipt.transaction_clean);
+        assert!(!result.receipt.busy_timeout_restored);
+        assert!(result.into_result().is_err());
+        assert!(!db.connection_reusable());
+        assert!(try_lock_narrative_maintenance(&db).is_err());
+        db.retire_connection_for_recovery().unwrap();
+        drop(db);
+        Database::new(&path).unwrap().with_conn(|conn| {
+            let value: String = conn.query_row("SELECT value FROM committed_result", [], |row| row.get(0))?;
+            assert_eq!(value, "success");
+            Ok(())
+        }).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+
 }

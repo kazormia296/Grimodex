@@ -510,14 +510,19 @@ pub(crate) fn with_immediate_transaction<T>(
         Ok(value) => {
             match value {
                 Ok(value) => {
-                    match conn.execute_batch("COMMIT") {
+                    match super::nir1_capacity::commit_transaction(conn) {
                         Ok(()) => Ok(value),
+                        // A veto by the capacity commit hook is a confirmed
+                        // rollback. Other COMMIT errors retain the existing
+                        // ambiguous-outcome cleanup/quarantine path.
+                        Err(error) if conn.is_autocommit()
+                            && super::source_revision::is_validation_capacity_exceeded(&error) => Err(error),
                         Err(error) => match conn.execute_batch("ROLLBACK") {
-                            Ok(()) if conn.is_autocommit() => Err(error.into()),
-                            Ok(()) => Err(anyhow::Error::new(error).context(
+                            Ok(()) if conn.is_autocommit() => Err(error),
+                            Ok(()) => Err(error.context(
                                 "NEX_DB_TRANSACTION_CLEANUP_UNPROVEN: rollback did not restore autocommit",
                             )),
-                            Err(rollback_error) => Err(anyhow::Error::new(error).context(format!(
+                            Err(rollback_error) => Err(error.context(format!(
                                 "NEX_DB_TRANSACTION_CLEANUP_UNPROVEN: rollback failed: {rollback_error}"
                             ))),
                         },
@@ -553,14 +558,14 @@ pub(crate) fn with_immediate_transaction_with_creation_outcome<T>(
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let operation_result = catch_unwind(AssertUnwindSafe(|| operation(conn)));
     match operation_result {
-        Ok(Ok(value)) => match conn.execute_batch("COMMIT") {
+        Ok(Ok(value)) => match super::nir1_capacity::commit_transaction(conn) {
             Ok(()) => Ok(value),
             Err(error) => {
                 let _ = conn.execute_batch("ROLLBACK");
                 if let Err(outcome_error) = outcome(RunCreationTransactionOutcome::Unknown) {
-                    return Err(anyhow::Error::new(error).context(outcome_error.to_string()));
+                    return Err(error.context(outcome_error.to_string()));
                 }
-                Err(error.into())
+                Err(error)
             }
         },
         Ok(Err(error)) => {

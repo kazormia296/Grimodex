@@ -378,8 +378,13 @@ rules:
       - evals/nir1-capacity/**
       - scripts/nir1-material-capacity-probe.mjs
       - scripts/nir1-material-capacity-probe.test.mjs
+      - scripts/nir1-material-capacity-probe.review-fixes.test.mjs
       - src-tauri/crates/grimodex-db/src/bin/nir1-material-capacity.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_diagnostics.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_disk.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_boundary_tests.rs
+      - src-tauri/crates/grimodex-db/tests/nir1_capacity_boundaries.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs
       - src-tauri/crates/grimodex-db/tests/nir1_capacity_binary.rs
     requirements:

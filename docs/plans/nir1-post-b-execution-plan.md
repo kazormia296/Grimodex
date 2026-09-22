@@ -2,10 +2,10 @@
 
 更新日：2026-09-22（Asia/Tokyo）
 対象：Grimodex / NIR-1 B-close、C、D2b、P、E
-状態：実行中の最終計画。全実装・B-close・G-01実行可能性検証・追加契約の批准・製品公開を完了したという記録ではない。
+状態：B-closeの実装・必須focused証跡は完了。C以降、G-01実行可能性検証、残る追加契約と製品公開は未完了。
 リポジトリ配置：`docs/plans/nir1-post-b-execution-plan.md`
 
-2026-09-22の実装開始基点は `origin/master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`。B-close第1段階に続き、第2段階の診断実装でも19-path / 114-child-runを完走し、SQLite temp spill累積bytes・PROFILE可視SQL VM steps（下界のみ）・mode固有のfull-set取消/foreground待機を計測した。lifecycle SQLのexact値/上界、Restoreのfile-install/recovery/rebuild全体の取消・総temporary disk high-waterは未計測で、数値capacity/deadline候補は診断用draftに留まる。批准・N/N+1受入れ・B-close完了は未達である。結果と非主張は [B-close capacity observation](nir1-b-close-capacity-observation-2026-09-22.md) を参照する。Graph query、Packing、製品dispatchは未公開である。
+実装開始基点は `origin/master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`。2026-09-22 B-close追記: #604を親とするstacked実装で、lifecycle SQL上界・WAL/journal/backup/Restore copyを含む総一時logical disk上界、必須lifecycle境界、数値容量契約とN/N+1検証を完了した。19-path / 114-childの測定と、確定値に対する8成功・4安全拒否のrelease childを分けて記録する。数値と適用範囲はユーザーが明示確認した。詳細は [B-close completion evidence](nir1-b-close-completion-2026-09-22.md)。Graph、Packing、AI dispatchは未activateで、NIR-1全体受入れは未完了。ユーザー指定により本候補のFull CI・独立受入れレビューは省略し、mergeは依頼範囲外として行っていない。
 
 ## 0. 現在地と基点
 
@@ -133,6 +133,8 @@ wall/CPU、SQL、read/write、temp、lock/publish/connection occupation、foregr
 第2段階で、測定からsupported work size、memory、SQL、deadlineを選び、必要な確認を経て実装する。測定前の仮値は診断専用とする。境界内成功、N/N+1の安全な拒否、取消/競合/失敗時のpartial generation非公開、冷再開を受け入れる。
 
 ### 5.3. B-close完了
+
+本候補のB-close実装・必須focused証跡は完了。確定値、証拠の範囲、未公開境界は [B-close completion evidence](nir1-b-close-completion-2026-09-22.md) に記録する。Full/merge readinessとNIR-1全体完了は別である。
 
 完全roster、atomic publish、writer失効、所有者付きfull-set validation、必須lifecycle境界、容量matrixと数値契約が揃い、Graph/送信未公開回帰が通ること。常にunavailableを返すだけでは正常容量の受け入れにならない。
 
@@ -395,7 +397,7 @@ pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"
 
 base/head/tree/clean state/receipt directory、契約ref、評価manifest/model hash、reviewerを境界時点で記録する。各操作で同じSHAを過剰照合しない。候補変更後は旧receiptを流用しない。Full失敗を単体再実行成功でPASSへ変えず、原因を確認し、必要修正後の新候補で再実行する。
 
-CI明示除外やcommit-onlyではその範囲を守り、merge readinessを主張しない。計画作成だけの現在の依頼では、commit/PR/CIを開始しない。
+CI明示除外やcommit-onlyではその範囲を守り、merge readinessを主張しない。計画作成時にはcommit/PR/CIを開始しなかった。本B-close実装はユーザー指定によりFullと独立受入れレビューを省略し、focused検証とstacked PR用のQuick/verifyまでを行う。
 
 ### 14.4. 文書更新
 
@@ -409,7 +411,7 @@ CI明示除外やcommit-onlyではその範囲を守り、merge readinessを主�
 
 ## 15. 最初の着手
 
-現時点で始めるのは、(a) B-closeの残測定/必須境界の証跡整理、(b) Cの候補完全性・Scene接続・G-01成立確認、(c) Dの来歴保存先・dispatch確定順序の設計である。
+B-closeの残測定・数値契約・必須境界の証跡整理は完了した。次の工程はCの候補完全性・Scene接続・G-01成立確認と、Dの来歴保存先・dispatch確定順序の設計である。本B-closeの依頼ではそれらの実装・製品公開を開始しない。
 
 B-closeと該当接続契約の完了後、C-queryとD2b-1を並行実装する。続いてC-productとhistoryを並行させ、Graph由来履歴の実接続まで受け入れた後にD2b-2-dispatchへ合流し、Eで全体完了を判定する。
 

@@ -1216,12 +1216,12 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         );
         assert.match(
           cells[4],
-          /none.*proposal\/5 is explicitly confirmed.*capacity remediation.*no supported capacity number/,
+          /none.*proposal\/5 is explicitly confirmed.*B full-set numbers additionally ratified on 2026-09-22.*product activation is not ratified/,
         );
-        assert.equal(cells[6], "capacity-remediation-in-progress");
+        assert.equal(cells[6], "b-close-complete");
         assert.match(
           cells[7],
-          /exact confirmation is recorded.*B\/C remain blocked.*measurement.*product activation/,
+          /exact confirmation is recorded.*B implementation and required focused evidence are complete.*C remains gated.*product activation/,
         );
         assert.match(
           cells[8],
@@ -1273,9 +1273,9 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     "the five confirmed baseline/typed contract rows are effective after the R0 merge",
   );
   assert.equal(
-    ledgerRows.filter((row) => row.includes("capacity-remediation-in-progress")).length,
+    ledgerRows.filter((row) => row.includes("b-close-complete")).length,
     1,
-    "the graph row remains in capacity remediation after proposal/5 confirmation",
+    "the graph row records B-close completion without activating Graph consumers",
   );
   assert.match(
     executionPlan,
@@ -1851,7 +1851,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     /\| A2 \|[^|]*\| complete-limited \|/,
     "current A2 lane status must record PR #591's limited completion",
   );
-  assert.match(executionPlan, /### Current lane snapshot \(2026-09-17\)/);
+  assert.match(executionPlan, /### Current lane snapshot \(2026-09-22\)/);
   assert.match(
     executionPlan,
     /\| A3 \| #598 A3 review remediation \| completed-foundation \|[^\n]*masterへmerged[^\n]*runtime／consumer activationは未完了/,
@@ -1859,8 +1859,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   );
   assert.match(
     executionPlan,
-    /\| B \| #596 Graph foundation[^|]*\| capacity-remediation-in-progress \|[^\n]*proposal\/5のexact confirmation[^\n]*capacity remediationがpending/,
-    "current B snapshot must remain blocked on proposal/5 and capacity remediation",
+    /\| B \| #596 Graph foundation[^|]*\| b-close-complete \|[^\n]*proposal\/5のexact confirmation[^\n]*数値容量契約を明示確認[^\n]*必須focused証跡とN\/N\+1を完了[^\n]*Graph query／product activationとFull／merge readinessは未完了/,
+    "current B snapshot must record ratified capacity and boundary evidence while preserving inactive product boundaries",
   );
   assert.match(
     executionPlan,

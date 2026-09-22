@@ -26,6 +26,7 @@ use crate::{
     ActiveWorkspace, WorkspaceAuthority, WorkspaceLifecycleCompatibilityView, WorkspaceState,
 };
 use grimodex_core::narrative_nir1::EntityRelationBundle;
+use super::nir1_capacity_disk::{CapacityDiskMeasurement, DiskMeasurement};
 
 use super::restore_rebuild::{
     rebuild_narrative_derived_state_for_project, verify_dependency_graph_snapshot_with_control,
@@ -174,6 +175,10 @@ pub struct CapacitySqlMetrics {
     pub closed_connections: u64,
     pub method: &'static str,
     pub coverage: &'static str,
+    pub lifecycle_vm_steps_upper_bound: Option<u64>,
+    pub lifecycle_vm_steps_method: &'static str,
+    pub lifecycle_vm_steps_coverage: &'static str,
+    pub sqlite_source_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -212,6 +217,7 @@ pub struct ProcessMetrics {
     pub temporary_bytes_method: &'static str,
     pub temporary_bytes_coverage: &'static str,
     pub temporary_bytes_uncertainty: &'static str,
+    pub temporary_disk: Option<CapacityDiskMeasurement>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -331,6 +337,7 @@ pub struct CancelMeasurement {
 pub struct CapacityInterruptionProbe {
     phase: &'static str,
     kind: &'static str,
+    trigger_point: &'static str,
     latency_ms: f64,
     progress_callbacks: u64,
     connection_reusable: bool,
@@ -412,7 +419,7 @@ impl CapacityObservation {
         measurements: CapacityInterruptionMeasurements,
     ) {
         const SCOPE: &str = "selected-mode-full-set-owners";
-        const UNCERTAINTY: &str = "maximum of named phase probes after first SQL progress; includes scheduling and cleanup, not a worst-case bound or Restore file-install cancellation";
+        const UNCERTAINTY: &str = "maximum of named phase probes at first SQL progress and the final pre-commit Rust boundary; includes scheduling and cleanup, not a worst-case bound on OS stalls or scheduling";
         let maximum = |kind| {
             measurements.probes.iter().filter(|probe| probe.kind == kind)
                 .map(|probe| probe.latency_ms).reduce(f64::max)
@@ -421,7 +428,7 @@ impl CapacityObservation {
             status: "measured",
             latency_ms: maximum("cancel"),
             scope: Some(SCOPE),
-            method: Some("atomic-stop-after-first-sql-progress-to-clean-owner-return"),
+            method: Some("atomic-stop-at-recorded-trigger-point-to-clean-owner-return"),
             uncertainty: Some(UNCERTAINTY),
         };
         self.occupancy.foreground_wait_ms = maximum("foreground");
@@ -468,6 +475,8 @@ struct TraceCounter {
     opened_connections: AtomicU64,
     closed_connections: AtomicU64,
     failed: AtomicBool,
+    all_progress_callbacks: AtomicU64,
+    interrupted: AtomicBool,
 }
 
 thread_local! {
@@ -499,6 +508,81 @@ impl DiagnosticSqlMeasurement {
             && self.0.opened_connections.load(Ordering::Relaxed)
                 == self.0.closed_connections.load(Ordering::Relaxed)
     }
+
+    fn lifecycle_upper_bound(&self) -> Option<u64> {
+        // In the pinned SQLite interpreter, cadence 1 flushes every VM step
+        // at vdbe_return, including SqlExec/VACUUM internal VMs. Prepare and
+        // integrity-check callbacks only add work: this is an upper bound,
+        // not an exact VM total. A cancelling callback can bypass that flush;
+        // no upper bound is claimed for such an incomplete observation.
+        let count = self.0.all_progress_callbacks.load(Ordering::Relaxed);
+        (self.complete()
+            && !self.0.interrupted.load(Ordering::Relaxed)
+            && sqlite_source_id() == AUDITED_SQLITE_SOURCE_ID
+            && count >= self.0.statement_vm_steps.load(Ordering::Relaxed))
+        .then_some(count)
+    }
+}
+
+use super::nir1_capacity::AUDITED_SQLITE_SOURCE_ID;
+
+fn sqlite_source_id() -> String {
+    // SAFETY: SQLite returns a process-lifetime, nul-terminated static string.
+    unsafe { std::ffi::CStr::from_ptr(rusqlite::ffi::sqlite3_sourceid()) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+pub(crate) fn sql_measurement_active() -> bool {
+    ACTIVE_TRACE.with(|active| active.borrow().is_some())
+}
+
+pub(crate) fn set_measured_progress_handler<F>(
+    conn: &Connection,
+    interval: i32,
+    mut handler: Option<F>,
+) -> rusqlite::Result<()>
+where
+    F: FnMut() -> bool + Send + 'static,
+{
+    let counter = ACTIVE_TRACE.with(|active| active.borrow().as_ref().cloned());
+    let Some(counter) = counter else {
+        return conn.progress_handler(interval, handler);
+    };
+    let mut since_owner_check = 0;
+    conn.progress_handler(
+        1,
+        Some(move || {
+            counter
+                .all_progress_callbacks
+                .fetch_add(1, Ordering::Relaxed);
+            // The owner retains its original bounded cadence and finalization
+            // semantics. Clearing it leaves only the non-cancelling meter for
+            // rollback/settings cleanup; no nested owner is introduced.
+            if interval > 0 {
+                since_owner_check += 1;
+                if since_owner_check >= interval {
+                    since_owner_check = 0;
+                    if handler.as_mut().is_some_and(|handler| handler()) {
+                        counter.interrupted.store(true, Ordering::Relaxed);
+                        return true;
+                    }
+                }
+            }
+            false
+        }),
+    )
+}
+
+unsafe extern "C" fn diagnostic_sql_progress(_context: *mut std::ffi::c_void) -> std::ffi::c_int {
+    ACTIVE_TRACE.with(|active| {
+        if let Some(counter) = active.borrow().as_ref() {
+            counter
+                .all_progress_callbacks
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    0
 }
 
 impl Drop for DiagnosticSqlMeasurement {
@@ -528,6 +612,16 @@ unsafe extern "C" fn diagnostic_sql_extension(
             )
         };
         if status == rusqlite::ffi::SQLITE_OK {
+            // SAFETY: this initial non-cancelling observer is replaced only
+            // by the composite outer-owner helper above, at the same cadence.
+            unsafe {
+                rusqlite::ffi::sqlite3_progress_handler(
+                    db,
+                    1,
+                    Some(diagnostic_sql_progress),
+                    std::ptr::null_mut(),
+                );
+            }
             counter.opened_connections.fetch_add(1, Ordering::Relaxed);
         } else {
             counter.failed.store(true, Ordering::Relaxed);
@@ -1280,6 +1374,7 @@ fn empty_lifecycle(error: Option<String>) -> GraphLifecycleRun {
     }
 }
 
+#[allow(clippy::type_complexity)] // Exact SQLite row snapshots for rollback comparison.
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct RestoreGraphBindingSnapshot {
     metadata: Option<(
@@ -1494,6 +1589,7 @@ fn roster_from_stored_revision(
     Ok(roster)
 }
 
+#[allow(clippy::type_complexity)] // Exact immutable Revision row, read as one snapshot.
 fn restore_revision_snapshot_from_conn(
     conn: &Connection,
     project_id: &str,
@@ -1745,6 +1841,25 @@ const INTERRUPTION_KINDS: [InterruptionProbeKind; 2] = [
     InterruptionProbeKind::Cancel,
     InterruptionProbeKind::Foreground,
 ];
+#[derive(Clone, Copy, PartialEq)]
+enum InterruptionPoint {
+    FirstSqlProgress,
+    BeforeCommit,
+}
+
+impl InterruptionPoint {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::FirstSqlProgress => "first-sql-progress",
+            Self::BeforeCommit => "before-commit",
+        }
+    }
+}
+
+const INTERRUPTION_POINTS: [InterruptionPoint; 2] = [
+    InterruptionPoint::FirstSqlProgress,
+    InterruptionPoint::BeforeCommit,
+];
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
 // Let the native SQL hook observe requests during SQL. At the first following
@@ -1758,11 +1873,20 @@ struct InterruptionControl<'a> {
     callbacks: &'a AtomicU64,
     kind: InterruptionProbeKind,
     deadline: Instant,
+    point: InterruptionPoint,
+    at_terminal_boundary: bool,
+    terminal_reached: &'a AtomicBool,
 }
 
 impl GraphWorkControl for InterruptionControl<'_> {
     fn check(&mut self, stage: GraphWorkStage) -> Result<()> {
-        if self.callbacks.load(Ordering::Acquire) > 0 {
+        if self.at_terminal_boundary {
+            self.terminal_reached.store(true, Ordering::Release);
+        }
+        if self.at_terminal_boundary
+            || (self.point == InterruptionPoint::FirstSqlProgress
+                && self.callbacks.load(Ordering::Acquire) > 0)
+        {
             loop {
                 let requested = match self.kind {
                     InterruptionProbeKind::Cancel => self.stop.load(Ordering::Acquire),
@@ -1786,71 +1910,93 @@ fn measure_interruption_probe(
     project_id: &str,
     phase: &'static str,
     kind: InterruptionProbeKind,
+    point: InterruptionPoint,
     operation: impl FnOnce(&Connection, &mut dyn GraphWorkControl) -> Result<()>,
 ) -> Result<CapacityInterruptionProbe> {
     let before = db.with_read_transaction(|conn| capture_restore_graph_binding(conn, project_id))?;
     let stop = Arc::new(AtomicBool::new(false));
     let callbacks = Arc::new(AtomicU64::new(0));
     let finished = AtomicBool::new(false);
+    let terminal_reached = AtomicBool::new(false);
     let deadline = Instant::now() + PROBE_TIMEOUT;
     let mut config = NarrativeMaintenanceGraphControlConfig::with_progress_callbacks(Arc::clone(&callbacks));
     config.deadline = Some(deadline);
-    let (owner, requested_at, observed_at, foreground_ms) = std::thread::scope(|scope| -> Result<_> {
-        let trigger = scope.spawn(|| -> Result<(Instant, Option<f64>)> {
-            while callbacks.load(Ordering::Acquire) == 0 {
-                anyhow::ensure!(!finished.load(Ordering::Acquire), "{phase} completed before its first SQL progress callback");
-                if Instant::now() >= deadline {
-                    stop.store(true, Ordering::Release);
-                    anyhow::bail!("{phase} observed no SQL progress within 30 seconds");
+    let (owner, requested_at, observed_at, foreground_ms) =
+        std::thread::scope(|scope| -> Result<_> {
+            let trigger = scope.spawn(|| -> Result<(Instant, Option<f64>)> {
+                while match point {
+                    InterruptionPoint::FirstSqlProgress => callbacks.load(Ordering::Acquire) == 0,
+                    InterruptionPoint::BeforeCommit => !terminal_reached.load(Ordering::Acquire),
+                } {
+                    anyhow::ensure!(
+                        !finished.load(Ordering::Acquire),
+                        "{phase} completed before {}",
+                        point.as_str()
+                    );
+                    if Instant::now() >= deadline {
+                        stop.store(true, Ordering::Release);
+                        anyhow::bail!("{phase} observed no SQL progress within 30 seconds");
+                    }
+                    std::thread::yield_now();
                 }
-                std::thread::yield_now();
-            }
-            let requested_at = Instant::now();
-            match kind {
-                InterruptionProbeKind::Cancel => {
-                    stop.store(true, Ordering::Release);
-                    Ok((requested_at, None))
+                let requested_at = Instant::now();
+                match kind {
+                    InterruptionProbeKind::Cancel => {
+                        stop.store(true, Ordering::Release);
+                        Ok((requested_at, None))
+                    }
+                    InterruptionProbeKind::Foreground => {
+                        let mut check = || {
+                            anyhow::ensure!(Instant::now() < deadline, "{phase} foreground handoff timed out");
+                            Ok(())
+                        };
+                        let conn = db.lock_conn_with_check(Some(&mut check))?;
+                        conn.query_row("SELECT 1", [], |_| Ok(()))?;
+                        drop(conn);
+                        Ok((requested_at, Some(requested_at.elapsed().as_secs_f64() * 1000.0)))
+                    }
                 }
-                InterruptionProbeKind::Foreground => {
-                    let mut check = || {
-                        anyhow::ensure!(Instant::now() < deadline, "{phase} foreground handoff timed out");
-                        Ok(())
-                    };
-                    let conn = db.lock_conn_with_check(Some(&mut check))?;
-                    conn.query_row("SELECT 1", [], |_| Ok(()))?;
-                    drop(conn);
-                    Ok((requested_at, Some(requested_at.elapsed().as_secs_f64() * 1000.0)))
-                }
-            }
-        });
-        let owner = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_narrative_maintenance_graph_control(
-                db,
-                Duration::ZERO,
-                PROGRESS_CADENCE_VM_STEPS,
-                Arc::clone(&stop),
-                config,
-                |conn, control| {
-                    // The real outer owner clears its hook before rollback.
-                    // No cancelled/accidentally completed probe commits a generation.
-                    conn.execute_batch("BEGIN")?;
-                    let mut control = InterruptionControl {
-                        inner: control, db, stop: &stop, callbacks: &callbacks, kind, deadline,
-                    };
-                    operation(conn, &mut control)
-                },
-            )
-        }));
-        let observed_at = Instant::now();
-        finished.store(true, Ordering::Release);
-        let triggered = trigger.join().map_err(|_| anyhow::anyhow!("{phase} trigger panicked"));
-        let owner = match owner {
-            Ok(owner) => owner,
-            Err(payload) => std::panic::resume_unwind(payload),
-        };
-        let (requested_at, foreground_ms) = triggered??;
-        Ok((owner?, requested_at, observed_at, foreground_ms))
-    })?;
+            });
+            let owner = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                with_narrative_maintenance_graph_control(
+                    db,
+                    Duration::ZERO,
+                    PROGRESS_CADENCE_VM_STEPS,
+                    Arc::clone(&stop),
+                    config,
+                    |conn, control| {
+                        // The real outer owner clears its hook before rollback.
+                        // No cancelled/accidentally completed probe commits a generation.
+                        conn.execute_batch("BEGIN")?;
+                        let mut control = InterruptionControl {
+                            inner: control,
+                            db,
+                            stop: &stop,
+                            callbacks: &callbacks,
+                            kind,
+                            deadline,
+                            point,
+                            at_terminal_boundary: false,
+                            terminal_reached: &terminal_reached,
+                        };
+                        operation(conn, &mut control)?;
+                        control.at_terminal_boundary = true;
+                        control.check(GraphWorkStage::ResultAssembly)
+                    },
+                )
+            }));
+            let observed_at = Instant::now();
+            finished.store(true, Ordering::Release);
+            let triggered = trigger
+                .join()
+                .map_err(|_| anyhow::anyhow!("{phase} trigger panicked"));
+            let owner = match owner {
+                Ok(owner) => owner,
+                Err(payload) => std::panic::resume_unwind(payload),
+            };
+            let (requested_at, foreground_ms) = triggered??;
+            Ok((owner?, requested_at, observed_at, foreground_ms))
+        })?;
     let owner = owner.context("interruption probe maintenance connection was deferred")?;
     let receipt = owner.receipt;
     anyhow::ensure!(
@@ -1875,6 +2021,7 @@ fn measure_interruption_probe(
     Ok(CapacityInterruptionProbe {
         phase,
         kind,
+        trigger_point: point.as_str(),
         latency_ms: foreground_ms.unwrap_or_else(|| observed_at.duration_since(requested_at).as_secs_f64() * 1000.0),
         progress_callbacks: callbacks.load(Ordering::Relaxed),
         connection_reusable: receipt.connection_reusable,
@@ -1898,36 +2045,107 @@ pub fn measure_capacity_interruptions(
     } else {
         // Primary measurement has already published when this mode requires a
         // sealed binding. This new connection is also the actual cold reopen.
-        for kind in INTERRUPTION_KINDS {
+        for (kind, point) in INTERRUPTION_KINDS
+            .into_iter()
+            .flat_map(|kind| INTERRUPTION_POINTS.map(|point| (kind, point)))
+        {
             let db = Database::new(database_path)?;
             match mode {
                 CapacityDiagnosticMode::FullBuild => {
                     let runtime = NirChronicleIndexRuntime::new(&db, 1);
-                    probes.push(measure_interruption_probe(&db, project_id, "build-prepare", kind, |conn, control| {
-                        prepare_graph_index_build_with_control(conn, &runtime, project_id, control).map(|_| ())
-                    })?);
-                    let snapshot = owned_mode_operation(&db, None, Arc::new(AtomicBool::new(false)), |conn, control| {
-                        let tx = conn.unchecked_transaction()?;
-                        let snapshot = prepare_graph_index_build_with_control(&tx, &runtime, project_id, control)?;
-                        tx.commit()?;
-                        Ok(snapshot)
-                    })?.context("publish probe preparation deferred")?;
-                    probes.push(measure_interruption_probe(&db, project_id, "build-publish", kind, |conn, control| {
-                        publish_nir1_entity_relation_index_in_tx_with_control(conn, &runtime, snapshot, control).map(|_| ())
-                    })?);
+                    probes.push(measure_interruption_probe(
+                        &db,
+                        project_id,
+                        "build-prepare",
+                        kind,
+                        point,
+                        |conn, control| {
+                            prepare_graph_index_build_with_control(
+                                conn, &runtime, project_id, control,
+                            )
+                            .map(|_| ())
+                        },
+                    )?);
+                    let snapshot = owned_mode_operation(
+                        &db,
+                        None,
+                        Arc::new(AtomicBool::new(false)),
+                        |conn, control| {
+                            let tx = conn.unchecked_transaction()?;
+                            let snapshot = prepare_graph_index_build_with_control(
+                                &tx, &runtime, project_id, control,
+                            )?;
+                            tx.commit()?;
+                            Ok(snapshot)
+                        },
+                    )?
+                    .context("publish probe preparation deferred")?;
+                    probes.push(measure_interruption_probe(
+                        &db,
+                        project_id,
+                        "build-publish",
+                        kind,
+                        point,
+                        |conn, control| {
+                            publish_nir1_entity_relation_index_in_tx_with_control(
+                                conn, &runtime, snapshot, control,
+                            )
+                            .map(|_| ())
+                        },
+                    )?);
                 }
-                CapacityDiagnosticMode::SourceReresolution => probes.push(measure_interruption_probe(&db, project_id, "source-reresolution", kind, |conn, control| {
-                    read_eligibility_source_with_control(conn, project_id, control).map(|_| ())
-                })?),
-                CapacityDiagnosticMode::CompleteRegistration => probes.push(measure_interruption_probe(&db, project_id, "complete-registration", kind, |conn, control| {
-                    is_complete_registered_with_control(conn, project_id, ENTITY_RELATION_INDEX_KEY, control).map(|_| ())
-                })?),
-                CapacityDiagnosticMode::Coverage => probes.push(measure_interruption_probe(&db, project_id, "coverage-verify", kind, |conn, control| {
-                    verify_dependency_graph_snapshot_with_control(conn, project_id, control).map(|_| ())
-                })?),
-                CapacityDiagnosticMode::ColdReopen => probes.push(measure_interruption_probe(&db, project_id, "cold-reopen", kind, |conn, control| {
-                    cold_reopen_graph_index_with_control(conn, project_id, control).map(|_| ())
-                })?),
+                CapacityDiagnosticMode::SourceReresolution => {
+                    probes.push(measure_interruption_probe(
+                        &db,
+                        project_id,
+                        "source-reresolution",
+                        kind,
+                        point,
+                        |conn, control| {
+                            read_eligibility_source_with_control(conn, project_id, control)
+                                .map(|_| ())
+                        },
+                    )?)
+                }
+                CapacityDiagnosticMode::CompleteRegistration => {
+                    probes.push(measure_interruption_probe(
+                        &db,
+                        project_id,
+                        "complete-registration",
+                        kind,
+                        point,
+                        |conn, control| {
+                            is_complete_registered_with_control(
+                                conn,
+                                project_id,
+                                ENTITY_RELATION_INDEX_KEY,
+                                control,
+                            )
+                            .map(|_| ())
+                        },
+                    )?)
+                }
+                CapacityDiagnosticMode::Coverage => probes.push(measure_interruption_probe(
+                    &db,
+                    project_id,
+                    "coverage-verify",
+                    kind,
+                    point,
+                    |conn, control| {
+                        verify_dependency_graph_snapshot_with_control(conn, project_id, control)
+                            .map(|_| ())
+                    },
+                )?),
+                CapacityDiagnosticMode::ColdReopen => probes.push(measure_interruption_probe(
+                    &db,
+                    project_id,
+                    "cold-reopen",
+                    kind,
+                    point,
+                    |conn, control| {
+                        cold_reopen_graph_index_with_control(conn, project_id, control).map(|_| ())
+                    },
+                )?),
                 CapacityDiagnosticMode::Restore => unreachable!(),
             }
         }
@@ -2140,7 +2358,7 @@ fn copy_database_state(source: &Path, destination: &Path) -> Result<()> {
         let destination_path = Path::new(&destination_path);
         match fs::copy(source_path, destination_path) {
             Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && suffix != "" => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !suffix.is_empty() => {}
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!(
@@ -2744,11 +2962,64 @@ fn run_real_restore_mode(
             Err(error) => (false, None, None, false, Some(error.to_string())),
         };
         if let Some(probes) = interruption_probes.as_mut() {
-            anyhow::ensure!(restore_verified, "restore interruption setup did not complete validation");
-            for kind in INTERRUPTION_KINDS {
+            anyhow::ensure!(
+                restore_verified,
+                "restore interruption setup did not complete validation"
+            );
+            for (kind, point) in INTERRUPTION_KINDS
+                .into_iter()
+                .flat_map(|kind| INTERRUPTION_POINTS.map(|point| (kind, point)))
+            {
                 probes.push(measure_interruption_probe(
-                    restored_authority.db(), project_id, "restore-full-set-validation", kind,
-                    |conn, control| verify_restored_graph(conn, project_id, rebuilt_generation, control).map(|_| ()),
+                    restored_authority.db(),
+                    project_id,
+                    "restore-full-set-validation",
+                    kind,
+                    point,
+                    |conn, control| {
+                        verify_restored_graph(conn, project_id, rebuilt_generation, control)
+                            .map(|_| ())
+                    },
+                )?);
+                let db = restored_authority.db();
+                let runtime = NirChronicleIndexRuntime::new(db, 3);
+                probes.push(measure_interruption_probe(
+                    db,
+                    project_id,
+                    "restore-graph-prepare",
+                    kind,
+                    point,
+                    |conn, control| {
+                        prepare_graph_index_build_with_control(conn, &runtime, project_id, control)
+                            .map(|_| ())
+                    },
+                )?);
+                let snapshot = owned_mode_operation(
+                    db,
+                    None,
+                    Arc::new(AtomicBool::new(false)),
+                    |conn, control| {
+                        let tx = conn.unchecked_transaction()?;
+                        let snapshot = prepare_graph_index_build_with_control(
+                            &tx, &runtime, project_id, control,
+                        )?;
+                        tx.commit()?;
+                        Ok(snapshot)
+                    },
+                )?
+                .context("restore publish probe preparation deferred")?;
+                probes.push(measure_interruption_probe(
+                    db,
+                    project_id,
+                    "restore-graph-publish",
+                    kind,
+                    point,
+                    |conn, control| {
+                        publish_nir1_entity_relation_index_in_tx_with_control(
+                            conn, &runtime, snapshot, control,
+                        )
+                        .map(|_| ())
+                    },
                 )?);
             }
         }
@@ -2952,7 +3223,7 @@ fn run_mode_operation(
         }
         CapacityDiagnosticMode::Restore => {
             drop(db);
-            return run_real_restore_mode(database_path, project_id, progress_callbacks, None);
+            run_real_restore_mode(database_path, project_id, progress_callbacks, None)
         }
         CapacityDiagnosticMode::ColdReopen => {
             let lifecycle =
@@ -3432,6 +3703,7 @@ pub fn measure_capacity_mode(
     // the process is fresh per orchestrator run, so the baseline is zeroed by
     // the child boundary rather than silently folded into the result.
     let _sqlite_before = sqlite_memory_used();
+    let disk_measurement = DiskMeasurement::start(database_path)?;
     let measurement = DiagnosticSqlMeasurement::start()?;
     let trace = Arc::clone(&measurement.0);
     let conn = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
@@ -3439,7 +3711,8 @@ pub fn measure_capacity_mode(
     install_connection_metadata(&conn)?;
     let progress = Arc::new(ProgressCounter::default());
     let progress_for_hook = Arc::clone(&progress);
-    conn.progress_handler(
+    crate::set_sqlite_progress_handler(
+        &conn,
         PROGRESS_CADENCE_VM_STEPS,
         Some(move || {
             progress_for_hook.callbacks.fetch_add(1, Ordering::Relaxed);
@@ -3524,6 +3797,9 @@ pub fn measure_capacity_mode(
     )?;
     let connection_hold_ms = conservative_connection_hold_ms(manual_a2_owner_ms, &lifecycle);
     let sql_complete = measurement.complete();
+    let lifecycle_vm_steps_upper_bound = measurement.lifecycle_upper_bound();
+    let temporary_disk = disk_measurement.finish();
+    drop(disk_measurement);
     drop(measurement);
     if let Some(shape) = lifecycle.shape.as_ref() {
         if mode != CapacityDiagnosticMode::Restore {
@@ -3627,7 +3903,15 @@ pub fn measure_capacity_mode(
         not_measured.push(path_not_measured(mode, "restore-verify"));
     }
     not_measured.push(path_not_measured(mode, "exact-lifecycle-vm-steps"));
-    not_measured.push(path_not_measured(mode, "lifecycle-vm-step-upper-bound"));
+    if lifecycle_vm_steps_upper_bound.is_none() {
+        not_measured.push(path_not_measured(mode, "lifecycle-vm-step-upper-bound"));
+    }
+    if temporary_disk.is_none() {
+        not_measured.push(path_not_measured(
+            mode,
+            "total-temporary-disk-high-water-upper-bound",
+        ));
+    }
     if !sql_complete {
         not_measured.push(path_not_measured(mode, "profiled-statement-vm-steps"));
         not_measured.push(path_not_measured(mode, "temporary-bytes"));
@@ -3662,6 +3946,7 @@ pub fn measure_capacity_mode(
             temporary_bytes_method: "sqlite3-db-status64-tempbuf-spill-at-every-connection-close",
             temporary_bytes_coverage: "cumulative bytes written to SQLite sort/intermediate/TEMP files across primary diagnostic connections",
             temporary_bytes_uncertainty: "not peak disk occupancy; excludes WAL/journals, backup/restore copies and in-memory temp storage (covered by SQLite/RSS high-water)",
+            temporary_disk,
         },
         sql: CapacitySqlMetrics {
             statement_vm_steps: trace.statement_vm_steps.load(Ordering::Relaxed),
@@ -3673,6 +3958,10 @@ pub fn measure_capacity_mode(
             closed_connections: trace.closed_connections.load(Ordering::Relaxed),
             method: "sqlite3-stmt-status-vm-step-reset-per-profile",
             coverage: "PROFILE-visible statements on primary diagnostic connections; excludes SQLite trace-suppressed internal VMs (VACUUM/SqlExec), interruption probes and non-SQL file work",
+            lifecycle_vm_steps_upper_bound,
+            lifecycle_vm_steps_method: "audited-sqlite-cadence-one-progress-including-prepare-upper-bound",
+            lifecycle_vm_steps_coverage: "all completed primary connection VMs including VACUUM/SqlExec, preparation and cleanup; no bound on interrupted scopes or unaudited SQLite source",
+            sqlite_source_id: sqlite_source_id(),
         },
         occupancy: CapacityOccupancy {
             connection_hold_ms,
@@ -3792,6 +4081,7 @@ mod tests {
                 temporary_bytes_method: "test",
                 temporary_bytes_coverage: "test",
                 temporary_bytes_uncertainty: "test",
+                temporary_disk: None,
             },
             sql: CapacitySqlMetrics {
                 statement_vm_steps: 1,
@@ -3803,6 +4093,10 @@ mod tests {
                 closed_connections: 1,
                 method: "test",
                 coverage: "test",
+                lifecycle_vm_steps_upper_bound: Some(2),
+                lifecycle_vm_steps_method: "test",
+                lifecycle_vm_steps_coverage: "test",
+                sqlite_source_id: sqlite_source_id(),
             },
             occupancy: CapacityOccupancy {
                 connection_hold_ms: 1.0,
@@ -3994,6 +4288,12 @@ mod tests {
         assert_eq!(measurement.0.statements.load(Ordering::Relaxed), 6);
         assert_eq!(measurement.0.opened_connections.load(Ordering::Relaxed), 2);
         assert_eq!(measurement.0.temporary_bytes.load(Ordering::Relaxed), 0);
+        assert!(
+            measurement
+                .lifecycle_upper_bound()
+                .context("lifecycle upper bound")?
+                >= expected_steps * 2
+        );
         Ok(())
     }
 
@@ -4026,12 +4326,16 @@ mod tests {
         drop(insert);
         assert_eq!(measurement.0.statement_vm_steps.load(Ordering::Relaxed) - before, expected);
         let before = measurement.0.statement_vm_steps.load(Ordering::Relaxed);
-        conn.progress_handler(1000, Some(|| true))?;
+        crate::set_sqlite_progress_handler(&conn, 1000, Some(|| true))?;
         assert!(conn.execute_batch("WITH RECURSIVE t(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM t WHERE n<100000) SELECT sum(n) FROM t").is_err());
-        conn.progress_handler(0, None::<fn() -> bool>)?;
+        crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>)?;
         assert!(measurement.0.statement_vm_steps.load(Ordering::Relaxed) > before);
         drop(conn);
         assert!(measurement.complete());
+        assert!(
+            measurement.lifecycle_upper_bound().is_none(),
+            "interruption suppresses the VM tail flush"
+        );
         Ok(())
     }
 
@@ -4047,21 +4351,60 @@ mod tests {
         let observed = Arc::clone(&callbacks);
         // Test-only cadence 1 observes the hidden VACUUM SQL too. This is not
         // used to multiply production callback counts into an SQL total.
-        conn.progress_handler(1, Some(move || {
-            observed.fetch_add(1, Ordering::Relaxed);
-            false
-        }))?;
+        crate::set_sqlite_progress_handler(
+            &conn,
+            1,
+            Some(move || {
+                observed.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )?;
         conn.execute("VACUUM INTO ?1", [":memory:"])?;
-        conn.progress_handler(0, None::<fn() -> bool>)?;
+        crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>)?;
         let profiled = measurement.0.statement_vm_steps.load(Ordering::Relaxed) - before;
         assert!(profiled > 0);
         assert!(callbacks.load(Ordering::Relaxed) > profiled * 10,
             "trace-suppressed VACUUM work must not be advertised as exact");
         drop(conn);
-        assert!(measurement.complete(), "connection coverage alone does not prove VM coverage");
+        assert!(
+            measurement.complete(),
+            "connection coverage alone does not prove VM coverage"
+        );
+        assert!(
+            measurement
+                .lifecycle_upper_bound()
+                .context("internal VM upper bound")?
+                > profiled * 10
+        );
         let observation = sample_capacity_observation();
         assert!(!observation.sql.exact_vm_steps);
         assert_eq!(observation.sql.vm_steps_kind, "profiled-subset-lower-bound");
+        Ok(())
+    }
+
+    #[test]
+    fn lifecycle_meter_survives_owner_removal_and_counts_rollback_cleanup() -> Result<()> {
+        let measurement = DiagnosticSqlMeasurement::start()?;
+        let conn = Connection::open_in_memory()?;
+        let owner_callbacks = Arc::new(AtomicU64::new(0));
+        let owner = Arc::clone(&owner_callbacks);
+        crate::set_sqlite_progress_handler(
+            &conn,
+            1000,
+            Some(move || {
+                owner.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )?;
+        conn.execute_batch("BEGIN; CREATE TABLE input(value); WITH RECURSIVE t(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM t WHERE n<2000) INSERT INTO input SELECT n FROM t;")?;
+        assert!(owner_callbacks.load(Ordering::Relaxed) > 0);
+        crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>)?;
+        let before = measurement.0.all_progress_callbacks.load(Ordering::Relaxed);
+        conn.execute_batch("ROLLBACK")?;
+        assert!(conn.is_autocommit());
+        assert!(measurement.0.all_progress_callbacks.load(Ordering::Relaxed) > before);
+        drop(conn);
+        assert!(measurement.lifecycle_upper_bound().is_some());
         Ok(())
     }
 

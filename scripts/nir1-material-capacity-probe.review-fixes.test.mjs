@@ -17,6 +17,10 @@ test("missing peaks remain null despite a sampled RSS", () => {
   assert.equal(summary.maxPeakRssBytes, null);
 });
 
+test("unrun cancellation cannot contribute a latency to aggregation", () => {
+  assert.equal(summarize([{ cancel: { status: "not-run", latencyMs: 1 } }]).medianCancelLatencyMs, null);
+});
+
 test("a valid high-water sample remains a peak source", () => {
   const summary = summarize([{ process: { totalPeakRssBytes: null, hwmRssBytes: 128, ruMaxrssBytes: null, rssBytes: 32 } }]);
   assert.equal(summary.medianPeakRssBytes, 128);

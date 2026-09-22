@@ -76,8 +76,8 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
       counts,
       fixtureShape,
       bytes: { payloadBytes: 0, envelopeBytes: 0, sourceBasisBytes: 0, liveSourceBytes: null, rosterBytes: 0, revisionIdOverheadBytes: 0 },
-      process: { elapsedMs: 1, userCpuUs: 1, systemCpuUs: 1, rssBytes: 2, hwmRssBytes: 2, ruMaxrssBytes: 2, sqliteMemoryBytes: 2, sqliteMemoryHighwaterBytes: 2, rustHeap: null, readBytes: 0, writeBytes: 0, temporaryBytesMethod: "fake", temporaryBytesCoverage: "fake", temporaryBytesUncertainty: "fake" },
-      sql: { statementVmSteps: 3, exactVmSteps: false, vmStepsKind: "profiled-subset-lower-bound", progressCallbacks: 0, statements: 1, openedConnections: 1, closedConnections: 1, method: "fake", coverage: "fake" },
+      process: { elapsedMs: 1, userCpuUs: 1, systemCpuUs: 1, rssBytes: 2, hwmRssBytes: 2, ruMaxrssBytes: 2, sqliteMemoryBytes: 2, sqliteMemoryHighwaterBytes: 2, rustHeap: null, readBytes: 0, writeBytes: 0, temporaryBytesMethod: "fake", temporaryBytesCoverage: "fake", temporaryBytesUncertainty: "fake", temporaryDisk: null },
+      sql: { statementVmSteps: 3, exactVmSteps: false, vmStepsKind: "profiled-subset-lower-bound", progressCallbacks: 0, statements: 1, openedConnections: 1, closedConnections: 1, method: "fake", coverage: "fake", lifecycleVmStepsUpperBound: null, lifecycleVmStepsMethod: "fake", lifecycleVmStepsCoverage: "fake", sqliteSourceId: "fake" },
       occupancy: { connectionHoldMs: 1, publishTransactionMs: null, foregroundWaitMs: null, foregroundWaitScope: null, foregroundWaitMethod: null, foregroundWaitUncertainty: null },
       graphLifecycle: {},
       modeOutcome: { operation: "fake", success: true, requiredSuccess: true, operationReportRecords: null },
@@ -132,12 +132,20 @@ test("native metric claims require closed connections and exact mode-specific in
   const workspace = makeWorkspace();
   const proof = `
     report.process.temporaryBytes = 0;
+    report.sql.lifecycleVmStepsUpperBound = 4;
+    report.sql.lifecycleVmStepsMethod = 'audited-sqlite-cadence-one-progress-including-prepare-upper-bound';
+    report.sql.sqliteSourceId = '2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24';
+    report.process.temporaryDisk = {
+      logicalHighWaterUpperBoundBytes: 10, initialBytes: 1, successfulWriteBytes: 2,
+      sqliteFileGrowthBytes: 3, sqliteShmGrowthBytes: 4, openedFiles: 1, closedFiles: 1,
+      method: 'initial-plus-linux-wchar-plus-sqlite-vfs-positive-growth', coverage: 'test', uncertainty: 'test',
+    };
     report.interruptionProbes = ['build-prepare', 'build-publish'].flatMap((phase) =>
-      ['cancel', 'foreground'].map((kind) => ({
-        phase, kind, latencyMs: kind === 'cancel' ? 2 : 3, progressCallbacks: 1,
+      ['cancel', 'foreground'].flatMap((kind) => ['first-sql-progress', 'before-commit'].map((triggerPoint) => ({
+        phase, kind, triggerPoint, latencyMs: kind === 'cancel' ? 2 : 3, progressCallbacks: 1,
         connectionReusable: true, transactionClean: true, progressHandlerCleared: true,
         busyTimeoutRestored: true, bindingUnchanged: true,
-      })));
+      }))));
     report.cancel = { status: 'measured', latencyMs: 2, scope: 'selected-mode-full-set-owners', method: 'test', uncertainty: 'test' };
     report.occupancy.foregroundWaitMs = 3;
     report.occupancy.foregroundWaitScope = 'selected-mode-full-set-owners';
@@ -154,12 +162,22 @@ test("native metric claims require closed connections and exact mode-specific in
     assert.equal(valid.results[0].summary.exactVmSteps, false);
     assert.deepEqual(valid.results[0].summary.vmStepsKinds, ["profiled-subset-lower-bound"]);
     assert.equal(valid.results[0].summary.medianCancelLatencyMs, 2);
+    assert.equal(valid.results[0].summary.maxLifecycleVmStepsUpperBound, 4);
+    assert.equal(valid.results[0].summary.maxTemporaryDiskHighWaterUpperBoundBytes, 10);
     for (const [mutation, expected] of [
       ["report.sql.closedConnections = 0;", /incomplete connection coverage/],
       ["report.sql.exactVmSteps = true;", /schema mismatch/],
+      ["report.sql.lifecycleVmStepsUpperBound = 2;", /SQL upper bound/],
+      ["report.sql.sqliteSourceId = 'unreviewed-engine';", /SQL upper bound/],
+      ["report.process.temporaryDisk.openedFiles = 2;", /disk upper bound/],
+      ["report.process.temporaryDisk.logicalHighWaterUpperBoundBytes = 9;", /disk upper bound/],
+      ["report.cancel = { status: 'not-run', latencyMs: 1, scope: null, method: null, uncertainty: null }; report.interruptionProbes = []; report.occupancy.foregroundWaitMs = null; report.notMeasured = [];", /schema mismatch/],
+      ["report.cancel.latencyMs = null;", /schema mismatch/],
+      ["report.cancel.status = 'unknown';", /schema mismatch/],
       ["delete report.process.temporaryBytesMethod;", /schema mismatch/],
       ["report.interruptionProbes[0].phase = 'coverage-verify';", /interruption phases/],
       ["report.interruptionProbes.pop();", /interruption phases/],
+      ["report.interruptionProbes[0].triggerPoint = 'before-commit';", /interruption phases/],
       ["report.interruptionProbes[0].bindingUnchanged = false;", /schema mismatch/],
       ["report.cancel.latencyMs = 0;", /interruption summary/],
       ["report.cancel.scope = 'isolated-whole-project-graph-prepare';", /interruption summary/],

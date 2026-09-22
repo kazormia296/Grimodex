@@ -1,4 +1,5 @@
 // Share the exact scene-anchor ADR002 source with the diagnostic adapter.
+#[cfg_attr(feature = "nir1-material-diagnostics", allow(clippy::duplicate_mod))]
 #[path = "../disclosure_precheck/scene_axis.rs"]
 pub(in crate::narrative_extraction) mod scene_axis;
 

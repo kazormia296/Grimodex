@@ -152,8 +152,11 @@ pub use revision_eligibility::{
 };
 #[cfg(feature = "nir1-material-diagnostics")]
 pub mod material_roster;
+pub(crate) mod nir1_capacity;
 #[cfg(feature = "nir1-material-diagnostics")]
 pub mod nir1_capacity_diagnostics;
+#[cfg(feature = "nir1-material-diagnostics")]
+mod nir1_capacity_disk;
 #[cfg(feature = "nir1-material-diagnostics")]
 pub mod nir1_capacity_fixtures;
 mod repository;

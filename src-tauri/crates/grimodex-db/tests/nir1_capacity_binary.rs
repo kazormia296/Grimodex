@@ -22,7 +22,7 @@ fn copy_database_state(source: &Path, destination: &Path) {
         let destination_path = Path::new(&destination_path);
         match fs::copy(source_path, destination_path) {
             Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && suffix != "" => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !suffix.is_empty() => {}
             Err(error) => panic!(
                 "copy {} to {}: {error}",
                 source_path.display(),
@@ -119,7 +119,23 @@ fn real_binary_report_heavy_measures_each_mode_and_its_own_interruptions() {
             assert_eq!(observation["sql"]["openedConnections"], observation["sql"]["closedConnections"]);
             assert!(observation["sql"]["openedConnections"].as_u64().is_some_and(|count| count > 0));
             assert!(observation["process"]["temporaryBytes"].is_u64());
-            assert!(observation["process"]["temporaryBytesMethod"].as_str().is_some_and(|method| method.contains("tempbuf-spill")));
+            let upper = observation["sql"]["lifecycleVmStepsUpperBound"]
+                .as_u64()
+                .expect("complete lifecycle SQL upper bound");
+            assert!(
+                upper
+                    >= observation["sql"]["statementVmSteps"]
+                        .as_u64()
+                        .expect("profiled steps")
+            );
+            assert!(
+                observation["process"]["temporaryDisk"]["logicalHighWaterUpperBoundBytes"]
+                    .as_u64()
+                    .is_some_and(|bytes| bytes > 0)
+            );
+            assert!(observation["process"]["temporaryBytesMethod"]
+                .as_str()
+                .is_some_and(|method| method.contains("tempbuf-spill")));
             assert_eq!(observation["cancel"]["status"], "measured");
             assert_eq!(
                 observation["cancel"]["scope"],
@@ -143,18 +159,24 @@ fn real_binary_report_heavy_measures_each_mode_and_its_own_interruptions() {
                 "source-reresolution" => &["source-reresolution"],
                 "complete-registration" => &["complete-registration"],
                 "coverage" => &["coverage-verify"],
-                "restore" => &["restore-full-set-validation"],
+                "restore" => &[
+                    "restore-full-set-validation",
+                    "restore-graph-prepare",
+                    "restore-graph-publish",
+                ],
                 "cold-reopen" => &["cold-reopen"],
                 _ => unreachable!(),
             };
             let probes = observation["interruptionProbes"].as_array().expect("phase probes");
-            assert_eq!(probes.len(), expected_phases.len() * 2);
+            assert_eq!(probes.len(), expected_phases.len() * 4);
             for phase in expected_phases {
                 for kind in ["cancel", "foreground"] {
-                    let probe = probes.iter().find(|probe| probe["phase"] == *phase && probe["kind"] == kind).expect("mode-specific phase/kind probe");
-                    assert!(probe["progressCallbacks"].as_u64().is_some_and(|count| count > 0));
-                    for field in ["connectionReusable", "transactionClean", "progressHandlerCleared", "busyTimeoutRestored", "bindingUnchanged"] {
-                        assert_eq!(probe[field], true, "{mode}/{phase}/{kind}: {field}");
+                    for point in ["first-sql-progress", "before-commit"] {
+                        let probe = probes.iter().find(|probe| probe["phase"] == *phase && probe["kind"] == kind && probe["triggerPoint"] == point).expect("mode-specific phase/kind/point probe");
+                        assert!(probe["progressCallbacks"].as_u64().is_some_and(|count| count > 0));
+                        for field in ["connectionReusable", "transactionClean", "progressHandlerCleared", "busyTimeoutRestored", "bindingUnchanged"] {
+                            assert_eq!(probe[field], true, "{mode}/{phase}/{kind}/{point}: {field}");
+                        }
                     }
                 }
             }
