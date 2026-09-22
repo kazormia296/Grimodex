@@ -76,12 +76,13 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
       counts,
       fixtureShape,
       bytes: { payloadBytes: 0, envelopeBytes: 0, sourceBasisBytes: 0, liveSourceBytes: null, rosterBytes: 0, revisionIdOverheadBytes: 0 },
-      process: { elapsedMs: 1, userCpuUs: 1, systemCpuUs: 1, rssBytes: 2, hwmRssBytes: 2, ruMaxrssBytes: 2, sqliteMemoryBytes: 2, sqliteMemoryHighwaterBytes: 2, rustHeap: null, readBytes: 0, writeBytes: 0 },
-      sql: { statementVmSteps: 3, exactVmSteps: true, progressCallbacks: 0, statements: 1 },
+      process: { elapsedMs: 1, userCpuUs: 1, systemCpuUs: 1, rssBytes: 2, hwmRssBytes: 2, ruMaxrssBytes: 2, sqliteMemoryBytes: 2, sqliteMemoryHighwaterBytes: 2, rustHeap: null, readBytes: 0, writeBytes: 0, temporaryBytesMethod: "fake", temporaryBytesCoverage: "fake", temporaryBytesUncertainty: "fake" },
+      sql: { statementVmSteps: 3, exactVmSteps: false, vmStepsKind: "profiled-subset-lower-bound", progressCallbacks: 0, statements: 1, openedConnections: 1, closedConnections: 1, method: "fake", coverage: "fake" },
       occupancy: { connectionHoldMs: 1, publishTransactionMs: null, foregroundWaitMs: null, foregroundWaitScope: null, foregroundWaitMethod: null, foregroundWaitUncertainty: null },
       graphLifecycle: {},
       modeOutcome: { operation: "fake", success: true, requiredSuccess: true, operationReportRecords: null },
       cancel: { status: "not-run", latencyMs: null, scope: null, method: null, uncertainty: null },
+      interruptionProbes: [],
       rejectionReasons: {},
       publishedGenerationBefore: 4,
       publishedGenerationAfter: 5,
@@ -127,6 +128,51 @@ function runProbe(workspace, binary, extraArgs = []) {
   );
 }
 
+test("native metric claims require closed connections and exact mode-specific interruption proof", () => {
+  const workspace = makeWorkspace();
+  const proof = `
+    report.process.temporaryBytes = 0;
+    report.interruptionProbes = ['build-prepare', 'build-publish'].flatMap((phase) =>
+      ['cancel', 'foreground'].map((kind) => ({
+        phase, kind, latencyMs: kind === 'cancel' ? 2 : 3, progressCallbacks: 1,
+        connectionReusable: true, transactionClean: true, progressHandlerCleared: true,
+        busyTimeoutRestored: true, bindingUnchanged: true,
+      })));
+    report.cancel = { status: 'measured', latencyMs: 2, scope: 'selected-mode-full-set-owners', method: 'test', uncertainty: 'test' };
+    report.occupancy.foregroundWaitMs = 3;
+    report.occupancy.foregroundWaitScope = 'selected-mode-full-set-owners';
+  `;
+  const binary = path.join(workspace.directory, "measurement-child.mjs");
+  const install = (mutation) => {
+    writeFileSync(binary, childReportSource().replace("console.log(JSON.stringify(report));", `${proof}\n${mutation}\nconsole.log(JSON.stringify(report));`));
+    chmodSync(binary, 0o755);
+  };
+  try {
+    install("");
+    const valid = JSON.parse(runProbe(workspace, binary, ["--fixture", fixtureId]));
+    assert.equal(valid.results[0].summary.medianTemporaryBytes, 0);
+    assert.equal(valid.results[0].summary.exactVmSteps, false);
+    assert.deepEqual(valid.results[0].summary.vmStepsKinds, ["profiled-subset-lower-bound"]);
+    assert.equal(valid.results[0].summary.medianCancelLatencyMs, 2);
+    for (const [mutation, expected] of [
+      ["report.sql.closedConnections = 0;", /incomplete connection coverage/],
+      ["report.sql.exactVmSteps = true;", /schema mismatch/],
+      ["delete report.process.temporaryBytesMethod;", /schema mismatch/],
+      ["report.interruptionProbes[0].phase = 'coverage-verify';", /interruption phases/],
+      ["report.interruptionProbes.pop();", /interruption phases/],
+      ["report.interruptionProbes[0].bindingUnchanged = false;", /schema mismatch/],
+      ["report.cancel.latencyMs = 0;", /interruption summary/],
+      ["report.cancel.scope = 'isolated-whole-project-graph-prepare';", /interruption summary/],
+    ]) {
+      install(mutation);
+      assert.throws(() => runProbe(workspace, binary, ["--fixture", fixtureId]), expected);
+      assert.equal(existsSync(path.join(workspace.outputDirectory, "capacity-report.json")), false);
+    }
+  } finally {
+    rmSync(workspace.directory, { recursive: true, force: true });
+  }
+});
+
 test("capacity manifest fixes the diagnostic matrix and Graph lifecycle boundary", () => {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
@@ -164,6 +210,10 @@ test("capacity manifest fixes the diagnostic matrix and Graph lifecycle boundary
   assert.ok(manifest.requiredMetrics.includes("cancelLatency"));
   assert.ok(manifest.requiredMetrics.includes("totalPeakRss"));
   assert.ok(manifest.requiredMetrics.includes("rustHeapRequestedHighWater"));
+  assert.ok(manifest.requiredMetrics.includes("sqlConnectionCoverage"));
+  assert.ok(manifest.requiredMetrics.includes("interruptionPhaseProofs"));
+  assert.ok(schema.$defs.observationProcess.required.includes("temporaryBytesMethod"));
+  assert.ok(schema.$defs.capacityObservation.required.includes("interruptionProbes"));
   assert.ok(schema.$defs.observationProcess.required.includes("rustHeap"));
   assert.equal(schema.$defs.rustHeapMeasurement.additionalProperties, false);
   assert.ok(schema.$defs.observationCancel.required.includes("uncertainty"));

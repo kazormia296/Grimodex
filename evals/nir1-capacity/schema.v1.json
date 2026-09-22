@@ -220,6 +220,7 @@
         "graphLifecycle",
         "modeOutcome",
         "cancel",
+        "interruptionProbes",
         "rejectionReasons",
         "notMeasured"
       ],
@@ -248,6 +249,10 @@
         "sql": { "$ref": "#/$defs/observationSql" },
         "occupancy": { "$ref": "#/$defs/observationOccupancy" },
         "cancel": { "$ref": "#/$defs/observationCancel" },
+        "interruptionProbes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/interruptionProbe" }
+        },
         "rejectionReasons": { "type": "object" },
         "notMeasured": {
           "type": "array",
@@ -345,7 +350,10 @@
         "rustHeap",
         "readBytes",
         "writeBytes",
-        "temporaryBytes"
+        "temporaryBytes",
+        "temporaryBytesMethod",
+        "temporaryBytesCoverage",
+        "temporaryBytesUncertainty"
       ],
       "properties": {
         "elapsedMs": { "type": "number", "minimum": 0 },
@@ -365,18 +373,26 @@
         },
         "readBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
         "writeBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
-        "temporaryBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" }
+        "temporaryBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "temporaryBytesMethod": { "type": "string", "minLength": 1 },
+        "temporaryBytesCoverage": { "type": "string", "minLength": 1 },
+        "temporaryBytesUncertainty": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": true
     },
     "observationSql": {
       "type": "object",
-      "required": ["statementVmSteps", "exactVmSteps", "progressCallbacks", "statements"],
+      "required": ["statementVmSteps", "exactVmSteps", "vmStepsKind", "progressCallbacks", "statements", "openedConnections", "closedConnections", "method", "coverage"],
       "properties": {
         "statementVmSteps": { "type": "integer", "minimum": 0 },
-        "exactVmSteps": { "type": "boolean" },
+        "exactVmSteps": { "const": false },
+        "vmStepsKind": { "enum": ["profiled-subset-lower-bound", "unavailable"] },
         "progressCallbacks": { "type": "integer", "minimum": 0 },
-        "statements": { "type": "integer", "minimum": 0 }
+        "statements": { "type": "integer", "minimum": 0 },
+        "openedConnections": { "type": "integer", "minimum": 0 },
+        "closedConnections": { "type": "integer", "minimum": 0 },
+        "method": { "type": "string", "minLength": 1 },
+        "coverage": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": true
     },
@@ -417,6 +433,25 @@
         "uncertainty": { "$ref": "#/$defs/optionalNonEmptyString" }
       },
       "additionalProperties": true
+    },
+    "interruptionProbe": {
+      "type": "object",
+      "required": [
+        "phase", "kind", "latencyMs", "progressCallbacks", "connectionReusable",
+        "transactionClean", "progressHandlerCleared", "busyTimeoutRestored", "bindingUnchanged"
+      ],
+      "properties": {
+        "phase": { "enum": ["build-prepare", "build-publish", "source-reresolution", "complete-registration", "coverage-verify", "restore-full-set-validation", "cold-reopen"] },
+        "kind": { "enum": ["cancel", "foreground"] },
+        "latencyMs": { "type": "number", "minimum": 0 },
+        "progressCallbacks": { "type": "integer", "minimum": 1 },
+        "connectionReusable": { "const": true },
+        "transactionClean": { "const": true },
+        "progressHandlerCleared": { "const": true },
+        "busyTimeoutRestored": { "const": true },
+        "bindingUnchanged": { "const": true }
+      },
+      "additionalProperties": false
     },
     "modeOutcome": {
       "type": "object",

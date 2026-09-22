@@ -6,7 +6,7 @@
 
 ## Current snapshot (2026-09-22)
 
-PR #591の限定A2 Entity／Relation reviewに加え、#600/#601の共有lifecycle実装はmasterへマージ済みである。現在の実装基点は `master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`（Tree `959f57102e93099872cffd07ea6970e83b7952c9`）。残工程は [NIR-1 残工程実装計画](nir1-post-b-execution-plan.md) を参照する。B-close第1段階の容量matrixは完走したが、[診断記録](nir1-b-close-capacity-observation-2026-09-22.md) の未測定項目と未批准の数値契約を残す。Graph、Packing、AI dispatchはinactive、downstream threat modelはdraft、NIR-1全体受入れは未完了である。NIR-1 overall acceptance remains incomplete.
+PR #591の限定A2 Entity／Relation reviewに加え、#600/#601の共有lifecycle実装はmasterへマージ済みである。現在の実装基点は `master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`（Tree `959f57102e93099872cffd07ea6970e83b7952c9`）。残工程は [NIR-1 残工程実装計画](nir1-post-b-execution-plan.md) を参照する。B-close第1段階に続き第2段階のnative temp spill/SQL・mode固有full-set取消の容量matrixも完走したが、[診断記録](nir1-b-close-capacity-observation-2026-09-22.md#stage-2-diagnostic-follow-up--2026-09-22) の未測定項目、未批准の数値契約と境界受入れを残す。Graph、Packing、AI dispatchはinactive、downstream threat modelはdraft、NIR-1全体受入れは未完了である。NIR-1 overall acceptance remains incomplete.
 
 The dated R0 entries below are historical ledger records. They retain the earlier
 ready conditions without changing the current limited-A2 and incomplete B-close boundaries above.

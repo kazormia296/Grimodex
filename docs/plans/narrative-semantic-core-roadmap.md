@@ -4,7 +4,7 @@
 
 - **Lifecycle:** Active mutable roadmap
 - **Last updated:** 2026-09-22
-- **Current focus:** NIR-1の#591限定A2と#600/#601共有lifecycleはmasterへマージ済み。`master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`（Tree `959f57102e93099872cffd07ea6970e83b7952c9`）から [残工程実装計画](nir1-post-b-execution-plan.md) を実行中である。[B-close第1段階の容量matrix](nir1-b-close-capacity-observation-2026-09-22.md) は完走したが未測定項目と未批准の数値契約を残す。Graph、Packing、AI dispatchはinactive、downstream threat modelはdraft、NIR-1全体受入れは未完了。NIR-1 overall acceptance remains incomplete.
+- **Current focus:** NIR-1の#591限定A2と#600/#601共有lifecycleはmasterへマージ済み。`master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`（Tree `959f57102e93099872cffd07ea6970e83b7952c9`）から [残工程実装計画](nir1-post-b-execution-plan.md) を実行中である。[B-close第1段階と第2段階診断実装の容量matrix](nir1-b-close-capacity-observation-2026-09-22.md#stage-2-diagnostic-follow-up--2026-09-22) は完走したが、未測定項目・未批准の数値契約・境界受入れを残す。Graph、Packing、AI dispatchはinactive、downstream threat modelはdraft、NIR-1全体受入れは未完了。NIR-1 overall acceptance remains incomplete.
 - **North star:** **本文に追従し、根拠を示し、人間の修正を覚える Living Story Bible**
 
 This document is the canonical **mutable implementation and product roadmap** for Narrative Semantic Core, AI-assisted extraction, incremental maintenance, and the Living Story Bible product surface.

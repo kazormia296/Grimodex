@@ -724,6 +724,37 @@ function assertDiagnosticReport(
       `${context} capacity observation schema mismatch: ${formatAjvErrors(validateObservation.errors)}`,
     );
   }
+  if (report.sql.vmStepsKind === "profiled-subset-lower-bound" || report.process.temporaryBytes !== null) {
+    if (report.sql.openedConnections < 1 || report.sql.openedConnections !== report.sql.closedConnections) {
+      fail(`${context} SQL/temp measurement has incomplete connection coverage`);
+    }
+  }
+  const probes = report.interruptionProbes;
+  if (probes.length > 0 || report.cancel.status === "measured" || report.occupancy.foregroundWaitMs !== null) {
+    const phases = {
+      "full-build": ["build-prepare", "build-publish"],
+      "source-reresolution": ["source-reresolution"],
+      "complete-registration": ["complete-registration"],
+      coverage: ["coverage-verify"],
+      restore: ["restore-full-set-validation"],
+      "cold-reopen": ["cold-reopen"],
+    }[mode];
+    const expected = phases.flatMap((phase) => ["cancel", "foreground"].map((kind) => `${phase}:${kind}`)).sort();
+    const observed = probes.map((probe) => `${probe.phase}:${probe.kind}`).sort();
+    if (JSON.stringify(observed) !== JSON.stringify(expected)) {
+      fail(`${context} interruption phases do not match the selected mode`);
+    }
+    const maximum = (kind) => Math.max(...probes.filter((probe) => probe.kind === kind).map((probe) => probe.latencyMs));
+    if (
+      report.cancel.status !== "measured" ||
+      report.cancel.scope !== "selected-mode-full-set-owners" ||
+      report.occupancy.foregroundWaitScope !== "selected-mode-full-set-owners" ||
+      report.cancel.latencyMs !== maximum("cancel") ||
+      report.occupancy.foregroundWaitMs !== maximum("foreground")
+    ) {
+      fail(`${context} interruption summary does not match its phase evidence`);
+    }
+  }
   validateObservedShape(
     report,
     spec,
@@ -1304,6 +1335,8 @@ function summarize(reports) {
     maxElapsedMs: elapsed.at(-1) ?? null,
     medianPeakRssBytes: median(peakRss),
     maxPeakRssBytes: peakRss.at(-1) ?? null,
+    exactVmSteps: reports.every((report) => report.sql?.exactVmSteps === true),
+    vmStepsKinds: [...new Set(reports.map((report) => report.sql?.vmStepsKind))],
     medianStatementVmSteps: median(vmSteps),
     maxStatementVmSteps: vmSteps.at(-1) ?? null,
     medianUserCpuUs: medianMetric((report) => report.process?.userCpuUs),
@@ -1311,6 +1344,7 @@ function summarize(reports) {
     medianReadBytes: medianMetric((report) => report.process?.readBytes),
     medianWriteBytes: medianMetric((report) => report.process?.writeBytes),
     medianTemporaryBytes: medianMetric((report) => report.process?.temporaryBytes),
+    temporaryBytesMethods: [...new Set(reports.map((report) => report.process?.temporaryBytesMethod))],
     medianConnectionHoldMs: medianMetric(
       (report) => report.occupancy?.connectionHoldMs,
     ),

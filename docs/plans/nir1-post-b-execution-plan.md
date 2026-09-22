@@ -5,7 +5,7 @@
 状態：実行中の最終計画。全実装・B-close・G-01実行可能性検証・追加契約の批准・製品公開を完了したという記録ではない。
 リポジトリ配置：`docs/plans/nir1-post-b-execution-plan.md`
 
-2026-09-22の実装開始基点は `origin/master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`。B-close第1段階の19-path / 114-child-run診断は完走したが、temporary bytesと選択mode固有の取消・foreground待機は未測定で、数値capacity/deadlineは未批准のままである。結果と非主張は [B-close capacity observation](nir1-b-close-capacity-observation-2026-09-22.md) を参照する。Graph query、Packing、製品dispatchは未公開である。
+2026-09-22の実装開始基点は `origin/master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`。B-close第1段階に続き、第2段階の診断実装でも19-path / 114-child-runを完走し、SQLite temp spill累積bytes・PROFILE可視SQL VM steps（下界のみ）・mode固有のfull-set取消/foreground待機を計測した。lifecycle SQLのexact値/上界、Restoreのfile-install/recovery/rebuild全体の取消・総temporary disk high-waterは未計測で、数値capacity/deadline候補は診断用draftに留まる。批准・N/N+1受入れ・B-close完了は未達である。結果と非主張は [B-close capacity observation](nir1-b-close-capacity-observation-2026-09-22.md) を参照する。Graph query、Packing、製品dispatchは未公開である。
 
 ## 0. 現在地と基点
 
@@ -128,7 +128,7 @@ UI非表示だけでは非公開としない。製品IPC/Native/transport入口�
 
 buildのprepare/A2からpublish/cleanupまでと、初回build以外のSource再解決、complete registration、coverage、restore、cold reopen各attemptを個別にend-to-end測定する。roster/Revision-ID bytesだけを総peakと呼ばない。二つのroster、dependency collections、JSON/parsed材料、Evidenceコピー、D1準備/検証、serialization、DB/statement/cache、container capacity、temporary copies、報告生成を含む同時peakか保守的上界を示す。
 
-wall/CPU、SQL、read/write、temp、lock/publish/connection occupation、foreground wait、取消遅延、cleanupも測定する。`exactVmSteps=false` は上界として記録し、exact値へ読み替えない。RSS不明を瞬間RSSで代用せず、method/coverage/uncertaintyと未計測項目を残す。主要構造に未accountがあればcapacity判定をしない。[S1][S3]
+wall/CPU、SQL、read/write、temp、lock/publish/connection occupation、foreground wait、取消遅延、cleanupも測定する。VM stepsのexact/上界/下界をmethod・coverageで区別する。過去の累積PROFILE上界も未trace接続やSQLite内部VMまで覆うものではなく、現行の`exactVmSteps=false` / `profiled-subset-lower-bound`を上界やcapacity受入れへ読み替えない。RSS不明を瞬間RSSで代用せず、method/coverage/uncertaintyと未計測項目を残す。主要構造に未accountがあればcapacity判定をしない。[S1][S3]
 
 第2段階で、測定からsupported work size、memory、SQL、deadlineを選び、必要な確認を経て実装する。測定前の仮値は診断専用とする。境界内成功、N/N+1の安全な拒否、取消/競合/失敗時のpartial generation非公開、冷再開を受け入れる。
 

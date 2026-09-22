@@ -64,7 +64,7 @@ fn run_capacity_probe(probe: &Path, args: &[String]) -> Value {
 }
 
 #[test]
-fn real_binary_report_heavy_crosses_build_coverage_and_restore() {
+fn real_binary_report_heavy_measures_each_mode_and_its_own_interruptions() {
     let manifest = temp_path("manifest");
     let source = temp_path("source");
     let manifest_text = r#"{
@@ -86,7 +86,7 @@ fn real_binary_report_heavy_crosses_build_coverage_and_restore() {
         ]);
         assert_eq!(fixture["observed"]["counts"]["reportRecords"], 1);
 
-        for mode in ["full-build", "coverage", "restore"] {
+        for mode in ["full-build", "source-reresolution", "complete-registration", "coverage", "restore", "cold-reopen"] {
             let child = temp_path(mode);
             copy_database_state(&source, &child);
             children.push(child.clone());
@@ -113,24 +113,51 @@ fn real_binary_report_heavy_crosses_build_coverage_and_restore() {
                 .as_u64()
                 .expect("peak Rust heap bytes");
             assert!(peak_heap > 0 && peak_heap >= current_heap);
+            assert_eq!(observation["sql"]["exactVmSteps"], false);
+            assert_eq!(observation["sql"]["vmStepsKind"], "profiled-subset-lower-bound");
+            assert!(observation["notMeasured"].as_array().expect("notMeasured").iter().any(|value| value == &format!("{mode}:exact-lifecycle-vm-steps")));
+            assert_eq!(observation["sql"]["openedConnections"], observation["sql"]["closedConnections"]);
+            assert!(observation["sql"]["openedConnections"].as_u64().is_some_and(|count| count > 0));
+            assert!(observation["process"]["temporaryBytes"].is_u64());
+            assert!(observation["process"]["temporaryBytesMethod"].as_str().is_some_and(|method| method.contains("tempbuf-spill")));
             assert_eq!(observation["cancel"]["status"], "measured");
             assert_eq!(
                 observation["cancel"]["scope"],
-                "isolated-whole-project-graph-prepare"
+                "selected-mode-full-set-owners"
             );
             assert!(observation["cancel"]["latencyMs"]
                 .as_f64()
                 .is_some_and(|latency| latency >= 0.0));
             assert!(observation["cancel"]["uncertainty"]
                 .as_str()
-                .is_some_and(|value| value.contains("selected diagnostic mode")));
+                .is_some_and(|value| value.contains("not a worst-case bound")));
             assert!(observation["occupancy"]["foregroundWaitMs"]
                 .as_f64()
                 .is_some_and(|latency| latency >= 0.0));
             assert_eq!(
                 observation["occupancy"]["foregroundWaitScope"],
-                "isolated-whole-project-graph-prepare"
+                "selected-mode-full-set-owners"
             );
+            let expected_phases: &[&str] = match mode {
+                "full-build" => &["build-prepare", "build-publish"],
+                "source-reresolution" => &["source-reresolution"],
+                "complete-registration" => &["complete-registration"],
+                "coverage" => &["coverage-verify"],
+                "restore" => &["restore-full-set-validation"],
+                "cold-reopen" => &["cold-reopen"],
+                _ => unreachable!(),
+            };
+            let probes = observation["interruptionProbes"].as_array().expect("phase probes");
+            assert_eq!(probes.len(), expected_phases.len() * 2);
+            for phase in expected_phases {
+                for kind in ["cancel", "foreground"] {
+                    let probe = probes.iter().find(|probe| probe["phase"] == *phase && probe["kind"] == kind).expect("mode-specific phase/kind probe");
+                    assert!(probe["progressCallbacks"].as_u64().is_some_and(|count| count > 0));
+                    for field in ["connectionReusable", "transactionClean", "progressHandlerCleared", "busyTimeoutRestored", "bindingUnchanged"] {
+                        assert_eq!(probe[field], true, "{mode}/{phase}/{kind}: {field}");
+                    }
+                }
+            }
             for suffix in [
                 ":retained-roster-edge-high-water",
                 ":d1-declaration-retained-bytes",
@@ -153,33 +180,34 @@ fn real_binary_report_heavy_crosses_build_coverage_and_restore() {
             for metric in [
                 format!("{mode}:selected-mode-cancel-latency"),
                 format!("{mode}:selected-mode-foreground-wait"),
+                format!("{mode}:temporary-bytes"),
             ] {
                 assert!(
-                    observation["notMeasured"]
+                    !observation["notMeasured"]
                         .as_array()
                         .expect("notMeasured array")
                         .iter()
                         .any(|value| value.as_str() == Some(metric.as_str())),
-                    "{mode} must not widen the shared interruption probe to selected-mode evidence"
+                    "{mode} must measure its own full-set operation: {metric}"
                 );
             }
             assert_eq!(observation["modeOutcome"]["success"], true);
             assert_eq!(observation["modeOutcome"]["requiredSuccess"], true);
-            assert!(
-                observation["graphLifecycle"]["publishTransactionMs"].is_number(),
-                "{mode} must retain publish transaction elapsed time"
-            );
-            assert!(
-                observation["occupancy"]["publishTransactionMs"].is_number(),
-                "{mode} must expose publish transaction occupancy"
-            );
-            assert!(
-                observation["modeOutcome"]["operationReportRecords"]
-                    .as_u64()
-                    .is_some_and(|records| records >= 1),
-                "{mode} must report operation-produced Verify records"
-            );
+            if mode != "source-reresolution" {
+                assert!(observation["graphLifecycle"]["publishTransactionMs"].is_number());
+                assert!(observation["occupancy"]["publishTransactionMs"].is_number());
+            }
+            if ["full-build", "coverage", "restore"].contains(&mode) {
+                assert!(
+                    observation["modeOutcome"]["operationReportRecords"]
+                        .as_u64().is_some_and(|records| records >= 1),
+                    "{mode} must report operation-produced Verify records"
+                );
+            } else {
+                assert!(observation["modeOutcome"]["operationReportRecords"].is_null());
+            }
             if mode == "restore" {
+                assert!(observation["notMeasured"].as_array().expect("notMeasured").iter().any(|value| value == "restore:restore-file-install-cancel-latency"));
                 assert!(
                     observation["graphLifecycle"]["restoreImageIdentity"]
                         .as_str()

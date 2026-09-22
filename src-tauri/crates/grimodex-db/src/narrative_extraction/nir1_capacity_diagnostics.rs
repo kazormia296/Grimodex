@@ -6,7 +6,6 @@
 //! owns Native-side statement, process, and lifecycle measurements.
 
 use anyhow::{Context, Result};
-use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, StatementStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,7 +43,8 @@ use super::{
         cold_reopen_graph_index_with_control, is_complete_registered_with_control,
         prepare_graph_index_build_with_control,
         publish_nir1_entity_relation_index_in_tx_with_control, read as read_graph_binding,
-        read_eligibility_source_with_control, BindingRead, GraphObjectRosterEntry,
+        read_eligibility_source_with_control, BindingRead, GraphObjectRosterEntry, GraphWorkControl,
+        GraphWorkStage,
         INDEX_KEY as ENTITY_RELATION_INDEX_KEY,
     },
     source_revision::{
@@ -160,16 +160,20 @@ pub struct CapacityBytes {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapacitySqlMetrics {
-    /// A conservative profile upper bound. Trace `StmtRef` exposes a
-    /// cumulative VM-step counter but not prepared-statement identity or
-    /// reset, so reused statements are intentionally summed at each profile
-    /// callback. Exact lifecycle VM steps remain explicitly unmeasured below.
+    /// Native VM_STEP counters reset after each PROFILE event. SQLite hides
+    /// VACUUM/SqlExec internal VMs from tracing, so this is only a lower bound
+    /// for lifecycle SQL, never an exact total or a capacity upper bound.
     pub statement_vm_steps: u64,
     pub exact_vm_steps: bool,
+    pub vm_steps_kind: &'static str,
     /// Progress callbacks are a cancellation cadence signal only.  They are
     /// never multiplied into an SQL work total.
     pub progress_callbacks: u64,
     pub statements: u64,
+    pub opened_connections: u64,
+    pub closed_connections: u64,
+    pub method: &'static str,
+    pub coverage: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -203,10 +207,11 @@ pub struct ProcessMetrics {
     pub rust_heap: Option<RustHeapMeasurement>,
     pub read_bytes: Option<u64>,
     pub write_bytes: Option<u64>,
-    /// SQLite temporary files are not reliably visible through `/proc` on all
-    /// supported hosts.  Keep the value nullable and report the path-local
-    /// notMeasured reason instead of turning an unavailable sample into zero.
+    /// Cumulative SQLite TEMPBUF_SPILL bytes, not peak filesystem occupancy.
     pub temporary_bytes: Option<u64>,
+    pub temporary_bytes_method: &'static str,
+    pub temporary_bytes_coverage: &'static str,
+    pub temporary_bytes_uncertainty: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -220,7 +225,7 @@ pub struct CapacityOccupancy {
     /// The controlled Graph publish transaction interval.
     pub publish_transaction_ms: Option<f64>,
     /// Wait from a foreground request until it acquires and verifies the
-    /// connection after preempting an isolated real Graph prepare owner.
+    /// connection after preempting the selected mode's real full-set owner.
     pub foreground_wait_ms: Option<f64>,
     pub foreground_wait_scope: Option<&'static str>,
     pub foreground_wait_method: Option<&'static str>,
@@ -321,10 +326,23 @@ pub struct CancelMeasurement {
     pub uncertainty: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapacityInterruptionProbe {
+    phase: &'static str,
+    kind: &'static str,
+    latency_ms: f64,
+    progress_callbacks: u64,
+    connection_reusable: bool,
+    transaction_clean: bool,
+    progress_handler_cleared: bool,
+    busy_timeout_restored: bool,
+    binding_unchanged: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct CapacityInterruptionMeasurements {
-    cancel_latency_ms: f64,
-    foreground_wait_ms: f64,
+    probes: Vec<CapacityInterruptionProbe>,
     post_probe_copy_digest: String,
 }
 
@@ -350,6 +368,7 @@ pub struct CapacityObservation {
     pub graph_lifecycle: GraphLifecycleMetrics,
     pub mode_outcome: CapacityModeOutcome,
     pub cancel: CancelMeasurement,
+    pub interruption_probes: Vec<CapacityInterruptionProbe>,
     pub rejection_reasons: BTreeMap<String, usize>,
     pub not_measured: Vec<String>,
 }
@@ -392,23 +411,33 @@ impl CapacityObservation {
         &mut self,
         measurements: CapacityInterruptionMeasurements,
     ) {
-        const SCOPE: &str = "isolated-whole-project-graph-prepare";
+        const SCOPE: &str = "selected-mode-full-set-owners";
+        const UNCERTAINTY: &str = "maximum of named phase probes after first SQL progress; includes scheduling and cleanup, not a worst-case bound or Restore file-install cancellation";
+        let maximum = |kind| {
+            measurements.probes.iter().filter(|probe| probe.kind == kind)
+                .map(|probe| probe.latency_ms).reduce(f64::max)
+        };
         self.cancel = CancelMeasurement {
             status: "measured",
-            latency_ms: Some(measurements.cancel_latency_ms),
+            latency_ms: maximum("cancel"),
             scope: Some(SCOPE),
-            method: Some("atomic-stop-after-first-sql-progress-callback-to-clean-owner-return"),
-            uncertainty: Some(
-                "shared prepare-owner probe; selected diagnostic mode cancellation is not measured",
-            ),
+            method: Some("atomic-stop-after-first-sql-progress-to-clean-owner-return"),
+            uncertainty: Some(UNCERTAINTY),
         };
-        self.occupancy.foreground_wait_ms = Some(measurements.foreground_wait_ms);
+        self.occupancy.foreground_wait_ms = maximum("foreground");
         self.occupancy.foreground_wait_scope = Some(SCOPE);
         self.occupancy.foreground_wait_method =
             Some("foreground-request-to-post-preemption-connection-query-completion");
-        self.occupancy.foreground_wait_uncertainty = Some(
-            "shared prepare-owner probe; selected diagnostic mode foreground wait is not measured",
-        );
+        self.occupancy.foreground_wait_uncertainty = Some(UNCERTAINTY);
+        self.interruption_probes = measurements.probes;
+        self.not_measured.retain(|metric| {
+            !metric.ends_with(":selected-mode-cancel-latency")
+                && !metric.ends_with(":selected-mode-foreground-wait")
+        });
+        if self.mode == CapacityDiagnosticMode::Restore {
+            self.not_measured.push(path_not_measured(self.mode, "restore-file-install-cancel-latency"));
+            self.not_measured.push(path_not_measured(self.mode, "restore-file-install-foreground-wait"));
+        }
         self.graph_lifecycle.post_run_copy_digest = measurements.post_probe_copy_digest;
     }
 }
@@ -435,32 +464,126 @@ impl Default for ProgressCounter {
 struct TraceCounter {
     statement_vm_steps: AtomicU64,
     statements: AtomicU64,
-    exact_vm_steps: std::sync::atomic::AtomicBool,
+    temporary_bytes: AtomicU64,
+    opened_connections: AtomicU64,
+    closed_connections: AtomicU64,
+    failed: AtomicBool,
 }
 
 thread_local! {
     static ACTIVE_TRACE: RefCell<Option<Arc<TraceCounter>>> = const { RefCell::new(None) };
 }
 
-fn trace_profile(event: TraceEvent<'_>) {
-    if let TraceEvent::Profile(statement, _) = event {
-        ACTIVE_TRACE.with(|active| {
-            if let Some(counter) = active.borrow().as_ref() {
-                let cumulative =
-                    u64::try_from(statement.get_status(StatementStatus::VmStep).max(0))
-                        .unwrap_or(0);
-                // StmtRef exposes the cumulative SQLite counter, but not the
-                // prepared-statement identity or reset operation. Summing the
-                // cumulative value is a conservative upper bound for reused
-                // statements; it is deliberately not advertised as exact.
-                counter.exact_vm_steps.store(false, Ordering::Relaxed);
-                counter
-                    .statement_vm_steps
-                    .fetch_add(cumulative, Ordering::Relaxed);
-                counter.statements.fetch_add(1, Ordering::Relaxed);
-            }
-        });
+// Only the opt-in diagnostic enters this scope. The auto-extension stays
+// registered (SQLite deduplicates registration) but is inert without this
+// thread-local owner. This also permits isolated parallel library tests.
+struct DiagnosticSqlMeasurement(Arc<TraceCounter>);
+
+impl DiagnosticSqlMeasurement {
+    fn start() -> Result<Self> {
+        anyhow::ensure!(
+            ACTIVE_TRACE.with(|active| active.borrow().is_none()),
+            "nested capacity SQL measurement"
+        );
+        // SAFETY: the extension only installs a trace callback. It never opens
+        // or closes a connection or changes the extension list from a callback.
+        unsafe { rusqlite::auto_extension::register_auto_extension(diagnostic_sql_extension)? };
+        let counter = Arc::new(TraceCounter::default());
+        ACTIVE_TRACE.with(|active| *active.borrow_mut() = Some(Arc::clone(&counter)));
+        Ok(Self(counter))
     }
+
+    fn complete(&self) -> bool {
+        !self.0.failed.load(Ordering::Relaxed)
+            && self.0.opened_connections.load(Ordering::Relaxed) > 0
+            && self.0.opened_connections.load(Ordering::Relaxed)
+                == self.0.closed_connections.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for DiagnosticSqlMeasurement {
+    fn drop(&mut self) {
+        ACTIVE_TRACE.with(|active| *active.borrow_mut() = None);
+    }
+}
+
+unsafe extern "C" fn diagnostic_sql_extension(
+    db: *mut rusqlite::ffi::sqlite3,
+    _error: *mut *mut std::ffi::c_char,
+    _api: *const rusqlite::ffi::sqlite3_api_routines,
+) -> std::ffi::c_int {
+    ACTIVE_TRACE.with(|active| {
+        let active = active.borrow();
+        let Some(counter) = active.as_ref() else {
+            return rusqlite::ffi::SQLITE_OK;
+        };
+        // SAFETY: SQLite supplies a live connection during open. The callback
+        // retains no raw pointer and observes only SQLite-provided event data.
+        let status = unsafe {
+            rusqlite::ffi::sqlite3_trace_v2(
+                db,
+                rusqlite::ffi::SQLITE_TRACE_PROFILE | rusqlite::ffi::SQLITE_TRACE_CLOSE,
+                Some(diagnostic_sql_trace),
+                std::ptr::null_mut(),
+            )
+        };
+        if status == rusqlite::ffi::SQLITE_OK {
+            counter.opened_connections.fetch_add(1, Ordering::Relaxed);
+        } else {
+            counter.failed.store(true, Ordering::Relaxed);
+        }
+        status
+    })
+}
+
+unsafe extern "C" fn diagnostic_sql_trace(
+    event: std::ffi::c_uint,
+    _context: *mut std::ffi::c_void,
+    object: *mut std::ffi::c_void,
+    _detail: *mut std::ffi::c_void,
+) -> std::ffi::c_int {
+    ACTIVE_TRACE.with(|active| {
+        let active = active.borrow();
+        let Some(counter) = active.as_ref() else { return };
+        if event == rusqlite::ffi::SQLITE_TRACE_PROFILE {
+            // SAFETY: PROFILE supplies the live statement. Reset only its
+            // telemetry counter, never statement execution or the progress hook.
+            let steps = unsafe {
+                rusqlite::ffi::sqlite3_stmt_status(
+                    object.cast(),
+                    rusqlite::ffi::SQLITE_STMTSTATUS_VM_STEP,
+                    1,
+                )
+            };
+            if let Ok(steps) = u64::try_from(steps) {
+                counter.statement_vm_steps.fetch_add(steps, Ordering::Relaxed);
+                counter.statements.fetch_add(1, Ordering::Relaxed);
+            } else {
+                counter.failed.store(true, Ordering::Relaxed);
+            }
+        } else if event == rusqlite::ffi::SQLITE_TRACE_CLOSE {
+            let mut bytes = 0;
+            let mut highwater = 0;
+            // SAFETY: CLOSE fires while the connection is still valid. SQLite
+            // exposes spill writes even when its unlinked temp files are gone.
+            let status = unsafe {
+                rusqlite::ffi::sqlite3_db_status64(
+                    object.cast(),
+                    rusqlite::ffi::SQLITE_DBSTATUS_TEMPBUF_SPILL,
+                    &mut bytes,
+                    &mut highwater,
+                    0,
+                )
+            };
+            if status == rusqlite::ffi::SQLITE_OK && bytes >= 0 {
+                counter.temporary_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+            } else {
+                counter.failed.store(true, Ordering::Relaxed);
+            }
+            counter.closed_connections.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    0
 }
 
 #[derive(Default, Clone, Copy)]
@@ -987,7 +1110,6 @@ fn mode_measurement_not_measured(
     if mode == CapacityDiagnosticMode::Restore && lifecycle.restore_install_ms.is_none() {
         not_measured.push(path_not_measured(mode, "restore-install"));
     }
-    not_measured.push(path_not_measured(mode, "temporary-bytes"));
     not_measured.push(path_not_measured(mode, "selected-mode-foreground-wait"));
     not_measured.push(path_not_measured(mode, "selected-mode-cancel-latency"));
     not_measured
@@ -1124,13 +1246,6 @@ fn database_state_digest(path: &Path) -> Result<String> {
         }
     }
     Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
-}
-
-fn install_diagnostic_trace(conn: &Connection, _trace: &Arc<TraceCounter>) {
-    // The callback reads the same thread-local Arc installed by the
-    // measurement owner; reinstalling it on a newly opened connection keeps
-    // cold-reopen Restore/Verify SQL inside the same conservative profile.
-    conn.trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(trace_profile));
 }
 
 fn empty_lifecycle(error: Option<String>) -> GraphLifecycleRun {
@@ -1626,141 +1741,199 @@ enum InterruptionProbeKind {
     Foreground,
 }
 
-fn measure_interruption_probe(
-    database_path: &Path,
-    project_id: &str,
+const INTERRUPTION_KINDS: [InterruptionProbeKind; 2] = [
+    InterruptionProbeKind::Cancel,
+    InterruptionProbeKind::Foreground,
+];
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+// Let the native SQL hook observe requests during SQL. At the first following
+// Rust boundary, rendezvous with the trigger so a short operation cannot win
+// a scheduler race and accidentally be reported as cancelled. The nested
+// control borrows the real owner/hook; it never installs or clears one.
+struct InterruptionControl<'a> {
+    inner: &'a mut dyn GraphWorkControl,
+    db: &'a Database,
+    stop: &'a AtomicBool,
+    callbacks: &'a AtomicU64,
     kind: InterruptionProbeKind,
-) -> Result<f64> {
-    const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+    deadline: Instant,
+}
 
-    let db = Arc::new(Database::new(database_path).with_context(|| {
-        format!(
-            "open interruption diagnostic database {}",
-            database_path.display()
-        )
-    })?);
-    let stop = Arc::new(AtomicBool::new(false));
-    let progress_callbacks = Arc::new(AtomicU64::new(0));
-    let owner_finished = Arc::new(AtomicBool::new(false));
-    let trigger_db = Arc::clone(&db);
-    let trigger_stop = Arc::clone(&stop);
-    let trigger_callbacks = Arc::clone(&progress_callbacks);
-    let trigger_finished = Arc::clone(&owner_finished);
-    let trigger = std::thread::spawn(move || -> Result<(Instant, Option<f64>)> {
-        let progress_deadline = Instant::now() + PROBE_TIMEOUT;
-        while trigger_callbacks.load(Ordering::Acquire) == 0 {
-            if trigger_finished.load(Ordering::Acquire) {
-                anyhow::bail!("interruption probe owner completed before its first SQL callback");
-            }
-            if Instant::now() >= progress_deadline {
-                trigger_stop.store(true, Ordering::Release);
-                anyhow::bail!("interruption probe observed no SQL callback within 30 seconds");
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-
-        let requested_at = Instant::now();
-        match kind {
-            InterruptionProbeKind::Cancel => {
-                trigger_stop.store(true, Ordering::Release);
-                Ok((requested_at, None))
-            }
-            InterruptionProbeKind::Foreground => {
-                let wait_deadline = requested_at + PROBE_TIMEOUT;
-                let mut check = || {
-                    anyhow::ensure!(
-                        Instant::now() < wait_deadline,
-                        "foreground interruption probe did not acquire the connection within 30 seconds"
-                    );
-                    Ok(())
+impl GraphWorkControl for InterruptionControl<'_> {
+    fn check(&mut self, stage: GraphWorkStage) -> Result<()> {
+        if self.callbacks.load(Ordering::Acquire) > 0 {
+            loop {
+                let requested = match self.kind {
+                    InterruptionProbeKind::Cancel => self.stop.load(Ordering::Acquire),
+                    InterruptionProbeKind::Foreground => self.db.foreground_connection_waiting(),
                 };
-                let conn = trigger_db.lock_conn_with_check(Some(&mut check))?;
-                conn.query_row("SELECT 1", [], |_| Ok(()))?;
-                drop(conn);
-                Ok((
-                    requested_at,
-                    Some(requested_at.elapsed().as_secs_f64() * 1000.0),
-                ))
+                if requested { break; }
+                anyhow::ensure!(Instant::now() < self.deadline, "interruption trigger rendezvous timed out");
+                std::thread::yield_now();
             }
         }
-    });
+        self.inner.check(stage)
+    }
 
-    let runtime = NirChronicleIndexRuntime::new(&db, 1);
-    let operation = with_narrative_maintenance_graph_control(
-        &db,
-        PROBE_TIMEOUT,
-        PROGRESS_CADENCE_VM_STEPS,
-        Arc::clone(&stop),
-        NarrativeMaintenanceGraphControlConfig::with_progress_callbacks(Arc::clone(
-            &progress_callbacks,
-        )),
-        |conn, control| {
-            let tx = conn.unchecked_transaction()?;
-            let result = prepare_graph_index_build_with_control(&tx, &runtime, project_id, control)
-                .map(|_| ());
-            match (result, tx.rollback()) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(error), Ok(())) => Err(error),
-                (Ok(()), Err(rollback_error)) => Err(rollback_error.into()),
-                (Err(error), Err(rollback_error)) => Err(error.context(format!(
-                    "rollback interruption diagnostic transaction: {rollback_error}"
-                ))),
+    fn allows_full_eligibility(&self) -> bool {
+        self.inner.allows_full_eligibility()
+    }
+}
+
+fn measure_interruption_probe(
+    db: &Database,
+    project_id: &str,
+    phase: &'static str,
+    kind: InterruptionProbeKind,
+    operation: impl FnOnce(&Connection, &mut dyn GraphWorkControl) -> Result<()>,
+) -> Result<CapacityInterruptionProbe> {
+    let before = db.with_read_transaction(|conn| capture_restore_graph_binding(conn, project_id))?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let callbacks = Arc::new(AtomicU64::new(0));
+    let finished = AtomicBool::new(false);
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let mut config = NarrativeMaintenanceGraphControlConfig::with_progress_callbacks(Arc::clone(&callbacks));
+    config.deadline = Some(deadline);
+    let (owner, requested_at, observed_at, foreground_ms) = std::thread::scope(|scope| -> Result<_> {
+        let trigger = scope.spawn(|| -> Result<(Instant, Option<f64>)> {
+            while callbacks.load(Ordering::Acquire) == 0 {
+                anyhow::ensure!(!finished.load(Ordering::Acquire), "{phase} completed before its first SQL progress callback");
+                if Instant::now() >= deadline {
+                    stop.store(true, Ordering::Release);
+                    anyhow::bail!("{phase} observed no SQL progress within 30 seconds");
+                }
+                std::thread::yield_now();
             }
-        },
-    );
-    owner_finished.store(true, Ordering::Release);
-    let trigger_result = trigger
-        .join()
-        .map_err(|_| anyhow::anyhow!("interruption probe trigger thread panicked"))??;
-    let observed_at = Instant::now();
-    let owner = operation?.context("interruption probe maintenance connection was deferred")?;
+            let requested_at = Instant::now();
+            match kind {
+                InterruptionProbeKind::Cancel => {
+                    stop.store(true, Ordering::Release);
+                    Ok((requested_at, None))
+                }
+                InterruptionProbeKind::Foreground => {
+                    let mut check = || {
+                        anyhow::ensure!(Instant::now() < deadline, "{phase} foreground handoff timed out");
+                        Ok(())
+                    };
+                    let conn = db.lock_conn_with_check(Some(&mut check))?;
+                    conn.query_row("SELECT 1", [], |_| Ok(()))?;
+                    drop(conn);
+                    Ok((requested_at, Some(requested_at.elapsed().as_secs_f64() * 1000.0)))
+                }
+            }
+        });
+        let owner = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_narrative_maintenance_graph_control(
+                db,
+                Duration::ZERO,
+                PROGRESS_CADENCE_VM_STEPS,
+                Arc::clone(&stop),
+                config,
+                |conn, control| {
+                    // The real outer owner clears its hook before rollback.
+                    // No cancelled/accidentally completed probe commits a generation.
+                    conn.execute_batch("BEGIN")?;
+                    let mut control = InterruptionControl {
+                        inner: control, db, stop: &stop, callbacks: &callbacks, kind, deadline,
+                    };
+                    operation(conn, &mut control)
+                },
+            )
+        }));
+        let observed_at = Instant::now();
+        finished.store(true, Ordering::Release);
+        let triggered = trigger.join().map_err(|_| anyhow::anyhow!("{phase} trigger panicked"));
+        let owner = match owner {
+            Ok(owner) => owner,
+            Err(payload) => std::panic::resume_unwind(payload),
+        };
+        let (requested_at, foreground_ms) = triggered??;
+        Ok((owner?, requested_at, observed_at, foreground_ms))
+    })?;
+    let owner = owner.context("interruption probe maintenance connection was deferred")?;
     let receipt = owner.receipt;
     anyhow::ensure!(
-        receipt.connection_reusable
-            && receipt.transaction_clean
-            && receipt.progress_handler_cleared
-            && receipt.busy_timeout_restored,
-        "interruption probe did not release a reusable clean connection: {receipt:?}"
+        receipt.connection_reusable && receipt.transaction_clean
+            && receipt.progress_handler_cleared && receipt.busy_timeout_restored,
+        "{phase} did not release a reusable clean connection: {receipt:?}"
     );
-    let error = owner
-        .into_result()
-        .expect_err("interruption probe unexpectedly completed Graph preparation");
-    let termination = error
-        .downcast_ref::<ValidationTerminated>()
-        .context("interruption probe did not preserve its typed termination reason")?;
-    let expected_reason = match kind {
-        InterruptionProbeKind::Cancel => ValidationTerminationReason::Cancelled,
-        InterruptionProbeKind::Foreground => ValidationTerminationReason::ForegroundPreempted,
+    let error = owner.into_result().err().context("interruption probe unexpectedly completed")?;
+    let termination = error.downcast_ref::<ValidationTerminated>()
+        .context("interruption probe lost its typed termination reason")?;
+    let (kind, expected_reason) = match kind {
+        InterruptionProbeKind::Cancel => ("cancel", ValidationTerminationReason::Cancelled),
+        InterruptionProbeKind::Foreground => ("foreground", ValidationTerminationReason::ForegroundPreempted),
     };
-    anyhow::ensure!(
-        termination.reason == expected_reason,
-        "interruption probe terminated as {:?}, expected {:?}",
-        termination.reason,
-        expected_reason
-    );
-    db.with_conn(|conn| {
+    anyhow::ensure!(termination.reason == expected_reason,
+        "{phase} terminated as {:?}, expected {:?}", termination.reason, expected_reason);
+    let after = db.with_read_transaction(|conn| {
         conn.query_row("SELECT 1", [], |_| Ok(()))?;
-        Ok(())
+        capture_restore_graph_binding(conn, project_id)
+    })?;
+    anyhow::ensure!(before == after, "{phase} interruption changed the sealed Graph binding");
+    Ok(CapacityInterruptionProbe {
+        phase,
+        kind,
+        latency_ms: foreground_ms.unwrap_or_else(|| observed_at.duration_since(requested_at).as_secs_f64() * 1000.0),
+        progress_callbacks: callbacks.load(Ordering::Relaxed),
+        connection_reusable: receipt.connection_reusable,
+        transaction_clean: receipt.transaction_clean,
+        progress_handler_cleared: receipt.progress_handler_cleared,
+        busy_timeout_restored: receipt.busy_timeout_restored,
+        binding_unchanged: before == after,
     })
-    .context("reuse connection after interruption probe cleanup")?;
-
-    Ok(trigger_result
-        .1
-        .unwrap_or_else(|| observed_at.duration_since(trigger_result.0).as_secs_f64() * 1000.0))
 }
 
 pub fn measure_capacity_interruptions(
     database_path: &Path,
     project_id: Option<&str>,
+    mode: CapacityDiagnosticMode,
 ) -> Result<CapacityInterruptionMeasurements> {
     let project_id = project_id.context("project id is required for interruption diagnostics")?;
-    let cancel_latency_ms =
-        measure_interruption_probe(database_path, project_id, InterruptionProbeKind::Cancel)?;
-    let foreground_wait_ms =
-        measure_interruption_probe(database_path, project_id, InterruptionProbeKind::Foreground)?;
+    let mut probes = Vec::new();
+    if mode == CapacityDiagnosticMode::Restore {
+        let restored = run_real_restore_mode(database_path, project_id, None, Some(&mut probes))?;
+        anyhow::ensure!(mode_required_success(mode, &restored), "restore probe setup failed: {:?}", restored.terminal_error);
+    } else {
+        // Primary measurement has already published when this mode requires a
+        // sealed binding. This new connection is also the actual cold reopen.
+        for kind in INTERRUPTION_KINDS {
+            let db = Database::new(database_path)?;
+            match mode {
+                CapacityDiagnosticMode::FullBuild => {
+                    let runtime = NirChronicleIndexRuntime::new(&db, 1);
+                    probes.push(measure_interruption_probe(&db, project_id, "build-prepare", kind, |conn, control| {
+                        prepare_graph_index_build_with_control(conn, &runtime, project_id, control).map(|_| ())
+                    })?);
+                    let snapshot = owned_mode_operation(&db, None, Arc::new(AtomicBool::new(false)), |conn, control| {
+                        let tx = conn.unchecked_transaction()?;
+                        let snapshot = prepare_graph_index_build_with_control(&tx, &runtime, project_id, control)?;
+                        tx.commit()?;
+                        Ok(snapshot)
+                    })?.context("publish probe preparation deferred")?;
+                    probes.push(measure_interruption_probe(&db, project_id, "build-publish", kind, |conn, control| {
+                        publish_nir1_entity_relation_index_in_tx_with_control(conn, &runtime, snapshot, control).map(|_| ())
+                    })?);
+                }
+                CapacityDiagnosticMode::SourceReresolution => probes.push(measure_interruption_probe(&db, project_id, "source-reresolution", kind, |conn, control| {
+                    read_eligibility_source_with_control(conn, project_id, control).map(|_| ())
+                })?),
+                CapacityDiagnosticMode::CompleteRegistration => probes.push(measure_interruption_probe(&db, project_id, "complete-registration", kind, |conn, control| {
+                    is_complete_registered_with_control(conn, project_id, ENTITY_RELATION_INDEX_KEY, control).map(|_| ())
+                })?),
+                CapacityDiagnosticMode::Coverage => probes.push(measure_interruption_probe(&db, project_id, "coverage-verify", kind, |conn, control| {
+                    verify_dependency_graph_snapshot_with_control(conn, project_id, control).map(|_| ())
+                })?),
+                CapacityDiagnosticMode::ColdReopen => probes.push(measure_interruption_probe(&db, project_id, "cold-reopen", kind, |conn, control| {
+                    cold_reopen_graph_index_with_control(conn, project_id, control).map(|_| ())
+                })?),
+                CapacityDiagnosticMode::Restore => unreachable!(),
+            }
+        }
+    }
     Ok(CapacityInterruptionMeasurements {
-        cancel_latency_ms,
-        foreground_wait_ms,
+        probes,
         post_probe_copy_digest: database_state_digest(database_path)?,
     })
 }
@@ -1982,6 +2155,26 @@ fn copy_database_state(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+fn verify_restored_graph(
+    conn: &Connection,
+    project_id: &str,
+    expected_generation: i64,
+    control: &mut dyn GraphWorkControl,
+) -> Result<(u64, i64, bool)> {
+    let source = read_eligibility_source_with_control(conn, project_id, control)?;
+    anyhow::ensure!(source.roster.is_empty(), "post-restore eligibility is not empty");
+    let binding = match read_graph_binding(conn, project_id)? {
+        BindingRead::Registered(binding) => binding,
+        other => anyhow::bail!("restored Graph binding is not registered: {other:?}"),
+    };
+    anyhow::ensure!(binding.generation == expected_generation, "rebuilt Graph generation changed");
+    let complete = is_complete_registered_with_control(conn, project_id, ENTITY_RELATION_INDEX_KEY, control)?;
+    anyhow::ensure!(complete, "fresh empty Graph binding is not complete");
+    let (report, _) = verify_dependency_graph_snapshot_with_control(conn, project_id, control)?;
+    control.check(GraphWorkStage::ResultAssembly)?;
+    Ok((report_observation_count(&report)?, binding.generation, complete))
+}
+
 /// Run Restore against a disposable workspace so the mode proves the actual
 /// backup/recovery boundary.  A same-file Verify would only exercise the
 /// normal publish path and could never establish a restored image, workspace
@@ -1990,7 +2183,7 @@ fn run_real_restore_mode(
     database_path: &Path,
     project_id: &str,
     progress_callbacks: Option<Arc<AtomicU64>>,
-    trace: Option<Arc<TraceCounter>>,
+    mut interruption_probes: Option<&mut Vec<CapacityInterruptionProbe>>,
 ) -> Result<GraphLifecycleRun> {
     let workspace = std::env::temp_dir().join(format!(
         "grimodex-nir1-capacity-restore-{}",
@@ -2115,12 +2308,6 @@ fn run_real_restore_mode(
                 .context("restore did not publish a workspace authority")?;
             Arc::clone(&active.authority)
         };
-        if let Some(trace) = trace.as_ref() {
-            restored_authority.db().with_conn(|conn| {
-                install_diagnostic_trace(conn, trace);
-                Ok(())
-            })?;
-        }
         let actual_workspace_identity = workspace_identity(&workspace);
         anyhow::ensure!(
             actual_workspace_identity == workspace_id,
@@ -2517,36 +2704,9 @@ fn run_real_restore_mode(
             stop,
             |conn, control| {
                 let tx = conn.unchecked_transaction()?;
-                let restored_source =
-                    read_eligibility_source_with_control(&tx, project_id, control)?;
-                anyhow::ensure!(
-                    restored_source.roster.is_empty(),
-                    "post-restore eligibility unexpectedly contains {} records",
-                    restored_source.roster.len()
-                );
-                let restored_binding = match read_graph_binding(&tx, project_id)? {
-                    BindingRead::Registered(binding) => binding,
-                    other => anyhow::bail!("restored Graph binding is not registered: {other:?}"),
-                };
-                anyhow::ensure!(
-                    restored_binding.generation == rebuilt_generation,
-                    "rebuilt Graph generation changed: expected {}, got {}",
-                    rebuilt_generation,
-                    restored_binding.generation
-                );
-                let complete = is_complete_registered_with_control(
-                    &tx,
-                    project_id,
-                    ENTITY_RELATION_INDEX_KEY,
-                    control,
-                )?;
-                anyhow::ensure!(complete, "fresh empty Graph binding is not complete");
-                let (report, _digest) =
-                    verify_dependency_graph_snapshot_with_control(&tx, project_id, control)?;
-                control.check(super::nir1_entity_relation_index::GraphWorkStage::ResultAssembly)?;
-                let records = report_observation_count(&report)?;
+                let result = verify_restored_graph(&tx, project_id, rebuilt_generation, control)?;
                 tx.commit()?;
-                Ok((records, restored_binding.generation, complete))
+                Ok(result)
             },
         );
         let operation_succeeded = matches!(&operation, Ok(Some(_)));
@@ -2583,6 +2743,15 @@ fn run_real_restore_mode(
             ),
             Err(error) => (false, None, None, false, Some(error.to_string())),
         };
+        if let Some(probes) = interruption_probes.as_mut() {
+            anyhow::ensure!(restore_verified, "restore interruption setup did not complete validation");
+            for kind in INTERRUPTION_KINDS {
+                probes.push(measure_interruption_probe(
+                    restored_authority.db(), project_id, "restore-full-set-validation", kind,
+                    |conn, control| verify_restored_graph(conn, project_id, rebuilt_generation, control).map(|_| ()),
+                )?);
+            }
+        }
         let restore_proof = RestoreProof {
             binding_persisted: restored_binding_check.1,
             generation_preserved: restored_binding_check.2,
@@ -2660,10 +2829,9 @@ fn run_mode_operation(
     project_id: Option<&str>,
     mode: CapacityDiagnosticMode,
     progress_callbacks: Option<Arc<AtomicU64>>,
-    trace: Option<Arc<TraceCounter>>,
 ) -> Result<GraphLifecycleRun> {
     if mode == CapacityDiagnosticMode::FullBuild {
-        return run_graph_lifecycle(conn, database_path, project_id, progress_callbacks, trace);
+        return run_graph_lifecycle(conn, database_path, project_id, progress_callbacks);
     }
     let Some(project_id) = project_id else {
         return Ok(empty_lifecycle(Some(
@@ -2784,7 +2952,7 @@ fn run_mode_operation(
         }
         CapacityDiagnosticMode::Restore => {
             drop(db);
-            return run_real_restore_mode(database_path, project_id, progress_callbacks, trace);
+            return run_real_restore_mode(database_path, project_id, progress_callbacks, None);
         }
         CapacityDiagnosticMode::ColdReopen => {
             let lifecycle =
@@ -2799,9 +2967,6 @@ fn run_mode_operation(
                     .with_context(|| {
                         format!("reopen diagnostic database {}", database_path.display())
                     })?;
-            if let Some(trace) = trace.as_ref() {
-                install_diagnostic_trace(&reopened_conn, trace);
-            }
             install_connection_metadata(&reopened_conn)?;
             let reopened_db = Database::from_connection(reopened_conn);
             let started = Instant::now();
@@ -2837,7 +3002,6 @@ fn run_graph_lifecycle(
     database_path: &Path,
     project_id: Option<&str>,
     progress_callbacks: Option<Arc<AtomicU64>>,
-    trace: Option<Arc<TraceCounter>>,
 ) -> Result<GraphLifecycleRun> {
     let Some(project_id) = project_id else {
         return Ok(GraphLifecycleRun {
@@ -2870,9 +3034,6 @@ fn run_graph_lifecycle(
             terminal_error: Some("project-id-required-for-graph-lifecycle".to_owned()),
         });
     };
-    if let Some(trace) = trace.as_ref() {
-        install_diagnostic_trace(&conn, trace);
-    }
     install_connection_metadata(&conn)?;
     let db = Database::from_connection(conn);
     let runtime = NirChronicleIndexRuntime::new(&db, 1);
@@ -3088,9 +3249,6 @@ fn run_graph_lifecycle(
     let reopened_conn =
         Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
             .with_context(|| format!("reopen diagnostic database {}", database_path.display()))?;
-    if let Some(trace) = trace.as_ref() {
-        install_diagnostic_trace(&reopened_conn, trace);
-    }
     install_connection_metadata(&reopened_conn)?;
     let reopened_db = Database::from_connection(reopened_conn);
 
@@ -3274,6 +3432,8 @@ pub fn measure_capacity_mode(
     // the process is fresh per orchestrator run, so the baseline is zeroed by
     // the child boundary rather than silently folded into the result.
     let _sqlite_before = sqlite_memory_used();
+    let measurement = DiagnosticSqlMeasurement::start()?;
+    let trace = Arc::clone(&measurement.0);
     let conn = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
         .with_context(|| format!("open diagnostic database {}", database_path.display()))?;
     install_connection_metadata(&conn)?;
@@ -3286,11 +3446,6 @@ pub fn measure_capacity_mode(
             false
         }),
     )?;
-    let trace = Arc::new(TraceCounter::default());
-    ACTIVE_TRACE.with(|active| {
-        *active.borrow_mut() = Some(Arc::clone(&trace));
-    });
-    install_diagnostic_trace(&conn, &trace);
     let mut sql = SqlAccumulator::default();
     let mut counts = CapacityCounts {
         candidate_revisions: 0,
@@ -3366,12 +3521,10 @@ pub fn measure_capacity_mode(
         project_id,
         mode,
         Some(Arc::clone(&progress.callbacks)),
-        Some(Arc::clone(&trace)),
     )?;
     let connection_hold_ms = conservative_connection_hold_ms(manual_a2_owner_ms, &lifecycle);
-    ACTIVE_TRACE.with(|active| {
-        *active.borrow_mut() = None;
-    });
+    let sql_complete = measurement.complete();
+    drop(measurement);
     if let Some(shape) = lifecycle.shape.as_ref() {
         if mode != CapacityDiagnosticMode::Restore {
             anyhow::ensure!(
@@ -3473,8 +3626,11 @@ pub fn measure_capacity_mode(
     {
         not_measured.push(path_not_measured(mode, "restore-verify"));
     }
-    if !trace.exact_vm_steps.load(Ordering::Relaxed) {
-        not_measured.push(path_not_measured(mode, "exact-lifecycle-vm-steps"));
+    not_measured.push(path_not_measured(mode, "exact-lifecycle-vm-steps"));
+    not_measured.push(path_not_measured(mode, "lifecycle-vm-step-upper-bound"));
+    if !sql_complete {
+        not_measured.push(path_not_measured(mode, "profiled-statement-vm-steps"));
+        not_measured.push(path_not_measured(mode, "temporary-bytes"));
     }
     not_measured.sort_unstable();
     not_measured.dedup();
@@ -3502,13 +3658,21 @@ pub fn measure_capacity_mode(
             rust_heap: None,
             read_bytes: diff_u64(after_process.read_bytes, before_process.read_bytes),
             write_bytes: diff_u64(after_process.write_bytes, before_process.write_bytes),
-            temporary_bytes: None,
+            temporary_bytes: sql_complete.then(|| trace.temporary_bytes.load(Ordering::Relaxed)),
+            temporary_bytes_method: "sqlite3-db-status64-tempbuf-spill-at-every-connection-close",
+            temporary_bytes_coverage: "cumulative bytes written to SQLite sort/intermediate/TEMP files across primary diagnostic connections",
+            temporary_bytes_uncertainty: "not peak disk occupancy; excludes WAL/journals, backup/restore copies and in-memory temp storage (covered by SQLite/RSS high-water)",
         },
         sql: CapacitySqlMetrics {
             statement_vm_steps: trace.statement_vm_steps.load(Ordering::Relaxed),
-            exact_vm_steps: trace.exact_vm_steps.load(Ordering::Relaxed),
+            exact_vm_steps: false,
+            vm_steps_kind: if sql_complete { "profiled-subset-lower-bound" } else { "unavailable" },
             progress_callbacks: progress.callbacks.load(Ordering::Relaxed),
             statements: trace.statements.load(Ordering::Relaxed),
+            opened_connections: trace.opened_connections.load(Ordering::Relaxed),
+            closed_connections: trace.closed_connections.load(Ordering::Relaxed),
+            method: "sqlite3-stmt-status-vm-step-reset-per-profile",
+            coverage: "PROFILE-visible statements on primary diagnostic connections; excludes SQLite trace-suppressed internal VMs (VACUUM/SqlExec), interruption probes and non-SQL file work",
         },
         occupancy: CapacityOccupancy {
             connection_hold_ms,
@@ -3562,6 +3726,7 @@ pub fn measure_capacity_mode(
             method: None,
             uncertainty: None,
         },
+        interruption_probes: Vec::new(),
         rejection_reasons,
         not_measured,
     })
@@ -3623,13 +3788,21 @@ mod tests {
                 }),
                 read_bytes: Some(9),
                 write_bytes: Some(10),
-                temporary_bytes: None,
+                temporary_bytes: Some(0),
+                temporary_bytes_method: "test",
+                temporary_bytes_coverage: "test",
+                temporary_bytes_uncertainty: "test",
             },
             sql: CapacitySqlMetrics {
                 statement_vm_steps: 1,
                 exact_vm_steps: false,
+                vm_steps_kind: "profiled-subset-lower-bound",
                 progress_callbacks: 2,
                 statements: 3,
+                opened_connections: 1,
+                closed_connections: 1,
+                method: "test",
+                coverage: "test",
             },
             occupancy: CapacityOccupancy {
                 connection_hold_ms: 1.0,
@@ -3695,6 +3868,7 @@ mod tests {
                 method: None,
                 uncertainty: None,
             },
+            interruption_probes: Vec::new(),
             rejection_reasons: BTreeMap::new(),
             not_measured: vec!["full-build:cancel-latency".to_owned()],
         }
@@ -3795,10 +3969,136 @@ mod tests {
     }
 
     #[test]
-    fn profile_upper_bound_sums_cumulative_reused_statement_status() {
-        let values = [5_u64, 10, 15];
-        let total = values.into_iter().sum::<u64>();
-        assert_eq!(total, 30);
+    fn native_sql_counters_count_reused_statements_once_across_connections() -> Result<()> {
+        const SQL: &str = "WITH RECURSIVE t(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM t WHERE n<?1) SELECT sum(n) FROM t";
+        let baseline = Connection::open_in_memory()?;
+        let mut statement = baseline.prepare(SQL)?;
+        let mut expected_steps = 0u64;
+        for limit in [10, 20, 30] {
+            let _: i64 = statement.query_row([limit], |row| row.get(0))?;
+            expected_steps += u64::try_from(statement.reset_status(StatementStatus::VmStep))?;
+        }
+        drop(statement);
+        drop(baseline);
+        let measurement = DiagnosticSqlMeasurement::start()?;
+        for _ in 0..2 {
+            let conn = Connection::open_in_memory()?;
+            let mut statement = conn.prepare(SQL)?;
+            for limit in [10, 20, 30] {
+                let sum: i64 = statement.query_row([limit], |row| row.get(0))?;
+                assert_eq!(sum, limit * (limit + 1) / 2);
+            }
+        }
+        assert!(measurement.complete());
+        assert_eq!(measurement.0.statement_vm_steps.load(Ordering::Relaxed), expected_steps * 2);
+        assert_eq!(measurement.0.statements.load(Ordering::Relaxed), 6);
+        assert_eq!(measurement.0.opened_connections.load(Ordering::Relaxed), 2);
+        assert_eq!(measurement.0.temporary_bytes.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn native_vm_steps_include_trigger_work_and_interrupted_sql() -> Result<()> {
+        fn run(conn: &Connection) -> Result<u64> {
+            conn.execute_batch("CREATE TABLE input(value); CREATE TABLE audit(value);
+                CREATE TRIGGER audit_input AFTER INSERT ON input BEGIN
+                  INSERT INTO audit VALUES(new.value); UPDATE audit SET value=value+1;
+                END;")?;
+            let mut insert = conn.prepare("INSERT INTO input VALUES(?1)")?;
+            let mut steps = 0u64;
+            for value in 0..3 {
+                insert.execute([value])?;
+                steps += u64::try_from(insert.reset_status(StatementStatus::VmStep))?;
+            }
+            Ok(steps)
+        }
+        let baseline = Connection::open_in_memory()?;
+        let expected = run(&baseline)?;
+        let measurement = DiagnosticSqlMeasurement::start()?;
+        let conn = Connection::open_in_memory()?;
+        run(&conn)?;
+        // Remove setup costs by comparing a fresh execution of the same
+        // trigger-bearing statement to the untraced native status counter.
+        conn.execute_batch("DELETE FROM input; DELETE FROM audit;")?;
+        let before = measurement.0.statement_vm_steps.load(Ordering::Relaxed);
+        let mut insert = conn.prepare("INSERT INTO input VALUES(?1)")?;
+        for value in 0..3 { insert.execute([value])?; }
+        drop(insert);
+        assert_eq!(measurement.0.statement_vm_steps.load(Ordering::Relaxed) - before, expected);
+        let before = measurement.0.statement_vm_steps.load(Ordering::Relaxed);
+        conn.progress_handler(1000, Some(|| true))?;
+        assert!(conn.execute_batch("WITH RECURSIVE t(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM t WHERE n<100000) SELECT sum(n) FROM t").is_err());
+        conn.progress_handler(0, None::<fn() -> bool>)?;
+        assert!(measurement.0.statement_vm_steps.load(Ordering::Relaxed) > before);
+        drop(conn);
+        assert!(measurement.complete());
+        Ok(())
+    }
+
+    #[test]
+    fn vacuum_internal_vms_are_not_an_exact_profile_total() -> Result<()> {
+        let measurement = DiagnosticSqlMeasurement::start()?;
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch("CREATE TABLE input(value);
+            WITH RECURSIVE t(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM t WHERE n<1000)
+            INSERT INTO input SELECT n FROM t;")?;
+        let before = measurement.0.statement_vm_steps.load(Ordering::Relaxed);
+        let callbacks = Arc::new(AtomicU64::new(0));
+        let observed = Arc::clone(&callbacks);
+        // Test-only cadence 1 observes the hidden VACUUM SQL too. This is not
+        // used to multiply production callback counts into an SQL total.
+        conn.progress_handler(1, Some(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+            false
+        }))?;
+        conn.execute("VACUUM INTO ?1", [":memory:"])?;
+        conn.progress_handler(0, None::<fn() -> bool>)?;
+        let profiled = measurement.0.statement_vm_steps.load(Ordering::Relaxed) - before;
+        assert!(profiled > 0);
+        assert!(callbacks.load(Ordering::Relaxed) > profiled * 10,
+            "trace-suppressed VACUUM work must not be advertised as exact");
+        drop(conn);
+        assert!(measurement.complete(), "connection coverage alone does not prove VM coverage");
+        let observation = sample_capacity_observation();
+        assert!(!observation.sql.exact_vm_steps);
+        assert_eq!(observation.sql.vm_steps_kind, "profiled-subset-lower-bound");
+        Ok(())
+    }
+
+    #[test]
+    fn native_temp_spill_counter_observes_unlinked_files_and_scope_cleans_up_on_error() -> Result<()> {
+        let measurement = DiagnosticSqlMeasurement::start()?;
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "PRAGMA temp_store=FILE; PRAGMA temp.cache_size=4;
+             CREATE TEMP TABLE spill(body BLOB);
+             WITH RECURSIVE t(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM t WHERE n<10000)
+             INSERT INTO spill SELECT zeroblob(1024) FROM t;"
+        )?;
+        let mut expected = 0;
+        let mut highwater = 0;
+        // SAFETY: this test owns a live connection and writable counters.
+        let status = unsafe {
+            rusqlite::ffi::sqlite3_db_status64(conn.handle(), rusqlite::ffi::SQLITE_DBSTATUS_TEMPBUF_SPILL, &mut expected, &mut highwater, 0)
+        };
+        assert_eq!(status, rusqlite::ffi::SQLITE_OK);
+        assert!(expected > 0, "test must actually spill TEMP pages");
+        assert!(!measurement.complete(), "an open connection is incomplete evidence");
+        drop(conn);
+        assert!(measurement.complete());
+        assert_eq!(measurement.0.temporary_bytes.load(Ordering::Relaxed), expected as u64);
+        drop(measurement);
+        let failed = (|| -> Result<()> {
+            let _measurement = DiagnosticSqlMeasurement::start()?;
+            let conn = Connection::open_in_memory()?;
+            conn.execute_batch("SELECT no_such_column")?;
+            Ok(())
+        })();
+        assert!(failed.is_err());
+        let next = DiagnosticSqlMeasurement::start()?;
+        drop(Connection::open_in_memory()?);
+        assert!(next.complete(), "error must not leak the prior thread-local scope");
+        Ok(())
     }
 
     #[test]

@@ -144,6 +144,7 @@ fn main() -> Result<()> {
     let interruptions = measure_capacity_interruptions(
         Path::new(&positionals[0]),
         positionals.get(2).map(String::as_str),
+        mode,
     )?;
     observation.record_interruption_measurements(interruptions);
     println!("{}", serde_json::to_string_pretty(&observation)?);
