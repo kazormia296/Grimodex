@@ -1257,12 +1257,13 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control_within_capacit
                     &run_id,
                     &semantic_epoch_id,
                 )?;
+                super::nir1_entity_relation_index::preflight_stored_graph_capacity(conn, project_id)?;
+                if is_reserved_semantic_index_consumer_kind(&consumer_kind) {
+                    return Ok(());
+                }
                     let edges =
                         find_edges_by_consumer(conn, project_id, &consumer_kind, &consumer_key)?;
                 if edges.is_empty() {
-                    return Ok(());
-                }
-                if is_reserved_semantic_index_consumer_kind(&consumer_kind) {
                     return Ok(());
                 }
                 if !is_declared_consumer_kind(&consumer_kind) {
@@ -1647,6 +1648,8 @@ pub(crate) fn verify_v2_shadow_for_rebuild_in_tx_with_control(
     run_id: &str,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<RebuildShadowVerificationSummary> {
+    control.check(GraphWorkStage::Coverage)?;
+    super::nir1_entity_relation_index::preflight_stored_graph_capacity(conn, project_id)?;
     let mut verification = RebuildShadowVerificationSummary::default();
     let head_keys = match list_dependency_declaration_head_keys_in_tx(conn, project_id) {
         Ok(keys) => {
@@ -1954,7 +1957,7 @@ fn rebuild_derived_state_edges_in_project_with_control_within_capacity(
     // V2-only Consumers that have no V1 compatibility Edge. The sidecar is
     // returned in memory and skipped by the persisted Run outcome.
     let mut summary = RebuildDerivedStateSummary {
-        v2_shadow: db.with_conn(|conn| {
+        v2_shadow: db.with_read_transaction(|conn| {
             verify_v2_shadow_for_rebuild_in_tx_with_control(conn, project_id, run_id, control)
             })?,
         ..Default::default()
@@ -1971,11 +1974,7 @@ fn rebuild_derived_state_edges_in_project_with_control_within_capacity(
                 // rotation and makes the captured Run identity the authority
                 // for every Consumer publish in this pass.
                 ensure_rebuild_run_is_current_in_tx(conn, project_id, run_id, semantic_epoch_id)?;
-                let edges =
-                    find_edges_by_consumer(conn, project_id, &consumer_kind, &consumer_key)?;
-                if edges.is_empty() {
-                    return Ok(());
-                }
+                super::nir1_entity_relation_index::preflight_stored_graph_capacity(conn, project_id)?;
                 if is_reserved_semantic_index_consumer_kind(&consumer_kind) {
                     // The declared NIR-1 index is rebuilt by its own audited
                     // producer. Unknown bindings remain manual-terminal.
@@ -1986,6 +1985,11 @@ fn rebuild_derived_state_edges_in_project_with_control_within_capacity(
                         consumer_key = %consumer_key,
                         "NEX_RESERVED_SEMANTIC_INDEX_REBUILD_SKIPPED"
                     );
+                    return Ok(());
+                }
+                let edges =
+                    find_edges_by_consumer(conn, project_id, &consumer_kind, &consumer_key)?;
+                if edges.is_empty() {
                     return Ok(());
                 }
                 // Two separate questions, deliberately not one. Whether the

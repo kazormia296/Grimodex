@@ -58,7 +58,12 @@ impl CapacityBudget {
         Ok(())
     }
 
-    fn step(&self, grant: Option<&Arc<AtomicBool>>) -> bool {
+    fn step(&self, grant: Option<&Arc<AtomicBool>>, reserved_commit_tail: bool) -> bool {
+        // This one count was already charged before SQLite could commit.
+        // It cannot become a late SQL/deadline refusal after durability.
+        if reserved_commit_tail {
+            return false;
+        }
         let steps = self.steps.fetch_add(1, Ordering::Relaxed).saturating_add(1);
         steps > self.step_limit
             || (steps.is_multiple_of(1_000)
@@ -88,6 +93,7 @@ struct ProgressOwner {
 struct ProgressState {
     owner: Option<Arc<Mutex<ProgressOwner>>>,
     budgets: Vec<ActiveBudget>,
+    reserved_commit_tail: Arc<AtomicBool>,
 }
 
 type SharedProgress = Arc<Mutex<ProgressState>>;
@@ -109,9 +115,13 @@ fn state_for(conn: &Connection) -> SharedProgress {
 }
 
 fn install(conn: &Connection, state: SharedProgress) -> rusqlite::Result<()> {
-    let (owner, budgets) = {
+    let (owner, budgets, reserved_commit_tail) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
-        (state.owner.clone(), state.budgets.clone())
+        (
+            state.owner.clone(),
+            state.budgets.clone(),
+            Arc::clone(&state.reserved_commit_tail),
+        )
     };
     let owner_interval = owner
         .as_ref()
@@ -132,9 +142,12 @@ fn install(conn: &Connection, state: SharedProgress) -> rusqlite::Result<()> {
         interval,
         Some(move || {
             let _keep_registered_state_alive = &state;
+            let reserved_commit_tail = reserved_commit_tail.swap(false, Ordering::Relaxed);
             let mut stop = false;
             for active in &budgets {
-                stop |= active.budget.step(active.grant.as_ref());
+                stop |= active
+                    .budget
+                    .step(active.grant.as_ref(), reserved_commit_tail);
             }
             if let (Some(owner), Some(owner_interval)) = (&owner, owner_interval) {
                 pending += interval;
@@ -165,6 +178,84 @@ where
             }))
         });
     install(conn, state)
+}
+
+/// The audited COMMIT program is Init -> Goto -> AutoCommit. Goto drains
+/// the first two progress calls; AutoCommit calls sqlite3VdbeHalt BEFORE
+/// vdbe_return delivers the final one. Reserve that last count at SQLite's
+/// commit hook, after any FTS xSync SQL and before any durable commit. FTS
+/// xCommit is a no-op. This applies ONLY to this literal COMMIT statement.
+/// All terminal DML, preparation, xSync and the final count remain charged.
+pub(crate) fn commit_transaction(conn: &Connection) -> anyhow::Result<()> {
+    let state = state_for(conn);
+    let (budgets, tail) = {
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            state.budgets.clone(),
+            Arc::clone(&state.reserved_commit_tail),
+        )
+    };
+    if budgets.is_empty() {
+        return conn.execute_batch("COMMIT").map_err(Into::into);
+    }
+    let refused = Arc::new(AtomicBool::new(false));
+    let gate_refused = Arc::clone(&refused);
+    let gate_tail = Arc::clone(&tail);
+    // Charge the one remaining callback before allowing durability. The
+    // synchronous connection owner consumes this credit only in COMMIT's tail.
+    // This is the only commit-hook owner in the crate.
+    conn.commit_hook(Some(move || {
+        if budgets.iter().any(|active| {
+            active.check().is_err()
+                || active
+                    .budget
+                    .steps
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                        used.checked_add(1)
+                            .filter(|total| *total <= active.budget.step_limit)
+                    })
+                    .is_err()
+        }) {
+            gate_refused.store(true, Ordering::Relaxed);
+            return true;
+        }
+        gate_tail.store(true, Ordering::Relaxed);
+        false
+    }))?;
+    let mut scope = CommitScope {
+        conn,
+        tail,
+        installed: true,
+    };
+    let result = conn.execute_batch("COMMIT");
+    let cleanup = conn.commit_hook(None::<fn() -> bool>);
+    scope.tail.store(false, Ordering::Relaxed);
+    scope.installed = false;
+    if let Err(error) = cleanup {
+        anyhow::bail!("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: capacity commit hook restore: {error}; COMMIT: {result:?}");
+    }
+    if refused.load(Ordering::Relaxed) {
+        return Err(validation_terminated(
+            ValidationTerminationReason::CapacityExceeded,
+            "NIR1 Graph COMMIT capacity reservation refused before durable publication",
+        ));
+    }
+    result.map_err(Into::into)
+}
+
+struct CommitScope<'conn> {
+    conn: &'conn Connection,
+    tail: Arc<AtomicBool>,
+    installed: bool,
+}
+
+impl Drop for CommitScope<'_> {
+    fn drop(&mut self) {
+        self.tail.store(false, Ordering::Relaxed);
+        if self.installed {
+            let _ = self.conn.commit_hook(None::<fn() -> bool>);
+        }
+    }
 }
 
 struct BudgetScope<'conn> {
@@ -322,6 +413,24 @@ fn current_attempt() -> Option<Arc<CapacityBudget>> {
     ATTEMPT.with(|slot| slot.borrow().clone())
 }
 
+#[cfg(test)]
+pub(crate) mod materialization_probe {
+    thread_local! {
+        pub(crate) static READS: std::cell::RefCell<Option<Vec<(bool, bool)>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(crate) fn record(conn: &rusqlite::Connection, d1: bool, kind: &str, key: &str) {
+        use super::super::nir1_entity_relation_index::INDEX_KEY;
+        if kind == "semantic-index" && key == INDEX_KEY {
+            READS.with(|reads| {
+                if let Some(reads) = reads.borrow_mut().as_mut() {
+                    reads.push((d1, conn.is_autocommit()));
+                }
+            });
+        }
+    }
+}
+
 struct AttemptScope(Option<Arc<CapacityBudget>>);
 impl Drop for AttemptScope {
     fn drop(&mut self) {
@@ -431,6 +540,141 @@ mod tests {
         assert_eq!(run_sql(n - 1), (n, false));
     }
 
+    fn finalize_run_at_limit(
+        run_kind: &str,
+        limit: u64,
+        granted_fts: bool,
+    ) -> anyhow::Result<(u64, bool)> {
+        use super::super::maintenance_lifecycle::{
+            complete_maintenance_run_in_tx, create_maintenance_run_in_tx,
+        };
+        use super::super::repository::SystemRunWorkKeyReuse;
+        use super::super::task_leases::with_immediate_transaction;
+
+        let directory =
+            std::env::temp_dir().join(format!("grimodex-capacity-commit-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory)?;
+        let path = directory.join("capacity.sqlite");
+        crate::test_support::current_schema_memory()?.with_conn(|conn| {
+            conn.backup("main", &path, None)?;
+            Ok(())
+        })?;
+        let db = crate::Database::new(&path)?;
+        let (spec, key) = if run_kind == "dependency-verify" {
+            (
+                serde_json::json!({"verifyContractVersion":super::super::restore_rebuild::VERIFY_CONTRACT_VERSION}),
+                "dependency-verify:capacity-epoch",
+            )
+        } else {
+            (serde_json::json!({}), "dependency-rebuild-derived")
+        };
+        let handle = db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects(id,title) VALUES('capacity','Capacity');
+                INSERT INTO narrative_semantic_epochs(id,project_id,epoch_number,reason,created_at)
+                VALUES('capacity-epoch','capacity',0,'initial','2026-09-22T00:00:00.000Z');",
+            )?;
+            if granted_fts {
+                conn.execute_batch("CREATE VIRTUAL TABLE capacity_fts USING fts5(body)")?;
+            }
+            with_immediate_transaction(conn, |conn| {
+                create_maintenance_run_in_tx(
+                    conn,
+                    "capacity",
+                    run_kind,
+                    "capacity-epoch",
+                    key,
+                    &spec,
+                    &format!("sha256:{}", super::super::commit::digest_plan(&spec)),
+                    SystemRunWorkKeyReuse::RunningOnly,
+                )
+            })
+        })?;
+        let budget = CapacityBudget::new(limit, Instant::now() + DEADLINE);
+        struct Granted(Arc<AtomicBool>);
+        impl GraphWorkControl for Granted {
+            fn check(&mut self, _: GraphWorkStage) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn finalization_signal(&self) -> Option<Arc<AtomicBool>> {
+                Some(Arc::clone(&self.0))
+            }
+        }
+        let mut granted = Granted(Arc::new(AtomicBool::new(true)));
+        let mut foreground = ForegroundValidationControl;
+        let result = db.with_conn(|conn| {
+            with_capacity_scope(
+                conn,
+                Some(Arc::clone(&budget)),
+                if granted_fts {
+                    &mut granted
+                } else {
+                    &mut foreground
+                },
+                |_, _| {
+                    with_immediate_transaction(conn, |conn| {
+                        if granted_fts {
+                            conn.execute(
+                                "INSERT INTO capacity_fts(body) VALUES(?1)",
+                                ["pending FTS sync terms ".repeat(200)],
+                            )?;
+                        }
+                        complete_maintenance_run_in_tx(conn, &handle)?;
+                        Ok(())
+                    })
+                },
+            )
+        });
+        let succeeded = result.is_ok();
+        if let Err(error) = result {
+            assert!(
+                super::super::source_revision::is_validation_capacity_exceeded(&error),
+                "{error:#}"
+            );
+        }
+        // Autocommit alone cannot distinguish a rollback from a commit whose
+        // final progress callback returned SQLITE_INTERRUPT. Read durability
+        // through another WAL connection, before any failure re-finalization.
+        let observer = Connection::open(&path)?;
+        let state: (String, String) = observer.query_row(
+            "SELECT r.status,a.status FROM narrative_extraction_runs r
+             CROSS JOIN narrative_extraction_attempts a WHERE r.id=?1 AND a.id=?2",
+            rusqlite::params![handle.run_id, handle.attempt_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let expected = if succeeded { "completed" } else { "running" };
+        assert_eq!(
+            state,
+            (expected.into(), expected.into()),
+            "failed finalization must not be durable"
+        );
+        if granted_fts {
+            assert_eq!(
+                observer.query_row("SELECT count(*) FROM capacity_fts", [], |row| row
+                    .get::<_, i64>(0))?,
+                i64::from(succeeded)
+            );
+        }
+        drop(observer);
+        drop(db);
+        std::fs::remove_dir_all(directory)?;
+        Ok((budget.steps.load(Ordering::Relaxed), succeeded))
+    }
+
+    #[test]
+    fn commit_inside_capacity_scope_never_returns_failure_after_durable_run_success(
+    ) -> anyhow::Result<()> {
+        for run_kind in ["dependency-verify", "semantic-index-rebuild"] {
+            for granted_fts in [false, true] {
+                let (n, succeeded) = finalize_run_at_limit(run_kind, u64::MAX, granted_fts)?;
+                assert!(succeeded && n > 1);
+                assert_eq!(finalize_run_at_limit(run_kind, n, granted_fts)?, (n, true));
+                assert!(!finalize_run_at_limit(run_kind, n - 1, granted_fts)?.1);
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn nested_scope_carries_usage_and_deadline_without_replacing_owner() {
         let conn = Connection::open_in_memory().unwrap();
@@ -476,8 +720,8 @@ mod tests {
         let budget = CapacityBudget::new(1, Instant::now());
         let granted = Arc::new(AtomicBool::new(true));
         assert!(budget.check(Some(&granted)).is_ok());
-        assert!(!budget.step(Some(&granted)));
-        assert!(budget.step(Some(&granted)));
+        assert!(!budget.step(Some(&granted), false));
+        assert!(budget.step(Some(&granted), false));
         assert!(budget.check(Some(&granted)).is_err());
         let budget = CapacityBudget::new(u64::MAX, Instant::now());
         granted.store(false, Ordering::Release);

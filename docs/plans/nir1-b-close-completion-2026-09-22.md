@@ -49,6 +49,25 @@ owner. These cleanup obligations and file-install OS stalls have no absolute
 180-second termination guarantee. Normal Rebuild retains its existing per-consumer
 transaction semantics; the Graph generation remains an atomic transaction.
 
+COMMIT is a separate irreversible boundary within that same SQL budget.
+The fixed SQLite's literal COMMIT executes `Init → Goto → AutoCommit`;
+`Goto` drains two progress callbacks, and `AutoCommit` commits before its
+last callback. The transaction helper therefore uses SQLite's commit hook
+to check the existing deadline/grant policy and debit **one remaining count from every active
+budget before durability**. This gate runs after FTS `xSync`, so its SQL is
+still metered; FTS `xCommit` is a no-op in the audited source. Only the one
+prepaid tail callback cannot interrupt. A finalization grant does not exempt
+terminal DML, COMMIT preparation or FTS work from the SQL limit. The hook and
+credit are scoped to this literal COMMIT and removed before later SQL.
+The same 600,000,000 limit applies; no extra terminal allowance is added.
+
+Rebuild checks stored Graph capacity before its D1 read and at each consumer
+phase, within the transaction that reads that phase. The ordinary D1 path
+now owns a read transaction, and the cycle-control path keeps its existing
+IMMEDIATE transaction. Reserved semantic-index consumers are skipped before
+loading their Edge vectors. Reacquiring a connection never reuses an earlier
+phase's capacity verdict.
+
 No new IPC, table, authority, product Graph reader or dispatch is introduced.
 The normal maintenance/foreground owners retain transaction, finalization,
 interruption, cleanup and quarantine responsibility. The Native supervisor
@@ -258,10 +277,12 @@ The already-merged #600 Full is historical regression evidence at
 Its [PR ledger](https://github.com/kazormia296/Grimodex/pull/600) explicitly
 does not certify all T01–T36 combinations. It is not this child's CI receipt.
 
-## Final guarded boundary qualification
+## Initial guarded boundary qualification
 
 `boundaries-final/complete.json` records **8 successful fresh release children
-and 4 safe N+1 refusals**. The real Native fixture writer seeded each source,
+and 4 safe N+1 refusals** at the pre-review implementation delivered in
+`6e44efac09bc73c779673e0f02b677e44c1b8011`. The review correction receipts
+below supersede its candidate claim. The real Native fixture writer seeded each source,
 closed/checkpointed it, and the harness verified that measurement left its hash
 unchanged. An over-limit fixture may be created successfully as data while its
 embedded observation reports `status=failed`; it is not a qualified build.
@@ -321,7 +342,45 @@ large boundary fixtures. The original 19-path measurement protocol remains one
 warmup plus five runs per path; this confirmation-stage boundary protocol does
 not pool its observations into those historical medians.
 
-## Current receipts
+## Review corrections to PR #605
+
+The review of `ca05ae523e05 → 6e44efac09bc` identified two capacity gaps.
+Both were reproduced against the repository's bundled SQLite 3.53.2, then
+fixed within the existing transaction and Rebuild owners. No capacity value,
+authority, activation boundary or lifecycle owner changed.
+
+- P1: the regression places the real Verify/Rebuild Run/Attempt success writer
+  and COMMIT inside the capacity scope. With the successful callback total
+  minus one, the old implementation returned a capacity error while another
+  WAL connection read both rows as `completed`. With the commit reservation,
+  N succeeds and N−1 refuses before durability: that connection sees the prior
+  `running` pair before any failure re-finalization. The same test covers an
+  active finalization grant with pending FTS `xSync` work; that SQL remains
+  charged. Other commit errors retain ambiguous-outcome cleanup/quarantine.
+- P2: both real Rebuild entry variants refuse oversized active Graph D1/Edge
+  collections before calling their vector materializers. Eight cases cross
+  the row/byte limit independently for both collections and both owners; the
+  resulting Run/Attempt are `failed` with `manual` retry disposition. A second
+  test uses a separate WAL writer to enlarge Graph edges after the D1 snapshot
+  in each entry variant. The later phase detects the new size; D1 reads remain
+  inside their snapshots, and no Graph Edge vector is loaded.
+
+Artifacts for these corrections are under
+`.artifacts/nir1-capacity/pr605-review-fixes/`; the earlier directory above is
+retained as historical evidence. `p1-red-r4.log` and `p2-red-r2.log` contain
+the product regressions. Earlier fixture/compiler corrections remain retained
+and are not counted as product reproductions or passes.
+
+`focused-final.json` records 157 passing Rust tests: capacity (6), stored
+boundaries (4), Restore/Rebuild (98), transaction wrappers (3), Run lifecycle
+(21), and maintenance connection (25). Strict Clippy for the DB library and
+the three diagnostic/boundary/Apply integration targets passed in `clippy.log`.
+`quality.log` records `pnpm verify:quality`, including all 72 active writers.
+The release boundary rerun and replacement clean-candidate Quick/verify receipt
+are recorded with the delivery PR after the candidate is frozen. The original
+Quick at `6e44efac09bc` is not reused for the corrected candidate.
+
+## Initial delivery receipts
 
 Local artifacts are under `.artifacts/nir1-capacity/b-close-completion/`.
 The delivery PR records the frozen base/head/tree tuple and the clean-candidate Quick/verify receipt. Full CI and independent acceptance review are excluded by the user for this session; merge is outside the requested PR scope. This ledger does not claim them.

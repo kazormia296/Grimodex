@@ -73,6 +73,230 @@ fn stored_graph_rows_and_bytes_accept_n_and_refuse_n_plus_one() -> Result<()> {
     Ok(())
 }
 
+fn rebuild_cycle_control(
+    should_stop: &dyn Fn() -> Result<()>,
+) -> super::super::maintenance_runtime::MaintenanceCycleControl<'_> {
+    use super::super::maintenance_runtime::{DesiredWork, MaintenanceCycleControl};
+    fn no_key(_: &str) -> Result<()> {
+        Ok(())
+    }
+    fn no_work(_: &DesiredWork) -> Result<()> {
+        Ok(())
+    }
+    MaintenanceCycleControl {
+        should_stop,
+        stop_signal: None,
+        finalization_granted_signal: None,
+        defer_preempted_run: &no_key,
+        grant_finalize: &no_key,
+        register_work: &no_work,
+        work_started: &no_work,
+        work_completed: &no_work,
+        work_noop_completed: &no_work,
+        work_deferred: &no_work,
+        attach_run: None,
+        reserve_run: None,
+        mark_run_creation_started: None,
+        mark_run_reuse_selection_unknown: None,
+        mark_run_creation_outcome: None,
+        reset_run_creation_tracking: None,
+        mark_run_terminalized: None,
+    }
+}
+
+#[test]
+fn rebuild_entry_refuses_oversize_graph_before_d1_or_edge_materialization() -> Result<()> {
+    use super::super::restore_rebuild::rebuild_narrative_derived_state_for_project_with_control;
+    use nir1_capacity::materialization_probe::READS;
+
+    let control = rebuild_cycle_control(&|| Ok(()));
+    for controlled in [false, true] {
+        for d1 in [true, false] {
+            for bytes in [false, true] {
+                let db = crate::test_support::current_schema_memory()?;
+                db.with_conn(|conn| {
+                    conn.execute_batch("INSERT INTO projects(id,title) VALUES('p','P');
+                        INSERT INTO narrative_semantic_epochs(id,project_id,epoch_number,reason,created_at)
+                        VALUES('epoch','p',0,'initial','2026-09-22T00:00:00.000Z');")?;
+                    let n = if bytes { 1 } else { nir1_capacity::STORED_COLLECTION_LIMIT as i64 + 1 };
+                    if d1 {
+                        conn.execute("INSERT INTO narrative_dependency_declaration_sets
+                            (id,project_id,consumer_kind,consumer_key,producer_id,producer_generation,dependency_set_digest,state,created_at)
+                            VALUES('set','p',?1,?2,'producer',1,?3,'sealed','now')",
+                            params![CONSUMER_KIND,INDEX_KEY,format!("sha256:{}", "0".repeat(64))])?;
+                        conn.execute("INSERT INTO narrative_dependency_declaration_heads
+                            (project_id,consumer_kind,consumer_key,active_declaration_set_id,producer_id,producer_generation,version,updated_at)
+                            VALUES('p',?1,?2,'set','producer',1,1,'now')", params![CONSUMER_KIND,INDEX_KEY])?;
+                        conn.execute("WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<?1)
+                            INSERT INTO narrative_dependency_declaration_entries
+                            (id,declaration_set_id,source_object_identity,dependency_key,dependency_role,role_contract_version,selector_json,selector_digest,created_at)
+                            SELECT 'e'||n,'set','codex:e'||n,?2,'direct-evidence','1','{}',?2,'now' FROM x",
+                            params![n,format!("sha256:{}", "0".repeat(64))])?;
+                        if bytes {
+                            conn.execute("UPDATE narrative_dependency_declaration_entries SET selector_json=?1",
+                                [serde_json::json!({"padding":"x".repeat(nir1_capacity::INPUT_BYTES + 1)}).to_string()])?;
+                        }
+                    } else {
+                        conn.execute("WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<?1)
+                            INSERT INTO narrative_dependency_edges
+                            (id,project_id,consumer_kind,consumer_key,source_object_identity,read_set_json,created_at)
+                            SELECT 'e'||n,'p',?2,?3,'codex:e'||n,'[]','now' FROM x", params![n,CONSUMER_KIND,INDEX_KEY])?;
+                        if bytes {
+                            conn.execute("UPDATE narrative_dependency_edges SET read_set_json=?1",
+                                [serde_json::json!(["x".repeat(nir1_capacity::INPUT_BYTES + 1)]).to_string()])?;
+                        }
+                    }
+                    Ok(())
+                })?;
+                READS.with(|reads| reads.replace(Some(Vec::new())));
+                let result = rebuild_narrative_derived_state_for_project_with_control(
+                    &db,
+                    "p",
+                    controlled.then_some(&control),
+                    "capacity-rebuild",
+                );
+                let reads = READS.with(|reads| reads.take().unwrap());
+                assert!(reads.is_empty(), "materialized before admission: controlled={controlled}, d1={d1}, bytes={bytes}: {reads:?}");
+                let error = result.expect_err("oversize stored Graph must refuse Rebuild");
+                assert!(is_validation_capacity_exceeded(&error), "{error:#}");
+                assert!(
+                    error
+                        .to_string()
+                        .contains(if d1 { "stored-D1-" } else { "stored-edge-" }),
+                    "{error:#}"
+                );
+                db.with_conn(|conn| {
+                    assert!(conn.is_autocommit());
+                    let statuses: (String, String, String) = conn.query_row(
+                        "SELECT r.status,a.status,a.retry_disposition FROM narrative_extraction_runs r
+                         JOIN narrative_extraction_tasks t ON t.run_id=r.id
+                         JOIN narrative_extraction_attempts a ON a.task_id=t.id
+                         WHERE r.run_kind='semantic-index-rebuild'", [],
+                        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+                    assert_eq!(statuses, ("failed".into(),"failed".into(),"manual".into()));
+                    Ok(())
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn rebuild_rechecks_graph_growth_after_the_d1_snapshot() -> Result<()> {
+    use super::super::restore_rebuild::{
+        rebuild_narrative_derived_state_for_project_with_control,
+        rebuild_narrative_derived_state_for_project_with_graph_control,
+    };
+    use nir1_capacity::materialization_probe::READS;
+
+    struct Check<'a>(&'a dyn Fn() -> Result<()>);
+    impl GraphWorkControl for Check<'_> {
+        fn check(&mut self, _: GraphWorkStage) -> Result<()> {
+            (self.0)()
+        }
+        fn allows_full_eligibility(&self) -> bool {
+            true
+        }
+    }
+    for controlled in [false, true] {
+        let root =
+            std::env::temp_dir().join(format!("nir1-rebuild-capacity-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)?;
+        let path = root.join("workspace.db");
+        crate::test_support::current_schema_memory()?.with_conn(|conn| {
+            conn.backup("main", &path, None)?;
+            Ok(())
+        })?;
+        let db = crate::Database::new(&path)?;
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects(id,title) VALUES('p','P');
+                INSERT INTO narrative_semantic_epochs(id,project_id,epoch_number,reason,created_at)
+                VALUES('epoch','p',0,'initial','2026-09-22T00:00:00.000Z');",
+            )?;
+            Ok(())
+        })?;
+        let runtime = NirChronicleIndexRuntime::new(&db, 1);
+        let snapshot =
+            db.with_read_transaction(|conn| prepare_graph_index_build(conn, &runtime, "p"))?;
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            publish_nir1_entity_relation_index_in_tx(&tx, &runtime, snapshot)?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        let writer = Connection::open(&path)?;
+        writer.busy_timeout(Duration::ZERO)?;
+        let injected = std::cell::Cell::new(false);
+        let padding = serde_json::json!(["x".repeat(nir1_capacity::INPUT_BYTES + 1)]).to_string();
+        let grow_after_d1 = || -> Result<()> {
+            let read_d1 = READS.with(|reads| {
+                reads
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|reads| reads.iter().any(|(d1, _)| *d1))
+            });
+            if injected.get() || !read_d1 {
+                return Ok(());
+            }
+            // A separate WAL writer can change a read snapshot immediately;
+            // for the cycle's IMMEDIATE snapshot, wait until the owner next
+            // releases the transaction. Never wait or reenter its mutex.
+            match writer.execute_batch("BEGIN IMMEDIATE") {
+                Ok(()) => {}
+                Err(rusqlite::Error::SqliteFailure(code, _))
+                    if matches!(
+                        code.code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    ) =>
+                {
+                    return Ok(())
+                }
+                Err(error) => return Err(error.into()),
+            }
+            writer.execute(
+                "UPDATE narrative_dependency_edges SET read_set_json=?1
+                WHERE project_id='p' AND consumer_kind=?2 AND consumer_key=?3",
+                params![padding, CONSUMER_KIND, INDEX_KEY],
+            )?;
+            writer.execute_batch("COMMIT")?;
+            injected.set(true);
+            Ok(())
+        };
+        READS.with(|reads| reads.replace(Some(Vec::new())));
+        let result = if controlled {
+            rebuild_narrative_derived_state_for_project_with_control(
+                &db,
+                "p",
+                Some(&rebuild_cycle_control(&grow_after_d1)),
+                "capacity-rebuild",
+            )
+        } else {
+            rebuild_narrative_derived_state_for_project_with_graph_control(
+                &db,
+                "p",
+                &mut Check(&grow_after_d1),
+            )
+        };
+        let reads = READS.with(|reads| reads.take().unwrap());
+        assert!(injected.get(), "the concurrent writer must actually commit");
+        assert!(
+            !reads.is_empty() && reads.iter().all(|(d1, autocommit)| *d1 && !*autocommit),
+            "all D1 reads use snapshots; no Graph Edge materialization: {reads:?}"
+        );
+        let error =
+            result.expect_err("the later phase must recheck the newly enlarged stored Graph");
+        assert!(is_validation_capacity_exceeded(&error), "{error:#}");
+        assert!(error.to_string().contains("stored-edge-bytes"), "{error:#}");
+        drop(writer);
+        drop(runtime);
+        drop(db);
+        std::fs::remove_dir_all(root)?;
+    }
+    Ok(())
+}
+
 #[test]
 fn source_byte_boundary_and_roster_projection_guard_preserve_prior_generation() -> Result<()> {
     let root = std::env::temp_dir().join(format!("nir1-capacity-bytes-{}", uuid::Uuid::new_v4()));

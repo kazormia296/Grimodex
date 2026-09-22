@@ -747,6 +747,8 @@ fn load_verified_set_by_id(
           WHERE declaration_set_id = ?1
           ORDER BY id"
     ))?;
+    #[cfg(test)]
+    super::nir1_capacity::materialization_probe::record(conn, true, &set.consumer_kind, &set.consumer_key);
     let raw_entries = statement
         .query_map([set.id.as_str()], row_to_entry)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
