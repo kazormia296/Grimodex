@@ -225,6 +225,7 @@
     "dependencyEdgeCount",
     "reportRecordCount",
     "totalPeakMemory",
+    "rustHeapRequestedHighWater",
     "totalPeakRss",
     "rss",
     "hwmRss",
@@ -233,6 +234,7 @@
     "wallTime",
     "cpuTime",
     "statementVmSteps",
+    "sqlConnectionCoverage",
     "progressCallbacks",
     "readBytes",
     "writeBytes",
@@ -240,8 +242,9 @@
     "connectionOccupancy",
     "publishOccupancy",
     "foregroundWait",
-    "cancelLatency"
+    "cancelLatency",
+    "interruptionPhaseProofs"
   ],
-  "notMeasuredPolicy": "A field remains explicitly listed under notMeasured when this read-only probe cannot observe it; null is not a zero.",
+  "notMeasuredPolicy": "A field remains explicitly listed under notMeasured when this disposable-copy diagnostic cannot observe it; null is not a zero. statementVmSteps is a PROFILE-visible subset/lower bound, never a lifecycle SQL upper bound (SQLite suppresses VACUUM/SqlExec internal tracing). temporaryBytes counts cumulative SQLite TEMPBUF_SPILL writes, not peak filesystem occupancy. Interruption probes name their full-set phase; Restore file installation and worst-case latency are not inferred.",
   "supportedCapacity": "No numeric capacity or deadline is ratified by this manifest or by a diagnostic result."
 }

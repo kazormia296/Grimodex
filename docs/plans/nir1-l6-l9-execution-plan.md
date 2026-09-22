@@ -7,6 +7,8 @@ Tree: b7f97fc7dbbb5243da090b41dbc884ecfdc0ec2b
 
 状態: 2026-09-17現在、#596/#597 foundations、#598 A3 review remediation、#599 typed Packing review remediationがmasterにある。Graph、Packing、AI dispatchは未activateで、Bはcapacity-remediation-in-progressである。proposal/5の契約は確認済みだが、supported capacityの数値、whole-project build、B activationは未完了である。downstream threat modelはdraft、NIR-1全体のruntime integration・activation・受入れは未完了である。#591のA2限定完了とR0台帳は履歴として保持する。
 
+2026-09-22実装追記: #600/#601の共有lifecycle実装はmasterへマージ済みで、`master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`（Tree `959f57102e93099872cffd07ea6970e83b7952c9`）以降の残工程は [NIR-1 残工程実装計画](nir1-post-b-execution-plan.md) が所有する。B-close第1段階と第2段階の診断実装で19-path / 114-child-run容量matrixは完走した。第2段階はnative temp spill/SQLとmode固有のfull-set取消を追加計測したが、[診断記録](nir1-b-close-capacity-observation-2026-09-22.md#stage-2-diagnostic-follow-up--2026-09-22) に残すRestore全体・総temporary disk等の未測定項目、draft数値契約の明示確認と境界受入れがあるため、Bは引き続きcapacity-remediation-in-progressである。Graph、Packing、AI dispatchは未activateのままである。
+
 ## 概要
 
 本書は、L0〜L5を引き継いでL6〜L9を実装するための実行契約である。統合計画の履歴的な設計・受入れ記録を置き換えず、実装順序、公開前提、境界、評価、完了判定を具体化する。

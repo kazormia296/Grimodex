@@ -4,12 +4,12 @@
 
 2026-09-08追記: [A5候補2](nir1-a5-candidate-2.md)のIR専用floor、Raw順序維持＋最大1件追加、復旧正例probeの別版実装とL5検証が承認された。以下の初回A5算法は比較履歴として残し、現候補は追加policy版に従う。固定Gold・B/D/T・安全境界・受入れ条件は維持する。
 
-## Current snapshot (2026-09-16)
+## Current snapshot (2026-09-22)
 
-PR #591 completes the limited A2 Entity／Relation review scope: normal preparation → Evidence confirmation → explicit Decision on an immutable Revision → target-bound cold reopen. The current candidate is `master@81d0390fe7a935191753b41e5673503f99d51d16` with Tree `0decaab5470c2408be81856ac2373b28e078b945`. Graph, Packing, and AI dispatch remain inactive; the downstream threat model is draft; NIR-1 overall acceptance remains incomplete.
+PR #591の限定A2 Entity／Relation reviewに加え、#600/#601の共有lifecycle実装はmasterへマージ済みである。現在の実装基点は `master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`（Tree `959f57102e93099872cffd07ea6970e83b7952c9`）。残工程は [NIR-1 残工程実装計画](nir1-post-b-execution-plan.md) を参照する。B-close第1段階に続き第2段階のnative temp spill/SQL・mode固有full-set取消の容量matrixも完走したが、[診断記録](nir1-b-close-capacity-observation-2026-09-22.md#stage-2-diagnostic-follow-up--2026-09-22) の未測定項目、未批准の数値契約と境界受入れを残す。Graph、Packing、AI dispatchはinactive、downstream threat modelはdraft、NIR-1全体受入れは未完了である。NIR-1 overall acceptance remains incomplete.
 
 The dated R0 entries below are historical ledger records. They retain the earlier
-ready conditions without changing the current A2 completion boundary above.
+ready conditions without changing the current limited-A2 and incomplete B-close boundaries above.
 
 ### Historical approval snapshot (2026-09-08)
 
