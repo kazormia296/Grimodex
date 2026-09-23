@@ -2223,7 +2223,7 @@ export function assertRestoreFixtureEvidence(
 
 /**
  * Seed a real scene Source and a fully shaped Dependency Edge through the
- * product's typed APIs before the scheduler launch.  The final Edge
+ * product's typed APIs before the post-restore scheduler launch. The final Edge
  * declaration uses the harness-owned fixture DML seam because no
  * renderer-facing Edge writer exists; its owner Run and every persisted field
  * are validated immediately after a renderer relaunch.
@@ -2231,7 +2231,7 @@ export function assertRestoreFixtureEvidence(
 export async function launchRestoreFixtureForJourney(
   harness,
   id,
-  { fixturePhase = "restore-fixture" } = {},
+  { fixturePhase = "restore-fixture", bootstrapBackfill = false } = {},
 ) {
   if (typeof id !== "string" || id.trim() === "") {
     throw new Error("restore fixture launcher requires a journey id");
@@ -2242,12 +2242,39 @@ export async function launchRestoreFixtureForJourney(
   const phase = `${id}/${fixturePhase}`;
   const launched = await withLaunchEnvironment(
     {
-      setup: "disabled",
+      setup: bootstrapBackfill ? null : "disabled",
       ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
     },
     () => harness.launch(phase),
   );
   return { ...launched, phase };
+}
+
+export async function waitForRestoreFixtureBackfill(context) {
+  // The ordinary scheduler owns foreground preemption and rediscovery.
+  // Poll its durable result; never retry a side-effecting manual command.
+  return context.harness.waitUntil(
+    async () => {
+      const status = await context.harness.invokeOk(
+        context.page,
+        "get_narrative_backfill_status",
+        { payload: { projectId: context.projectId } },
+      );
+      if (
+        status?.status !== "completed" ||
+        typeof status.runId !== "string" ||
+        status.runId.trim() === ""
+      ) {
+        throw new Error(
+          `restore fixture automatic Backfill is not completed: ${JSON.stringify(status)}`,
+        );
+      }
+      return status;
+    },
+    "restore fixture automatic Backfill completion",
+    NARRATIVE_MAINTENANCE_WAIT_MS,
+    100,
+  );
 }
 
 async function seedRestoreFixtureEvidence(
@@ -2258,6 +2285,7 @@ async function seedRestoreFixtureEvidence(
 ) {
   let fixtureLaunch = await launchRestoreFixtureForJourney(harness, id, {
     fixturePhase,
+    bootstrapBackfill: true,
   });
   const closeFixtureLaunch = async () => {
     const launched = fixtureLaunch;
@@ -2273,6 +2301,7 @@ async function seedRestoreFixtureEvidence(
       id,
       null,
     );
+    const backfillStatus = await waitForRestoreFixtureBackfill(context);
     const preSceneRuns = await context.runs();
     const preSceneFeedAndCursor = await context.feedAndCursor();
     const scene = await createSceneIfNeeded(context, "restore-fixture-source");
@@ -2288,29 +2317,9 @@ async function seedRestoreFixtureEvidence(
         )}`,
       );
     }
-    // Establish the same durable legacy boundary that a real workspace has
-    // before restore. Calling the typed production route is important here:
-    // an empty/epochless fixture makes the first post-restore open dispatch a
-    // Backfill, so the journey can no longer prove the required Verify ->
-    // Rebuild -> confirmation Verify chain. A production startup scheduler
-    // may win the race before this explicit retry; accept that alreadyRun
-    // response when the canonical persisted Run/Epoch checks below confirm
-    // the fresh fixture boundary.
-    const backfillOutcome = await context.harness.invokeOk(
-      context.page,
-      "retry_narrative_legacy_backfill",
-      { payload: { projectId: context.projectId } },
-    );
-    if (
-      !backfillOutcome ||
-      !["ran", "alreadyRun"].includes(backfillOutcome.outcome) ||
-      typeof backfillOutcome.runId !== "string" ||
-      backfillOutcome.runId.trim() === ""
-    ) {
-      throw new Error(
-        `restore fixture requires a fresh typed/production legacy Backfill outcome: ${JSON.stringify(backfillOutcome)}`,
-      );
-    }
+    // Bind the observed completed Backfill to its exact durable Run/Epoch.
+    // An epochless fixture would dispatch Backfill after Restore instead of
+    // proving Verify -> Rebuild -> confirmation Verify.
     const backfillRuns = await context.query(
       `SELECT id,
               project_id AS projectId,
@@ -2323,7 +2332,7 @@ async function seedRestoreFixtureEvidence(
               completed_at AS completedAt
          FROM narrative_extraction_runs
         WHERE project_id = ? AND id = ?`,
-      [context.projectId, backfillOutcome.runId],
+      [context.projectId, backfillStatus.runId],
     );
     const initialEpochs = await context.query(
       `SELECT id,
@@ -2342,7 +2351,7 @@ async function seedRestoreFixtureEvidence(
     if (
       backfillRuns.length !== 1 ||
       !backfillRun ||
-      backfillRun.id !== backfillOutcome.runId ||
+      backfillRun.id !== backfillStatus.runId ||
       backfillRun.projectId !== context.projectId ||
       backfillRun.runKind !== "backfill" ||
       backfillRun.workKey !== "legacy-dependency-backfill:v3" ||
@@ -2359,7 +2368,7 @@ async function seedRestoreFixtureEvidence(
       throw new Error(
         `restore fixture legacy Backfill boundary is not canonical: ${JSON.stringify(
           {
-            outcome: backfillOutcome,
+            backfillStatus,
             backfillRun,
             initialEpoch,
           },
@@ -2384,7 +2393,7 @@ async function seedRestoreFixtureEvidence(
     }
     context.record("restore-fixture-backfill-boundary-seeded", {
       runId: backfillRun.id,
-      outcome: backfillOutcome.outcome,
+      status: backfillStatus.status,
       semanticEpochId: backfillRun.semanticEpochId,
       epochNumber: Number(initialEpoch.epochNumber),
       reason: initialEpoch.reason,

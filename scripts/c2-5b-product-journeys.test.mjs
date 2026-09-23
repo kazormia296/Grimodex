@@ -2220,7 +2220,7 @@ test("restore fixture backup contract serializes and preserves evidence reads", 
   }
 });
 
-test("restore fixture requires a typed completed legacy Backfill boundary", async () => {
+test("restore fixture binds automatic Backfill completion to its exact durable boundary", async () => {
   const source = await readFile(
     new URL(
       "../electron/scripts/narrative-maintenance-product-journeys.mjs",
@@ -2232,7 +2232,7 @@ test("restore fixture requires a typed completed legacy Backfill boundary", asyn
     /async function seedRestoreFixtureEvidence\([\s\S]*?\n}\n\n\/\*\*/,
   )?.[0];
   assert.ok(seedBody, "restore fixture seeding helper must remain inspectable");
-  const backfillRouteAt = seedBody.indexOf('"retry_narrative_legacy_backfill"');
+  const backfillRouteAt = seedBody.indexOf("waitForRestoreFixtureBackfill(context)");
   const ownerRunAt = seedBody.indexOf('"narrative_extraction_create_run"');
   const gapAt = seedBody.search(
     /createRestoreFixtureDerivedStateGap\(\s*context/,
@@ -2240,7 +2240,7 @@ test("restore fixture requires a typed completed legacy Backfill boundary", asyn
   const backupAt = seedBody.indexOf("createRestoreBackupFixture(workspace)");
   assert.ok(
     backfillRouteAt >= 0,
-    "restore fixture must seed legacy Backfill through the typed production route",
+    "restore fixture must observe the scheduler's completed Backfill through the typed status route",
   );
   assert.ok(
     backfillRouteAt < ownerRunAt && backfillRouteAt < gapAt,
@@ -2250,11 +2250,10 @@ test("restore fixture requires a typed completed legacy Backfill boundary", asyn
     gapAt < backupAt,
     "the gap must be captured only after the completed Backfill boundary",
   );
-  assert.match(
-    seedBody,
-    /!\["ran",\s*"alreadyRun"\]\.includes\(backfillOutcome\.outcome\)/,
-    "the fixture must accept only a typed run or a startup-created alreadyRun outcome",
-  );
+  assert.match(seedBody, /fixturePhase,\s*bootstrapBackfill: true/);
+  assert.doesNotMatch(seedBody, /retry_narrative_legacy_backfill/);
+  assert.match(seedBody, /\[context\.projectId, backfillStatus\.runId\]/);
+  assert.match(seedBody, /backfillRun\.id !== backfillStatus\.runId/);
   assert.match(
     seedBody,
     /runKind\s*!==\s*"backfill"[\s\S]*status\s*!==\s*"completed"/,
@@ -3054,6 +3053,128 @@ test("transient and terminal validators reject fallback and same-millisecond fal
       failed,
     ).map((run) => run.id),
     ["same-ms-retry"],
+  );
+});
+
+test("restore fixture bootstrap enables automatic Backfill without enabling later fixture maintenance", async () => {
+  const keys = [
+    "CI",
+    NARRATIVE_MAINTENANCE_SETUP_ENV,
+    NARRATIVE_FRESHNESS_DISABLE_ENV,
+    NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+    NARRATIVE_MAINTENANCE_NONCE_ENV,
+  ];
+  const before = new Map(keys.map((key) => [key, process.env[key]]));
+  const launches = [];
+  const harness = {
+    async launch(phase) {
+      launches.push({
+        phase,
+        setup: process.env[NARRATIVE_MAINTENANCE_SETUP_ENV],
+        freshness: process.env[NARRATIVE_FRESHNESS_DISABLE_ENV],
+        receipt: expectedNarrativeMaintenanceCiReceipt(process.env),
+      });
+      return { app: {}, page: {} };
+    },
+  };
+  try {
+    process.env.CI = "true";
+    process.env[NARRATIVE_MAINTENANCE_SETUP_ENV] = "disabled";
+    process.env[NARRATIVE_FRESHNESS_DISABLE_ENV] = "disabled";
+    for (const id of [
+      "c2-5b-restore-verify-rebuild-verify",
+      "c2-5b-no-automatic-repair",
+    ]) {
+      await narrativeMaintenanceProductJourneys.launchRestoreFixtureForJourney(
+        harness, id, { bootstrapBackfill: true },
+      );
+      await narrativeMaintenanceProductJourneys.launchRestoreFixtureForJourney(
+        harness, id,
+      );
+      assert.equal(process.env[NARRATIVE_MAINTENANCE_SETUP_ENV], "disabled");
+      assert.equal(process.env[NARRATIVE_FRESHNESS_DISABLE_ENV], "disabled");
+    }
+  } finally {
+    for (const [key, value] of before) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  for (const [index, launch] of launches.entries()) {
+    assert.equal(launch.setup, index % 2 === 0 ? undefined : "disabled");
+    assert.equal(launch.freshness, undefined);
+    assert.equal(launch.receipt.active, true);
+    assert.ok(launch.phase.endsWith("/restore-fixture"));
+  }
+  assert.equal(new Set(launches.map(({ receipt }) => receipt.nonce)).size, 4);
+});
+
+test("restore fixture waits read-only across preemption until automatic Backfill completes", async () => {
+  const completed = { runId: "completed-backfill", status: "completed" };
+  const statuses = [
+    null,
+    { runId: "preempted-backfill", status: "cancelled" },
+    { runId: "completed-backfill", status: "pending" },
+    { runId: "completed-backfill", status: "running" },
+    completed,
+  ];
+  const commands = [];
+  const page = {};
+  const context = {
+    page,
+    projectId: "fixture-project",
+    harness: {
+      async invokeOk(actualPage, command, args) {
+        assert.equal(actualPage, page);
+        assert.equal(command, "get_narrative_backfill_status");
+        assert.deepEqual(args, { payload: { projectId: "fixture-project" } });
+        commands.push(command);
+        return statuses.shift();
+      },
+      async waitUntil(predicate, label, timeoutMs, intervalMs) {
+        assert.equal(label, "restore fixture automatic Backfill completion");
+        assert.equal(timeoutMs, 5_000);
+        assert.equal(intervalMs, 100);
+        for (let index = 0; index < 4; index += 1) {
+          await assert.rejects(predicate, /Backfill is not completed/);
+        }
+        return predicate();
+      },
+    },
+  };
+  assert.equal(
+    await narrativeMaintenanceProductJourneys.waitForRestoreFixtureBackfill(context),
+    completed,
+  );
+  assert.equal(commands.length, 5);
+});
+
+test("restore fixture rejects malformed Backfill identity and propagates status-read failure", async () => {
+  for (const status of [
+    { status: "completed" },
+    { status: "completed", runId: " " },
+    { status: "completed", runId: 1 },
+    { status: "failed", runId: "failed-backfill" },
+  ]) {
+    await assert.rejects(
+      narrativeMaintenanceProductJourneys.waitForRestoreFixtureBackfill({
+        harness: {
+          invokeOk: async () => status,
+          waitUntil: (predicate) => predicate(),
+        },
+      }),
+      /Backfill is not completed/,
+    );
+  }
+  const error = new Error("typed status read failed");
+  await assert.rejects(
+    narrativeMaintenanceProductJourneys.waitForRestoreFixtureBackfill({
+      harness: {
+        invokeOk: async () => { throw error; },
+        waitUntil: (predicate) => predicate(),
+      },
+    }),
+    (actual) => actual === error,
   );
 });
 
