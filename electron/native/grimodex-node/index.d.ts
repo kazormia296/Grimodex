@@ -604,10 +604,8 @@ export declare class Backend {
   relatedScenesReconcile(): Promise<string>
   nir1EvidenceQualify(ownerKey: string, navigationIdentity: string): Promise<string>
   /**
-   * Read a bounded, request-local NIR-1 Entity/Relation graph.  The
-   * workspace path is checked against the pinned Native authority before
-   * the read transaction begins; the renderer cannot choose a different
-   * DB by changing the project or seed fields.
+   * The product Graph route stays closed until C-query/C-product acceptance.
+   * Internal canonical reader tests do not authorize this exported entry.
    */
   nir1GraphQuery(payload: any): Promise<string>
   /**
