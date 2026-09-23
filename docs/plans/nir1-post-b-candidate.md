@@ -119,3 +119,18 @@ The pure receipt core focused tests passed 11 cases; D1 shared Packing and Sourc
 ### PR publication request
 
 After the continuation validation above, the user explicitly requested a PR. The previously uncommitted status is therefore the implementation-completion checkpoint, not a ban on this newly requested publication. Publish the same 74-path candidate from `codex/nir1-post-b` to a PR targeting `master`, with all product/authority HOLDs unchanged. Record the clean committed base/head/tree binding in `.artifacts/nir1-post-b/pr-candidate-binding.json`; run candidate-bound local Quick and its immediate verify before push/PR. The PR body records the resulting evidence. No Full, merge, standard-build/G-01 execution, or product activation is included in this request.
+
+### PR #608 review: recovery page starvation (candidate reopened)
+
+The user identified a P2 in `cdc2580`: project enumeration includes empty and terminal-only projects, consuming the fixed page budget again on every fresh owner. Reopen the candidate for a recovery-only pending-project filter and same-budget retry regression. The `cdc2580` Quick receipt and earlier independent reviews do not certify this modified working tree.
+
+Pre-mutation R1 impact/owner check: reuse the [existing finite lifecycle matrix](nir1-d2b-dispatch-candidate.md#finite-lifecycle-matrix). The exact Ready binding, pinned workspace/participant, single-flight owner, per-operation deadlines, page/item/time cutoffs, terminal writes and release-on-error are unchanged. Select projects with canonical pending rows (`terminal_json IS NULL`) before keyset `LIMIT`; retain workspace-wide scope without a caller project selector or persisted cursor. This fixes internal enumeration only, without new authority, transport, startup hooks or attempt-creation-barrier claims.
+
+The real Rust regression failed against the original SQL (`recovery-page-starvation-red.log`): four empty leading projects prevented the first of two pending projects from being recovered with a three-page limit. The pager now filters pending projects before LIMIT; the same unchanged regression verifies fresh owners reduce pending work 2 → 1 → 0 without raising that limit, then a final owner reports exhaustion. The existing keyset fixture now actually recovers 129 attempts across 65 pending projects; its 65-attempt first project still crosses an attempt-page boundary. The one-page error case was moved before recovery, while pending rows still exist.
+
+Focused validation, run serially:
+- `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml nir1_generation::tests:: -- --nocapture` — **24/24 passed** (`.artifacts/nir1-post-b/recovery-page-starvation-native-green.log`).
+- `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db nir1_generation -- --nocapture` — **58/58 passed** (`.artifacts/nir1-post-b/recovery-page-starvation-storage-green.log`).
+- Targeted rustfmt and `git diff --check` passed. The failed pre-fix run is retained, not relabeled as a passing run.
+
+These are focused working-tree diagnostics; no commit or push occurred at fix completion. The user subsequently requested committing and pushing this four-file fix to the existing PR #608 branch. The unchanged tested Rust files retain their focused evidence; this commit/push-only request does not start a new Quick/Full or independent acceptance, and makes no merge-readiness claim. The earlier Quick receipt remains bound to `cdc2580`, not the updated candidate. All product-hook, Graph, history and D1 HOLDs remain unchanged.

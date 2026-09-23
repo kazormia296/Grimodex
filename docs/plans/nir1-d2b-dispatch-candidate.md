@@ -40,9 +40,9 @@ that a provider received bytes.
 The unpublished Native `GenerationRecoveryCoordinator` is a separate
 restart/reopen primitive. It captures one exact `Ready` lifecycle binding with
 a pinned `ActiveWorkspaceSnapshot`, participant, and Native workspace-operation
-guard. DB APIs now expose bounded keyset pages for every project and each
-project's pending attempts, plus a participant-controlled terminal write. Each
-operation has a finite deadline and SQLite busy-wait cap; the Native sweep caps
+guard. DB APIs expose bounded keyset pages for projects with pending attempts
+across the workspace, each project's pending IDs, and a participant-controlled
+terminal write. Each operation has a finite deadline and SQLite busy-wait cap; the Native sweep caps
 pages (4,096), items (2,048), and wall time (5 seconds), with pages of at most
 64 IDs and operations capped at 250 ms / 100 ms busy wait. Stops, contention,
 errors, and budget exhaustion return incomplete; already committed terminal
@@ -54,11 +54,11 @@ history, touches Graph, or invokes transport.
 
 | ID | Flow / variant | Owner / boundary | Consumer / sink | Preserved invariant | Verification | Status |
 |---|---|---|---|---|---|---|
-| R1 | One project-ID page | `grimodex-db::ActiveWorkspaceSnapshot` reads all project IDs with exact ascending keyset cursor and bounded limit | Native recovery sweep | Caller supplies no project selector; no DB mutex or transaction spans pages | 65 added projects swept across keyset boundaries | implemented |
+| R1 | One pending-project-ID page | `grimodex-db::ActiveWorkspaceSnapshot` selects projects with `terminal_json IS NULL` attempts before ascending keyset LIMIT | Native recovery sweep | Workspace-wide scope, no caller project selector; empty/terminal-only projects do not consume pending-page budget; no DB mutex or transaction spans pages | 65 pending projects across keyset boundaries; unchanged three-page budget retires later projects on fresh-owner retries | implemented; Native follow-up passed 24/24 |
 | R2 | One pending-attempt page | DB pager scoped to exact project ID and pending status, ascending attempt ID keyset | Native recovery sweep | Immutable attempt ID; exhaustive per-project cursor; no truncated global sample | 65 pending attempts recovered across 64-ID page boundary | implemented |
 | R3 | One terminal recovery write | DB writer updates only the selected existing attempt inside participant-controlled IMMEDIATE transaction | Native coordinator | Existing conservative terminal matrix; no body/message creation, output replay, resend, or history qualification | partial terminal failure leaves committed row; fresh capture retries pending rows | implemented |
 | R4 | Bounded participant SQL operation | `Database` owns mutex acquisition checks, bounded busy timeout, SQL progress stop/deadline, rollback, setting restoration, and connection quarantine | R1–R3 | Exact participant and pinned snapshot remain authoritative; an interrupted/unknown operation is incomplete, never success | bounded DB filter passed 18 tests; covers mutex wait, busy timeout, SQL cancel/deadline, rollback, settings restoration and connection reuse | implemented |
-| R5 | Whole recovery sweep | Private Native coordinator owns exact binding single-flight, detached blocking worker, all-project enumeration, and finite item/page/wall-clock limits | Private post-Ready helper; no Open/Restore caller | One DB operation at a time, partial terminal rows persist, all owner state released on every exit; fresh capture only retries | Native focused filter passed 23 tests; includes >64 project/attempt boundaries, each sweep cutoff, re-entry, distinct DB pinning, transition/shutdown, detached completion and regressed wall-clock recovery | implemented, private only |
+| R5 | Whole recovery sweep | Private Native coordinator owns exact binding single-flight, detached blocking worker, all-project enumeration, and finite item/page/wall-clock limits | Private post-Ready helper; no Open/Restore caller | One DB operation at a time, partial terminal rows persist, all owner state released on every exit; fresh capture only retries | Native focused filter passed 24 tests; includes >64 pending-project/attempt boundaries, same-page-budget fresh-owner progress, each sweep cutoff, re-entry, distinct DB pinning, transition/shutdown, detached completion and regressed wall-clock recovery | implemented, private only |
 | R6 | Open / Restore placement | Existing Native supervisors publish Ready; helper has no product caller | Actual Open and successful Restore callsites | Current product outcome and renderer state remain unaffected by best-effort incomplete recovery | Direct `requires-open`/RecoveryRequired and actual Open/Restore lock-release placement tests are not demonstrated | HOLD; hooks remain unwired |
 
 Lifecycle note (R1–R5): one private owner is created only for one exact
@@ -112,10 +112,10 @@ outcome or renderer state. A future attempt-creation barrier is separately HOLD.
 | Retry and regenerate | New handle/attempt, payload references and authorization | Old claimed handles never reenter. No hidden HTTP retry, redirect or proxy exists in the test path. |
 | Startup and explicit Open — HOLD | Startup auto-open and explicit Open converge on Native `open_workspace`. The candidate hook would be after `publish_workspace_lifecycle_from_workspace` returns exact `Ready` in `open_workspace_supervised`, never inside `finish_workspace_open_success`. | Bounds exist, but do not launch until exact Ready-after-lock-release and caller-outcome cases are demonstrated. Later, start a detached blocking worker and do not await it; incomplete recovery must not change Open success, enter `RecoveryShell`, mutate renderer state, or clear retained dirty drafts. |
 | Successful Restore — HOLD | Restore publishes Ready from its own supervisor through `publish_workspace_lifecycle_from_workspace`; it does not pass through the Open supervisor. If enabled later, use the same post-publication helper at both callsites and gate Restore on exact `Ready` / activation `ready`; `requires-open` defers to bootstrap Open. | Still missing direct `requires-open` and RecoveryRequired suppression tests and actual supervisor placement. Do not start for RecoveryRequired, Closed, Unchanged, or a failed restore. UI reload after restore is not proof that every direct Native Restore Ready path was covered. |
-| Begin and re-entry | The private sweep owns the exact Ready binding, pinned snapshot, participant, and operation guard. Permit at most one sweep per exact binding; same-binding re-entry coalesces. It enumerates all projects (no renderer/caller project ID) with keyset pages capped at 64, then exhausts bounded pending-ID pages per project under finite sweep limits. | Capture racing Transition/shutdown skips. Each DB call is a separate controlled operation; no transaction or connection mutex spans pages. |
+| Begin and re-entry | The private sweep owns the exact Ready binding, pinned snapshot, participant, and operation guard. Permit at most one sweep per exact binding; same-binding re-entry coalesces. It enumerates all projects with pending attempts (no renderer/caller project ID), filtering before keyset LIMIT with pages capped at 64, then exhausts bounded pending-ID pages per project under finite sweep limits. | Capture racing Transition/shutdown skips. Each DB call is a separate controlled operation; no transaction or connection mutex spans pages. |
 | Page, workspace switch, and shutdown | Controlled DB calls check participant stop/deadline during mutex acquisition and SQL, use bounded SQLite busy waits, roll back interrupted writes, and restore connection settings. | Held-mutex transition/shutdown tests prove participant and operation ownership drain within the operation bound. Any stop or error is incomplete, never success. |
 | Completion evidence | The internal summary is returned only after bounded project enumeration and every per-project pending page are exhausted under the same binding and within item/page/time/operation cutoffs. | Any stop, timeout, item/page-budget exhaustion, mutex contention, SQLite busy/error, or lifecycle change means incomplete. Recovery writes no body/message version and grants no old-handle or history authority. |
-| Partial failure and retry | A page/read/write error or per-sweep budget exhaustion exits the owner and leaves already-committed terminal rows intact. Remove the in-memory single-flight entry on every exit. | No tight retry loop: release participant/operation ownership, then a later Open/cold start captures a fresh owner and resumes remaining pending rows. Until then those outputs remain unavailable for history. |
+| Partial failure and retry | A page/read/write error or per-sweep budget exhaustion exits the owner and leaves already-committed terminal rows intact. Remove the in-memory single-flight entry on every exit. | No tight retry loop: release participant/operation ownership, then a later Open/cold start captures a fresh owner and resumes remaining pending rows. Fresh enumeration skips empty and fully terminalized projects rather than spending the same page budget on them again. Until then those outputs remain unavailable for history. |
 | Future claim barrier — HOLD | No production claim/attempt creator is wired today. Before any `GenerationClaimOwner` start/claim is connected, add a serialized startup barrier that prevents new attempt creation until exhaustive all-project recovery reports complete for the exact binding. | Recovery never authorizes dispatch, transport, Graph, history qualification, or reuse of an old handle. One-project completion, an interrupted pass, or merely publishing Ready is not barrier proof. |
 
 ## Validation scope
@@ -124,7 +124,7 @@ The dispatch claim suite covers profile/route and exact workspace guard
 ordering, pending DB-wait cancellation, duplicate claim recorder 0/1,
 invalidation-before-claim 0, and guard release before transport observation.
 Recovery evidence includes the focused DB `bounded_` filter (18 passed),
-then the final serialized DB `nir1_generation` filter (58 passed) and Native
+then the original serialized DB `nir1_generation` filter (58 passed) and Native
 `nir1_generation::tests::` filter (23 passed): file-backed all-
 project cold reopen beyond 64 project/attempt boundaries, no-resend terminal
 observations, partial terminal-write failure and fresh-owner retry, item/page/
@@ -140,6 +140,24 @@ rejects timestamp mismatch. DB and cold-reopen Native regressions passed in the
 58/23 runs, and candidate-untouched re-review resolved the P2 with no findings
 for this recovery slice. Logs are `.artifacts/nir1-post-b/recovery-clock-storage-final.log`
 and `recovery-clock-native-final.log`; this is not whole-candidate acceptance.
+
+The subsequent PR #608 review found a separate P2: empty and terminal-only
+projects could consume the page budget again on every fresh capture. The DB
+project pager now filters by pending-attempt existence before keyset LIMIT,
+using the existing pending index and unchanged bounded participant scope.
+A real Native regression failed against the old SQL, then passed after the
+fix: four empty leading projects and two pending projects use the same
+three-page limit on every owner; pending counts decrease 2 → 1 → 0, and a
+final owner confirms exhaustion without increasing any limit. The >64-project
+fixture now gives every project pending work (129 attempts across 65 projects),
+rather than counting empty projects as coverage. The one-page rejection test
+runs while pending work exists, not after all work is terminalized.
+
+Post-fix serialized focused commands passed Native **24/24** and DB **58/58**.
+Logs: `.artifacts/nir1-post-b/recovery-page-starvation-red.log`,
+`recovery-page-starvation-native-green.log`, and
+`recovery-page-starvation-storage-green.log`. This is working-tree diagnostic
+evidence, not a new independent acceptance or Quick/Full receipt.
 
 Missing pre-hook proof remains explicit: direct `requires-open` and
 `RecoveryRequired` suppression, actual Open and successful Restore launch

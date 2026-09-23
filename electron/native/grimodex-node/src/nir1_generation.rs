@@ -276,7 +276,7 @@ impl GenerationRecoveryCoordinator {
         }))
     }
 
-    /// Exhaust all projects and pending attempts under finite safety cutoffs.
+    /// Exhaust pending attempts across the workspace under finite safety cutoffs.
     /// Every DB operation owns its own bounded participant scope; partial
     /// terminal commits survive an incomplete pass, whose fresh owner retries.
     pub(crate) fn recover_all_pending_attempts(self) -> Result<GenerationRecoverySummary> {
@@ -292,7 +292,7 @@ impl GenerationRecoveryCoordinator {
         let mut after_project_id: Option<String> = None;
         loop {
             budget.begin_page(&self)?;
-            let projects = storage::active_project_id_page_bounded(
+            let projects = storage::pending_project_id_page_bounded(
                 &self.workspace,
                 after_project_id.as_deref(),
                 MAX_RECOVERY_PAGE_SIZE,
@@ -1911,8 +1911,8 @@ mod tests {
             summary,
             GenerationRecoverySummary {
                 project_pages: 2,
-                projects: 2,
-                attempt_pages: 3,
+                projects: 1,
+                attempt_pages: 2,
                 recovered: 3
             }
         );
@@ -2125,7 +2125,23 @@ mod tests {
 
     #[test]
     fn recovery_keyset_pages_more_than_64_projects_and_attempts() {
-        let (root, attempts, project_ids) = recovery_workspace_many(65, 65);
+        let (root, mut attempts, project_ids) = recovery_workspace_many(65, 65);
+        {
+            let db = grimodex_db::Database::new(&root.join("grimodex.db")).expect("database");
+            for (index, project_id) in project_ids.iter().enumerate().skip(1) {
+                attempts.push(
+                    storage::create_attempt(
+                        &db,
+                        recovery_attempt_for(
+                            project_id,
+                            &format!("recovery-session-{index:04}"),
+                            0,
+                        ),
+                    )
+                    .expect("pending attempt on every project"),
+                );
+            }
+        }
         let state = reopened_recovery_state(&root);
         let coordinator = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
             .expect("capture recovery coordinator")
@@ -2136,9 +2152,9 @@ mod tests {
             .expect("recover complete all-project sweep");
 
         assert_eq!(summary.project_pages, 3);
-        assert_eq!(summary.projects, 66);
-        assert_eq!(summary.attempt_pages, 68);
-        assert_eq!(summary.recovered, 65);
+        assert_eq!(summary.projects, 65);
+        assert_eq!(summary.attempt_pages, 131);
+        assert_eq!(summary.recovered, attempts.len());
         assert!(
             storage::pending_attempt_ids(db.db(), &project_ids[0], None, 64)
                 .expect("pending attempts exhausted")
@@ -2160,6 +2176,65 @@ mod tests {
     }
 
     #[test]
+    fn recovery_page_limit_retry_progresses_past_empty_and_terminal_projects() {
+        let (root, mut attempts, project_ids) = recovery_workspace_many(6, 0);
+        {
+            let db = grimodex_db::Database::new(&root.join("grimodex.db")).expect("database");
+            for (index, project_id) in project_ids.iter().enumerate().skip(4) {
+                attempts.push(
+                    storage::create_attempt(
+                        &db,
+                        recovery_attempt_for(
+                            project_id,
+                            &format!("recovery-session-{index:04}"),
+                            0,
+                        ),
+                    )
+                    .expect("pending attempt after empty projects"),
+                );
+            }
+        }
+        let state = reopened_recovery_state(&root);
+        let limits = GenerationRecoveryLimits {
+            pages: 3,
+            ..GenerationRecoveryLimits::SAFETY_LIMITS
+        };
+        for recovered_index in 0..attempts.len() {
+            let owner = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
+                .expect("capture fresh owner")
+                .expect("previous page-limited owner released");
+            let db = Arc::clone(&owner.workspace.authority);
+            let error = owner
+                .recover_all_pending_attempts_with_limits(limits)
+                .expect_err("three pages allow one project but not a complete sweep");
+            assert!(error.to_string().contains("SWEEP_PAGE_LIMIT"));
+            for (index, attempt) in attempts.iter().enumerate() {
+                assert_eq!(
+                    storage::read_terminal(db.db(), &attempt.id)
+                        .expect("terminal read")
+                        .is_some(),
+                    index <= recovered_index,
+                    "each fresh owner must retire the next pending project with the same page limit"
+                );
+            }
+        }
+        let summary = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
+            .expect("capture final owner")
+            .expect("ready owner")
+            .recover_all_pending_attempts_with_limits(limits)
+            .expect("same limit proves exhaustion after pending rows are retired");
+        assert_eq!(
+            summary,
+            GenerationRecoverySummary {
+                project_pages: 1,
+                ..GenerationRecoverySummary::default()
+            }
+        );
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn recovery_sweep_page_item_and_time_limits_are_incomplete_and_retryable() {
         let (root, attempts) = recovery_workspace(3);
         let state = reopened_recovery_state(&root);
@@ -2170,6 +2245,16 @@ mod tests {
         let first_id = storage::pending_attempt_ids(db.db(), "recovery-project", None, 64)
             .expect("pending before limited sweep")[0]
             .clone();
+        let mut page_limits = GenerationRecoveryLimits::SAFETY_LIMITS;
+        page_limits.pages = 1;
+        let error = coordinator
+            .recover_all_pending_attempts_with_limits(page_limits)
+            .expect_err("page limit cannot admit a pending-attempt query");
+        assert!(error.to_string().contains("SWEEP_PAGE_LIMIT"));
+
+        let coordinator = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
+            .expect("capture item-limited owner")
+            .expect("page-limited owner released");
         let mut item_limits = GenerationRecoveryLimits::SAFETY_LIMITS;
         item_limits.items = 1;
         let error = coordinator
@@ -2203,16 +2288,6 @@ mod tests {
                 .expect("pending after retry")
                 .is_empty()
         );
-
-        let page_owner = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
-            .expect("capture page-limited owner")
-            .expect("ready owner");
-        let mut page_limits = GenerationRecoveryLimits::SAFETY_LIMITS;
-        page_limits.pages = 1;
-        let error = page_owner
-            .recover_all_pending_attempts_with_limits(page_limits)
-            .expect_err("page limit is incomplete");
-        assert!(error.to_string().contains("SWEEP_PAGE_LIMIT"));
 
         let time_owner = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
             .expect("capture time-limited owner")

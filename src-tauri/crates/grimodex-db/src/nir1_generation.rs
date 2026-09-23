@@ -2480,9 +2480,10 @@ pub fn recover_attempt_bounded(
         })
 }
 
-/// Exact ascending keyset page of project IDs from this pinned workspace.
+/// Exact ascending keyset page of projects with pending attempts in this workspace.
+/// Filter before LIMIT so empty/terminal-only projects cannot starve fresh sweeps.
 /// Startup recovery has no caller-selected project filter.
-pub fn active_project_id_page_bounded(
+pub fn pending_project_id_page_bounded(
     workspace: &ActiveWorkspaceSnapshot,
     after_id: Option<&str>,
     limit: usize,
@@ -2500,8 +2501,11 @@ pub fn active_project_id_page_bounded(
         .db()
         .with_participant_read_transaction_bounded(workspace.participant(), budget, |conn| {
             let mut statement = conn.prepare(
-                "SELECT rowid,octet_length(id) FROM projects
-                 WHERE id>?1 ORDER BY id LIMIT ?2",
+                "SELECT p.rowid,octet_length(p.id) FROM projects AS p
+                 WHERE p.id>?1 AND EXISTS (
+                     SELECT 1 FROM nir1_generation_attempts AS a
+                     WHERE a.project_id=p.id AND a.terminal_json IS NULL
+                 ) ORDER BY p.id LIMIT ?2",
             )?;
             let mut rows =
                 statement.query(params![after_id.unwrap_or(""), i64::try_from(limit)?])?;
