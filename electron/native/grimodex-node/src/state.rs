@@ -18,6 +18,7 @@ use grimodex_db::narrative_extraction::{
     ForegroundSystemWorkRun, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
     NarrativeMaintenanceCiFault, RecoveryMode, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
 };
+use grimodex_db::workspace_lifecycle::LiveBinding;
 use grimodex_db::{GlobalSettingsPath, PinnedWorkspaceDb, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
@@ -2564,6 +2565,8 @@ pub struct AppState {
     pub workspace_operation_active: Arc<AtomicUsize>,
     pub workspace_operation_notify: Arc<Notify>,
     pub workspace_shutdown_requested: Arc<AtomicBool>,
+    /// Exact-binding single-flight keys for unpublished NIR-1 cold recovery.
+    pub(crate) nir1_generation_recovery_bindings: Mutex<Vec<LiveBinding>>,
     /// Lease-only baton for a retired maintenance authority. The SQLite
     /// handle inside the pinned authority has already been closed and marked
     /// unusable; retaining this Arc keeps the shared lease continuous until a
@@ -2690,6 +2693,7 @@ impl AppState {
             workspace_operation_active: Arc::new(AtomicUsize::new(0)),
             workspace_operation_notify: Arc::new(Notify::new()),
             workspace_shutdown_requested: Arc::new(AtomicBool::new(false)),
+            nir1_generation_recovery_bindings: Mutex::new(Vec::new()),
             narrative_maintenance_recovery_batons: Mutex::new(HashMap::new()),
             narrative_maintenance_recovery_bindings: Mutex::new(HashMap::new()),
             narrative_maintenance_recovery_receipts: Mutex::new(BTreeMap::new()),

@@ -82,6 +82,12 @@ pub enum GraphWorkStage {
     Publish,
 }
 
+/// A callback-safe owner observation used while SQLite is inside a long
+/// statement. It must capture only process-local, lock-safe state and may not
+/// re-enter the database or borrow the owner. The return value requests an
+/// interrupt; the Rust boundary then preserves the owner's typed reason.
+pub(crate) type GraphProgressCallback = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Request-local work control for the full-set producer.
 ///
 /// This is intentionally a small internal seam rather than a generic
@@ -90,6 +96,29 @@ pub enum GraphWorkStage {
 /// transaction.
 pub trait GraphWorkControl {
     fn check(&mut self, stage: GraphWorkStage) -> Result<()>;
+
+    /// Optional complete callback-safe stop observation for nested SQLite
+    /// work. Full registration owners must provide this when their dynamic
+    /// lifecycle state can change while a statement is executing; otherwise
+    /// the reader fails closed before opening the registration transaction.
+    fn progress_callback(&self) -> Option<GraphProgressCallback> {
+        None
+    }
+
+    /// Optional callback-safe cancellation source.  Long SQLite statements
+    /// cannot borrow the owner back through `check`; a phase owner that has a
+    /// shared stop latch exposes it here so nested readers preserve the same
+    /// cancellation while the VM is executing.
+    fn stop_signal(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        None
+    }
+
+    /// Optional callback-safe owner deadline for nested SQLite work.  The
+    /// finalization grant, when present, masks this deadline exactly as it
+    /// masks `check` in the owning maintenance control.
+    fn progress_deadline(&self) -> Option<std::time::Instant> {
+        None
+    }
 
     /// A whole-project eligibility read must be backed by an owner that
     /// explicitly opts into the enclosing foreground or maintenance

@@ -7,11 +7,14 @@
 //! the lifetime of the `Database` value.
 
 use super::Database;
-use crate::workspace_lifecycle::WorkspaceParticipant;
-use crate::narrative_extraction::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
-use crate::narrative_extraction::{
-    is_validation_terminated, validation_terminated, ValidationTerminationReason,
+use crate::narrative_extraction::nir1_entity_relation_index::{
+    GraphProgressCallback, GraphWorkControl, GraphWorkStage,
 };
+use crate::narrative_extraction::{
+    is_validation_terminated, validation_terminated, with_immediate_transaction,
+    ValidationTerminationReason,
+};
+use crate::workspace_lifecycle::WorkspaceParticipant;
 use anyhow::{anyhow, Result};
 use rusqlite::{Connection, Error as SqliteError, ErrorCode};
 use std::cell::RefCell;
@@ -52,7 +55,8 @@ impl TerminationLatch {
                 TERMINATION_WORKSPACE_GENERATION
             }
             ValidationTerminationReason::ForegroundPreempted => TERMINATION_FOREGROUND,
-            ValidationTerminationReason::CleanupFailed | ValidationTerminationReason::CapacityExceeded => TERMINATION_NONE,
+            ValidationTerminationReason::CleanupFailed
+            | ValidationTerminationReason::CapacityExceeded => TERMINATION_NONE,
         };
         if code != TERMINATION_NONE {
             let _ = self.0.compare_exchange(
@@ -150,6 +154,12 @@ fn enter_scope(conn: &Connection) -> (bool, ScopeConnectionGuard) {
         nested
     });
     (nested, ScopeConnectionGuard { connection_id })
+}
+
+/// The generation claim's final profile/lifecycle guards must not execute
+/// progress callbacks that acquire those same guards. Check before DB locking.
+pub(crate) fn any_sql_owner_scope_active() -> bool {
+    SCOPE_CONNECTIONS.with(|connections| !connections.borrow().is_empty())
 }
 
 #[derive(Debug)]
@@ -257,6 +267,70 @@ pub(crate) struct NarrativeMaintenanceGraphControlConfig {
     termination_latch: TerminationLatch,
 }
 
+/// Controls owned by one participant-scoped read owner.  The stop signal is
+/// intentionally an atomic value: SQLite's progress callback must not call
+/// back into the owner, lifecycle, or database mutex while a statement is
+/// executing.
+#[derive(Clone, Debug)]
+pub(crate) struct ParticipantSqlControl {
+    pub(crate) stop: Arc<AtomicBool>,
+    pub(crate) deadline: Option<Instant>,
+}
+
+impl Default for ParticipantSqlControl {
+    fn default() -> Self {
+        Self {
+            stop: Arc::new(AtomicBool::new(false)),
+            deadline: None,
+        }
+    }
+}
+
+/// A finite participant-owned SQL operation. Recovery callers use this
+/// separately from `ParticipantSqlControl` so the existing participant APIs
+/// retain their ordinary SQLite busy-timeout behavior.
+#[derive(Clone, Debug)]
+pub struct ParticipantSqlOperationBudget {
+    stop: Arc<AtomicBool>,
+    deadline: Instant,
+    /// Maximum SQLite busy wait for this operation. The scope clips it to the
+    /// time remaining after it acquires the process-local connection mutex.
+    busy_timeout: Duration,
+}
+
+impl ParticipantSqlOperationBudget {
+    pub fn new(stop: Arc<AtomicBool>, deadline: Instant, busy_timeout: Duration) -> Self {
+        Self {
+            stop,
+            deadline,
+            busy_timeout,
+        }
+    }
+
+    fn check(&self, participant: &WorkspaceParticipant) -> Result<()> {
+        check_participant_sql_control(participant, &self.stop, Some(self.deadline))
+    }
+}
+
+fn preserve_participant_stop<T>(
+    result: Result<T>,
+    participant: &WorkspaceParticipant,
+    budget: &ParticipantSqlOperationBudget,
+) -> Result<T> {
+    match result {
+        Ok(value) => {
+            budget.check(participant)?;
+            Ok(value)
+        }
+        Err(error) => match budget.check(participant) {
+            Ok(()) => Err(error),
+            Err(termination) => Err(termination.context(format!(
+                "participant SQL operation stopped after SQLite returned: {error}"
+            ))),
+        },
+    }
+}
+
 impl NarrativeMaintenanceGraphControlConfig {
     #[cfg(feature = "nir1-material-diagnostics")]
     pub(crate) fn with_progress_callbacks(progress_callbacks: Arc<AtomicU64>) -> Self {
@@ -289,6 +363,27 @@ fn check_participant(participant: &WorkspaceParticipant) -> Result<()> {
         return Err(validation_terminated(
             reason,
             "workspace participant stopped SQL work",
+        ));
+    }
+    Ok(())
+}
+
+fn check_participant_sql_control(
+    participant: &WorkspaceParticipant,
+    stop: &Arc<AtomicBool>,
+    deadline: Option<Instant>,
+) -> Result<()> {
+    if stop.load(Ordering::Acquire) {
+        return Err(validation_terminated(
+            ValidationTerminationReason::Cancelled,
+            "participant SQL owner stopped the read",
+        ));
+    }
+    check_participant(participant)?;
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(validation_terminated(
+            ValidationTerminationReason::TimedOut,
+            "participant SQL read deadline elapsed",
         ));
     }
     Ok(())
@@ -405,6 +500,37 @@ impl GraphWorkControl for NarrativeMaintenanceGraphControl<'_> {
 
     fn finalization_signal(&self) -> Option<Arc<AtomicBool>> {
         self.config.finalization_granted.clone()
+    }
+
+    fn progress_callback(&self) -> Option<GraphProgressCallback> {
+        let stop = Arc::clone(&self.stop);
+        let closed = self.config.closed.clone();
+        let participant = self.config.participant.clone();
+        let workspace_generation = self.config.workspace_generation.clone();
+        let deadline = self.config.deadline;
+        let foreground_waiters = Arc::clone(&self.db.foreground_connection_waiters);
+        Some(Arc::new(move || {
+            closed
+                .as_ref()
+                .is_some_and(|signal| signal.load(Ordering::Acquire))
+                || stop.load(Ordering::Acquire)
+                || participant
+                    .as_ref()
+                    .is_some_and(|value| participant_termination(value).is_some())
+                || workspace_generation
+                    .as_ref()
+                    .is_some_and(|(current, expected)| current.load(Ordering::Acquire) != *expected)
+                || deadline.is_some_and(|value| Instant::now() >= value)
+                || foreground_waiters.load(Ordering::SeqCst) > 0
+        }))
+    }
+
+    fn stop_signal(&self) -> Option<Arc<AtomicBool>> {
+        Some(Arc::clone(&self.stop))
+    }
+
+    fn progress_deadline(&self) -> Option<Instant> {
+        self.config.deadline
     }
 
     fn allows_full_eligibility(&self) -> bool {
@@ -880,11 +1006,15 @@ where
         }
     }
     receipt.transaction_clean = conn.is_autocommit();
-    if operation_error.as_ref().is_some_and(|error| error.chain().any(|cause|
-        cause.to_string().contains("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: capacity hook restore"))) {
+    if operation_error.as_ref().is_some_and(|error| {
+        error.chain().any(|cause| {
+            cause
+                .to_string()
+                .contains("NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED: capacity hook restore")
+        })
+    }) {
         receipt.progress_handler_cleared = false;
     }
-
 
     let restored_timeout = conn.busy_timeout(Duration::from_millis(original_timeout_ms as u64));
     if let Err(error) = restored_timeout {
@@ -980,18 +1110,173 @@ impl Database {
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
-        self.with_participant_sql_scope(participant, |conn| {
+        self.with_participant_read_transaction_control(
+            participant,
+            ParticipantSqlControl::default(),
+            operation,
+        )
+    }
+
+    /// Read one SQLite snapshot with caller-owned cancellation and deadline
+    /// signals.  This remains the single outer participant scope; callers must
+    /// not invoke it from a callback that already owns this Database mutex.
+    pub(crate) fn with_participant_read_transaction_control<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        control: ParticipantSqlControl,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        let stop = control.stop;
+        let deadline = control.deadline;
+        let operation_stop = Arc::clone(&stop);
+        let config = NarrativeMaintenanceGraphControlConfig {
+            deadline: control.deadline,
+            ..Default::default()
+        };
+        self.with_participant_sql_scope_config_with_stop(participant, config, stop, move |conn| {
+            check_participant_sql_control(participant, &operation_stop, deadline)?;
             let tx = conn.unchecked_transaction()?;
-            let value = operation(&tx)?;
+            let value = match operation(&tx) {
+                Ok(value) => {
+                    check_participant_sql_control(participant, &operation_stop, deadline)?;
+                    value
+                }
+                Err(error) => {
+                    // An interrupted read can surface the operation error
+                    // before the outer progress hook gets a chance to map
+                    // the participant stop. Prefer that typed reason while
+                    // preserving the original error when no stop is active.
+                    check_participant_sql_control(participant, &operation_stop, deadline)?;
+                    return Err(error);
+                }
+            };
             tx.commit()?;
             Ok(value)
         })
     }
 
+    /// Read one participant-owned snapshot with a finite mutex/SQL deadline
+    /// and an explicit SQLite busy-wait bound. The busy timeout is clipped to
+    /// the remaining deadline after process-local mutex acquisition.
+    pub(crate) fn with_participant_read_transaction_bounded<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        budget: ParticipantSqlOperationBudget,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        let config = NarrativeMaintenanceGraphControlConfig {
+            deadline: Some(budget.deadline),
+            ..Default::default()
+        };
+        let stop = Arc::clone(&budget.stop);
+        self.with_participant_sql_scope_config_with_stop_and_timeout(
+            participant,
+            config,
+            stop,
+            Some(budget.busy_timeout),
+            move |conn| {
+                budget.check(participant)?;
+                let tx = conn.unchecked_transaction()?;
+                // Recheck after BEGIN, then after the complete bounded page
+                // callback, immediately before COMMIT, and after COMMIT.
+                budget.check(participant)?;
+                let value = preserve_participant_stop(operation(&tx), participant, &budget)?;
+                tx.commit()?;
+                budget.check(participant)?;
+                Ok(value)
+            },
+        )
+    }
+
+    /// Perform one immediate participant-owned write transaction with a
+    /// finite mutex/SQL deadline and an explicit SQLite busy-wait bound. Any
+    /// interrupted transaction is rolled back by the shared transaction and
+    /// connection-scope cleanup before its connection can be reused.
+    pub(crate) fn with_participant_immediate_transaction_bounded<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        budget: ParticipantSqlOperationBudget,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        let config = NarrativeMaintenanceGraphControlConfig {
+            deadline: Some(budget.deadline),
+            ..Default::default()
+        };
+        let stop = Arc::clone(&budget.stop);
+        self.with_participant_sql_scope_config_with_stop_and_timeout(
+            participant,
+            config,
+            stop,
+            Some(budget.busy_timeout),
+            move |conn| {
+                budget.check(participant)?;
+                let result = with_immediate_transaction(conn, |conn| {
+                    // BEGIN IMMEDIATE may itself wait on another SQLite
+                    // writer. Check the owner as soon as the lock is acquired.
+                    budget.check(participant)?;
+                    preserve_participant_stop(operation(conn), participant, &budget)
+                });
+                let value = preserve_participant_stop(result, participant, &budget)?;
+                // A stop observed just after COMMIT makes this pass
+                // incomplete, while leaving the committed row idempotently
+                // recoverable by a fresh sweep.
+                budget.check(participant)?;
+                Ok(value)
+            },
+        )
+    }
+
     fn with_participant_sql_scope_config<T, F>(
         &self,
         participant: &WorkspaceParticipant,
+        config: NarrativeMaintenanceGraphControlConfig,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        self.with_participant_sql_scope_config_with_stop(
+            participant,
+            config,
+            Arc::new(AtomicBool::new(false)),
+            operation,
+        )
+    }
+
+    fn with_participant_sql_scope_config_with_stop<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        config: NarrativeMaintenanceGraphControlConfig,
+        stop: Arc<AtomicBool>,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        self.with_participant_sql_scope_config_with_stop_and_timeout(
+            participant,
+            config,
+            stop,
+            None,
+            operation,
+        )
+    }
+
+    fn with_participant_sql_scope_config_with_stop_and_timeout<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
         mut config: NarrativeMaintenanceGraphControlConfig,
+        stop: Arc<AtomicBool>,
+        requested_busy_timeout: Option<Duration>,
         operation: F,
     ) -> Result<T>
     where
@@ -999,20 +1284,30 @@ impl Database {
     {
         check_participant(participant)?;
         config.participant = Some(participant.clone());
-        let mut check_acquisition = || check_participant(participant);
+        let deadline = config.deadline;
+        let acquisition_stop = Arc::clone(&stop);
+        let mut check_acquisition =
+            || check_participant_sql_control(participant, &acquisition_stop, deadline);
         let conn = self.lock_conn_with_check(Some(&mut check_acquisition))?;
+        let busy_timeout = requested_busy_timeout.map(|requested| {
+            requested.min(
+                deadline
+                    .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                    .unwrap_or(requested),
+            )
+        });
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             with_narrative_maintenance_connection_scope_with_latch(
                 &conn,
-                None,
+                busy_timeout,
                 1_000,
-                Arc::new(AtomicBool::new(false)),
+                stop,
                 config,
                 None,
                 |conn| {
-                    check_participant(participant)?;
+                    check_participant_sql_control(participant, &acquisition_stop, deadline)?;
                     let value = operation(conn)?;
-                    check_participant(participant)?;
+                    check_participant_sql_control(participant, &acquisition_stop, deadline)?;
                     Ok(value)
                 },
             )
@@ -1089,9 +1384,7 @@ impl Database {
         // the reusable flag and would make the cleanup-failure -> recovery
         // path permanently unable to emit its retirement receipt.
         let replacement = Connection::open_in_memory().map_err(|error| {
-            anyhow!(
-                "NEX_MAINTENANCE_CONNECTION_RETIREMENT_REPLACEMENT_OPEN_FAILED: {error}"
-            )
+            anyhow!("NEX_MAINTENANCE_CONNECTION_RETIREMENT_REPLACEMENT_OPEN_FAILED: {error}")
         })?;
         let mut conn = self
             .conn
@@ -1136,9 +1429,7 @@ impl Database {
     pub fn retry_retirement_close(&self) -> anyhow::Result<()> {
         let pending = {
             let mut connections = self.retired_connections.lock().map_err(|error| {
-                anyhow!(
-                    "NEX_MAINTENANCE_CONNECTION_RETIREMENT_BATON_LOCKED: {error}"
-                )
+                anyhow!("NEX_MAINTENANCE_CONNECTION_RETIREMENT_BATON_LOCKED: {error}")
             })?;
             std::mem::take(&mut *connections)
         };
@@ -1159,9 +1450,7 @@ impl Database {
             self.retired_connections
                 .lock()
                 .map_err(|error| {
-                    anyhow!(
-                        "NEX_MAINTENANCE_CONNECTION_RETIREMENT_BATON_LOCKED: {error}"
-                    )
+                    anyhow!("NEX_MAINTENANCE_CONNECTION_RETIREMENT_BATON_LOCKED: {error}")
                 })?
                 .extend(remaining);
         }
@@ -1257,6 +1546,18 @@ mod tests {
         Arc::new(AtomicBool::new(false))
     }
 
+    fn operation_budget(
+        stop: Arc<AtomicBool>,
+        deadline: Instant,
+        busy_timeout: Duration,
+    ) -> ParticipantSqlOperationBudget {
+        ParticipantSqlOperationBudget {
+            stop,
+            deadline,
+            busy_timeout,
+        }
+    }
+
     fn termination_reason(error: anyhow::Error) -> ValidationTerminationReason {
         assert!(is_validation_terminated(&error), "{error}");
         error
@@ -1331,6 +1632,360 @@ mod tests {
         assert!(reusable_while_held);
         core.close()
             .expect("queued participant released before shutdown completion");
+    }
+
+    #[test]
+    fn participant_read_control_rejects_cancellation_and_deadline_before_sql() {
+        let db = test_db();
+        let (core, participant) = test_participant();
+        let stop = Arc::new(AtomicBool::new(true));
+        let error = db
+            .with_participant_read_transaction_control(
+                &participant,
+                ParticipantSqlControl {
+                    stop: Arc::clone(&stop),
+                    deadline: None,
+                },
+                |_| -> Result<()> { panic!("cancelled read must not enter SQL") },
+            )
+            .expect_err("owner cancellation");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(db.connection_reusable());
+
+        stop.store(false, Ordering::Release);
+        let error = db
+            .with_participant_read_transaction_control(
+                &participant,
+                ParticipantSqlControl {
+                    stop,
+                    deadline: Some(Instant::now() - Duration::from_millis(1)),
+                },
+                |_| -> Result<()> { panic!("expired read must not enter SQL") },
+            )
+            .expect_err("expired read deadline");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::TimedOut
+        );
+        assert!(db.connection_reusable());
+        db.with_conn(|conn| {
+            assert_eq!(
+                conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?,
+                1
+            );
+            Ok(())
+        })
+        .expect("control rejection must leave the connection reusable");
+        drop(participant);
+        core.close().expect("participant released");
+    }
+
+    #[test]
+    fn bounded_participant_read_stops_while_queued_for_connection() {
+        for use_deadline in [false, true] {
+            let db = Arc::new(test_db());
+            let (core, participant) = test_participant();
+            let stop = stop_flag();
+            let operation_stop = Arc::clone(&stop);
+            let body_ran = Arc::new(AtomicBool::new(false));
+            let held = db
+                .conn
+                .lock()
+                .expect("hold connection before bounded read starts");
+            let (done_tx, done_rx) = mpsc::channel();
+            let worker_db = Arc::clone(&db);
+            let worker_body_ran = Arc::clone(&body_ran);
+            let deadline = Instant::now()
+                + if use_deadline {
+                    Duration::from_millis(75)
+                } else {
+                    Duration::from_secs(2)
+                };
+            let worker = thread::spawn(move || {
+                let result = worker_db.with_participant_read_transaction_bounded(
+                    &participant,
+                    operation_budget(operation_stop, deadline, Duration::from_millis(25)),
+                    |conn| {
+                        worker_body_ran.store(true, Ordering::Release);
+                        conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+                        Ok(())
+                    },
+                );
+                drop(participant);
+                let _ = done_tx.send(result);
+            });
+
+            let queue_deadline = Instant::now() + Duration::from_secs(2);
+            while db.foreground_connection_waiter_count() == 0 && Instant::now() < queue_deadline {
+                thread::yield_now();
+            }
+            let queued = db.foreground_connection_waiter_count() == 1;
+            if !use_deadline {
+                stop.store(true, Ordering::Release);
+            }
+            let result_while_held = done_rx.recv_timeout(Duration::from_millis(500));
+            let waiters_while_held = db.foreground_connection_waiter_count();
+            let participants_while_held = core.workspace_participant_count();
+            drop(held);
+            worker.join().expect("bounded read worker joined");
+
+            assert!(queued, "worker must be queued for the held DB mutex");
+            let error = result_while_held
+                .expect("bounded read must exit before releasing the DB mutex")
+                .expect_err("bounded read must stop before SQL");
+            assert_eq!(
+                termination_reason(error),
+                if use_deadline {
+                    ValidationTerminationReason::TimedOut
+                } else {
+                    ValidationTerminationReason::Cancelled
+                }
+            );
+            assert!(!body_ran.load(Ordering::Acquire));
+            assert_eq!(waiters_while_held, 0);
+            assert_eq!(participants_while_held.expect("participant count"), 0);
+            assert!(db.connection_reusable());
+            core.close().expect("participant released before shutdown");
+        }
+    }
+
+    #[test]
+    fn bounded_immediate_write_clips_busy_wait_and_preserves_stop() {
+        let directory =
+            std::env::temp_dir().join(format!("participant-sql-busy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).expect("create database directory");
+        let path = directory.join("workspace.db");
+        let db = Database::new(&path).expect("open test database");
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TABLE bounded_write (value INTEGER NOT NULL)")?;
+            Ok(())
+        })
+        .expect("create bounded write table");
+        let (core, participant) = test_participant();
+        let blocker = Connection::open(&path).expect("open SQLite lock holder");
+        blocker
+            .busy_timeout(Duration::ZERO)
+            .expect("configure lock holder");
+        blocker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold SQLite write lock");
+
+        let deadline = Instant::now() + Duration::from_millis(75);
+        let started = Instant::now();
+        let operation_ran = Arc::new(AtomicBool::new(false));
+        let operation_ran_by_call = Arc::clone(&operation_ran);
+        let _error = db
+            .with_participant_immediate_transaction_bounded(
+                &participant,
+                operation_budget(stop_flag(), deadline, Duration::from_secs(2)),
+                move |conn| {
+                    operation_ran_by_call.store(true, Ordering::Release);
+                    conn.execute("INSERT INTO bounded_write VALUES (1)", [])?;
+                    Ok(())
+                },
+            )
+            .expect_err("deadline-clipped SQLite busy wait must stop");
+        assert!(started.elapsed() >= Duration::from_millis(30));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(!operation_ran.load(Ordering::Acquire));
+        assert!(db.connection_reusable());
+
+        let stop = stop_flag();
+        let cancel_stop = Arc::clone(&stop);
+        let cancel_worker = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            cancel_stop.store(true, Ordering::Release);
+        });
+        let started = Instant::now();
+        let operation_ran_by_call = Arc::clone(&operation_ran);
+        let error = db
+            .with_participant_immediate_transaction_bounded(
+                &participant,
+                operation_budget(
+                    stop,
+                    Instant::now() + Duration::from_secs(2),
+                    Duration::from_millis(80),
+                ),
+                move |conn| {
+                    operation_ran_by_call.store(true, Ordering::Release);
+                    conn.execute("INSERT INTO bounded_write VALUES (2)", [])?;
+                    Ok(())
+                },
+            )
+            .expect_err("SQLite busy error must preserve concurrent stop");
+        cancel_worker.join().expect("cancel worker joined");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(!operation_ran.load(Ordering::Acquire));
+        assert!(db.connection_reusable());
+        assert_eq!(
+            db.with_conn(|conn| {
+                Ok(conn.query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))?)
+            })
+            .expect("busy timeout query"),
+            5_000,
+            "bounded busy timeout must restore the connection's prior setting"
+        );
+
+        blocker
+            .execute_batch("ROLLBACK")
+            .expect("release SQLite write lock");
+        assert_eq!(
+            db.with_conn(|conn| {
+                Ok(
+                    conn.query_row("SELECT count(*) FROM bounded_write", [], |row| {
+                        row.get::<_, i64>(0)
+                    })?,
+                )
+            })
+            .expect("verify failed writes were not committed"),
+            0
+        );
+        drop(participant);
+        core.close().expect("participant released");
+        drop(blocker);
+        drop(db);
+        std::fs::remove_dir_all(directory).expect("remove test database");
+    }
+
+    #[test]
+    fn bounded_immediate_write_rolls_back_sql_cancellation_and_reuses_connection() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TABLE bounded_rollback (value INTEGER NOT NULL)")?;
+            Ok(())
+        })
+        .expect("create rollback table");
+        let (core, participant) = test_participant();
+        let stop = stop_flag();
+        let cancel_stop = Arc::clone(&stop);
+        let (query_started_tx, query_started_rx) = mpsc::channel();
+        let cancel_worker = thread::spawn(move || {
+            query_started_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("long SQL started");
+            thread::sleep(Duration::from_millis(10));
+            cancel_stop.store(true, Ordering::Release);
+        });
+
+        let error = db
+            .with_participant_immediate_transaction_bounded(
+                &participant,
+                operation_budget(
+                    stop,
+                    Instant::now() + Duration::from_secs(3),
+                    Duration::from_millis(25),
+                ),
+                move |conn| {
+                    conn.execute("INSERT INTO bounded_rollback VALUES (1)", [])?;
+                    query_started_tx
+                        .send(())
+                        .expect("notify cancellation worker");
+                    conn.query_row(
+                        "WITH RECURSIVE n(x) AS (
+                           VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<100000000
+                         ) SELECT max(x) FROM n",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )?;
+                    Ok(())
+                },
+            )
+            .expect_err("progress hook must stop long SQL");
+        cancel_worker.join().expect("cancel worker joined");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(db.connection_reusable());
+        assert_eq!(
+            db.with_conn(|conn| {
+                Ok(
+                    conn.query_row("SELECT count(*) FROM bounded_rollback", [], |row| {
+                        row.get::<_, i64>(0)
+                    })?,
+                )
+            })
+            .expect("verify rollback"),
+            0
+        );
+        let error = db
+            .with_participant_immediate_transaction_bounded(
+                &participant,
+                operation_budget(
+                    stop_flag(),
+                    Instant::now() + Duration::from_millis(20),
+                    Duration::from_millis(10),
+                ),
+                |conn| {
+                    conn.execute("INSERT INTO bounded_rollback VALUES (2)", [])?;
+                    conn.query_row(
+                        "WITH RECURSIVE n(x) AS (
+                           VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<100000000
+                         ) SELECT max(x) FROM n",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )?;
+                    Ok(())
+                },
+            )
+            .expect_err("operation deadline must stop long SQL");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::TimedOut
+        );
+        assert!(db.connection_reusable());
+        assert_eq!(
+            db.with_conn(|conn| {
+                Ok(
+                    conn.query_row("SELECT count(*) FROM bounded_rollback", [], |row| {
+                        row.get::<_, i64>(0)
+                    })?,
+                )
+            })
+            .expect("verify deadline rollback"),
+            0
+        );
+        db.with_conn(|conn| {
+            assert_eq!(
+                conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?,
+                1
+            );
+            Ok(())
+        })
+        .expect("connection reusable after interrupted transaction");
+        drop(participant);
+        core.close().expect("participant released");
+    }
+
+    #[test]
+    fn participant_read_control_prefers_workspace_stop_after_operation_error() {
+        let db = test_db();
+        let (core, participant) = test_participant();
+        let error = db
+            .with_participant_read_transaction_control(
+                &participant,
+                ParticipantSqlControl::default(),
+                |conn| {
+                    let _: i64 = conn.query_row("SELECT 1", [], |row| row.get(0))?;
+                    core.request_shutdown().expect("request workspace stop");
+                    Err::<(), _>(anyhow!("operation error"))
+                },
+            )
+            .expect_err("workspace stop must win over operation error");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(db.connection_reusable());
+        drop(participant);
+        core.close().expect("participant released");
     }
 
     #[test]
@@ -1871,12 +2526,12 @@ mod tests {
         let db = test_db();
         let stop = Arc::new(AtomicBool::new(true));
         let result = with_narrative_maintenance_connection(&db, Duration::ZERO, 1, stop, |conn| {
-                conn.execute_batch("BEGIN")?;
-                assert!(!conn.is_autocommit());
-                Err::<(), _>(validation_terminated(
-                    ValidationTerminationReason::Cancelled,
-                    "ordinary cancellation",
-                ))
+            conn.execute_batch("BEGIN")?;
+            assert!(!conn.is_autocommit());
+            Err::<(), _>(validation_terminated(
+                ValidationTerminationReason::Cancelled,
+                "ordinary cancellation",
+            ))
         })
         .expect("acquisition")
         .expect("scope");
@@ -1947,9 +2602,7 @@ mod tests {
             .expect("clean autocommit connection is retired");
 
         assert!(!db.connection_reusable());
-        assert!(db
-            .with_conn(|_| Ok::<_, anyhow::Error>(()))
-            .is_err());
+        assert!(db.with_conn(|_| Ok::<_, anyhow::Error>(())).is_err());
     }
 
     #[test]
@@ -1966,9 +2619,7 @@ mod tests {
             .expect("close must retire and roll back the active transaction");
         assert!(!db.connection_reusable());
         assert!(!db.retirement_close_pending());
-        assert!(db
-            .with_conn(|_| Ok::<_, anyhow::Error>(()))
-            .is_err());
+        assert!(db.with_conn(|_| Ok::<_, anyhow::Error>(())).is_err());
     }
 
     #[test]
@@ -2005,8 +2656,8 @@ mod tests {
                     "typed cancellation",
                 ))
             })
-        .expect("acquisition")
-        .expect("scope");
+            .expect("acquisition")
+            .expect("scope");
         assert!(!result.receipt.connection_reusable);
         let error = result
             .into_result()
@@ -2136,24 +2787,33 @@ mod tests {
     }
     #[test]
     fn committed_write_survives_cleanup_failure_and_verified_reopen() {
-        let directory = std::env::temp_dir().join(format!("grimodex-committed-cleanup-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&directory).unwrap();
+        let directory = std::env::temp_dir().join(format!(
+            "grimodex-committed-cleanup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("workspace.db");
         let db = Database::new(&path).unwrap();
         db.with_conn(|conn| {
             conn.execute_batch("CREATE TABLE committed_result (value TEXT NOT NULL)")?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
         set_maintenance_cleanup_failpoints_for_test(MaintenanceCleanupFailpoints {
-            rollback: false, autocommit_check: false,
-            progress_reset: false, busy_timeout_restore: true,
+            rollback: false,
+            autocommit_check: false,
+            progress_reset: false,
+            busy_timeout_restore: true,
         });
-        let result = with_narrative_maintenance_connection(&db, Duration::ZERO, 1, stop_flag(), |conn| {
-            let tx = conn.unchecked_transaction()?;
-            tx.execute("INSERT INTO committed_result VALUES ('success')", [])?;
-            tx.commit()?;
-            Ok::<_, anyhow::Error>(())
-        }).unwrap().unwrap();
+        let result =
+            with_narrative_maintenance_connection(&db, Duration::ZERO, 1, stop_flag(), |conn| {
+                let tx = conn.unchecked_transaction()?;
+                tx.execute("INSERT INTO committed_result VALUES ('success')", [])?;
+                tx.commit()?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .unwrap()
+            .unwrap();
         assert!(result.operation_error.is_none());
         assert!(result.receipt.transaction_clean);
         assert!(!result.receipt.busy_timeout_restored);
@@ -2162,13 +2822,15 @@ mod tests {
         assert!(try_lock_narrative_maintenance(&db).is_err());
         db.retire_connection_for_recovery().unwrap();
         drop(db);
-        Database::new(&path).unwrap().with_conn(|conn| {
-            let value: String = conn.query_row("SELECT value FROM committed_result", [], |row| row.get(0))?;
-            assert_eq!(value, "success");
-            Ok(())
-        }).unwrap();
+        Database::new(&path)
+            .unwrap()
+            .with_conn(|conn| {
+                let value: String =
+                    conn.query_row("SELECT value FROM committed_result", [], |row| row.get(0))?;
+                assert_eq!(value, "success");
+                Ok(())
+            })
+            .unwrap();
         std::fs::remove_dir_all(directory).unwrap();
     }
-
-
 }

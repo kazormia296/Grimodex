@@ -13,7 +13,7 @@ pub(crate) const DEADLINE: std::time::Duration = std::time::Duration::from_secs(
 
 pub(crate) const AUDITED_SQLITE_SOURCE_ID: &str =
     "2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24";
-use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
+use super::nir1_entity_relation_index::{GraphProgressCallback, GraphWorkControl, GraphWorkStage};
 use super::source_revision::{validation_terminated, ValidationTerminationReason};
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -89,6 +89,15 @@ struct ProgressOwner {
     interval: i32,
 }
 
+/// A temporary owner installed by a nested reader. The previous owner is
+/// restored after the reader has rolled back its private transaction. Keeping
+/// this state in the progress registry prevents a nested reader from silently
+/// dropping the connection owner's cancellation hook.
+pub(crate) struct ProgressOwnerRestore {
+    state: SharedProgress,
+    previous: Option<Arc<Mutex<ProgressOwner>>>,
+}
+
 #[derive(Default)]
 struct ProgressState {
     owner: Option<Arc<Mutex<ProgressOwner>>>,
@@ -112,6 +121,82 @@ fn state_for(conn: &Connection) -> SharedProgress {
     let state = Arc::new(Mutex::new(ProgressState::default()));
     owners.insert(key, Arc::downgrade(&state));
     state
+}
+
+/// Observe the already-installed owner and budgets during Rust work. This
+/// never installs a hook or executes SQL. Owners have the same no-reentrant-SQL
+/// requirement as when SQLite invokes their progress callback.
+pub(crate) fn check_active_work(conn: &Connection) -> anyhow::Result<()> {
+    check_progress_state(&state_for(conn))
+}
+
+fn check_progress_state(state: &SharedProgress) -> anyhow::Result<()> {
+    let (owner, budgets) = {
+        let state = state.lock().unwrap_or_else(|error| error.into_inner());
+        (state.owner.clone(), state.budgets.clone())
+    };
+    if owner.is_some_and(|owner| {
+        (owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .callback)()
+    }) {
+        return Err(validation_terminated(
+            ValidationTerminationReason::Cancelled,
+            "NIR1 Graph active owner stopped Rust work",
+        ));
+    }
+    for budget in budgets {
+        budget.check()?;
+    }
+    Ok(())
+}
+
+/// JSON input is observed at most every 4096 bytes, including inside one long
+/// JSON string. Preserve the owner's typed stop instead of a serde I/O wrapper.
+pub(crate) fn parse_json_with_active_work<T: serde::de::DeserializeOwned>(
+    conn: &Connection,
+    text: &str,
+) -> anyhow::Result<T> {
+    struct CheckedReader<'a> {
+        input: &'a [u8],
+        state: SharedProgress,
+        until_check: usize,
+        stopped: Option<anyhow::Error>,
+    }
+    impl std::io::Read for CheckedReader<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            if output.is_empty() {
+                return Ok(0);
+            }
+            if self.until_check == 0 {
+                if let Err(error) = check_progress_state(&self.state) {
+                    self.stopped = Some(error);
+                    return Err(std::io::Error::other("NIR1 Graph JSON work stopped"));
+                }
+                self.until_check = 4096;
+            }
+            let count = output.len().min(self.input.len()).min(self.until_check);
+            output[..count].copy_from_slice(&self.input[..count]);
+            self.input = &self.input[count..];
+            self.until_check -= count;
+            Ok(count)
+        }
+    }
+    let state = state_for(conn);
+    check_progress_state(&state)?;
+    let mut reader = CheckedReader {
+        input: text.as_bytes(),
+        state,
+        until_check: 4096,
+        stopped: None,
+    };
+    let result = serde_json::from_reader(&mut reader);
+    if let Some(error) = reader.stopped {
+        return Err(error);
+    }
+    check_progress_state(&reader.state)?;
+    result.map_err(Into::into)
 }
 
 fn install(conn: &Connection, state: SharedProgress) -> rusqlite::Result<()> {
@@ -178,6 +263,89 @@ where
             }))
         });
     install(conn, state)
+}
+
+/// Compose a nested owner with the callback already installed on this
+/// connection. SQLite exposes one progress callback, so the two callbacks are
+/// multiplexed at the smaller cadence and the prior callback is retained for
+/// restoration after the nested scope completes.
+pub(crate) fn push_progress_owner<F>(
+    conn: &Connection,
+    interval: i32,
+    callback: F,
+) -> rusqlite::Result<ProgressOwnerRestore>
+where
+    F: FnMut() -> bool + Send + 'static,
+{
+    if interval <= 0 {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "progress owner interval must be positive".to_string(),
+        ));
+    }
+    let state = state_for(conn);
+    let mut callback = Box::new(callback) as Box<dyn FnMut() -> bool + Send>;
+    let previous = {
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        let previous = state.owner.take();
+        let owner = if let Some(previous_owner) = previous.as_ref() {
+            let previous_interval = previous_owner
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .interval
+                .max(1);
+            let cadence = previous_interval.min(interval).max(1);
+            let previous_for_callback = Arc::clone(previous_owner);
+            let mut previous_pending: i32 = 0;
+            let mut current_pending: i32 = 0;
+            ProgressOwner {
+                interval: cadence,
+                callback: Box::new(move || {
+                    previous_pending = previous_pending.saturating_add(cadence);
+                    current_pending = current_pending.saturating_add(cadence);
+                    let previous_stop = if previous_pending >= previous_interval {
+                        previous_pending %= previous_interval;
+                        (previous_for_callback
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .callback)()
+                    } else {
+                        false
+                    };
+                    let current_stop = if current_pending >= interval {
+                        current_pending %= interval;
+                        callback()
+                    } else {
+                        false
+                    };
+                    previous_stop || current_stop
+                }),
+            }
+        } else {
+            ProgressOwner { callback, interval }
+        };
+        state.owner = Some(Arc::new(Mutex::new(owner)));
+        previous
+    };
+    if let Err(error) = install(conn, Arc::clone(&state)) {
+        state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .owner = previous.clone();
+        let _ = install(conn, Arc::clone(&state));
+        return Err(error);
+    }
+    Ok(ProgressOwnerRestore { state, previous })
+}
+
+impl ProgressOwnerRestore {
+    pub(crate) fn restore(mut self, conn: &Connection) -> rusqlite::Result<()> {
+        let previous = self.previous.take();
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .owner = previous;
+        install(conn, Arc::clone(&self.state))
+    }
 }
 
 /// The audited COMMIT program is Init -> Goto -> AutoCommit. Goto drains
@@ -296,6 +464,19 @@ impl GraphWorkControl for CapacityControl<'_> {
     fn allows_full_eligibility(&self) -> bool {
         self.owner.allows_full_eligibility()
     }
+
+    fn progress_callback(&self) -> Option<GraphProgressCallback> {
+        self.owner.progress_callback()
+    }
+
+    fn stop_signal(&self) -> Option<Arc<AtomicBool>> {
+        self.owner.stop_signal()
+    }
+
+    fn progress_deadline(&self) -> Option<Instant> {
+        self.owner.progress_deadline()
+    }
+
     fn finalization_signal(&self) -> Option<Arc<AtomicBool>> {
         self.owner.finalization_signal()
     }
@@ -469,6 +650,104 @@ mod tests {
     use crate::narrative_extraction::source_revision::ForegroundValidationControl;
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
+
+    #[test]
+    fn json_checks_existing_owner_inside_long_strings_without_replacing_hook() {
+        let conn = Connection::open_in_memory().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let stopped = Arc::new(AtomicBool::new(true));
+        let observed = Arc::clone(&calls);
+        let signal = Arc::clone(&stopped);
+        set_progress_owner(
+            &conn,
+            1,
+            Some(move || {
+                let count = observed.fetch_add(1, Ordering::Relaxed) + 1;
+                signal.load(Ordering::Relaxed) && count >= 3
+            }),
+        )
+        .unwrap();
+        let text = format!("\"{}\"", "a".repeat(32 * 1024));
+        let error = parse_json_with_active_work::<String>(&conn, &text).unwrap_err();
+        assert!(super::super::source_revision::is_validation_terminated(
+            &error
+        ));
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+        stopped.store(false, Ordering::Relaxed);
+        let before = calls.load(Ordering::Relaxed);
+        conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+        assert!(
+            calls.load(Ordering::Relaxed) > before,
+            "original hook still installed"
+        );
+        assert_eq!(
+            parse_json_with_active_work::<String>(&conn, &text)
+                .unwrap()
+                .len(),
+            32 * 1024
+        );
+        set_progress_owner(&conn, 0, None::<fn() -> bool>).unwrap();
+    }
+
+    #[test]
+    fn json_preserves_active_capacity_failure_and_normal_parse_errors() {
+        let conn = Connection::open_in_memory().unwrap();
+        let state = state_for(&conn);
+        state.lock().unwrap().budgets.push(ActiveBudget {
+            budget: CapacityBudget::new(u64::MAX, Instant::now()),
+            grant: None,
+        });
+        let error = parse_json_with_active_work::<serde_json::Value>(&conn, "{}").unwrap_err();
+        assert!(super::super::source_revision::is_validation_capacity_exceeded(&error));
+        state.lock().unwrap().budgets.clear();
+        let error = parse_json_with_active_work::<serde_json::Value>(&conn, "{").unwrap_err();
+        assert!(error.downcast_ref::<serde_json::Error>().is_some());
+        assert_eq!(
+            conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn nested_progress_owner_composes_and_restores_the_prior_owner() {
+        let conn = Connection::open_in_memory().unwrap();
+        let prior_calls = Arc::new(AtomicUsize::new(0));
+        let nested_calls = Arc::new(AtomicUsize::new(0));
+        let prior_observed = Arc::clone(&prior_calls);
+        set_progress_owner(
+            &conn,
+            1,
+            Some(move || {
+                prior_observed.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .unwrap();
+        let nested_observed = Arc::clone(&nested_calls);
+        let scope = push_progress_owner(&conn, 1, move || {
+            nested_observed.fetch_add(1, Ordering::Relaxed);
+            false
+        })
+        .unwrap();
+        let probe = "WITH RECURSIVE series(n) AS (
+                 VALUES(1) UNION ALL SELECT n+1 FROM series WHERE n < 200
+             ) SELECT sum(n) FROM series";
+        conn.execute_batch(probe).unwrap();
+        assert!(prior_calls.load(Ordering::Relaxed) > 0);
+        assert!(nested_calls.load(Ordering::Relaxed) > 0);
+        scope.restore(&conn).unwrap();
+        let prior_before_restore_probe = prior_calls.load(Ordering::Relaxed);
+        let nested_before_restore_probe = nested_calls.load(Ordering::Relaxed);
+        conn.execute_batch(probe).unwrap();
+        assert!(prior_calls.load(Ordering::Relaxed) > prior_before_restore_probe);
+        assert_eq!(
+            nested_calls.load(Ordering::Relaxed),
+            nested_before_restore_probe
+        );
+        set_progress_owner(&conn, 0, None::<fn() -> bool>).unwrap();
+    }
 
     const INSERT: &str = "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<200) INSERT INTO bounded SELECT n FROM x";
 

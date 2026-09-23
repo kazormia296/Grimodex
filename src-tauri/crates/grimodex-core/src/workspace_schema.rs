@@ -30,6 +30,30 @@ use crate::{
 const GENERATED_SCHEMA_CONTRACT: &str =
     include_str!("../../../../src/db/generated/schema-contract.json");
 
+pub const NIR1_GENERATION_MESSAGE_DELETE_TRIGGER_SQL: &str =
+    "CREATE TRIGGER nir1_generation_invalidate_message_delete AFTER DELETE ON chat_messages
+     BEGIN
+         UPDATE nir1_generation_message_versions SET invalidated = 1 WHERE message_id = OLD.id;
+     END";
+
+pub const NIR1_GENERATION_MESSAGE_INSERT_TRIGGER_SQL: &str =
+    "CREATE TRIGGER nir1_generation_invalidate_message_insert AFTER INSERT ON chat_messages
+     BEGIN
+         UPDATE nir1_generation_message_versions SET invalidated = 1 WHERE message_id = NEW.id;
+     END";
+
+pub const NIR1_GENERATION_MESSAGE_UPDATE_TRIGGER_SQL: &str =
+    "CREATE TRIGGER nir1_generation_invalidate_message_update
+     AFTER UPDATE OF id, session_id, role, content, metadata, created_at ON chat_messages
+     WHEN OLD.id IS NOT NEW.id OR OLD.session_id IS NOT NEW.session_id
+       OR OLD.role IS NOT NEW.role OR OLD.content IS NOT NEW.content
+       OR OLD.created_at IS NOT NEW.created_at
+       OR (CASE WHEN json_valid(OLD.metadata) THEN json_extract(OLD.metadata, '$.thinking_blocks') ELSE NULL END)
+          IS NOT (CASE WHEN json_valid(NEW.metadata) THEN json_extract(NEW.metadata, '$.thinking_blocks') ELSE NULL END)
+     BEGIN
+         UPDATE nir1_generation_message_versions SET invalidated = 1 WHERE message_id IN (OLD.id, NEW.id);
+     END";
+
 const AI_AUDIT_COLUMNS: &[(&str, &str, bool, i32)] = &[
     ("id", "INTEGER", false, 1),
     ("scope_id", "TEXT", true, 0),
@@ -596,9 +620,10 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// atomically projects non-empty body creation baselines from the canonical
 /// Narrative Change Feed lifecycle event. Version 35 adds NIR-1's semantic
 /// index storage. Version 36 adds the NIR-1 A1 scene-scope authority storage
-/// and its pre-A1 compatibility backfill boundary.
+/// and its pre-A1 compatibility backfill boundary. Version 37 adds NIR-1
+/// generation attempts and immutable message/input qualification references.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 36
+    Ok(SCHEMA_VERSION == 37
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -640,12 +665,179 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v34_c2a_stage_storage(conn)?
         && has_v35_nir1_index_storage(conn)?
         && has_v36_scene_scope_storage(conn)?
+        && has_v37_generation_storage(conn)?
         && has_current_query_indexes(conn)?
         // The durable wake outbox and the V2 pointer monotonicity guard ship
         // as an in-version repair of SCHEMA 34: their absence forces a full
         // idempotent DDL replay rather than a version bump.
         && table_exists(conn, "narrative_maintenance_wake_outbox")?
         && has_timelapse_creation_baseline_triggers(conn)?)
+}
+
+fn has_v37_generation_storage(conn: &Connection) -> anyhow::Result<bool> {
+    let attempt_columns = [
+        ("id", "TEXT", false, 1),
+        ("project_id", "TEXT", true, 0),
+        ("session_id", "TEXT", true, 0),
+        ("binding_json", "TEXT", true, 0),
+        ("payload_digest", "TEXT", true, 0),
+        ("input_digest", "TEXT", true, 0),
+        ("created_at_ms", "INTEGER", true, 0),
+        ("expires_at_ms", "INTEGER", true, 0),
+        ("claimed_at_ms", "INTEGER", false, 0),
+        ("terminal_json", "TEXT", false, 0),
+        ("terminal_digest", "TEXT", false, 0),
+        ("completed_at_ms", "INTEGER", false, 0),
+        ("output_version_id", "TEXT", false, 0),
+    ];
+    let version_columns = [
+        ("id", "TEXT", false, 1),
+        ("project_id", "TEXT", true, 0),
+        ("session_id", "TEXT", true, 0),
+        ("message_id", "TEXT", true, 0),
+        ("origin", "TEXT", true, 0),
+        ("body_digest", "TEXT", true, 0),
+        ("parent_attempt_id", "TEXT", false, 0),
+        ("created_at_ms", "INTEGER", true, 0),
+        ("invalidated", "INTEGER", true, 0),
+    ];
+    let reference_columns = [
+        ("attempt_id", "TEXT", true, 1),
+        ("ordinal", "INTEGER", true, 2),
+        ("reference_json", "TEXT", true, 0),
+    ];
+    for (table, expected) in [
+        ("nir1_generation_attempts", attempt_columns.as_slice()),
+        (
+            "nir1_generation_message_versions",
+            version_columns.as_slice(),
+        ),
+        ("nir1_generation_input_refs", reference_columns.as_slice()),
+        (
+            "nir1_generation_qualification_refs",
+            reference_columns.as_slice(),
+        ),
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+        let columns = table_columns(conn, table)?;
+        if columns.len() != expected.len()
+            || !expected.iter().all(|(name, kind, not_null, primary_key)| {
+                columns.iter().any(|column| {
+                    column.name == *name
+                        && column.declared_type == *kind
+                        && column.not_null == *not_null
+                        && column.primary_key == *primary_key
+                })
+            })
+        {
+            return Ok(false);
+        }
+    }
+    for table in [
+        "nir1_generation_attempts",
+        "nir1_generation_message_versions",
+    ] {
+        if !foreign_key_matches(conn, table, "project_id", "projects", "id")? {
+            return Ok(false);
+        }
+    }
+    for table in [
+        "nir1_generation_input_refs",
+        "nir1_generation_qualification_refs",
+    ] {
+        if !foreign_key_matches(conn, table, "attempt_id", "nir1_generation_attempts", "id")? {
+            return Ok(false);
+        }
+        let sql = compact_sql(&table_sql(conn, table)?);
+        if !sql.contains("check(ordinal>=0)") || !sql.contains("check(json_valid(reference_json))")
+        {
+            return Ok(false);
+        }
+    }
+    for (index, expected) in [
+        (
+            "idx_nir1_generation_attempts_session",
+            &["project_id", "session_id", "id"][..],
+        ),
+        (
+            "idx_nir1_generation_attempts_pending",
+            &["project_id", "id"][..],
+        ),
+        (
+            "idx_nir1_generation_message_versions_session",
+            &["project_id", "session_id", "id"][..],
+        ),
+    ] {
+        if !index_columns(conn, index)?
+            .iter()
+            .map(String::as_str)
+            .eq(expected.iter().copied())
+        {
+            return Ok(false);
+        }
+    }
+    let pending_sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_nir1_generation_attempts_pending'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !compact_sql(&pending_sql).ends_with("whereterminal_jsonisnull") {
+        return Ok(false);
+    }
+    let parent_fk: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list('nir1_generation_message_versions')
+          WHERE \"from\" = 'parent_attempt_id' AND \"table\" = 'nir1_generation_attempts'
+            AND \"to\" = 'id' AND on_delete = 'NO ACTION')",
+        [],
+        |row| row.get(0),
+    )?;
+    let message_unique: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_index_list('nir1_generation_message_versions') i
+          WHERE i.\"unique\" = 1 AND i.partial = 0
+            AND (SELECT count(*) FROM pragma_index_info(i.name)) = 1
+            AND (SELECT name FROM pragma_index_info(i.name)) = 'message_id')",
+        [],
+        |row| row.get(0),
+    )?;
+    let attempt_sql = compact_sql(&table_sql(conn, "nir1_generation_attempts")?);
+    let version_sql = compact_sql(&table_sql(conn, "nir1_generation_message_versions")?);
+    for (name, expected) in [
+        (
+            "nir1_generation_invalidate_message_delete",
+            NIR1_GENERATION_MESSAGE_DELETE_TRIGGER_SQL,
+        ),
+        (
+            "nir1_generation_invalidate_message_update",
+            NIR1_GENERATION_MESSAGE_UPDATE_TRIGGER_SQL,
+        ),
+        (
+            "nir1_generation_invalidate_message_insert",
+            NIR1_GENERATION_MESSAGE_INSERT_TRIGGER_SQL,
+        ),
+    ] {
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if actual.as_deref().map(compact_sql) != Some(compact_sql(expected)) {
+            return Ok(false);
+        }
+    }
+    Ok(parent_fk
+        && message_unique
+        && attempt_sql.contains("check(json_valid(binding_json))")
+        && attempt_sql.contains("check(expires_at_ms>created_at_ms)")
+        && attempt_sql.contains("check(terminal_jsonisnullorjson_valid(terminal_json))")
+        && attempt_sql.contains("check((terminal_jsonisnullandterminal_digestisnullandcompleted_at_msisnull)or(terminal_jsonisnotnullandterminal_digestisnotnullandcompleted_at_msisnotnull))")
+        && attempt_sql.contains("check(output_version_idisnullorterminal_jsonisnotnull)")
+        && version_sql.contains("check(originin('human','generated'))")
+        && version_sql.contains("invalidatedintegernotnulldefault0check(invalidatedin(0,1))")
+        && version_sql.contains("check((origin='human'andparent_attempt_idisnull)or(origin='generated'andparent_attempt_idisnotnull))"))
 }
 
 fn has_v36_scene_scope_storage(conn: &Connection) -> anyhow::Result<bool> {

@@ -18,6 +18,7 @@ use std::sync::{
 use std::time::Duration;
 
 pub(crate) mod narrative_maintenance_connection;
+pub use narrative_maintenance_connection::ParticipantSqlOperationBudget;
 use narrative_maintenance_connection::ConnectionHealth;
 
 /// Preserve the existing SQL owner while composing a full-set capacity
@@ -854,6 +855,8 @@ pub mod map_writes;
 mod migrate;
 pub mod narrative_extraction;
 pub mod narrative_runtime_policy;
+pub mod nir1_generation;
+mod nir1_generation_history;
 pub mod plot_threads;
 pub mod post_effect;
 pub mod profile_egress_policy;

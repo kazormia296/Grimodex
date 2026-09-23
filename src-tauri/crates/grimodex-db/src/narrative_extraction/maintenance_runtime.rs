@@ -41,7 +41,9 @@ use super::maintenance_skip_evidence::{
     evaluate_completed_run_skip, persist_completed_run_skip_evidence_in_tx,
     CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
 };
-use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
+use super::nir1_entity_relation_index::{
+    GraphProgressCallback, GraphWorkControl, GraphWorkStage,
+};
 use super::restore_rebuild::{
     is_canonical_graph_state_digest, validate_canonical_verify_outcome_digest,
     validate_graph_state_digest, validate_graph_state_digest_with_control,
@@ -1436,6 +1438,34 @@ impl GraphWorkControl for MaintenanceCycleGraphControl<'_, '_> {
 
     fn finalization_signal(&self) -> Option<Arc<AtomicBool>> {
         self.inner.finalization_signal()
+    }
+
+    fn progress_callback(&self) -> Option<GraphProgressCallback> {
+        let inner = self.inner.progress_callback();
+        let cycle_stop = self.cycle.and_then(|cycle| cycle.stop_signal.clone());
+        // An arbitrary should_stop closure cannot be borrowed by SQLite's
+        // 'static callback. If the cycle has no shared stop latch, fail closed
+        // for full registration rather than pretending the callback sees all
+        // of the cycle's dynamic state.
+        let Some(inner) = inner else {
+            return cycle_stop.map(|stop| Arc::new(move || stop.load(Ordering::Acquire)) as GraphProgressCallback);
+        };
+        let Some(cycle_stop) = cycle_stop else {
+            return None;
+        };
+        Some(Arc::new(move || {
+            cycle_stop.load(Ordering::Acquire) || inner()
+        }))
+    }
+
+    fn stop_signal(&self) -> Option<Arc<AtomicBool>> {
+        self.cycle
+            .and_then(|cycle| cycle.stop_signal.clone())
+            .or_else(|| self.inner.stop_signal())
+    }
+
+    fn progress_deadline(&self) -> Option<std::time::Instant> {
+        self.inner.progress_deadline()
     }
 
     fn allows_full_eligibility(&self) -> bool {

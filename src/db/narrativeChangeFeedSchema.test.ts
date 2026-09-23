@@ -46,7 +46,7 @@ describe("narrative maintenance Change Feed schema (SCHEMA 22)", () => {
     // top-level schemaVersion further but do not touch narrative_change_*
     // itself -- this guard exists so the next schema bump revisits this test
     // too.
-    expect(contractJson.schemaVersion).toBe(36);
+    expect(contractJson.schemaVersion).toBe(37);
     expect(
       contractJson.tables.narrative_change_transactions.columns
         .source_change_event_uid,

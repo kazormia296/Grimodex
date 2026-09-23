@@ -140,7 +140,38 @@ export async function runNir1Retrieval(options) {
   let app;
   let vite;
   let verifiedBuildSources;
+  let built;
   try {
+    if (options["build-receipt"]) {
+      receipt.buildReceipt = await artifactIdentity(
+        path.resolve(options["build-receipt"]),
+      );
+      built = JSON.parse(await readFile(receipt.buildReceipt.path, "utf8"));
+      assert.equal(
+        built.status,
+        "passed",
+        "[precheck] build receipt status must be passed",
+      );
+      assert.equal(
+        built.standardBuild,
+        true,
+        "[precheck] authoritative standard build is required",
+      );
+      assert.equal(
+        built.schemaVersion,
+        "nir1-standard-build/1",
+        "[precheck] unsupported standard-build receipt schema",
+      );
+      assert.equal(
+        built.sourceUnchanged,
+        true,
+        "[precheck] standard build did not keep source identity",
+      );
+    } else if (options.mode !== "precheck") {
+      throw new Error(
+        "[precheck] --build-receipt is required to bind standard main/preload/native artifacts",
+      );
+    }
     const contract = await loadContract(ROOT, {
       requireFreeze: options.mode !== "precheck",
     });
@@ -205,18 +236,7 @@ export async function runNir1Retrieval(options) {
     receipt.rawSourceArtifacts = await Promise.all(
       rawSources.map((file) => artifactIdentity(path.join(ROOT, file))),
     );
-    if (options["build-receipt"]) {
-      receipt.buildReceipt = await artifactIdentity(
-        path.resolve(options["build-receipt"]),
-      );
-      const built = JSON.parse(
-        await readFile(receipt.buildReceipt.path, "utf8"),
-      );
-      assert.equal(
-        built.sourceUnchanged,
-        true,
-        "[precheck] standard build did not keep source identity",
-      );
+    if (built) {
       if (options.mode === "compare") {
         const sourceBytes = await readFile(built.sourceManifest);
         assert.equal(
@@ -252,10 +272,6 @@ export async function runNir1Retrieval(options) {
           "[precheck] standard build artifact changed",
         );
       }
-    } else if (options.mode !== "precheck") {
-      throw new Error(
-        "[precheck] --build-receipt is required to bind standard main/preload/native artifacts",
-      );
     }
     if (options.mode === "precheck") {
       receipt.status = "precheck-complete";

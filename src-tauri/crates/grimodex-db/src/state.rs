@@ -165,6 +165,13 @@ impl ActiveWorkspaceSnapshot {
         &self.authority
     }
 
+    /// Borrow the lifecycle participant paired with this exact authority.
+    /// Callers must not replace it with a participant acquired after a
+    /// workspace transition; the participant has no independent binding ID.
+    pub(crate) fn participant(&self) -> &crate::workspace_lifecycle::WorkspaceParticipant {
+        &self._participant
+    }
+
     pub fn path(&self) -> &Path {
         self.authority.path()
     }
