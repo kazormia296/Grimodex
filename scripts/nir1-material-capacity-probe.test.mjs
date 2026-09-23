@@ -123,10 +123,11 @@ function makePipeLeakingChild(directory, { detached = false } = {}) {
   return binary;
 }
 
-function runProbe(workspace, binary, extraArgs = []) {
+function runProbe(workspace, binary, extraArgs = [], nodeArgs = []) {
   return execFileSync(
     process.execPath,
     [
+      ...nodeArgs,
       probePath,
       binary,
       manifestPath,
@@ -714,36 +715,109 @@ test("inherited child pipes are a terminal lifecycle failure and stay bounded", 
   }
 });
 
-test("setsid descendants are killed and absent before the owner returns", () => {
-  if (process.platform !== "linux") return;
+for (const delayedCapture of [false, true]) {
+  test(`setsid descendants are killed and absent before the owner returns${delayedCapture ? " with delayed pipe capture" : ""}`, () => {
+    if (process.platform !== "linux") return;
+    const workspace = makeWorkspace();
+    try {
+      const descendantPidPath = path.join(workspace.directory, "descendant.pid");
+      const binary = makePipeLeakingChild(workspace.directory, { detached: true });
+      const nodeArgs = [];
+      if (delayedCapture) {
+        const hook = path.join(workspace.directory, "delay-spawn-return.mjs");
+        writeFileSync(hook, `
+          import childProcess from 'node:child_process';
+          import { syncBuiltinESMExports } from 'node:module';
+          const spawn = childProcess.spawn;
+          childProcess.spawn = (...args) => {
+            const child = spawn(...args);
+            // Force the parent to resume only after a fast target could exit.
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+            return child;
+          };
+          syncBuiltinESMExports();
+        `);
+        nodeArgs.push("--import", hook);
+      }
+      const started = Date.now();
+      let failureStderr;
+      assert.throws(
+        () =>
+          runProbe(workspace, binary, [
+            descendantPidPath,
+            "--fixture",
+            fixtureId,
+            "--runs",
+            "5",
+            "--timeout-ms",
+            "100",
+            "--kill-grace-ms",
+            "40",
+          ], nodeArgs),
+        (error) => {
+          failureStderr = error.stderr;
+          assert.match(error.stderr, /lifecycle failure:/);
+          assert.equal(existsSync(path.join(workspace.outputDirectory, "capacity-report.json")), false);
+          return true;
+        },
+      );
+      const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
+      assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
+      assert.ok(Date.now() - started < 1000, "setsid descendants must remain bounded");
+      // Retain the actual process state and owner error if immediate absence fails.
+      let stat = null;
+      try {
+        stat = readFileSync(`/proc/${descendantPid}/stat`, "utf8");
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      assert.equal(existsSync(`/proc/${descendantPid}`), false, `${failureStderr}\n${stat}`);
+    } finally {
+      rmSync(workspace.directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("pipe capture failure closes admission before the target runs", () => {
   const workspace = makeWorkspace();
   try {
-    const descendantPidPath = path.join(workspace.directory, "descendant.pid");
-    const binary = makePipeLeakingChild(workspace.directory, { detached: true });
+    const marker = path.join(workspace.directory, "target-ran");
+    const binary = path.join(workspace.directory, "target.sh");
+    writeFileSync(binary, '#!/bin/sh\nprintf child-ran > "$3"\nprintf "{}"\n');
+    chmodSync(binary, 0o755);
+    const hook = path.join(workspace.directory, "deny-pipe-capture.mjs");
+    const pidPath = path.join(workspace.directory, "direct.pid");
+    writeFileSync(hook, `
+      import childProcess from 'node:child_process';
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const spawn = childProcess.spawn;
+      childProcess.spawn = (...args) => {
+        const child = spawn(...args);
+        fs.writeFileSync(${JSON.stringify(pidPath)}, String(child.pid));
+        return child;
+      };
+      fs.readlinkSync = () => {
+        throw Object.assign(new Error('fixture pipe capture denied'), { code: 'EIO' });
+      };
+      syncBuiltinESMExports();
+    `);
     const started = Date.now();
+    let failureStderr;
     assert.throws(
-      () =>
-        runProbe(workspace, binary, [
-          descendantPidPath,
-          "--fixture",
-          fixtureId,
-          "--runs",
-          "5",
-          "--timeout-ms",
-          "100",
-          "--kill-grace-ms",
-          "40",
-        ]),
+      () => runProbe(workspace, binary, [marker, "--fixture", fixtureId, "--runs", "5", "--timeout-ms", "100", "--kill-grace-ms", "40"], ["--import", hook]),
       (error) => {
-        assert.match(error.stderr, /lifecycle failure:/);
-        assert.equal(existsSync(path.join(workspace.outputDirectory, "capacity-report.json")), false);
+        failureStderr = error.stderr;
         return true;
       },
     );
-    const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
-    assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
-    assert.ok(Date.now() - started < 1000, "setsid descendants must remain bounded");
-    assert.equal(existsSync(`/proc/${descendantPid}`), false);
+    assert.equal(existsSync(marker), false, "unknown pipe ownership must not admit the target");
+    assert.match(failureStderr, /fixture pipe capture denied/);
+    assert.equal(existsSync(path.join(workspace.outputDirectory, "capacity-report.json")), false);
+    const pid = Number(readFileSync(pidPath, "utf8"));
+    assert.ok(Number.isInteger(pid) && pid > 0);
+    assert.equal(existsSync(`/proc/${pid}`), false, "cancelled launch gate must actually exit");
+    assert.ok(Date.now() - started < 1000, "cancelled admission must remain bounded");
   } finally {
     rmSync(workspace.directory, { recursive: true, force: true });
   }

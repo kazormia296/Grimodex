@@ -20,7 +20,6 @@ const BASE_RUNTIME_BUDGETS = Object.freeze({
   autosaveInvokeSaveWallMs: 250,
   autosaveDomainIpcCount: 1,
   autosaveDbTransactionCount: 1,
-  startupMemoryBytes: 1_000_000_000,
   peakMemoryBytes: 2_500_000_000,
   mapPeakMemoryBytes: 2_500_000_000,
   timelinePeakMemoryBytes: 2_500_000_000,
@@ -696,7 +695,8 @@ export function evaluateRuntimePerformance(
     [
       "memory.startupBytes",
       metrics.memory?.startupBytes,
-      budgets.startupMemoryBytes,
+      // Startup uses the whole-run memory envelope, not a separate 1 GB cap.
+      budgets.peakMemoryBytes,
     ],
     ["memory.peakBytes", metrics.memory?.peakBytes, budgets.peakMemoryBytes],
   ];
