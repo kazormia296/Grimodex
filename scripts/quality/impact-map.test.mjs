@@ -155,6 +155,8 @@ test("NIR-1 Entity/Relation paths select their dedicated suite without losing sh
     "src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.ts",
     "src/lib/tauri.ts",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs",
+    "src/features/related-scenes/nir1RelatedScenesFusion.ts",
+    "src/features/related-scenes/nir1RelatedScenesFusion.test.ts",
     "scripts/codex-entity-relation-product-journey.test.mjs",
   ];
   for (const changedPath of dedicatedPaths) {
@@ -181,6 +183,14 @@ test("NIR-1 Entity/Relation paths select their dedicated suite without losing sh
     ["electron/main/ipc.ts", "narrative-semantic-contract"],
     ["electron/main/profileEgress.ts", "narrative-runtime-authority"],
     ["src/lib/tauri.ts", "narrative-semantic-contract"],
+    [
+      "src/features/related-scenes/nir1RelatedScenesFusion.ts",
+      "retrieval-grounding",
+    ],
+    [
+      "src/features/related-scenes/nir1RelatedScenesFusion.test.ts",
+      "retrieval-grounding",
+    ],
     [
       "electron/scripts/product-journey-catalog.mjs",
       "narrative-maintenance-product-journeys",
@@ -224,6 +234,197 @@ test("NIR-1 Entity/Relation paths select their dedicated suite without losing sh
   const qualityDefinitionSelection = selectImpact(map, ["evals/quality-manifest.yaml"]);
   assert.deepEqual(qualityDefinitionSelection.suiteIds, map.allSuites);
   assert.equal(qualityDefinitionSelection.fallback, false);
+});
+
+test("Change Feed writer policy-only edits run the quality workflow alongside runtime policy gates", async () => {
+  const [source, packageSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../../package.json", import.meta.url), "utf8"),
+  ]);
+  const map = parseImpactMap(source);
+  const packageJson = JSON.parse(packageSource);
+  const selection = selectImpact(map, [
+    "policies/narrative/change-feed-writers.json",
+  ]);
+
+  assert.ok(
+    selection.matchedRuleIds.includes("narrative-change-feed-policy-quality"),
+  );
+  assert.ok(selection.matchedRuleIds.includes("narrative-runtime-authority"));
+  assert.ok(selection.matchedRuleIds.includes("narrative-semantic-contract"));
+  assert.ok(selection.suiteIds.includes("quality-workflow"));
+  assert.ok(selection.suiteIds.includes("narrative-runtime"));
+  assert.ok(selection.suiteIds.includes("tool-policy"));
+  assert.ok(selection.suiteIds.includes("narrative-semantic-contract"));
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /scripts\/quality\/validate-change-feed-writers\.test\.mjs/,
+  );
+  assert.equal(selection.fallback, false);
+  assert.equal(selection.allSelected, false);
+});
+
+test("NIR-1 post-B paths select executable core/DB checks and retain separate Native acceptance", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const implementations = [
+    "src-tauri/crates/grimodex-core/src/narrative_nir1_receipt.rs",
+    "src-tauri/crates/grimodex-db/src/nir1_generation.rs",
+    "electron/native/grimodex-node/src/nir1_generation.rs",
+    "src-tauri/crates/grimodex-db/src/nir1_generation_history.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/candidates.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/input.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scenes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/memory.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs",
+  ];
+  const tests = [
+    "src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs",
+    "src-tauri/crates/grimodex-db/src/nir1_generation/tests.rs",
+    "electron/native/grimodex-node/src/nir1_generation.rs",
+    "src-tauri/crates/grimodex-db/src/nir1_generation_history.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/oracle_tests.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs",
+  ];
+  const nativeAcceptance = "electron/native/grimodex-node/src/nir1_graph_activation_tests.rs";
+  const g01Assets = ["evals/nir1-g01/fixture.v1.json", "src/features/related-scenes/nir1G01Feasibility.test.ts"];
+  const postBCandidatePaths = [
+    "docs/plans/nir1-c-scene-connection-candidate.md",
+    "docs/plans/nir1-d1-snapshot-candidate.md",
+    "docs/plans/nir1-d2b-dispatch-candidate.md",
+    "docs/plans/nir1-d2b-history-gap-candidate.md",
+    "docs/plans/nir1-d2b-storage-candidate.md",
+    "docs/plans/nir1-post-b-candidate.md",
+    "src-tauri/crates/grimodex-db/Cargo.toml",
+    "src-tauri/crates/grimodex-db/src/lib.rs",
+    "src-tauri/crates/grimodex-db/src/profile_egress_policy.rs",
+    "src-tauri/crates/grimodex-db/tests/release_schema_migration.rs",
+    "src-tauri/crates/grimodex-db/tests/workspace_migration_supervisor.rs",
+    "src/db/narrativeChangeFeedSchema.test.ts",
+  ];
+  for (const changedPath of [
+    ...implementations,
+    ...tests,
+    nativeAcceptance,
+    ...g01Assets,
+    ...postBCandidatePaths,
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("nir1-entity-relation-review"), changedPath);
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+  }
+  const postBSelection = selectImpact(map, postBCandidatePaths);
+  assert.deepEqual(postBSelection.unmatchedPaths, []);
+  assert.equal(postBSelection.fallback, false);
+  assert.equal(postBSelection.allSelected, false);
+  assert.deepEqual(postBSelection.suiteIds, [
+    "nir1-entity-relation-review",
+    "narrative-runtime",
+    "tool-policy",
+  ]);
+  assert.ok(
+    postBSelection.matchedRuleIds.includes("narrative-runtime-authority"),
+  );
+  assert.ok(postBSelection.suiteIds.includes("narrative-runtime"));
+  assert.ok(postBSelection.suiteIds.includes("tool-policy"));
+  for (const requirementId of ["GDX-ARTIFACT-001", "GDX-NARR-SEMANTIC-CONTRACT-001"]) {
+    const requirement = manifest.requirements.find((candidate) => candidate.id === requirementId);
+    assert.ok(requirement, requirementId);
+    for (const implementation of implementations) {
+      assert.ok(requirement.implementedBy.includes(implementation), `${requirementId}: ${implementation}`);
+    }
+    for (const testPath of tests) {
+      assert.ok(requirement.lightTests.includes(testPath), `${requirementId}: ${testPath}`);
+    }
+  }
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands
+    .map((command) => command.join(" "));
+  const ground = manifest.requirements.find((candidate) => candidate.id === "GDX-GROUND-001");
+  assert.ok(ground.implementedBy.includes(g01Assets[0]));
+  assert.ok(ground.lightTests.includes(g01Assets[1]));
+  assert.ok(commandLines.some((command) => command.includes(g01Assets[1])));
+  for (const command of [
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-core --test narrative_nir1_receipt",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::nir1_graph -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::nir1_packing -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation::tests -- --test-threads=1",
+    "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib nir1_generation::tests -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation_history::tests -- --test-threads=1",
+  ]) {
+    assert.ok(commandLines.includes(command), command);
+  }
+  const semantic = manifest.requirements.find((candidate) => candidate.id === "GDX-NARR-SEMANTIC-CONTRACT-001");
+  assert.ok(semantic.heavyTests.includes(nativeAcceptance));
+  assert.equal(semantic.lightTests.includes(nativeAcceptance), false);
+});
+
+test("final NIR drafts and workspace authority select narrow quality suites", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const nirDrafts = [
+    "docs/plans/nir1-c-memory-capacity-delta-draft.md",
+    "docs/plans/nir1-c-scene-body-disclosure-delta-draft.md",
+    "docs/plans/nir1-c-target-scene-body-authority-proposal-draft.md",
+    "docs/plans/nir1-d2b-history-authority-proposal-draft.md",
+  ];
+  const workspaceAuthority =
+    "src-tauri/crates/grimodex-db/src/state.rs";
+
+  for (const changedPath of nirDrafts) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.deepEqual(selection.unmatchedPaths, [], changedPath);
+    assert.ok(
+      selection.matchedRuleIds.includes("nir1-entity-relation-review"),
+      changedPath,
+    );
+    assert.deepEqual(selection.suiteIds, ["nir1-entity-relation-review"], changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+    assert.equal(selection.allSelected, false, changedPath);
+  }
+
+  const authoritySelection = selectImpact(map, [workspaceAuthority]);
+  assert.deepEqual(authoritySelection.unmatchedPaths, []);
+  for (const ruleId of [
+    "narrative-semantic-contract",
+    "nir1-entity-relation-review",
+    "narrative-maintenance-product-journeys",
+    "narrative-runtime-authority",
+  ]) {
+    assert.ok(authoritySelection.matchedRuleIds.includes(ruleId), ruleId);
+  }
+  assert.deepEqual(
+    [...authoritySelection.suiteIds].sort(),
+    [
+      "narrative-runtime",
+      "narrative-semantic-contract",
+      "nir1-entity-relation-review",
+      "tool-policy",
+    ].sort(),
+  );
+  assert.equal(authoritySelection.fallback, false);
+  assert.equal(authoritySelection.allSelected, false);
+
+  const combinedSelection = selectImpact(map, [
+    ...nirDrafts,
+    workspaceAuthority,
+  ]);
+  assert.deepEqual(combinedSelection.unmatchedPaths, []);
+  assert.equal(combinedSelection.fallback, false);
+  assert.equal(combinedSelection.allSelected, false);
+  assert.deepEqual(
+    [...combinedSelection.suiteIds].sort(),
+    [...authoritySelection.suiteIds].sort(),
+  );
 });
 
 test("incremental Freshness runtime changes select the Narrative runtime gate", async () => {
@@ -615,6 +816,31 @@ test("the extracted chat stream transport preserves audit and Web Editor impact 
   assert.ok(selection.suiteIds.includes("ai-routing"));
   assert.ok(selection.suiteIds.includes("tool-policy"));
   assert.equal(selection.fallback, false);
+});
+
+test("standard-build producer selects provenance and lifecycle fixture coverage", async () => {
+  const map = parseImpactMap(await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  ));
+  for (const changedPath of [
+    "scripts/quality/run-nir1-retrieval.mjs",
+    "scripts/quality/nir1-retrieval/standard-build.mjs",
+    "scripts/quality/nir1-retrieval/standard-build.test.mjs",
+    "docs/plans/nir1-standard-build-producer.md",
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.equal(selection.fallback, false, changedPath);
+    assert.ok(selection.matchedRuleIds.includes("nir1-standard-build"));
+    for (const requirement of ["GDX-PRECHECK-001", "GDX-ARTIFACT-001", "GDX-TRACE-001"])
+      assert.ok(selection.requirementIds.includes(requirement), changedPath);
+    assert.ok(selection.suiteIds.includes("quality-workflow"), changedPath);
+    assert.ok(selection.suiteIds.includes("retrieval-grounding"), changedPath);
+  }
+  assert.ok(LIGHT_SUITE_DEFINITIONS["retrieval-grounding"].commands.some(
+    (command) => command[0] === "node" && command[1] === "--test"
+      && command.includes("scripts/quality/nir1-retrieval/standard-build.test.mjs"),
+  ));
 });
 
 test("semantic recall and reranker runtimes preserve audit impact coverage", async () => {

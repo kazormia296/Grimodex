@@ -177,6 +177,12 @@ const WRITER_TO_MODULES = {
   "narrative.stage-provenance": [
     "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
   ],
+  // NIR-1 D2b attempts, immutable message versions and final input references
+  // are written only by the Native storage module. They are observation and
+  // lineage metadata, not a new semantic or renderer mutation authority.
+  "nir1_generation.storage": [
+    "src-tauri/crates/grimodex-db/src/nir1_generation.rs",
+  ],
   // schema_data_migrations records which data migrations have completed, and
   // the schema checkpoint reads it to decide whether a migration re-runs.
   // That makes it migration authority rather than diagnostics: a forged

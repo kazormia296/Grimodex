@@ -89,7 +89,11 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
   });
 
   it("preserves a dirty detached draft while repeated recovery invalidates runtime and IME identity", () => {
-    const document = { kind: "scene", id: "recovery-scene" } as const;
+    const document = {
+      kind: "tree",
+      id: "recovery-scene",
+      storage: "database",
+    } as const;
     const instance = createEditorInstanceId("recovery-editor");
     const draft = {
       plainText: "未保存の本文",

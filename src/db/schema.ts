@@ -9,7 +9,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-import { isNotNull } from "drizzle-orm";
+import { isNotNull, isNull } from "drizzle-orm";
 import { nowInstantString } from "@/lib/time";
 
 export const projects = sqliteTable("projects", {
@@ -2368,6 +2368,92 @@ export const narrativeExtractionStageReceipts = sqliteTable(
       table.attemptId,
     ),
   ],
+);
+
+// NIR-1 D2b. Native owns these metadata references; bodies remain in their
+// existing stores. Receipt storage alone does not authorize history or dispatch.
+export const nir1GenerationAttempts = sqliteTable(
+  "nir1_generation_attempts",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull(),
+    bindingJson: text("binding_json").notNull(),
+    payloadDigest: text("payload_digest").notNull(),
+    inputDigest: text("input_digest").notNull(),
+    createdAtMs: integer("created_at_ms").notNull(),
+    expiresAtMs: integer("expires_at_ms").notNull(),
+    claimedAtMs: integer("claimed_at_ms"),
+    terminalJson: text("terminal_json"),
+    terminalDigest: text("terminal_digest"),
+    completedAtMs: integer("completed_at_ms"),
+    outputVersionId: text("output_version_id"),
+  },
+  (table) => [
+    index("idx_nir1_generation_attempts_session").on(
+      table.projectId,
+      table.sessionId,
+      table.id,
+    ),
+    index("idx_nir1_generation_attempts_pending")
+      .on(table.projectId, table.id)
+      .where(isNull(table.terminalJson)),
+  ],
+);
+
+export const nir1GenerationMessageVersions = sqliteTable(
+  "nir1_generation_message_versions",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull(),
+    messageId: text("message_id").notNull(),
+    origin: text("origin").notNull(),
+    bodyDigest: text("body_digest").notNull(),
+    parentAttemptId: text("parent_attempt_id").references(
+      () => nir1GenerationAttempts.id,
+    ),
+    createdAtMs: integer("created_at_ms").notNull(),
+    invalidated: integer("invalidated").notNull().default(0),
+  },
+  (table) => [
+    uniqueIndex("uq_nir1_generation_message_versions_message").on(
+      table.messageId,
+    ),
+    index("idx_nir1_generation_message_versions_session").on(
+      table.projectId,
+      table.sessionId,
+      table.id,
+    ),
+  ],
+);
+
+export const nir1GenerationInputRefs = sqliteTable(
+  "nir1_generation_input_refs",
+  {
+    attemptId: text("attempt_id")
+      .notNull()
+      .references(() => nir1GenerationAttempts.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    referenceJson: text("reference_json").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.attemptId, table.ordinal] })],
+);
+
+export const nir1GenerationQualificationRefs = sqliteTable(
+  "nir1_generation_qualification_refs",
+  {
+    attemptId: text("attempt_id")
+      .notNull()
+      .references(() => nir1GenerationAttempts.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    referenceJson: text("reference_json").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.attemptId, table.ordinal] })],
 );
 
 // NIR-1 A1. The existing tree/project Scope authority remains canonical for

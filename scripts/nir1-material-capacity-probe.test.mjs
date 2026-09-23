@@ -34,7 +34,7 @@ function makeWorkspace(selectedFixture = fixtureId) {
   return { directory, fixtureDirectory, outputDirectory, sourceDb };
 }
 
-function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, fixtureShapeReportRecords = null, malformed = false, timeout = false, leakyDescendant = false, detachedDescendant = false, writeProjectMarker = false, enforceSingleChildCopy = false, omitMode = false, supportedCapacityClaim = false, failedMode = false, operationReportRecords = null, sourceSnapshotDependencyEdges = null } = {}) {
+function childReportSource({ fixtureForReport = fixtureId, mutate = false, mismatch = false, mismatchField = null, fixtureShapeReportRecords = null, malformed = false, timeout = false, writeProjectMarker = false, enforceSingleChildCopy = false, omitMode = false, supportedCapacityClaim = false, failedMode = false, operationReportRecords = null, sourceSnapshotDependencyEdges = null } = {}) {
   const fixtureCounts = {
     [fixtureId]: { candidateRevisions: 3, qualifiedRevisions: 3, rejectedRevisions: 0, entityRecords: 255, relationRecords: 3, evidenceRecords: 255, qualifiedMaterialRecords: 513, rosterRecords: 513, dependencyEdges: null, graphSnapshotDependencyEdges: null, reportRecords: null },
     "Q8176/R16": { candidateRevisions: 16, qualifiedRevisions: 16, rejectedRevisions: 0, entityRecords: 4080, relationRecords: 16, evidenceRecords: 4080, qualifiedMaterialRecords: 8176, rosterRecords: 8176, dependencyEdges: null, graphSnapshotDependencyEdges: null, reportRecords: null },
@@ -50,15 +50,12 @@ function childReportSource({ fixtureForReport = fixtureId, mutate = false, misma
   if (fixtureShapeReportRecords !== null) fixtureShape.reportRecords = fixtureShapeReportRecords;
   return [
     "#!/usr/bin/env node",
-    'import { spawn } from "node:child_process";',
     'import { readdirSync, writeFileSync } from "node:fs";',
     'import { dirname } from "node:path";',
     "const database = process.argv[2];",
     "const fixtureId = process.argv[3];",
     "const projectId = process.argv[4] ?? null;",
     timeout ? "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);" : "",
-    leakyDescendant ? "const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit' }); descendant.unref();" : "",
-    detachedDescendant ? "const descendant = spawn('setsid', ['env', '-i', process.execPath, '-e', 'setTimeout(() => {}, 2000)'], { stdio: 'inherit' }); if (projectId) writeFileSync(projectId, String(descendant.pid)); descendant.unref();" : "",
     writeProjectMarker ? "if (projectId) writeFileSync(projectId, 'child-ran');" : "",
     enforceSingleChildCopy ? "if (readdirSync(dirname(database)).filter((name) => name.endsWith('.db')).length !== 1) { console.error('prior disposable child DB was retained'); process.exit(91); }" : "",
     mutate ? "writeFileSync(database, `mutated-main-${process.pid}`);" : "",
@@ -113,10 +110,24 @@ function makeChild(directory, options) {
   return binary;
 }
 
-function runProbe(workspace, binary, extraArgs = []) {
+function makePipeLeakingChild(directory, { detached = false } = {}) {
+  // Exercise owned-pipe cleanup, not a second Node runtime's startup time.
+  // Keep the existing 100 ms child budget and two-second descendant lifetime.
+  const binary = path.join(directory, "pipe-leaking-child.sh");
+  const child = detached
+    // Record the real escaped PID only after setsid and env -i have succeeded.
+    ? `setsid env -i /bin/sh -c 'printf "%s" "$$" > "$1"; exec sleep 2' sh "$3" &`
+    : "sleep 2 &";
+  writeFileSync(binary, `#!/bin/sh\n${child}\nexit 0\n`);
+  chmodSync(binary, 0o755);
+  return binary;
+}
+
+function runProbe(workspace, binary, extraArgs = [], nodeArgs = []) {
   return execFileSync(
     process.execPath,
     [
+      ...nodeArgs,
       probePath,
       binary,
       manifestPath,
@@ -688,7 +699,7 @@ test("child timeout is bounded and reports the fixture/run context", () => {
 test("inherited child pipes are a terminal lifecycle failure and stay bounded", () => {
   const workspace = makeWorkspace();
   try {
-    const binary = makeChild(workspace.directory, { leakyDescendant: true });
+    const binary = makePipeLeakingChild(workspace.directory);
     const started = Date.now();
     assert.throws(
       () => runProbe(workspace, binary, ["--fixture", fixtureId, "--runs", "5", "--timeout-ms", "100", "--kill-grace-ms", "40"]),
@@ -704,36 +715,109 @@ test("inherited child pipes are a terminal lifecycle failure and stay bounded", 
   }
 });
 
-test("setsid descendants are killed and absent before the owner returns", () => {
-  if (process.platform !== "linux") return;
+for (const delayedCapture of [false, true]) {
+  test(`setsid descendants are killed and absent before the owner returns${delayedCapture ? " with delayed pipe capture" : ""}`, () => {
+    if (process.platform !== "linux") return;
+    const workspace = makeWorkspace();
+    try {
+      const descendantPidPath = path.join(workspace.directory, "descendant.pid");
+      const binary = makePipeLeakingChild(workspace.directory, { detached: true });
+      const nodeArgs = [];
+      if (delayedCapture) {
+        const hook = path.join(workspace.directory, "delay-spawn-return.mjs");
+        writeFileSync(hook, `
+          import childProcess from 'node:child_process';
+          import { syncBuiltinESMExports } from 'node:module';
+          const spawn = childProcess.spawn;
+          childProcess.spawn = (...args) => {
+            const child = spawn(...args);
+            // Force the parent to resume only after a fast target could exit.
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+            return child;
+          };
+          syncBuiltinESMExports();
+        `);
+        nodeArgs.push("--import", hook);
+      }
+      const started = Date.now();
+      let failureStderr;
+      assert.throws(
+        () =>
+          runProbe(workspace, binary, [
+            descendantPidPath,
+            "--fixture",
+            fixtureId,
+            "--runs",
+            "5",
+            "--timeout-ms",
+            "100",
+            "--kill-grace-ms",
+            "40",
+          ], nodeArgs),
+        (error) => {
+          failureStderr = error.stderr;
+          assert.match(error.stderr, /lifecycle failure:/);
+          assert.equal(existsSync(path.join(workspace.outputDirectory, "capacity-report.json")), false);
+          return true;
+        },
+      );
+      const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
+      assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
+      assert.ok(Date.now() - started < 1000, "setsid descendants must remain bounded");
+      // Retain the actual process state and owner error if immediate absence fails.
+      let stat = null;
+      try {
+        stat = readFileSync(`/proc/${descendantPid}/stat`, "utf8");
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      assert.equal(existsSync(`/proc/${descendantPid}`), false, `${failureStderr}\n${stat}`);
+    } finally {
+      rmSync(workspace.directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("pipe capture failure closes admission before the target runs", () => {
   const workspace = makeWorkspace();
   try {
-    const descendantPidPath = path.join(workspace.directory, "descendant.pid");
-    const binary = makeChild(workspace.directory, { detachedDescendant: true });
+    const marker = path.join(workspace.directory, "target-ran");
+    const binary = path.join(workspace.directory, "target.sh");
+    writeFileSync(binary, '#!/bin/sh\nprintf child-ran > "$3"\nprintf "{}"\n');
+    chmodSync(binary, 0o755);
+    const hook = path.join(workspace.directory, "deny-pipe-capture.mjs");
+    const pidPath = path.join(workspace.directory, "direct.pid");
+    writeFileSync(hook, `
+      import childProcess from 'node:child_process';
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const spawn = childProcess.spawn;
+      childProcess.spawn = (...args) => {
+        const child = spawn(...args);
+        fs.writeFileSync(${JSON.stringify(pidPath)}, String(child.pid));
+        return child;
+      };
+      fs.readlinkSync = () => {
+        throw Object.assign(new Error('fixture pipe capture denied'), { code: 'EIO' });
+      };
+      syncBuiltinESMExports();
+    `);
     const started = Date.now();
+    let failureStderr;
     assert.throws(
-      () =>
-        runProbe(workspace, binary, [
-          descendantPidPath,
-          "--fixture",
-          fixtureId,
-          "--runs",
-          "5",
-          "--timeout-ms",
-          "100",
-          "--kill-grace-ms",
-          "40",
-        ]),
+      () => runProbe(workspace, binary, [marker, "--fixture", fixtureId, "--runs", "5", "--timeout-ms", "100", "--kill-grace-ms", "40"], ["--import", hook]),
       (error) => {
-        assert.match(error.stderr, /lifecycle failure:/);
-        assert.equal(existsSync(path.join(workspace.outputDirectory, "capacity-report.json")), false);
+        failureStderr = error.stderr;
         return true;
       },
     );
-    const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
-    assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
-    assert.ok(Date.now() - started < 1000, "setsid descendants must remain bounded");
-    assert.equal(existsSync(`/proc/${descendantPid}`), false);
+    assert.equal(existsSync(marker), false, "unknown pipe ownership must not admit the target");
+    assert.match(failureStderr, /fixture pipe capture denied/);
+    assert.equal(existsSync(path.join(workspace.outputDirectory, "capacity-report.json")), false);
+    const pid = Number(readFileSync(pidPath, "utf8"));
+    assert.ok(Number.isInteger(pid) && pid > 0);
+    assert.equal(existsSync(`/proc/${pid}`), false, "cancelled launch gate must actually exit");
+    assert.ok(Date.now() - started < 1000, "cancelled admission must remain bounded");
   } finally {
     rmSync(workspace.directory, { recursive: true, force: true });
   }

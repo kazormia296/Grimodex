@@ -7,9 +7,12 @@
 //! the maintenance feed commit or roll back together.
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Deserializer, Value};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
+use std::fmt;
 use uuid::Uuid;
 
 /// The coordinate system used by the renderer's canonical text projection.
@@ -355,25 +358,69 @@ fn upsert_object_head(
     Ok(())
 }
 
-fn normalize_canonical_fragment(value: &str) -> String {
-    value.replace("\r\n", "\n").replace('\r', "\n")
+const CANONICAL_TEXT_CHECK_BYTES: usize = 1024;
+// Graph source reads use a streaming visitor rather than constructing a
+// serde_json::Value tree. This is a refusal boundary, not a supported Scene
+// size promise: a bounded input is still rejected when the caller's live
+// output/parse budget cannot admit its transient allocations.
+const CANONICAL_PARSE_INPUT_LIMIT: usize = 32 * 1024;
+const CANONICAL_STREAM_MAX_DEPTH: usize = 32;
+
+fn normalize_canonical_fragment<E>(
+    value: &str,
+    emit: &mut dyn FnMut(&str) -> Result<(), E>,
+    check: &mut dyn FnMut() -> Result<(), E>,
+) -> Result<(), E> {
+    let mut start = 0;
+    while start < value.len() {
+        check()?;
+        let mut end = start
+            .saturating_add(CANONICAL_TEXT_CHECK_BYTES)
+            .min(value.len());
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        // Keep CRLF together even when it crosses a bounded piece boundary.
+        if value.as_bytes().get(end.wrapping_sub(1)) == Some(&b'\r')
+            && value.as_bytes().get(end) == Some(&b'\n')
+        {
+            end += 1;
+        }
+        let mut piece = &value[start..end];
+        while let Some(cr) = piece.find('\r') {
+            emit(&piece[..cr])?;
+            emit("\n")?;
+            piece = &piece[cr + 1..];
+            if let Some(rest) = piece.strip_prefix('\n') {
+                piece = rest;
+            }
+        }
+        emit(piece)?;
+        start = end;
+    }
+    Ok(())
 }
 
-fn append_canonical_inline_text(node: &Value, output: &mut String) {
+fn append_canonical_inline_text<E>(
+    node: &Value,
+    emit: &mut dyn FnMut(&str) -> Result<(), E>,
+    check: &mut dyn FnMut() -> Result<(), E>,
+) -> Result<(), E> {
+    check()?;
     match node.get("type").and_then(Value::as_str) {
         Some("text") => {
             if let Some(text) = node.get("text").and_then(Value::as_str) {
-                output.push_str(&normalize_canonical_fragment(text));
+                normalize_canonical_fragment(text, emit, check)?;
             }
         }
-        Some("hardBreak") => output.push('\n'),
+        Some("hardBreak") => emit("\n")?,
         Some("ruby") => {
             if let Some(base) = node
                 .get("attrs")
                 .and_then(|attrs| attrs.get("base"))
                 .and_then(Value::as_str)
             {
-                output.push_str(&normalize_canonical_fragment(base));
+                normalize_canonical_fragment(base, emit, check)?;
             }
         }
         Some("mention") => {
@@ -387,56 +434,916 @@ fn append_canonical_inline_text(node: &Value, output: &mut String) {
                         .and_then(Value::as_str)
                 })
                 .unwrap_or_default();
-            output.push('@');
-            output.push_str(&normalize_canonical_fragment(label));
+            emit("@")?;
+            normalize_canonical_fragment(label, emit, check)?;
         }
-        Some("image") => output.push('\u{fffc}'),
+        Some("image") => emit("\u{fffc}")?,
         _ => {
             if let Some(children) = node.get("content").and_then(Value::as_array) {
                 for child in children {
-                    append_canonical_inline_text(child, output);
+                    append_canonical_inline_text(child, emit, check)?;
                 }
             }
         }
     }
+    Ok(())
 }
 
-fn collect_canonical_blocks(node: &Value, blocks: &mut Vec<String>) {
+fn begin_canonical_block<E>(
+    blocks: &mut usize,
+    emit: &mut dyn FnMut(&str) -> Result<(), E>,
+) -> Result<(), E> {
+    if *blocks > 0 {
+        emit("\n")?;
+    }
+    *blocks += 1;
+    Ok(())
+}
+
+fn collect_canonical_blocks<E>(
+    node: &Value,
+    blocks: &mut usize,
+    emit: &mut dyn FnMut(&str) -> Result<(), E>,
+    check: &mut dyn FnMut() -> Result<(), E>,
+) -> Result<(), E> {
+    check()?;
     let node_type = node.get("type").and_then(Value::as_str);
     match node_type {
         Some("doc") => {
             if let Some(children) = node.get("content").and_then(Value::as_array) {
                 for child in children {
-                    collect_canonical_blocks(child, blocks);
+                    collect_canonical_blocks(child, blocks, emit, check)?;
                 }
             }
         }
         Some("paragraph") | Some("heading") | Some("codeBlock") | Some("sceneBeat") => {
-            let mut block = String::new();
+            begin_canonical_block(blocks, emit)?;
             if let Some(children) = node.get("content").and_then(Value::as_array) {
                 for child in children {
-                    append_canonical_inline_text(child, &mut block);
+                    append_canonical_inline_text(child, emit, check)?;
                 }
             }
-            blocks.push(block);
         }
-        Some("horizontalRule") | Some("sceneBreak") => blocks.push(String::new()),
-        Some("image") => blocks.push("\u{fffc}".to_string()),
+        Some("horizontalRule") | Some("sceneBreak") => begin_canonical_block(blocks, emit)?,
+        Some("image") => {
+            begin_canonical_block(blocks, emit)?;
+            emit("\u{fffc}")?;
+        }
         _ => {
-            let before = blocks.len();
+            let before = *blocks;
             if let Some(children) = node.get("content").and_then(Value::as_array) {
                 for child in children {
-                    collect_canonical_blocks(child, blocks);
+                    collect_canonical_blocks(child, blocks, emit, check)?;
                 }
             }
             // This mirrors collectBlocks in the TypeScript serializer: a
             // valid empty block container is represented by an empty block so
             // synthetic boundaries remain deterministic.
-            if blocks.len() == before {
-                blocks.push(String::new());
+            if *blocks == before {
+                begin_canonical_block(blocks, emit)?;
             }
         }
     }
+    Ok(())
+}
+
+/// A request-local projection produced while the JSON visitor walks one node.
+/// The parser keeps only the two projections needed to resolve arbitrary
+/// ProseMirror field order: a node's block form and its inline form. It never
+/// retains unknown JSON fields or a serde_json::Value tree.
+struct StreamingSceneNode {
+    block: StreamingSceneBlocks,
+    inline: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StreamingSceneNodeKind {
+    Text,
+    HardBreak,
+    Ruby,
+    Mention,
+    Image,
+    Doc,
+    Paragraph,
+    Heading,
+    CodeBlock,
+    SceneBeat,
+    HorizontalRule,
+    SceneBreak,
+    Other,
+}
+
+impl StreamingSceneNodeKind {
+    fn from_type(node_type: Option<&str>) -> Self {
+        match node_type {
+            Some("text") => Self::Text,
+            Some("hardBreak") => Self::HardBreak,
+            Some("ruby") => Self::Ruby,
+            Some("mention") => Self::Mention,
+            Some("image") => Self::Image,
+            Some("doc") => Self::Doc,
+            Some("paragraph") => Self::Paragraph,
+            Some("heading") => Self::Heading,
+            Some("codeBlock") => Self::CodeBlock,
+            Some("sceneBeat") => Self::SceneBeat,
+            Some("horizontalRule") => Self::HorizontalRule,
+            Some("sceneBreak") => Self::SceneBreak,
+            _ => Self::Other,
+        }
+    }
+}
+
+struct StreamingSceneBlocks {
+    text: String,
+    count: usize,
+}
+
+struct StreamingSceneState<'de> {
+    node_type: Option<Cow<'de, str>>,
+    text: Option<Cow<'de, str>>,
+    attrs: StreamingSceneAttrs<'de>,
+    block_children: String,
+    block_count: usize,
+    inline_children: String,
+}
+
+impl<'de> StreamingSceneState<'de> {
+    fn new() -> Self {
+        Self {
+            node_type: None,
+            text: None,
+            attrs: StreamingSceneAttrs::default(),
+            block_children: String::new(),
+            block_count: 0,
+            inline_children: String::new(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct StreamingSceneAttrs<'de> {
+    base: Option<Cow<'de, str>>,
+    label: Option<Cow<'de, str>>,
+    id: Option<Cow<'de, str>>,
+}
+
+struct StreamingSceneParser<'a> {
+    max_output_bytes: usize,
+    json_string_reservation: usize,
+    check: &'a mut dyn FnMut() -> anyhow::Result<()>,
+    admit_parse: &'a mut dyn FnMut(usize) -> anyhow::Result<()>,
+    admit_output: &'a mut dyn FnMut(usize) -> anyhow::Result<()>,
+}
+
+impl StreamingSceneParser<'_> {
+    fn check(&mut self) -> anyhow::Result<()> {
+        (self.check)()
+    }
+
+    fn admit_parse(&mut self, bytes: usize) -> anyhow::Result<()> {
+        (self.admit_parse)(bytes)
+    }
+
+    fn admit_output(&mut self, bytes: usize) -> anyhow::Result<()> {
+        (self.admit_output)(bytes)
+    }
+
+    fn begin_node(&mut self, depth: usize) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            depth <= CANONICAL_STREAM_MAX_DEPTH,
+            "NEX_CANONICAL_TEXT_DEPTH_LIMIT"
+        );
+        self.check()?;
+        // No JSON node is retained after its two projections are returned.
+        // This accounts for the visitor's request-local node state and call
+        // stack separately from any String capacity admitted below.
+        self.admit_parse(128)?;
+        Ok(())
+    }
+
+    fn begin_skipped_value(&mut self, depth: usize) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            depth <= CANONICAL_STREAM_MAX_DEPTH,
+            "NEX_CANONICAL_TEXT_DEPTH_LIMIT"
+        );
+        self.check()?;
+        // serde_json may use its scratch buffer when an ignored string has
+        // escapes. Reserve a bounded worst case before entering the value;
+        // nested skipped values charge independently.
+        self.admit_parse(self.json_string_reservation)?;
+        Ok(())
+    }
+
+    fn reserve_json_string(&mut self) -> anyhow::Result<()> {
+        self.check()?;
+        // A borrowed string costs no heap, while an escaped string can occupy
+        // both serde_json's scratch buffer and an owned Cow. The hard input
+        // cap bounds this conservative pre-admission; it is deliberately
+        // charged before deserialize_str can allocate either representation.
+        self.admit_parse(self.json_string_reservation)
+    }
+
+    fn append_piece(&mut self, output: &mut String, piece: &str) -> anyhow::Result<()> {
+        self.check()?;
+        if piece.is_empty() {
+            return Ok(());
+        }
+        let new_len = output
+            .len()
+            .checked_add(piece.len())
+            .ok_or_else(|| anyhow::anyhow!("NEX_CANONICAL_TEXT_OUTPUT_LIMIT"))?;
+        anyhow::ensure!(
+            new_len <= self.max_output_bytes,
+            "NEX_CANONICAL_TEXT_OUTPUT_LIMIT"
+        );
+        self.admit_output(piece.len())?;
+        output.try_reserve_exact(piece.len())?;
+        output.push_str(piece);
+        Ok(())
+    }
+
+    fn append_normalized(&mut self, output: &mut String, value: &str) -> anyhow::Result<()> {
+        let mut start = 0;
+        while start < value.len() {
+            self.check()?;
+            let mut end = start
+                .saturating_add(CANONICAL_TEXT_CHECK_BYTES)
+                .min(value.len());
+            while !value.is_char_boundary(end) {
+                end -= 1;
+            }
+            if value.as_bytes().get(end.wrapping_sub(1)) == Some(&b'\r')
+                && value.as_bytes().get(end) == Some(&b'\n')
+            {
+                end += 1;
+            }
+            let mut piece = &value[start..end];
+            while let Some(cr) = piece.find('\r') {
+                self.append_piece(output, &piece[..cr])?;
+                self.append_piece(output, "\n")?;
+                piece = &piece[cr + 1..];
+                if let Some(rest) = piece.strip_prefix('\n') {
+                    piece = rest;
+                }
+            }
+            self.append_piece(output, piece)?;
+            start = end;
+        }
+        Ok(())
+    }
+
+    fn append_block_child(
+        &mut self,
+        target: &mut String,
+        count: &mut usize,
+        child: &StreamingSceneNode,
+    ) -> anyhow::Result<()> {
+        if child.block.count == 0 {
+            return Ok(());
+        }
+        if *count > 0 {
+            self.append_piece(target, "\n")?;
+        }
+        self.append_piece(target, &child.block.text)?;
+        *count = (*count)
+            .checked_add(child.block.count)
+            .ok_or_else(|| anyhow::anyhow!("NEX_CANONICAL_TEXT_NODE_LIMIT"))?;
+        Ok(())
+    }
+
+    fn finish_node<'de>(
+        &mut self,
+        state: StreamingSceneState<'de>,
+    ) -> anyhow::Result<StreamingSceneNode> {
+        self.check()?;
+        let node_kind = StreamingSceneNodeKind::from_type(state.node_type.as_deref());
+        let inline = match node_kind {
+            StreamingSceneNodeKind::Text => {
+                let mut output = String::new();
+                if let Some(text) = state.text.as_deref() {
+                    self.append_normalized(&mut output, text)?;
+                }
+                output
+            }
+            StreamingSceneNodeKind::HardBreak => {
+                let mut output = String::new();
+                self.append_piece(&mut output, "\n")?;
+                output
+            }
+            StreamingSceneNodeKind::Ruby => {
+                let mut output = String::new();
+                if let Some(base) = state.attrs.base.as_deref() {
+                    self.append_normalized(&mut output, base)?;
+                }
+                output
+            }
+            StreamingSceneNodeKind::Mention => {
+                let mut output = String::new();
+                self.append_piece(&mut output, "@")?;
+                let label = state
+                    .attrs
+                    .label
+                    .as_deref()
+                    .or(state.attrs.id.as_deref())
+                    .unwrap_or_default();
+                self.append_normalized(&mut output, label)?;
+                output
+            }
+            StreamingSceneNodeKind::Image => {
+                let mut output = String::new();
+                self.append_piece(&mut output, "\u{fffc}")?;
+                output
+            }
+            _ => state.inline_children,
+        };
+
+        let block = match node_kind {
+            StreamingSceneNodeKind::Doc => StreamingSceneBlocks {
+                text: state.block_children,
+                count: state.block_count,
+            },
+            StreamingSceneNodeKind::Paragraph
+            | StreamingSceneNodeKind::Heading
+            | StreamingSceneNodeKind::CodeBlock
+            | StreamingSceneNodeKind::SceneBeat => {
+                let mut text = String::new();
+                self.append_piece(&mut text, &inline)?;
+                StreamingSceneBlocks { text, count: 1 }
+            }
+            StreamingSceneNodeKind::HorizontalRule | StreamingSceneNodeKind::SceneBreak => {
+                StreamingSceneBlocks {
+                    text: String::new(),
+                    count: 1,
+                }
+            }
+            StreamingSceneNodeKind::Image => {
+                let mut text = String::new();
+                self.append_piece(&mut text, "\u{fffc}")?;
+                StreamingSceneBlocks { text, count: 1 }
+            }
+            _ if state.block_count > 0 => StreamingSceneBlocks {
+                text: state.block_children,
+                count: state.block_count,
+            },
+            _ => StreamingSceneBlocks {
+                text: String::new(),
+                count: 1,
+            },
+        };
+        self.check()?;
+        Ok(StreamingSceneNode { block, inline })
+    }
+}
+
+struct StreamingSceneStringVisitor;
+
+impl<'de> Visitor<'de> for StreamingSceneStringVisitor {
+    type Value = Cow<'de, str>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON string")
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Cow::Borrowed(value))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Cow::Owned(value.to_owned()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Cow::Owned(value))
+    }
+}
+
+struct StreamingSceneStringSeed<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+}
+
+impl<'de, 'p, 'a> DeserializeSeed<'de> for StreamingSceneStringSeed<'p, 'a> {
+    type Value = Cow<'de, str>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        self.parser
+            .reserve_json_string()
+            .map_err(de::Error::custom)?;
+        deserializer.deserialize_str(StreamingSceneStringVisitor)
+    }
+}
+
+struct StreamingSceneOptionalStringSeed<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+}
+
+struct StreamingSceneOptionalStringVisitor<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+}
+
+impl<'de, 'p, 'a> Visitor<'de> for StreamingSceneOptionalStringVisitor<'p, 'a> {
+    type Value = Option<Cow<'de, str>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an optional JSON string")
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(None)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(None)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        StreamingSceneStringSeed {
+            parser: self.parser,
+        }
+        .deserialize(deserializer)
+        .map(Some)
+    }
+}
+
+impl<'de, 'p, 'a> DeserializeSeed<'de> for StreamingSceneOptionalStringSeed<'p, 'a> {
+    type Value = Option<Cow<'de, str>>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        deserializer.deserialize_option(StreamingSceneOptionalStringVisitor {
+            parser: self.parser,
+        })
+    }
+}
+
+struct StreamingSceneSkipSeed<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+}
+
+struct StreamingSceneSkipVisitor<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+}
+
+impl<'p, 'a> StreamingSceneSkipVisitor<'p, 'a> {
+    fn check<E>(self) -> Result<Self, E>
+    where
+        E: de::Error,
+    {
+        self.parser.check().map_err(E::custom)?;
+        Ok(self)
+    }
+}
+
+impl<'de, 'p, 'a> Visitor<'de> for StreamingSceneSkipVisitor<'p, 'a> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_i128<E>(self, _value: i128) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_u128<E>(self, _value: u128) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_borrowed_str<E>(self, _value: &'de str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_string<E>(self, _value: String) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        StreamingSceneSkipSeed {
+            parser: self.parser,
+            depth: self.depth + 1,
+        }
+        .deserialize(deserializer)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let parser = self.parser;
+        while let Some(()) = sequence.next_element_seed(StreamingSceneSkipSeed {
+            parser: &mut *parser,
+            depth: self.depth + 1,
+        })? {}
+        Ok(())
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let parser = self.parser;
+        while let Some(_key) = map.next_key_seed(StreamingSceneStringSeed {
+            parser: &mut *parser,
+        })? {
+            map.next_value_seed(StreamingSceneSkipSeed {
+                parser: &mut *parser,
+                depth: self.depth + 1,
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl<'de, 'p, 'a> DeserializeSeed<'de> for StreamingSceneSkipSeed<'p, 'a> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        self.parser
+            .begin_skipped_value(self.depth)
+            .map_err(de::Error::custom)?;
+        deserializer.deserialize_any(StreamingSceneSkipVisitor {
+            parser: self.parser,
+            depth: self.depth,
+        })
+    }
+}
+
+struct StreamingSceneAttrsSeed<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+}
+
+struct StreamingSceneAttrsVisitor<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+}
+
+impl<'de, 'p, 'a> Visitor<'de> for StreamingSceneAttrsVisitor<'p, 'a> {
+    type Value = StreamingSceneAttrs<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a Scene attrs object")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let parser = self.parser;
+        let mut attrs = StreamingSceneAttrs::default();
+        while let Some(key) = map.next_key_seed(StreamingSceneStringSeed {
+            parser: &mut *parser,
+        })? {
+            parser.check().map_err(de::Error::custom)?;
+            match key.as_ref() {
+                "base" => {
+                    attrs.base = map.next_value_seed(StreamingSceneOptionalStringSeed {
+                        parser: &mut *parser,
+                    })?;
+                }
+                "label" => {
+                    attrs.label = map.next_value_seed(StreamingSceneOptionalStringSeed {
+                        parser: &mut *parser,
+                    })?;
+                }
+                "id" => {
+                    attrs.id = map.next_value_seed(StreamingSceneOptionalStringSeed {
+                        parser: &mut *parser,
+                    })?;
+                }
+                _ => {
+                    map.next_value_seed(StreamingSceneSkipSeed {
+                        parser: &mut *parser,
+                        depth: self.depth + 1,
+                    })?;
+                }
+            }
+        }
+        Ok(attrs)
+    }
+}
+
+impl<'de, 'p, 'a> DeserializeSeed<'de> for StreamingSceneAttrsSeed<'p, 'a> {
+    type Value = StreamingSceneAttrs<'de>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(StreamingSceneAttrsVisitor {
+            parser: self.parser,
+            depth: self.depth,
+        })
+    }
+}
+
+struct StreamingSceneChildrenSeed<'p, 'a, 'out> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+    block_children: &'out mut String,
+    block_count: &'out mut usize,
+    inline_children: &'out mut String,
+}
+
+struct StreamingSceneChildrenVisitor<'p, 'a, 'out> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+    block_children: &'out mut String,
+    block_count: &'out mut usize,
+    inline_children: &'out mut String,
+}
+
+impl<'de, 'p, 'a, 'out> Visitor<'de> for StreamingSceneChildrenVisitor<'p, 'a, 'out> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a Scene content array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let parser = self.parser;
+        while let Some(child) = sequence.next_element_seed(StreamingSceneNodeSeed {
+            parser: &mut *parser,
+            depth: self.depth,
+        })? {
+            parser
+                .append_block_child(self.block_children, self.block_count, &child)
+                .map_err(de::Error::custom)?;
+            parser
+                .append_piece(self.inline_children, &child.inline)
+                .map_err(de::Error::custom)?;
+        }
+        Ok(())
+    }
+}
+
+impl<'de, 'p, 'a, 'out> DeserializeSeed<'de> for StreamingSceneChildrenSeed<'p, 'a, 'out> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(StreamingSceneChildrenVisitor {
+            parser: self.parser,
+            depth: self.depth,
+            block_children: self.block_children,
+            block_count: self.block_count,
+            inline_children: self.inline_children,
+        })
+    }
+}
+
+struct StreamingSceneNodeSeed<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+}
+
+struct StreamingSceneNodeVisitor<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+}
+
+impl<'de, 'p, 'a> Visitor<'de> for StreamingSceneNodeVisitor<'p, 'a> {
+    type Value = StreamingSceneNode;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a ProseMirror Scene node object")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let parser = self.parser;
+        let mut state = StreamingSceneState::new();
+        while let Some(key) = map.next_key_seed(StreamingSceneStringSeed {
+            parser: &mut *parser,
+        })? {
+            parser.check().map_err(de::Error::custom)?;
+            match key.as_ref() {
+                "type" => {
+                    state.node_type = map.next_value_seed(StreamingSceneOptionalStringSeed {
+                        parser: &mut *parser,
+                    })?;
+                }
+                "text" => {
+                    state.text = map.next_value_seed(StreamingSceneOptionalStringSeed {
+                        parser: &mut *parser,
+                    })?;
+                }
+                "attrs" => {
+                    state.attrs = map.next_value_seed(StreamingSceneAttrsSeed {
+                        parser: &mut *parser,
+                        depth: self.depth + 1,
+                    })?;
+                }
+                "content" => {
+                    state.block_children.clear();
+                    state.block_count = 0;
+                    state.inline_children.clear();
+                    map.next_value_seed(StreamingSceneChildrenSeed {
+                        parser: &mut *parser,
+                        depth: self.depth + 1,
+                        block_children: &mut state.block_children,
+                        block_count: &mut state.block_count,
+                        inline_children: &mut state.inline_children,
+                    })?;
+                }
+                _ => {
+                    map.next_value_seed(StreamingSceneSkipSeed {
+                        parser: &mut *parser,
+                        depth: self.depth + 1,
+                    })?;
+                }
+            }
+        }
+        parser.finish_node(state).map_err(de::Error::custom)
+    }
+}
+
+impl<'de, 'p, 'a> DeserializeSeed<'de> for StreamingSceneNodeSeed<'p, 'a> {
+    type Value = StreamingSceneNode;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        self.parser
+            .begin_node(self.depth)
+            .map_err(de::Error::custom)?;
+        deserializer.deserialize_map(StreamingSceneNodeVisitor {
+            parser: self.parser,
+            depth: self.depth,
+        })
+    }
+}
+
+/// Parse and project one persisted Scene body under the same admission and
+/// cancellation boundary used by the Graph reader.
+///
+/// The caller must perform the SQLite scalar byte-length check before loading
+/// the stored value.  `max_input_bytes` is repeated here as a defence against
+/// callers that already own a materialized string, while `max_output_bytes`
+/// bounds the canonical projection before its result is allocated.  Invalid
+/// JSON is unavailable to this path; the legacy unbounded helper below keeps
+/// its existing storage fallback for change-feed digests.
+#[cfg(test)]
+pub(crate) fn canonical_scene_storage_with_check(
+    storage: &str,
+    max_input_bytes: usize,
+    max_output_bytes: usize,
+    check: &mut dyn FnMut() -> anyhow::Result<()>,
+) -> anyhow::Result<String> {
+    canonical_scene_storage_with_admission(
+        storage,
+        max_input_bytes,
+        max_output_bytes,
+        check,
+        &mut |_| Ok(()),
+        &mut |_| Ok(()),
+    )
+}
+
+/// Parse/project a stored Scene with a bounded streaming visitor. The visitor
+/// charges parser scratch and every projected String before allocation, checks
+/// cancellation at each node/field/chunk, and never constructs a Value tree.
+/// The callbacks are intentionally separate from check so cancellation and
+/// resource accounting cannot be reset by a candidate.
+pub(crate) fn canonical_scene_storage_with_admission(
+    storage: &str,
+    max_input_bytes: usize,
+    max_output_bytes: usize,
+    check: &mut dyn FnMut() -> anyhow::Result<()>,
+    admit_parse: &mut dyn FnMut(usize) -> anyhow::Result<()>,
+    admit_output: &mut dyn FnMut(usize) -> anyhow::Result<()>,
+) -> anyhow::Result<String> {
+    check()?;
+    anyhow::ensure!(
+        storage.len() <= max_input_bytes,
+        "NEX_CANONICAL_TEXT_INPUT_LIMIT"
+    );
+    anyhow::ensure!(
+        storage.len() <= CANONICAL_PARSE_INPUT_LIMIT,
+        "NEX_CANONICAL_TEXT_PARSE_LIMIT"
+    );
+    let json_string_reservation = storage
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| anyhow::anyhow!("NEX_CANONICAL_TEXT_PARSE_LIMIT"))?;
+    let mut parser = StreamingSceneParser {
+        max_output_bytes,
+        json_string_reservation,
+        check,
+        admit_parse,
+        admit_output,
+    };
+    let mut deserializer = Deserializer::from_str(storage);
+    let root = StreamingSceneNodeSeed {
+        parser: &mut parser,
+        depth: 0,
+    }
+    .deserialize(&mut deserializer)
+    .map_err(|error| anyhow::anyhow!("NEX_CANONICAL_TEXT_INVALID_JSON: {error}"))?;
+    deserializer
+        .end()
+        .map_err(|error| anyhow::anyhow!("NEX_CANONICAL_TEXT_INVALID_JSON: {error}"))?;
+    parser.check()?;
+    Ok(root.block.text)
 }
 
 /// Extracts the canonical plain-text projection of a Scene's ProseMirror
@@ -449,9 +1356,20 @@ pub(crate) fn scene_canonical_text(storage: &str) -> String {
     let Ok(document) = serde_json::from_str::<Value>(storage) else {
         return storage.to_string();
     };
-    let mut blocks = Vec::new();
-    collect_canonical_blocks(&document, &mut blocks);
-    blocks.join("\n")
+    let mut output = String::new();
+    let result: Result<(), std::convert::Infallible> = collect_canonical_blocks(
+        &document,
+        &mut 0,
+        &mut |piece| {
+            output.push_str(piece);
+            Ok(())
+        },
+        &mut || Ok(()),
+    );
+    match result {
+        Ok(()) => output,
+        Err(never) => match never {},
+    }
 }
 
 fn sha256_digest(value: &[u8]) -> String {
@@ -2746,5 +3664,225 @@ mod tests {
                 fixture.id
             );
         }
+    }
+
+    #[test]
+    fn bounded_scene_storage_matches_the_shared_typescript_golden_fixtures() {
+        #[derive(Debug, Deserialize)]
+        struct GoldenFixture {
+            id: String,
+            document: Value,
+            #[serde(rename = "canonicalText")]
+            canonical_text: String,
+        }
+
+        let fixtures: Vec<GoldenFixture> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../evals/fixtures/narrative/canonical-text-v1.json"
+        )))
+        .expect("parse canonical text golden fixtures");
+
+        for fixture in fixtures {
+            let storage =
+                serde_json::to_string(&fixture.document).expect("serialize canonical text fixture");
+            let actual = canonical_scene_storage_with_check(
+                &storage,
+                storage.len(),
+                fixture.canonical_text.len(),
+                &mut || Ok(()),
+            )
+            .unwrap_or_else(|error| panic!("fixture {}: {error}", fixture.id));
+            assert_eq!(actual, fixture.canonical_text, "fixture {}", fixture.id);
+        }
+    }
+
+    #[test]
+    fn bounded_scene_storage_rejects_oversized_input_before_json_parse() {
+        let mut checks = 0;
+        let error = canonical_scene_storage_with_check(&"[".repeat(32), 8, 128, &mut || {
+            checks += 1;
+            Ok(())
+        })
+        .expect_err("oversized storage must be unavailable");
+        assert!(error.to_string().contains("NEX_CANONICAL_TEXT_INPUT_LIMIT"));
+        assert_eq!(checks, 1, "admission must happen before parsing");
+    }
+
+    #[test]
+    fn bounded_scene_storage_rejects_oversized_canonical_output_before_allocation() {
+        let storage = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "abcdef" }]
+            }]
+        })
+        .to_string();
+        let error = canonical_scene_storage_with_check(&storage, storage.len(), 5, &mut || Ok(()))
+            .expect_err("canonical output must consume the caller's byte budget");
+        assert!(error
+            .to_string()
+            .contains("NEX_CANONICAL_TEXT_OUTPUT_LIMIT"));
+    }
+
+    #[test]
+    fn bounded_scene_storage_admits_canonical_output_before_second_pass() {
+        let storage = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "abcdef" }]
+            }]
+        })
+        .to_string();
+        let mut parse_admitted = Vec::new();
+        let mut output_admitted = Vec::new();
+        let actual = canonical_scene_storage_with_admission(
+            &storage,
+            storage.len(),
+            6,
+            &mut || Ok(()),
+            &mut |bytes| {
+                parse_admitted.push(bytes);
+                Ok(())
+            },
+            &mut |bytes| {
+                output_admitted.push(bytes);
+                Ok(())
+            },
+        )
+        .expect("bounded projection");
+        assert_eq!(actual, "abcdef");
+        assert!(!parse_admitted.is_empty());
+        assert!(parse_admitted.iter().all(|bytes| *bytes > 0));
+        assert!(output_admitted.contains(&6));
+    }
+
+    #[test]
+    fn bounded_scene_storage_rejects_large_json_parse_before_deserialize() {
+        let storage = "[".repeat(CANONICAL_PARSE_INPUT_LIMIT + 1);
+        let mut checks = 0;
+        let mut parse_admissions = 0;
+        let error = canonical_scene_storage_with_admission(
+            &storage,
+            storage.len(),
+            4096,
+            &mut || {
+                checks += 1;
+                Ok(())
+            },
+            &mut |_| {
+                parse_admissions += 1;
+                Ok(())
+            },
+            &mut |_| Ok(()),
+        )
+        .expect_err("large JSON must be conservatively unavailable");
+        assert!(error.to_string().contains("NEX_CANONICAL_TEXT_PARSE_LIMIT"));
+        assert_eq!(checks, 1, "parse cap must run before deserialization");
+        assert_eq!(
+            parse_admissions, 0,
+            "rejected input must not enter the streaming parser"
+        );
+    }
+
+    #[test]
+    fn bounded_scene_storage_rejects_a_huge_text_token_before_deserialize() {
+        let storage = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "x".repeat(CANONICAL_PARSE_INPUT_LIMIT)
+                }]
+            }]
+        })
+        .to_string();
+        assert!(storage.len() > CANONICAL_PARSE_INPUT_LIMIT);
+        let mut parse_admissions = 0;
+        let error = canonical_scene_storage_with_admission(
+            &storage,
+            storage.len(),
+            4096,
+            &mut || Ok(()),
+            &mut |_| {
+                parse_admissions += 1;
+                Ok(())
+            },
+            &mut |_| Ok(()),
+        )
+        .expect_err("huge text token must be unavailable");
+        assert!(error.to_string().contains("NEX_CANONICAL_TEXT_PARSE_LIMIT"));
+        assert_eq!(parse_admissions, 0);
+    }
+
+    #[test]
+    fn bounded_scene_storage_rejects_deep_nested_content_before_stack_growth() {
+        let mut document = json!({ "type": "text", "text": "leaf" });
+        for _ in 0..40 {
+            document = json!({
+                "type": "wrapper",
+                "content": [document]
+            });
+        }
+        let storage = document.to_string();
+        let error =
+            canonical_scene_storage_with_check(&storage, storage.len(), 4096, &mut || Ok(()))
+                .expect_err("deep content must be unavailable");
+        assert!(error.to_string().contains("NEX_CANONICAL_TEXT_DEPTH_LIMIT"));
+    }
+
+    #[test]
+    fn bounded_scene_storage_observes_cancellation_during_json_projection() {
+        let storage = json!({
+            "type": "doc",
+            "content": (0..64)
+                .map(|index| json!({
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": format!("line-{index}")
+                    }]
+                }))
+                .collect::<Vec<_>>()
+        })
+        .to_string();
+        let mut checks = 0;
+        let error = canonical_scene_storage_with_check(&storage, storage.len(), 4096, &mut || {
+            checks += 1;
+            anyhow::ensure!(checks < 8, "test cancellation");
+            Ok(())
+        })
+        .expect_err("projection must stop when the owner is cancelled");
+        assert!(error.to_string().contains("test cancellation"));
+        assert!(
+            checks >= 2,
+            "the parser and visitor need cancellation checks"
+        );
+    }
+
+    #[test]
+    fn bounded_scene_storage_keeps_crlf_together_at_a_piece_boundary() {
+        let text = format!("{}\r\nnext", "x".repeat(CANONICAL_TEXT_CHECK_BYTES - 1));
+        let storage = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": text }]
+            }]
+        })
+        .to_string();
+        let actual = canonical_scene_storage_with_check(
+            &storage,
+            storage.len(),
+            CANONICAL_TEXT_CHECK_BYTES + 16,
+            &mut || Ok(()),
+        )
+        .expect("bounded projection");
+        assert_eq!(
+            actual,
+            format!("{}\nnext", "x".repeat(CANONICAL_TEXT_CHECK_BYTES - 1))
+        );
     }
 }

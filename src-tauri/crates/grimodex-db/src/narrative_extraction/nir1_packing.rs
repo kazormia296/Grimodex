@@ -13,6 +13,7 @@ use grimodex_core::narrative_nir1::{
     MAX_PACKING_ITEMS,
 };
 use grimodex_core::{canonical_json_digest, canonical_json_string};
+use rusqlite::Connection;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -23,6 +24,9 @@ use super::nir1_entity_relation::{
     evaluate_nir1_entity_relation_disclosure, Nir1EntityRelationDecision,
     Nir1EntityRelationDisclosure, Nir1EntityRelationDisclosureRead, Nir1EntityRelationFreshness,
     Nir1EntityRelationRevision,
+};
+use super::retrieval_admission::{
+    read_retrieval_scene_source_bounded, RetrievalSceneSourceBinding, RetrievalSceneSourceRead,
 };
 use crate::Database;
 
@@ -291,6 +295,55 @@ impl Deref for NativeNir1PackedContext {
     }
 }
 
+/// Internal request, deliberately separate from a renderer/final-payload DTO.
+/// Raw items retain the legacy diagnostic contract and confer no Source authority.
+pub(super) struct NativeNir1PooledPackingRequest<'a> {
+    pub project_id: &'a str,
+    pub revision_ids: &'a [String],
+    pub query_scene_id: &'a str,
+    pub budget_tokens: usize,
+    pub purpose: PackingPurpose,
+    pub raw_items: &'a [NativeNir1RawContextItem],
+}
+
+/// Internal request for the product-side candidate composition. It has no
+/// caller-supplied Raw field; the query Scene Source reader supplies that item.
+pub(super) struct NativeNir1SourcePooledPackingRequest<'a> {
+    pub project_id: &'a str,
+    pub revision_ids: &'a [String],
+    pub query_scene_id: &'a str,
+    pub budget_tokens: usize,
+    pub purpose: PackingPurpose,
+}
+
+/// Request-local reference to a persisted Scene Source. The binding is the
+/// complete Source identity observed by the caller; a token or renderer label
+/// alone cannot authorize the body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct NativeNir1RawSourceRef<'a> {
+    pub project_id: &'a str,
+    pub scene_id: &'a str,
+    pub binding: &'a RetrievalSceneSourceBinding,
+}
+
+/// Exact query Source identity retained beside the selected Raw item so that a
+/// later Native boundary can reauthorize the body before direct input use.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct NativeNir1RawSourceBinding {
+    pub project_id: String,
+    pub scene_id: String,
+    pub binding: RetrievalSceneSourceBinding,
+}
+
+pub(super) struct NativeNir1PooledPackedContext {
+    pub packed: PackedContext,
+    pub selected_items: Vec<NativeNir1SelectedContextItem>,
+    // All consulted unique Revisions, including omitted groups. These are
+    // observations; downstream direct input references must follow selected_items.
+    pub bindings: Vec<NativeNir1AuthorityBinding>,
+    pub raw_source_binding: Option<NativeNir1RawSourceBinding>,
+}
+
 fn require_non_empty(value: &str, field: &str) -> Result<()> {
     ensure!(
         !value.trim().is_empty(),
@@ -316,8 +369,9 @@ fn canonical_value(value: &Value) -> Result<String> {
 }
 
 #[derive(Default)]
-struct NativePackingInputBudget {
+pub(super) struct NativePackingInputBudget {
     used_bytes: usize,
+    retained_binding_bytes: usize,
 }
 
 impl NativePackingInputBudget {
@@ -349,6 +403,19 @@ impl NativePackingInputBudget {
         self.reserve_lengths(raw.id.len(), raw.text.len(), 0)
     }
 
+    /// Preflight the bounded Source reader's temporary peak without charging
+    /// the final selector envelope. The reader reports a monotonic peak for
+    /// persisted columns, parser/output work, and retained Source metadata;
+    /// the returned Raw item is charged exactly once by `reserve_raw`.
+    fn preflight_source_peak(&self, peak_bytes: usize) -> Result<()> {
+        let remaining = MAX_PACKING_INPUT_BYTES.saturating_sub(self.used_bytes);
+        ensure!(
+            peak_bytes <= remaining,
+            "NIR1_NATIVE_RAW_SOURCE_PEAK_LIMIT {MAX_PACKING_INPUT_BYTES}"
+        );
+        Ok(())
+    }
+
     fn reserve_group(&mut self, group_id: &str, parts: &[(AtomicPart, String)]) -> Result<()> {
         for (part, text) in parts {
             let part_name = reader_part_name(*part);
@@ -361,6 +428,144 @@ impl NativePackingInputBudget {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RawBudgetCharge {
+    Charge,
+    AlreadyCharged,
+}
+
+/// Read one Raw body from the canonical persisted Scene Source. This is an
+/// internal adapter only: it does not change the existing public wrapper or
+/// expose a renderer/IPC DTO. The scalar SQLite length check intentionally
+/// happens before the bounded Source reader materializes any stored body.
+/// The Source reader and this adapter borrow the caller's transaction and
+/// therefore inherit its existing progress owner; no nested hook is installed.
+pub(super) fn read_nir1_source_raw_context_item(
+    conn: &Connection,
+    source_ref: NativeNir1RawSourceRef<'_>,
+    input_budget: &mut NativePackingInputBudget,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<NativeNir1RawContextItem> {
+    ensure!(
+        !conn.is_autocommit(),
+        "NIR1_NATIVE_RAW_SOURCE_REQUIRES_READ_TRANSACTION"
+    );
+    ensure!(
+        !source_ref.project_id.is_empty() && source_ref.project_id.trim() == source_ref.project_id,
+        "NIR1_NATIVE_RAW_SOURCE_PROJECT_ID_INVALID"
+    );
+    ensure!(
+        !source_ref.scene_id.is_empty() && source_ref.scene_id.trim() == source_ref.scene_id,
+        "NIR1_NATIVE_RAW_SOURCE_SCENE_ID_INVALID"
+    );
+    ensure!(
+        source_ref.binding.source_key == format!("project:scene:{}", source_ref.scene_id),
+        "NIR1_NATIVE_RAW_SOURCE_IDENTITY_MISMATCH"
+    );
+    ensure!(
+        !source_ref.binding.revision_token.trim().is_empty(),
+        "NIR1_NATIVE_RAW_SOURCE_REVISION_TOKEN_INVALID"
+    );
+    let source = match read_retrieval_scene_source_bounded(
+        conn,
+        source_ref.project_id,
+        source_ref.scene_id,
+        MAX_PACKING_INPUT_BYTES,
+        MAX_PACKING_INPUT_BYTES,
+        checkpoint,
+        &mut |peak_bytes| input_budget.preflight_source_peak(peak_bytes),
+    )? {
+        RetrievalSceneSourceRead::Available(source) => source,
+        RetrievalSceneSourceRead::Unavailable { .. } => {
+            anyhow::bail!("NIR1_NATIVE_RAW_SOURCE_UNAVAILABLE")
+        }
+    };
+    ensure!(
+        source.project_id == source_ref.project_id
+            && source.scene_id == source_ref.scene_id
+            && source.query_source == *source_ref.binding,
+        "NIR1_NATIVE_RAW_SOURCE_STALE"
+    );
+    ensure!(!source.archived, "NIR1_NATIVE_RAW_SOURCE_ARCHIVED");
+    checkpoint()?;
+
+    // D1 receives the persisted Source body projected by the trusted reader.
+    // It never substitutes caller text, renderer `kind: raw`, or a token claim.
+    let text = source.canonical_source_text;
+    ensure!(!text.is_empty(), "NIR1_NATIVE_RAW_SOURCE_EMPTY");
+    ensure!(
+        text.len() <= MAX_PACKING_INPUT_BYTES,
+        "NIR1_NATIVE_RAW_SOURCE_OUTPUT_LIMIT {MAX_PACKING_INPUT_BYTES}"
+    );
+    let raw = NativeNir1RawContextItem {
+        id: source_ref.binding.source_key.clone(),
+        tokens: estimate_nir1_context_tokens(&text),
+        text,
+    };
+    input_budget.reserve_raw(&raw)?;
+    checkpoint()?;
+    Ok(raw)
+}
+
+/// Read and pool the exact query Scene Raw plus typed Revision candidates in
+/// one caller-owned read transaction. Only the query Scene Source is accepted;
+/// Graph target bodies and caller-provided Raw labels/text are not inputs.
+/// Source reading charges its Raw bytes here, and the pooled selector skips a
+/// second Raw reservation while still using the same cumulative budget.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "internal Source/pool composition is not a product Native request adapter"
+    )
+)]
+pub(super) fn read_and_pack_native_a2_context_with_source_raw_in_tx(
+    conn: &Connection,
+    request: NativeNir1SourcePooledPackingRequest<'_>,
+    source_ref: NativeNir1RawSourceRef<'_>,
+    input_budget: &mut NativePackingInputBudget,
+    reserve_retained_binding: &mut impl FnMut(usize) -> Result<()>,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<NativeNir1PooledPackedContext> {
+    ensure!(
+        !conn.is_autocommit(),
+        "NIR1_NATIVE_PACKING_REQUIRES_READ_TRANSACTION"
+    );
+    ensure!(
+        source_ref.project_id == request.project_id,
+        "NIR1_NATIVE_RAW_SOURCE_PROJECT_MISMATCH"
+    );
+    ensure!(
+        source_ref.scene_id == request.query_scene_id,
+        "NIR1_NATIVE_RAW_SOURCE_QUERY_SCENE_MISMATCH"
+    );
+
+    let raw_source_binding = NativeNir1RawSourceBinding {
+        project_id: source_ref.project_id.to_owned(),
+        scene_id: source_ref.scene_id.to_owned(),
+        binding: source_ref.binding.clone(),
+    };
+    let raw = read_nir1_source_raw_context_item(conn, source_ref, input_budget, checkpoint)?;
+    let pooled_request = NativeNir1PooledPackingRequest {
+        project_id: request.project_id,
+        revision_ids: request.revision_ids,
+        query_scene_id: request.query_scene_id,
+        budget_tokens: request.budget_tokens,
+        purpose: request.purpose,
+        raw_items: std::slice::from_ref(&raw),
+    };
+    let mut packed = read_and_pack_native_a2_context_in_tx_with_raw_charge(
+        conn,
+        pooled_request,
+        input_budget,
+        RawBudgetCharge::AlreadyCharged,
+        reserve_retained_binding,
+        checkpoint,
+    )?;
+    packed.raw_source_binding = Some(raw_source_binding);
+    Ok(packed)
 }
 
 fn canonical_digest_bytes(value: &Value, field: &str) -> Result<[u8; 32]> {
@@ -592,8 +797,32 @@ fn authority_binding_value(binding: &NativeNir1AuthorityBinding) -> Result<Value
     }))
 }
 
-fn authority_binding_digest(binding: &NativeNir1AuthorityBinding) -> Result<[u8; 32]> {
-    canonical_digest_bytes(&authority_binding_value(binding)?, "authority binding")
+fn authority_binding_digest_and_size(
+    binding: &NativeNir1AuthorityBinding,
+) -> Result<([u8; 32], usize)> {
+    let serialized = canonical_value(&authority_binding_value(binding)?)?;
+    // Revision serialization skips its private Decision, which is also held
+    // beside the public binding projection. Count that duplicate content
+    // without publishing it or changing the established digest.
+    let retained_bytes = [
+        &binding.decision.id,
+        &binding.decision.revision_id,
+        &binding.decision.decision,
+        &binding.decision.decision_json,
+        &binding.decision.created_at,
+        &binding.decision.created_by,
+        &binding.decision.actor_kind,
+        &binding.decision.actor_id,
+        &binding.decision.authority_scope,
+        &binding.decision.override_field_paths_json,
+    ]
+    .into_iter()
+    .try_fold(serialized.len(), |bytes, field| {
+        bytes
+            .checked_add(field.len())
+            .ok_or_else(|| anyhow::anyhow!("NIR-1 Native authority byte count overflow"))
+    })?;
+    Ok((Sha256::digest(serialized.as_bytes()).into(), retained_bytes))
 }
 
 fn candidate_binding_digest(
@@ -769,6 +998,7 @@ fn adapt_typed_revision_candidates(
     binding: &NativeNir1AuthorityBinding,
     input_budget: &mut NativePackingInputBudget,
     candidates: &mut Vec<CandidateContextItem>,
+    checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<()> {
     let revision = &disclosure.revision;
     let evidence_by_id = material_evidence_map(&revision.material_basis.evidence_set)?;
@@ -783,6 +1013,7 @@ fn adapt_typed_revision_candidates(
         "NIR-1 Native typed Entity IDs are not unique"
     );
     for entity in &revision.bundle.entities {
+        checkpoint()?;
         let evidence = material_evidence_for_ids(
             &entity
                 .evidence
@@ -816,6 +1047,7 @@ fn adapt_typed_revision_candidates(
         )?);
     }
     for relation in &revision.bundle.relations {
+        checkpoint()?;
         let from = entities_by_id
             .get(relation.from_entity_id.as_str())
             .ok_or_else(|| anyhow::anyhow!("NIR-1 Native relation source Entity is missing"))?;
@@ -915,9 +1147,91 @@ pub fn read_and_pack_native_a2_context(
     database: &Database,
     request: NativeNir1PackingRequest,
 ) -> Result<NativeNir1PackedContext> {
+    let mut input_budget = NativePackingInputBudget::default();
+    database.with_read_transaction(|conn| {
+        let mut pooled = read_and_pack_native_a2_context_in_tx(
+            conn,
+            NativeNir1PooledPackingRequest {
+                project_id: &request.project_id,
+                revision_ids: std::slice::from_ref(&request.revision_id),
+                query_scene_id: &request.query_scene_id,
+                budget_tokens: request.budget_tokens,
+                purpose: request.purpose,
+                raw_items: &request.raw_items,
+            },
+            &mut input_budget,
+            &mut |_| Ok(()),
+            &mut || Ok(()),
+        )?;
+        let binding = pooled
+            .bindings
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("NIR-1 Native packing lost its authority binding"))?;
+        Ok(NativeNir1PackedContext {
+            packed: pooled.packed,
+            selected_items: pooled.selected_items,
+            binding,
+        })
+    })
+}
+
+/// Read every unique exact Revision in one caller-owned snapshot and pack the
+/// combined candidates once. The checkpoint borrows the outer read budget and
+/// cancellation owner; this helper never installs or resets a connection hook.
+/// `input_budget` is cumulative across all revisions and remains charged on
+/// failure. The reservation callback receives cumulative serialized binding
+/// bytes plus skipped private Decision content, before another binding is held.
+/// This is accounting for retained authority content, not allocator/SQLite peak
+/// memory. The caller supplies its applicable aggregate limit; this helper does
+/// not silently use B build or C query limits. Bindings describe this snapshot,
+/// not currentness after it closes.
+pub(super) fn read_and_pack_native_a2_context_in_tx(
+    conn: &Connection,
+    request: NativeNir1PooledPackingRequest<'_>,
+    input_budget: &mut NativePackingInputBudget,
+    reserve_retained_binding: &mut impl FnMut(usize) -> Result<()>,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<NativeNir1PooledPackedContext> {
+    read_and_pack_native_a2_context_in_tx_with_raw_charge(
+        conn,
+        request,
+        input_budget,
+        RawBudgetCharge::Charge,
+        reserve_retained_binding,
+        checkpoint,
+    )
+}
+
+fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
+    conn: &Connection,
+    request: NativeNir1PooledPackingRequest<'_>,
+    input_budget: &mut NativePackingInputBudget,
+    raw_budget_charge: RawBudgetCharge,
+    reserve_retained_binding: &mut impl FnMut(usize) -> Result<()>,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<NativeNir1PooledPackedContext> {
+    ensure!(
+        !conn.is_autocommit(),
+        "NIR1_NATIVE_PACKING_REQUIRES_READ_TRANSACTION"
+    );
+    // Reject oversized unqualified lists before scanning IDs or allocating a
+    // dedup set. Every valid Revision contributes at least one atomic group.
+    ensure!(
+        request.revision_ids.len() <= MAX_PACKING_ITEMS,
+        "NIR-1 Native Revision count exceeds MAX_PACKING_ITEMS {MAX_PACKING_ITEMS}"
+    );
+    let revision_id_bytes = request.revision_ids.iter().try_fold(0usize, |used, id| {
+        used.checked_add(id.len())
+            .ok_or_else(|| anyhow::anyhow!("NIR-1 Native Revision ID byte count overflow"))
+    })?;
+    ensure!(
+        revision_id_bytes <= MAX_PACKING_INPUT_BYTES,
+        "NIR-1 Native Revision IDs exceed MAX_PACKING_INPUT_BYTES {MAX_PACKING_INPUT_BYTES}"
+    );
     ensure!(
         !request.project_id.trim().is_empty()
-            && !request.revision_id.trim().is_empty()
+            && !request.revision_ids.is_empty()
+            && request.revision_ids.iter().all(|id| !id.trim().is_empty())
             && !request.query_scene_id.trim().is_empty(),
         "NIR-1 Native packing request identity is incomplete"
     );
@@ -925,62 +1239,84 @@ pub fn read_and_pack_native_a2_context(
         !request.raw_items.is_empty(),
         "NIR-1 Native packing requires at least one Raw context item"
     );
-    let mut input_budget = NativePackingInputBudget::default();
-    for raw in &request.raw_items {
-        input_budget.reserve_raw(raw)?;
+    checkpoint()?;
+    preflight_projected_item_count(request.raw_items.len(), 0, 0)?;
+    if raw_budget_charge == RawBudgetCharge::Charge {
+        for raw in request.raw_items {
+            input_budget.reserve_raw(raw)?;
+        }
     }
-    database.with_read_transaction(|conn| {
-        // The disclosure evaluator starts with the exact typed A2 reader and
-        // only then adds query-specific Scope/reveal admission in this same
-        // snapshot. Chronicle retrieval eligibility is intentionally not used.
+    let mut items = request
+        .raw_items
+        .iter()
+        .map(|raw| {
+            adapt_raw_context_item(ContextItemKind::Raw {
+                id: raw.id.clone(),
+                text: raw.text.clone(),
+                tokens: raw.tokens,
+            })
+            .map_err(anyhow::Error::from)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut seen = HashSet::new();
+    let mut bindings = Vec::new();
+    for revision_id in request.revision_ids {
+        checkpoint()?;
+        if !seen.insert(revision_id.as_str()) {
+            continue;
+        }
         let disclosure = match evaluate_nir1_entity_relation_disclosure(
             conn,
-            &request.project_id,
-            &request.revision_id,
-            &request.query_scene_id,
+            request.project_id,
+            revision_id,
+            request.query_scene_id,
         )? {
             Nir1EntityRelationDisclosureRead::Eligible(disclosure) => disclosure,
             Nir1EntityRelationDisclosureRead::Unavailable { reason } => {
                 anyhow::bail!("NIR1_NATIVE_A2_UNAVAILABLE:{reason}")
             }
         };
+        checkpoint()?;
         preflight_projected_item_count(
-            request.raw_items.len(),
+            items.len(),
             disclosure.revision.bundle.entities.len(),
             disclosure.revision.bundle.relations.len(),
         )?;
         let binding = authority_binding(&disclosure)?;
-        let authority_digest = authority_binding_digest(&binding)?;
-        let mut items = request
-            .raw_items
-            .iter()
-            .map(|raw| {
-                adapt_raw_context_item(ContextItemKind::Raw {
-                    id: raw.id.clone(),
-                    text: raw.text.clone(),
-                    tokens: raw.tokens,
-                })
-                .map_err(anyhow::Error::from)
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let (authority_digest, binding_bytes) = authority_binding_digest_and_size(&binding)?;
+        let retained_binding_bytes = input_budget
+            .retained_binding_bytes
+            .checked_add(binding_bytes)
+            .ok_or_else(|| anyhow::anyhow!("NIR-1 Native authority byte count overflow"))?;
+        reserve_retained_binding(retained_binding_bytes)?;
+        input_budget.retained_binding_bytes = retained_binding_bytes;
         adapt_typed_revision_candidates(
             &disclosure,
             authority_digest,
             &binding,
-            &mut input_budget,
+            input_budget,
             &mut items,
+            checkpoint,
         )?;
-        let packed = pack_candidate_context(CandidatePackingRequest {
-            budget_tokens: request.budget_tokens,
-            purpose: request.purpose,
-            items: items.clone(),
-        })
-        .map_err(anyhow::Error::from)?;
-        let selected_items = selected_items(&items, &packed)?;
-        Ok(NativeNir1PackedContext {
-            packed,
-            selected_items,
-            binding,
-        })
+        bindings.push(binding);
+    }
+    checkpoint()?;
+    let packed = pack_candidate_context(CandidatePackingRequest {
+        budget_tokens: request.budget_tokens,
+        purpose: request.purpose,
+        items: items.clone(),
+    })
+    .map_err(anyhow::Error::from)?;
+    let selected_items = selected_items(&items, &packed)?;
+    checkpoint()?;
+    Ok(NativeNir1PooledPackedContext {
+        packed,
+        selected_items,
+        bindings,
+        raw_source_binding: None,
     })
 }
+
+#[cfg(test)]
+#[path = "nir1_packing_tests.rs"]
+mod tests;

@@ -127,6 +127,10 @@ requirements:
     title: Missing inputs, policies, confirmation, or tools stop before mutation.
     definedIn: policies/quality/iron-laws.md#GDX-PRECHECK-001
     implementedBy:
+      - scripts/quality/run-nir1-retrieval.mjs
+      - scripts/quality/nir1-retrieval/standard-build.mjs
+      - scripts/local-ci-process-supervisor.mjs
+      - docs/plans/nir1-standard-build-producer.md
       - AGENTS.md
       - CLAUDE.md
       - GLOBAL_CLAUDE.md
@@ -146,6 +150,8 @@ requirements:
       - src/features/settings/categories/AiProjectSettings.tsx
       - src/features/ai-policy/policyGuard.ts
     lightTests:
+      - scripts/quality/nir1-retrieval/standard-build.test.mjs
+      - scripts/local-ci-process-supervisor.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - src/features/chat/turn/resolveTurnRoute.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
@@ -352,6 +358,8 @@ requirements:
     title: Answers and prompts preserve current, attributable grounding.
     definedIn: policies/quality/iron-laws.md#GDX-GROUND-001
     implementedBy:
+      - evals/nir1-g01/fixture.v1.json
+      - src/features/related-scenes/nir1G01Feasibility.test.ts
       - evals/nir1-retrieval/manifest.json
       - policies/narrative/nir1-related-scenes-ranking.json
       - evals/nir1-retrieval/ranking-candidate-v2.json
@@ -362,8 +370,10 @@ requirements:
       - scripts/quality/nir1-retrieval/recovery-workload.mjs
       - evals/nir1-retrieval/corpus.json
       - scripts/quality/nir1-retrieval/contract.mjs
+      - scripts/quality/nir1-retrieval/standard-build.mjs
       - scripts/quality/nir1-retrieval/paired.mjs
       - scripts/quality/nir1-retrieval/renderer.ts
+      - scripts/quality/run-nir1-retrieval.mjs
       - scripts/quality/validate-nir1-retrieval.mjs
       - src/features/chat/citationVerify.ts
       - src/features/chat/chatRecall.ts
@@ -395,7 +405,10 @@ requirements:
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
       - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
+      - src/features/related-scenes/nir1G01Feasibility.test.ts
+      - src/features/related-scenes/nir1RelatedScenesFusion.test.ts
       - scripts/quality/nir1-retrieval/contract.test.mjs
+      - scripts/quality/nir1-retrieval/standard-build.test.mjs
       - scripts/quality/nir1-retrieval/candidate-policy.test.mjs
       - scripts/quality/validate-nir1-retrieval.mjs
       - src/features/chat/citationVerify.test.ts
@@ -432,6 +445,17 @@ requirements:
     title: Structured and generated outputs pass schema and provenance validation.
     definedIn: policies/quality/iron-laws.md#GDX-ARTIFACT-001
     implementedBy:
+      - scripts/quality/run-nir1-retrieval.mjs
+      - scripts/quality/nir1-retrieval/standard-build.mjs
+      - src-tauri/crates/grimodex-core/src/narrative_nir1_receipt.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation.rs
+      - electron/native/grimodex-node/src/nir1_generation.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/candidates.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/input.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scenes.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/memory.rs
       - policies/narrative/narrative-artifact-authority.json
       - policies/narrative/schemas/narrative-artifact-authority.schema.json
       - policies/narrative/fixtures/artifact-authority.json
@@ -472,6 +496,14 @@ requirements:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission/types.rs
       - src-tauri/crates/grimodex-db/tests/narrative_nir1_retrieval_admission.rs
     lightTests:
+      - scripts/quality/nir1-retrieval/standard-build.test.mjs
+      - src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation/tests.rs
+      - electron/native/grimodex-node/src/nir1_generation.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/oracle_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - src/features/chat/agent/toolExecutors.test.ts
@@ -715,6 +747,16 @@ requirements:
     title: Narrative authority, artifact lifecycle, Interpreter boundaries, Scope relation, Dependency role, state axes, disclosure contracts, and the reserved C2-ZC Semantic Index boundary remain ratified.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-SEMANTIC-CONTRACT-001
     implementedBy:
+      - src-tauri/crates/grimodex-core/src/narrative_nir1_receipt.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation.rs
+      - electron/native/grimodex-node/src/nir1_generation.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/candidates.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/input.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scenes.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/memory.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
       - docs/adr/005-narrative-semantic-core-boundary.md
       - docs/adr/006-narrative-mutation-authority-routes.md
       - docs/adr/009-narrative-scope-relation-contract.md
@@ -866,6 +908,13 @@ requirements:
       - scripts/product-journey-backlog.test.mjs
       - scripts/product-journey-impact.test.mjs
     lightTests:
+      - src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation/tests.rs
+      - electron/native/grimodex-node/src/nir1_generation.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/oracle_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/validate-narrative-ir-contract.test.mjs
       - scripts/quality/nir1-packing/contract.test.mjs
@@ -930,6 +979,8 @@ requirements:
       - electron/scripts/product-journey-shards.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
     heavyTests:
+      # Focused Native activation denial is separate from the Light suite.
+      - electron/native/grimodex-node/src/nir1_graph_activation_tests.rs
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     evaluatedBy:
       - eval-narrative-replay-provenance
@@ -1145,6 +1196,8 @@ requirements:
       - scripts/local-ci-registry.json
       - scripts/local-ci-runner.mjs
       - scripts/local-ci-process-supervisor.mjs
+      - scripts/quality/nir1-retrieval/standard-build.mjs
+      - scripts/quality/run-nir1-retrieval.mjs
       - scripts/quality/impact-map.mjs
       - scripts/quality/impact-map.test.mjs
       - evals/impact-map.yaml
@@ -1192,6 +1245,7 @@ requirements:
       - scripts/local-ci.test.mjs
       - scripts/local-ci-runner.test.mjs
       - scripts/local-ci-process-supervisor.test.mjs
+      - scripts/quality/nir1-retrieval/standard-build.test.mjs
       - scripts/ci-pause.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/nir1-packing/contract.test.mjs

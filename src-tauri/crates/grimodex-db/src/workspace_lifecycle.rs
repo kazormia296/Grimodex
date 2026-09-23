@@ -293,6 +293,35 @@ struct WorkspaceParticipantLease {
 }
 
 impl WorkspaceParticipant {
+    /// Keep the exact current authority stable through a short final claim.
+    ///
+    /// The caller must acquire its DB connection before entering this guard.
+    /// Its closure must not reacquire lifecycle state, admit nested work, or
+    /// run SQL with a participant progress hook (that hook calls this core).
+    /// Include the durable COMMIT in the closure and release before transport.
+    /// This does not admit work or confer any model/publication permission.
+    pub fn with_current_binding<T>(
+        &self,
+        expected: &LiveBinding,
+        operation: impl FnOnce() -> T,
+    ) -> Result<T, LifecycleError> {
+        let state = self.lease.core.lock_state()?;
+        if state.shutdown_requested || matches!(state.state, LifecycleState::Closed) {
+            return Err(LifecycleError::Closed);
+        }
+        if self
+            .lease
+            .core
+            .inner
+            .compatibility_switching
+            .load(Ordering::SeqCst)
+            || !matches!(&state.state, LifecycleState::Ready(current) if current == expected)
+        {
+            return Err(LifecycleError::InvalidState);
+        }
+        Ok(operation())
+    }
+
     /// Observe the existing owner's stop state without admitting nested work
     /// or acquiring the workspace/DB locks held by its caller.
     pub fn stop_requested(&self) -> Result<bool, LifecycleError> {
@@ -4158,22 +4187,23 @@ impl WorkspaceLifecycleCompatibilityView {
         // never let that legacy write reopen the normal DB boundary.  The
         // authoritative state remains in `CoreState` until activate/recovery
         // completion.
-        if !value {
-            if let Ok(state) = self.inner.state.lock() {
-                if matches!(state.state, LifecycleState::Transition { .. })
-                    || !state.joined_operations.is_empty()
-                    || state
-                        .admissions
-                        .values()
-                        .any(|ticket| ticket.kind.is_transition())
-                {
-                    return;
-                }
-            } else {
-                // Fail closed on a poisoned state lock.  The next normal
-                // lifecycle operation will surface the poison explicitly.
-                return;
-            }
+        // Both directions share the final-dispatch guard. Checking state
+        // under the mutex and writing the atomic after dropping it would
+        // still permit a switching/claim race.
+        let Ok(state) = self.inner.state.lock() else {
+            // Fail closed on poison, including a request to close admission.
+            self.inner.compatibility_switching.store(true, order);
+            return;
+        };
+        if !value
+            && (matches!(state.state, LifecycleState::Transition { .. })
+                || !state.joined_operations.is_empty()
+                || state
+                    .admissions
+                    .values()
+                    .any(|ticket| ticket.kind.is_transition()))
+        {
+            return;
         }
         self.inner.compatibility_switching.store(value, order);
     }
@@ -4943,6 +4973,78 @@ mod tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn participant_final_claim_requires_exact_ready_binding_and_holds_core() {
+        let core = WorkspaceLifecycleCore::new();
+        let expected = binding(1);
+        core.set_ready(expected.clone()).expect("ready");
+        let participant = core.begin_workspace_participant().expect("participant");
+        participant
+            .with_current_binding(&expected, || {
+                assert!(matches!(
+                    core.inner.state.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+            })
+            .expect("exact binding");
+        assert!(
+            core.inner.state.try_lock().is_ok(),
+            "release before transport"
+        );
+        for mismatch in [
+            binding(2),
+            LiveBinding {
+                recovery_generation: 2,
+                ..expected.clone()
+            },
+        ] {
+            assert_eq!(
+                participant.with_current_binding(&mismatch, || panic!("stale claim")),
+                Err(LifecycleError::InvalidState)
+            );
+        }
+        core.compatibility_view().store(true, Ordering::SeqCst);
+        assert_eq!(
+            participant.with_current_binding(&expected, || panic!("switching claim")),
+            Err(LifecycleError::InvalidState)
+        );
+        core.compatibility_view().store(false, Ordering::SeqCst);
+        core.request_shutdown().expect("shutdown");
+        assert_eq!(
+            participant.with_current_binding(&expected, || panic!("closed claim")),
+            Err(LifecycleError::Closed)
+        );
+    }
+
+    #[test]
+    fn compatibility_switching_waits_for_final_claim_guard() {
+        let core = WorkspaceLifecycleCore::new();
+        let expected = binding(1);
+        core.set_ready(expected.clone()).expect("ready");
+        let participant = core.begin_workspace_participant().expect("participant");
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let worker = participant
+            .with_current_binding(&expected, || {
+                let view = core.compatibility_view();
+                let worker = std::thread::spawn(move || {
+                    started_tx.send(()).expect("announce switching request");
+                    view.store(true, Ordering::SeqCst);
+                });
+                started_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("switching requested");
+                assert!(!core.inner.compatibility_switching.load(Ordering::SeqCst));
+                worker
+            })
+            .expect("claim before switching");
+        worker.join().expect("switching completes after claim");
+        assert!(core.inner.compatibility_switching.load(Ordering::SeqCst));
+        assert_eq!(
+            participant.with_current_binding(&expected, || panic!("late claim")),
+            Err(LifecycleError::InvalidState)
+        );
     }
 
     #[test]

@@ -371,10 +371,28 @@ impl ProfileEgressState {
         identity: Option<&CallerIdentity>,
         pinned_workspace_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        permit.ensure_open()?;
+        self.with_authorized_dispatch(permit, identity, pinned_workspace_id, || Ok(()))
+    }
+
+    /// Serialize a short final dispatch claim with profile/caller revocation.
+    /// The caller already owns its DB transaction; its closure must include
+    /// COMMIT, must not reacquire this state, and must never await transport.
+    /// This is not a product transport grant: the route, workspace, current
+    /// material and durable one-shot claim remain the caller's responsibility.
+    pub fn with_authorized_dispatch<T>(
+        &self,
+        permit: &ProfileDispatchPermit,
+        identity: Option<&CallerIdentity>,
+        pinned_workspace_id: Option<&str>,
+        operation: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
         let state = self.lock();
+        permit.ensure_open()?;
         anyhow::ensure!(
-            permit.lease.generation == self.revocation_generation.load(Ordering::Acquire),
+            Arc::ptr_eq(
+                &permit.lease.revocation_generation,
+                &self.revocation_generation
+            ) && permit.lease.generation == self.revocation_generation.load(Ordering::Acquire),
             "{D2A_EGRESS_DENIED_MARKER} dispatch binding was revoked"
         );
         if state.restricted {
@@ -393,7 +411,19 @@ impl ProfileEgressState {
                 "{D2A_EGRESS_DENIED_MARKER} caller identity is no longer registered"
             );
         }
-        Ok(())
+        operation()
+    }
+
+    /// The Native settings writer and final route check share the profile
+    /// lock. Revoke before writing, including failed/partial file writes.
+    /// The closure performs filesystem work only and never enters DB/core.
+    pub fn with_route_update<T>(
+        &self,
+        update: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let _state = self.lock();
+        self.revoke_permits();
+        update()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -553,6 +583,84 @@ mod tests {
 
     fn temp_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("grimodex-d2a-{label}-{}.json", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn final_dispatch_guard_holds_profile_authority_through_claim() {
+        let path = temp_path("final-dispatch-guard");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let status = state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        state.bind_workspace(Some("workspace-a".into()));
+        let identity = CallerIdentity {
+            profile_id: status.profile_id,
+            caller_id: "main-issued".into(),
+            caller_epoch: status.caller_epoch,
+            sender_id: 51,
+            workspace_id: Some("workspace-a".into()),
+            session_id: "session-a".into(),
+        };
+        state.register_caller(&identity).expect("register");
+        let permit = state.begin_dispatch(Some(&identity)).expect("permit");
+        let result = state
+            .with_authorized_dispatch(&permit, Some(&identity), Some("workspace-a"), || {
+                assert!(matches!(
+                    state.state.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                Ok("durable-claim")
+            })
+            .expect("claim under guard");
+        assert_eq!(result, "durable-claim");
+        assert!(
+            state.state.try_lock().is_ok(),
+            "transport must run after guard release"
+        );
+        state.invalidate_callers();
+        let entered = AtomicBool::new(false);
+        assert!(state
+            .with_authorized_dispatch(&permit, Some(&identity), Some("workspace-a"), || {
+                entered.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .is_err());
+        assert!(!entered.load(Ordering::SeqCst));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn route_update_serializes_with_final_claim_and_revokes_on_failure() {
+        let path = temp_path("route-update-guard");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let permit = state.begin_dispatch(None).expect("legacy fixture permit");
+        let result: anyhow::Result<()> = state.with_route_update(|| {
+            assert!(matches!(
+                state.state.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            assert!(
+                permit.ensure_open().is_err(),
+                "revoke before file writer enters"
+            );
+            Err(anyhow!("partial route write"))
+        });
+        assert!(result.is_err());
+        assert!(state
+            .with_authorized_dispatch(&permit, None, None, || Ok(()))
+            .is_err());
+        assert!(state.state.try_lock().is_ok());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn final_dispatch_guard_rejects_permit_from_another_profile_owner() {
+        let first = ProfileEgressState::new(temp_path("permit-owner-a")).expect("first");
+        let second = ProfileEgressState::new(temp_path("permit-owner-b")).expect("second");
+        let permit = first.begin_dispatch(None).expect("first owner permit");
+        assert!(second
+            .with_authorized_dispatch(&permit, None, None, || Ok(()))
+            .is_err());
     }
 
     #[test]

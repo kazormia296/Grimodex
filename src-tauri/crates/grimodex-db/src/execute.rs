@@ -203,6 +203,17 @@ fn renderer_function_denied(name: &str) -> bool {
 }
 
 fn protected_writer_rejection(ctx: &AuthContext<'_>) -> Option<String> {
+    // Only the canonical message mutation triggers may irreversibly revoke a
+    // Native version. Renderer DDL is denied, so it cannot forge an accessor.
+    // This exception grants no direct table writes or version qualification.
+    if matches!(ctx.action, AuthAction::Update { table_name, column_name }
+        if table_name == "nir1_generation_message_versions" && column_name == "invalidated")
+        && matches!(ctx.accessor, Some("nir1_generation_invalidate_message_update"
+            | "nir1_generation_invalidate_message_delete"
+            | "nir1_generation_invalidate_message_insert"))
+    {
+        return None;
+    }
     let registry = bundled_protected_writer_registry();
     match &ctx.action {
         AuthAction::Delete { table_name } => {

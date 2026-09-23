@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
@@ -124,11 +125,70 @@ test("rejects a command that exits while a same-group survivor remains", async (
     }),
     (error) => {
       assert.match(error.message, /process group survived command close/u);
+      assert.match(
+        error.result?.logs?.stdout?.sha256 ?? "",
+        /^sha256:[0-9a-f]{64}$/u,
+      );
       assert.equal(error.result?.cleanup?.survivorDetected, true);
       assert.equal(error.result?.cleanup?.complete, true);
       return true;
     },
   );
+});
+
+test("bounded close observation reports unknown and retains late close/error ownership", async (t) => {
+  const root = await fixture(t);
+  let delayedError;
+  const delayClose = (command, args, options) => {
+    const child = spawn(command, args, options);
+    const originalOnce = child.once.bind(child);
+    child.once = (event, listener) => {
+      if (event === "error") {
+        delayedError = new Error("controlled late spawn error");
+        originalOnce(event, listener);
+        setTimeout(() => listener(delayedError), 190);
+        return child;
+      }
+      if (event === "close") {
+        originalOnce(event, (...values) =>
+          setTimeout(() => listener(...values), 220),
+        );
+        return child;
+      }
+      return originalOnce(event, listener);
+    };
+    return child;
+  };
+  let unknown;
+  await assert.rejects(
+    runLocalCiCommand(
+      nodeCommand("process.on('SIGTERM',()=>{});setInterval(()=>{},1000);"),
+      {
+        closeGraceMs: 25,
+        killGraceMs: 100,
+        logDirectory: ".logs",
+        root,
+        spawnProcess: delayClose,
+        taskId: "late-close",
+        termGraceMs: 25,
+        timeoutMs: 30,
+      },
+    ),
+    (error) => {
+      unknown = error;
+      assert.equal(error.result?.closeObserved, false);
+      assert.equal(error.result?.cleanup?.complete, false);
+      assert.equal(error.result?.termination, "unknown");
+      assert.equal(error.result?.logs.stdout.complete, false);
+      return true;
+    },
+  );
+
+  const late = await unknown.lateClose;
+  assert.equal(late.closeObserved, true);
+  assert.equal(late.cleanup.complete, true);
+  assert.equal(late.termination, "late-close-and-group-exit-observed");
+  assert.equal(late.error, delayedError.message);
 });
 
 test("allows bounded process-group teardown after command close", async (t) => {

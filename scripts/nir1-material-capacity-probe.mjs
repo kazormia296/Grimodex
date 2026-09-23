@@ -913,6 +913,7 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
     const knownOwnedPids = new Set();
     let ownedPipeInodes = [];
     let pipeOwnershipError = null;
+    let launchError = null;
 
     const clearTimers = () => {
       for (const timer of [timeoutTimer, termTimer, killTimer, streamTimer]) {
@@ -928,7 +929,7 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
       if (settled) return;
       settled = true;
       clearTimers();
-      for (const stream of [child?.stdout, child?.stderr]) {
+      for (const stream of [child?.stdout, child?.stderr, child?.stdio[3]]) {
         if (stream && !stream.destroyed) stream.destroy();
       }
       resolve({
@@ -937,6 +938,7 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
         stdout,
         stderr,
         timedOut,
+        error: pipeOwnershipError ?? launchError,
         exitConfirmed: exitInfo !== null,
         termination: {
           termSent,
@@ -948,7 +950,7 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
     };
 
     const destroyStreams = () => {
-      for (const stream of [child?.stdout, child?.stderr]) {
+      for (const stream of [child?.stdout, child?.stderr, child?.stdio[3]]) {
         if (stream && !stream.destroyed) stream.destroy();
       }
     };
@@ -958,7 +960,7 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
       if (process.platform !== "win32" && Number.isInteger(pid) && pid > 0) {
         try {
           // A detached child owns its process group. Signalling the group
-          // also reaps descendants which may have inherited our output pipes.
+          // also signals descendants which may have inherited our output pipes.
           process.kill(-pid, signal);
           return true;
         } catch (error) {
@@ -1120,8 +1122,14 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
     };
 
     try {
-      child = spawn(path.resolve(binary), childArgs, {
-        stdio: ["ignore", "pipe", "pipe"],
+      // Keep the child's output endpoints alive until ownership is captured.
+      // A fast target could otherwise exit before /proc/<pid>/fd is inspected.
+      // The gate closes fd 3 and execs the original argv in the same PID.
+      child = spawn("/bin/sh", [
+        "-c", 'read -r _ <&3 && exec 3<&- && exec "$@"',
+        "nir1-capacity-child", path.resolve(binary), ...childArgs,
+      ], {
+        stdio: ["ignore", "pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
         env: { ...process.env, [CHILD_OWNER_ENV]: ownerToken },
         windowsHide: true,
@@ -1135,6 +1143,10 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
       return;
     }
 
+    child.stdio[3]?.once("error", (error) => {
+      // Retain the failure; exit/close or the existing deadline owns completion.
+      launchError = error;
+    });
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (chunk) => {
@@ -1184,6 +1196,8 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
         }, terminationGraceMs);
       }, terminationGraceMs);
     }, timeoutMs);
+    // EOF cancels a failed admission: the shell's read must not run the target.
+    child.stdio[3]?.end(pipeOwnershipError ? undefined : "\n");
   });
 }
 

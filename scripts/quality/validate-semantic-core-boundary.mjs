@@ -39,7 +39,13 @@ const REPO_ROOT = path.resolve(
 // SCHEMA 34 (NIR-0 C2A) adds non-authoritative Chronicle V2 persistence and
 // stage-provenance closure storage; D2 V2 evaluation remains a shadow lane.
 // SCHEMA 36 adds the NIR-1 A1 scene-scope authority storage.
-export const EXPECTED_SCHEMA_VERSION = 36;
+// SCHEMA 37 adds NIR-1 generation attempt, immutable message-version, and
+// ordered input/qualification reference metadata. These rows record existing
+// body/semantic authority identities for a future history gate; they neither
+// determine Freshness/Decision/Scope nor publish a new search generation.
+// Generic writes are blocked by the protected-writer registry and the Native
+// writer has a separate operation policy. The concern matrix is unchanged.
+export const EXPECTED_SCHEMA_VERSION = 37;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

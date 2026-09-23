@@ -4599,6 +4599,29 @@
       "canonical": null
     },
     {
+      "id": "nir1.generation.storage",
+      "authorityRoute": "restore-or-migration",
+      "controls": [
+        "exclusive-system-operation",
+        "semantic-epoch-event",
+        "full-rebuild-marker"
+      ],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "runtimeEvidence": { "status": "excluded", "reason": "control-plane" },
+      "reason": "Native D2b storage persists immutable generation attempt, message-version, input-reference, qualification-reference, and terminal-receipt metadata. These rows record observations against existing stores; they do not mutate a canonical Narrative aggregate or append a Change Feed event.",
+      "exclusionReason": "control-plane",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/nir1_generation.rs",
+        "symbol": "create_attempt"
+      },
+      "routes": [],
+      "writerIds": ["nir1_generation.storage"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
       "id": "narrative.maintenance-attention.set",
       "authorityRoute": "attention-typed-writer",
       "controls": ["typed-writer", "occ", "stable-request-id", "actor-context"],

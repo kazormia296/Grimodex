@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 36,
+  "schemaVersion": 37,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -10385,6 +10385,294 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_temporal_projections ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, target_kind TEXT NOT NULL CHECK(target_kind IN ('scene-time','event-time','scene-story-order')), target_id TEXT NOT NULL, constraint_set_digest TEXT NOT NULL, solver_version TEXT NOT NULL, calendar_digest TEXT, projected_value_digest TEXT NOT NULL, target_result_version INTEGER NOT NULL, application_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'current' CHECK(status IN ('current','invalidated','undone')), version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
     },
+    "nir1_generation_attempts": {
+      "kind": "table",
+      "columns": {
+        "binding_json": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "claimed_at_ms": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "completed_at_ms": {
+          "ordinal": 11,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at_ms": {
+          "ordinal": 6,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "expires_at_ms": {
+          "ordinal": 7,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "input_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "output_version_id": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "payload_digest": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "session_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "terminal_digest": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "terminal_json": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE nir1_generation_attempts ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, session_id TEXT NOT NULL, binding_json TEXT NOT NULL CHECK(json_valid(binding_json)), payload_digest TEXT NOT NULL, input_digest TEXT NOT NULL, created_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms > created_at_ms), claimed_at_ms INTEGER, terminal_json TEXT CHECK(terminal_json IS NULL OR json_valid(terminal_json)), terminal_digest TEXT, completed_at_ms INTEGER, output_version_id TEXT, CHECK((terminal_json IS NULL AND terminal_digest IS NULL AND completed_at_ms IS NULL) OR (terminal_json IS NOT NULL AND terminal_digest IS NOT NULL AND completed_at_ms IS NOT NULL)), CHECK(output_version_id IS NULL OR terminal_json IS NOT NULL) )"
+    },
+    "nir1_generation_input_refs": {
+      "kind": "table",
+      "columns": {
+        "attempt_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "ordinal": {
+          "ordinal": 1,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "reference_json": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "nir1_generation_attempts",
+          "from": "attempt_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE nir1_generation_input_refs ( attempt_id TEXT NOT NULL REFERENCES nir1_generation_attempts(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL CHECK(ordinal >= 0), reference_json TEXT NOT NULL CHECK(json_valid(reference_json)), PRIMARY KEY(attempt_id, ordinal) )"
+    },
+    "nir1_generation_message_versions": {
+      "kind": "table",
+      "columns": {
+        "body_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at_ms": {
+          "ordinal": 7,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "invalidated": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "message_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "origin": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "parent_attempt_id": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "session_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "nir1_generation_attempts",
+          "from": "parent_attempt_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "message_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE nir1_generation_message_versions ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, session_id TEXT NOT NULL, message_id TEXT NOT NULL UNIQUE, origin TEXT NOT NULL CHECK(origin IN ('human', 'generated')), body_digest TEXT NOT NULL, parent_attempt_id TEXT REFERENCES nir1_generation_attempts(id), created_at_ms INTEGER NOT NULL, invalidated INTEGER NOT NULL DEFAULT 0 CHECK(invalidated IN (0, 1)), CHECK((origin = 'human' AND parent_attempt_id IS NULL) OR (origin = 'generated' AND parent_attempt_id IS NOT NULL)) )"
+    },
+    "nir1_generation_qualification_refs": {
+      "kind": "table",
+      "columns": {
+        "attempt_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "ordinal": {
+          "ordinal": 1,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "reference_json": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "nir1_generation_attempts",
+          "from": "attempt_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE nir1_generation_qualification_refs ( attempt_id TEXT NOT NULL REFERENCES nir1_generation_attempts(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL CHECK(ordinal >= 0), reference_json TEXT NOT NULL CHECK(json_valid(reference_json)), PRIMARY KEY(attempt_id, ordinal) )"
+    },
     "plot_thread_branches": {
       "kind": "table",
       "columns": {
@@ -15811,6 +16099,62 @@
       ],
       "createSql": "CREATE INDEX idx_narrative_wake_outbox_pending ON narrative_maintenance_wake_outbox(project_id) WHERE acked_at IS NULL"
     },
+    "idx_nir1_generation_attempts_pending": {
+      "table": "nir1_generation_attempts",
+      "unique": false,
+      "partial": true,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_nir1_generation_attempts_pending ON nir1_generation_attempts(project_id, id) WHERE terminal_json IS NULL"
+    },
+    "idx_nir1_generation_attempts_session": {
+      "table": "nir1_generation_attempts",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "session_id"
+        },
+        {
+          "ordinal": 2,
+          "column": "id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_nir1_generation_attempts_session ON nir1_generation_attempts(project_id, session_id, id)"
+    },
+    "idx_nir1_generation_message_versions_session": {
+      "table": "nir1_generation_message_versions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "session_id"
+        },
+        {
+          "ordinal": 2,
+          "column": "id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_nir1_generation_message_versions_session ON nir1_generation_message_versions(project_id, session_id, id)"
+    },
     "idx_pea_parent": {
       "table": "post_effect_annotations",
       "unique": false,
@@ -16946,6 +17290,9 @@
     "narrative_revision_immutable_after_apply_update": "CREATE TRIGGER narrative_revision_immutable_after_apply_update BEFORE UPDATE ON narrative_proposal_revisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END",
     "narrative_source_basis_immutable_delete": "CREATE TRIGGER narrative_source_basis_immutable_delete BEFORE DELETE ON narrative_revision_source_basis WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END",
     "narrative_source_basis_immutable_update": "CREATE TRIGGER narrative_source_basis_immutable_update BEFORE UPDATE ON narrative_revision_source_basis BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END",
+    "nir1_generation_invalidate_message_delete": "CREATE TRIGGER nir1_generation_invalidate_message_delete AFTER DELETE ON chat_messages BEGIN UPDATE nir1_generation_message_versions SET invalidated = 1 WHERE message_id = OLD.id; END",
+    "nir1_generation_invalidate_message_insert": "CREATE TRIGGER nir1_generation_invalidate_message_insert AFTER INSERT ON chat_messages BEGIN UPDATE nir1_generation_message_versions SET invalidated = 1 WHERE message_id = NEW.id; END",
+    "nir1_generation_invalidate_message_update": "CREATE TRIGGER nir1_generation_invalidate_message_update AFTER UPDATE OF id, session_id, role, content, metadata, created_at ON chat_messages WHEN OLD.id IS NOT NEW.id OR OLD.session_id IS NOT NEW.session_id OR OLD.role IS NOT NEW.role OR OLD.content IS NOT NEW.content OR OLD.created_at IS NOT NEW.created_at OR (CASE WHEN json_valid(OLD.metadata) THEN json_extract(OLD.metadata, '$.thinking_blocks') ELSE NULL END) IS NOT (CASE WHEN json_valid(NEW.metadata) THEN json_extract(NEW.metadata, '$.thinking_blocks') ELSE NULL END) BEGIN UPDATE nir1_generation_message_versions SET invalidated = 1 WHERE message_id IN (OLD.id, NEW.id); END",
     "post_effect_annotations_fts_ad": "CREATE TRIGGER post_effect_annotations_fts_ad AFTER DELETE ON post_effect_annotations BEGIN INSERT INTO post_effect_annotations_fts(post_effect_annotations_fts, rowid, content) VALUES ('delete', old.rowid, old.content); END",
     "post_effect_annotations_fts_ai": "CREATE TRIGGER post_effect_annotations_fts_ai AFTER INSERT ON post_effect_annotations BEGIN INSERT INTO post_effect_annotations_fts(rowid, content) VALUES (new.rowid, new.content); END",
     "post_effect_annotations_fts_au": "CREATE TRIGGER post_effect_annotations_fts_au AFTER UPDATE ON post_effect_annotations WHEN old.content IS NOT new.content BEGIN INSERT INTO post_effect_annotations_fts(post_effect_annotations_fts, rowid, content) VALUES ('delete', old.rowid, old.content); INSERT INTO post_effect_annotations_fts(rowid, content) VALUES (new.rowid, new.content); END",

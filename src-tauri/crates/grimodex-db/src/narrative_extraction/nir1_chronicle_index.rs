@@ -10,7 +10,7 @@ mod input_guard;
 pub(crate) mod invalidate;
 mod publish;
 mod query;
-mod read_identity;
+pub(crate) mod read_identity;
 mod revision_bindings;
 mod runtime;
 pub(crate) mod source;

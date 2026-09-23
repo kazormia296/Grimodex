@@ -158,6 +158,20 @@ rules:
       - GDX-TRACE-001
     suites:
       - prompt-contract
+  - id: nir1-standard-build
+    reason: Standard-build evidence must bind clean source and observed command/artifact outcomes without admitting ambiguous cleanup or fixture receipts.
+    paths:
+      - scripts/quality/run-nir1-retrieval.mjs
+      - scripts/quality/nir1-retrieval/standard-build.mjs
+      - scripts/quality/nir1-retrieval/standard-build.test.mjs
+      - docs/plans/nir1-standard-build-producer.md
+    requirements:
+      - GDX-PRECHECK-001
+      - GDX-ARTIFACT-001
+      - GDX-TRACE-001
+    suites:
+      - quality-workflow
+      - retrieval-grounding
   - id: retrieval-grounding
     reason: Recall, reranker admission authority, context planning, citation, and related-scene changes affect grounding.
     paths:
@@ -264,6 +278,7 @@ rules:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
       - src-tauri/crates/grimodex-db/src/migrate.rs
       - src-tauri/crates/grimodex-db/src/backup_restore.rs
+      - src-tauri/crates/grimodex-db/src/state.rs
       - src-tauri/crates/grimodex-core/src/workspace_schema.rs
       - electron/main/index.ts
       - electron/main/narrativeMaintenance*.ts
@@ -291,7 +306,7 @@ rules:
     suites:
       - narrative-semantic-contract
   - id: nir1-entity-relation-review
-    reason: NIR-1 typed Entity/Relation review keeps its renderer API, hook/dialog, Revision reader, typed IPC/Native persistence, core/DB contracts, and dedicated target-bound journey together while preserving overlap with shared semantic and runtime gates.
+    reason: NIR-1 typed Entity/Relation review and internal Graph, Packing, and generation receipt contracts keep their core/DB checks together with typed IPC and the review journey; Native activation denial remains separately validated.
     paths:
       - src/features/codex/CodexEntityRelationReviewDialog.integration.test.tsx
       - src/features/codex/CodexEntityRelationReviewDialog.test.tsx
@@ -317,7 +332,21 @@ rules:
       - src/features/ai-context/nir1Packing.ts
       - src/features/ai-context/nir1Packing.test.ts
       - evals/nir1-packing/**
+      - evals/nir1-g01/**
+      - docs/plans/nir1-c-scene-connection-candidate.md
+      - docs/plans/nir1-d1-snapshot-candidate.md
+      - docs/plans/nir1-d2b-dispatch-candidate.md
+      - docs/plans/nir1-d2b-history-gap-candidate.md
+      - docs/plans/nir1-d2b-storage-candidate.md
+      - docs/plans/nir1-post-b-candidate.md
+      - docs/plans/nir1-c-memory-capacity-delta-draft.md
+      - docs/plans/nir1-c-scene-body-disclosure-delta-draft.md
+      - docs/plans/nir1-c-target-scene-body-authority-proposal-draft.md
+      - docs/plans/nir1-d2b-history-authority-proposal-draft.md
       - scripts/quality/nir1-packing/**
+      - src/features/related-scenes/nir1G01Feasibility.test.ts
+      - src/features/related-scenes/nir1RelatedScenesFusion.ts
+      - src/features/related-scenes/nir1RelatedScenesFusion.test.ts
       - src/lib/tauri.electron.test.ts
       - src/lib/tauri.ts
       - electron/main/ipc.test.ts
@@ -326,6 +355,8 @@ rules:
       - electron/main/profileEgress.ts
       - electron/native/grimodex-node/index.d.ts
       - electron/native/grimodex-node/src/lib.rs
+      - electron/native/grimodex-node/src/nir1_generation.rs
+      - electron/native/grimodex-node/src/nir1_graph_activation_tests.rs
       - electron/scripts/codex-entity-relation-product-journey.mjs
       - electron/scripts/product-journey-catalog.mjs
       - electron/scripts/product-journey-shards.mjs
@@ -343,6 +374,15 @@ rules:
       - src-tauri/crates/grimodex-core/src/narrative_ir.rs
       - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
       - src-tauri/crates/grimodex-core/tests/narrative_nir1.rs
+      - src-tauri/crates/grimodex-core/src/narrative_nir1_receipt.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs
+      - src-tauri/crates/grimodex-db/Cargo.toml
+      - src-tauri/crates/grimodex-db/src/lib.rs
+      - src-tauri/crates/grimodex-db/src/state.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation/**
+      - src-tauri/crates/grimodex-db/src/profile_egress_policy.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/codex_operations.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/human_derivation.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs
@@ -351,18 +391,24 @@ rules:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/**
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/**
       - src-tauri/crates/grimodex-db/src/narrative_extraction/phase-cases.json
       - src-tauri/crates/grimodex-db/src/narrative_extraction/reveal-cases.json
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/project_scope_authority.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission/types.rs
       - src-tauri/crates/grimodex-db/tests/narrative_nir1_retrieval_admission.rs
+      - src-tauri/crates/grimodex-db/tests/release_schema_migration.rs
+      - src-tauri/crates/grimodex-db/tests/workspace_migration_supervisor.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/scene_scope.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/scope_authority_runtime.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs
+      - src/db/narrativeChangeFeedSchema.test.ts
     requirements:
       - GDX-NARR-SEMANTIC-CONTRACT-001
       - GDX-ARTIFACT-001
@@ -475,6 +521,7 @@ rules:
       - electron/native/grimodex-node/**
       - src-tauri/crates/grimodex-db/src/narrative_extraction/**
       - src-tauri/crates/grimodex-db/src/workspace_lifecycle.rs
+      - src-tauri/crates/grimodex-db/src/state.rs
       - src-tauri/crates/grimodex-db/src/domain_writes.rs
       - src-tauri/crates/grimodex-db/src/narrative_maintenance_connection.rs
       - src-tauri/crates/grimodex-db/tests/narrative_*.rs
@@ -1011,6 +1058,8 @@ rules:
       - electron/native/grimodex-node/src/lib.rs
       - src-tauri/crates/grimodex-db/src/narrative_runtime_policy.rs
       - src-tauri/crates/grimodex-db/src/protected_writers.rs
+      - src-tauri/crates/grimodex-db/src/profile_egress_policy.rs
+      - src-tauri/crates/grimodex-db/src/state.rs
       - src-tauri/crates/grimodex-db/src/execute.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/**
       - src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs
@@ -1028,4 +1077,13 @@ rules:
     suites:
       - narrative-runtime
       - tool-policy
+  - id: narrative-change-feed-policy-quality
+    reason: Change Feed writer policy-only edits must run the canonical quality workflow and its validator in addition to the runtime policy gates.
+    paths:
+      - policies/narrative/change-feed-writers.json
+    requirements:
+      - GDX-POLICY-001
+      - GDX-TRACE-001
+    suites:
+      - quality-workflow
 default: all

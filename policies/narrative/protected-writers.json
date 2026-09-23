@@ -1,5 +1,33 @@
 [
   {
+    "aggregate": "nir1-generation",
+    "table": "nir1_generation_attempts",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_generation_message_versions",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_generation_input_refs",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_generation_qualification_refs",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "foreshadow",
     "table": "foreshadows",
     "protection": "table",

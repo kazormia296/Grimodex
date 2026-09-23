@@ -18,6 +18,9 @@ mod convert;
 #[cfg(feature = "legacy-keyring-migration")]
 mod legacy_keyring;
 mod narrative_maintenance;
+mod nir1_generation;
+#[cfg(test)]
+mod nir1_graph_activation_tests;
 mod post_effect_runtime;
 mod profile_egress;
 mod related_scenes;
@@ -11394,37 +11397,11 @@ impl Backend {
         .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))
     }
 
-    /// Read a bounded, request-local NIR-1 Entity/Relation graph.  The
-    /// workspace path is checked against the pinned Native authority before
-    /// the read transaction begins; the renderer cannot choose a different
-    /// DB by changing the project or seed fields.
+    /// The product Graph route stays closed until C-query/C-product acceptance.
+    /// Internal canonical reader tests do not authorize this exported entry.
     #[napi]
-    pub async fn nir1_graph_query(&self, payload: serde_json::Value) -> Result<String> {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase", deny_unknown_fields)]
-        struct Request {
-            expected_workspace_path: String,
-            project_id: String,
-            query_scene_id: String,
-            seed_entity_id: String,
-        }
-
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let request: Request = from_wire("payload", payload)?;
-            let workspace = active_workspace_snapshot(&state.ws)?;
-            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
-            let graph_request = narrative_extraction::Nir1GraphRequest {
-                project_id: request.project_id,
-                query_scene_id: request.query_scene_id,
-                seed_entity_id: request.seed_entity_id,
-            };
-            let response = workspace.authority.db().with_read_transaction(|conn| {
-                narrative_extraction::read_nir1_graph(conn, &graph_request)
-            })?;
-            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
-        })
-        .await
+    pub async fn nir1_graph_query(&self, _payload: serde_json::Value) -> Result<String> {
+        Err(Error::from_reason("NIR1_GRAPH_NOT_ACTIVATED"))
     }
 
     /// Pack typed NIR-1 context units without persisting or forwarding them.
@@ -14319,7 +14296,9 @@ impl Backend {
             from_wire("settings", settings).map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            grimodex_ai::write_ai_settings(&state.ai_settings_path, &settings)?;
+            state.profile_egress.with_route_update(|| {
+                grimodex_ai::write_ai_settings(&state.ai_settings_path, &settings)
+            })?;
             Ok(())
         })
         .await

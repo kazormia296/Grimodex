@@ -54,6 +54,7 @@ use super::human_material_basis::{
     D1DeclarationProjection, MaterialBasis, MaterialDependencyEntry, MaterialEvidenceEntry,
     MaterialSourceBasisEntry,
 };
+use super::nir1_capacity::{check_active_work, parse_json_with_active_work};
 use super::project_scope_authority::load_live_project_scope_authority;
 use super::publish_runtime::{
     publish_complete_runless_freshness_in_tx, worst_edge_state_for_consumer,
@@ -532,8 +533,10 @@ fn build_typed_material_basis(
     let context_id = "context:nir1.entity-relation".to_string();
     let mut dependency_set = Vec::new();
     for entity in &bundle.entities {
+        check_active_work(conn)?;
         let source_key = format!("codex:{}", entity.entity_id);
         for evidence in &entity.evidence {
+            check_active_work(conn)?;
             dependency_set.push(MaterialDependencyEntry {
                 dependency_id: format!("nir1:evidence:{}", evidence.evidence_id),
                 input_ref: source_key.clone(),
@@ -551,6 +554,7 @@ fn build_typed_material_basis(
         });
     }
     for relation in &bundle.relations {
+        check_active_work(conn)?;
         dependency_set.push(MaterialDependencyEntry {
             dependency_id: format!("nir1:relation:{}", relation.edge_id),
             input_ref: format!("codex-relation:{}", relation.edge_id),
@@ -928,6 +932,7 @@ fn validate_typed_persisted_material(
         "NIR1_ENTITY_RELATION_V1_EDGE_SET_MISMATCH"
     );
     for source in &expected_sources {
+        check_active_work(conn)?;
         let matching = edges
             .iter()
             .filter(|edge| edge.source_object_identity == source.source_key)
@@ -937,8 +942,14 @@ fn validate_typed_persisted_material(
             "NIR1_ENTITY_RELATION_V1_EDGE_SOURCE_MISMATCH"
         );
         let edge = matching[0];
-        let read_set: Vec<String> = serde_json::from_str(&edge.read_set_json)
-            .map_err(|_| anyhow::anyhow!("NIR1_ENTITY_RELATION_V1_READ_SET_INVALID"))?;
+        let read_set: Vec<String> = parse_json_with_active_work(conn, &edge.read_set_json)
+            .map_err(|error| {
+                if is_validation_terminated(&error) {
+                    error
+                } else {
+                    anyhow::anyhow!("NIR1_ENTITY_RELATION_V1_READ_SET_INVALID")
+                }
+            })?;
         anyhow::ensure!(
             edge.project_id == project_id
                 && edge.consumer_kind == "proposal-revision"
@@ -973,6 +984,7 @@ fn validate_typed_persisted_material(
         .declarations
         .iter()
         .map(|declaration| {
+            check_active_work(conn)?;
             Ok((
                 declaration.source_object_identity.clone(),
                 declaration.role.as_str().to_owned(),
@@ -984,10 +996,14 @@ fn validate_typed_persisted_material(
         .entries
         .iter()
         .map(|entry| {
+            check_active_work(conn)?;
             Ok((
                 entry.source_object_identity.clone(),
                 entry.dependency_role.as_str().to_owned(),
-                canonicalize_dependency_selector(&serde_json::from_str(&entry.selector_json)?)?,
+                canonicalize_dependency_selector(&parse_json_with_active_work(
+                    conn,
+                    &entry.selector_json,
+                )?)?,
             ))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -1067,8 +1083,14 @@ fn evaluate_typed_edge(
     project_id: &str,
     edge: &DependencyEdge,
 ) -> anyhow::Result<super::evaluator::EdgeObservation> {
-    let read_set: Vec<String> = serde_json::from_str(&edge.read_set_json)
-        .map_err(|_| anyhow::anyhow!("NIR1_ENTITY_RELATION_V1_READ_SET_INVALID"))?;
+    let read_set: Vec<String> =
+        parse_json_with_active_work(conn, &edge.read_set_json).map_err(|error| {
+            if is_validation_terminated(&error) {
+                error
+            } else {
+                anyhow::anyhow!("NIR1_ENTITY_RELATION_V1_READ_SET_INVALID")
+            }
+        })?;
     anyhow::ensure!(
         read_set.len() == 1,
         "NIR1_ENTITY_RELATION_V1_READ_SET_INVALID"
@@ -1290,6 +1312,7 @@ fn read_typed_canonical_freshness(
         Err(_) => return Ok(None),
     };
     for edge in &edges {
+        check_active_work(conn)?;
         if edge.owning_run_id.as_deref() != Some(run_id) {
             return Ok(None);
         }
@@ -1962,10 +1985,13 @@ fn read_typed_revision_core(
         return Ok(unavailable("revision-restore-invalidated"));
     }
 
-    let payload: StoredNir1EntityRelationPayload = match serde_json::from_str(&payload_json) {
-        Ok(payload) => payload,
-        Err(_) => return Ok(unavailable("revision-payload-invalid")),
-    };
+    let payload: StoredNir1EntityRelationPayload =
+        match parse_json_with_active_work(conn, &payload_json) {
+            Ok(payload) => payload,
+            Err(error) if is_validation_terminated(&error) => return Err(error),
+            Err(_) => return Ok(unavailable("revision-payload-invalid")),
+        };
+    drop(payload_json);
     if payload.schema_version != 1
         || payload.kind != NIR1_ENTITY_RELATION_PROPOSAL_KIND
         || payload.producer != ENTITY_RELATION_PRODUCER
@@ -1980,10 +2006,12 @@ fn read_typed_revision_core(
         Some(envelope_json) => envelope_json,
         None => return Ok(unavailable("canonical-freshness-unavailable")),
     };
-    let envelope: Value = match serde_json::from_str(&envelope_json) {
+    let mut envelope: Value = match parse_json_with_active_work(conn, &envelope_json) {
         Ok(envelope) => envelope,
+        Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(_) => return Ok(unavailable("revision-envelope-invalid")),
     };
+    drop(envelope_json);
     if validate_entity_relation_revision_envelope_v2(&envelope).is_err()
         || envelope
             .as_object()
@@ -1991,13 +2019,17 @@ fn read_typed_revision_core(
     {
         return Ok(unavailable("revision-envelope-invalid"));
     }
+    check_active_work(conn)?;
     let expected_envelope_digest = canonical_json_digest(&envelope)?;
+    check_active_work(conn)?;
     if envelope_digest.as_deref() != Some(expected_envelope_digest.as_str()) {
         return Ok(unavailable("revision-envelope-invalid"));
     }
     let payload_value = serde_json::to_value(&payload)?;
     let bundle_digest = canonical_json_digest(&serde_json::to_value(&payload.bundle)?)?;
     let payload_digest = canonical_json_digest(&payload_value)?;
+    check_active_work(conn)?;
+    drop(payload_value);
     if envelope.pointer("/assertion/payload/bundleDigest")
         != Some(&Value::String(bundle_digest.clone()))
         || envelope.pointer("/assertion/payload/revisionId")
@@ -2007,14 +2039,17 @@ fn read_typed_revision_core(
     {
         return Ok(unavailable("revision-payload-binding-invalid"));
     }
+    check_active_work(conn)?;
     let material_basis: MaterialBasis = match envelope
-        .get("effectiveMaterialBasis")
-        .cloned()
+        .get_mut("effectiveMaterialBasis")
+        .map(Value::take)
         .map(serde_json::from_value)
     {
         Some(Ok(material)) => material,
         _ => return Ok(unavailable("revision-envelope-invalid")),
     };
+    drop(envelope);
+    check_active_work(conn)?;
     if validate_entity_relation_bundle(&payload.bundle).is_err() {
         return Ok(unavailable("source-revision-changed"));
     }
@@ -2141,7 +2176,9 @@ pub fn evaluate_nir1_entity_relation_disclosure(
     // the query-axis guard, phase resolver, explicit Scope checks, and reveal
     // comparator. Recomputing it per pair would both waste work and make it
     // too easy for callers to accidentally mix axes.
+    check_active_work(conn)?;
     let story_statuses = build_a3_story_status_index(&authority);
+    check_active_work(conn)?;
 
     let query_source = match super::retrieval_admission::read_retrieval_scene_source(
         conn,
@@ -2238,6 +2275,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
     let mut phase_state = Vec::with_capacity(revision.bundle.entities.len());
 
     for entity in &revision.bundle.entities {
+        check_active_work(conn)?;
         if entity.scope.authority_revision != query_scope_authority_revision {
             return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
                 reason: "a3-scope-authority-stale".into(),
@@ -2318,6 +2356,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
             "foreshadows": reveal.saved,
         }));
         let phases = load_a3_phases(conn, project_id, &entity.entity_id)?;
+        check_active_work(conn)?;
         let phase_resolution = evaluate_a3_phase(
             &entity.scope.phase,
             &authority,
@@ -2327,6 +2366,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
             &phases,
             &story_statuses,
         );
+        check_active_work(conn)?;
         if let Some(reason) = evaluate_a3_entity_scope(
             conn,
             project_id,
@@ -2350,16 +2390,17 @@ pub fn evaluate_nir1_entity_relation_disclosure(
                 .phases
                 .iter()
                 .map(|phase| {
-                    json!({
+                    check_active_work(conn)?;
+                    Ok(json!({
                         "id": &phase.id,
                         "anchorSceneId": &phase.anchor_scene_id,
                         "label": &phase.label,
                         "createdAt": &phase.created_at,
                         "contextModeOverride": &phase.context_mode_override,
                         "version": phase.version,
-                    })
+                    }))
                 })
-                .collect::<Vec<_>>(),
+                .collect::<anyhow::Result<Vec<_>>>()?,
             "applicablePhaseIds": phase_resolution
                 .applicable
                 .iter()
@@ -2369,6 +2410,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
         }));
     }
 
+    check_active_work(conn)?;
     let reveal_state_token = canonical_json_digest(&json!({
         "projectId": project_id,
         "querySceneId": query_scene_id,
@@ -2766,6 +2808,7 @@ fn read_a3_reveal_state(
     let mut failure_reason = None;
     let mut saved = Vec::with_capacity(rows.len());
     for (id, secret, abandoned, payoff_confirmed, payoff_scene_id) in rows {
+        check_active_work(conn)?;
         let payoff_mapping = payoff_scene_id.as_deref().and_then(|scene_id| {
             authority
                 .mappings
@@ -3287,6 +3330,7 @@ fn validate_live_sources(
         &format!("project:scope-authority:{project_id}"),
     )?;
     for entity in &bundle.entities {
+        check_active_work(conn)?;
         let current: Option<(String, String, Option<String>, String)> = conn
             .query_row(
                 "SELECT type, name, summary, updated_at
@@ -3324,6 +3368,7 @@ fn validate_live_sources(
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| name.clone());
         for evidence in &entity.evidence {
+            check_active_work(conn)?;
             anyhow::ensure!(
                 evidence.source_ref == format!("codex:{}", entity.entity_id),
                 "NIR1_ENTITY_EVIDENCE_SOURCE_MISMATCH: Evidence '{}' is not bound to its Entity",
@@ -3342,6 +3387,7 @@ fn validate_live_sources(
         }
     }
     for relation in &bundle.relations {
+        check_active_work(conn)?;
         let current: Option<(String, String, String, String, i64, String)> = conn
             .query_row(
                 "SELECT from_codex_id, to_codex_id, relation_type, directionality,
@@ -3762,7 +3808,7 @@ fn create_typed_run_in_tx(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::{
         create_nir1_entity_relation_revision, evaluate_nir1_entity_relation_disclosure,
         find_nir1_entity_relation_revision_run, prepare_nir1_entity_relation_revision,
@@ -3877,7 +3923,7 @@ mod tests {
         }
     }
 
-    fn seed_run_and_catalog(db: &crate::Database) -> anyhow::Result<()> {
+    pub(crate) fn seed_run_and_catalog(db: &crate::Database) -> anyhow::Result<()> {
         db.with_conn(|conn| {
             super::super::create_epoch_in_tx(conn, "default-project", "initial", None)
         })?;
@@ -3942,7 +3988,7 @@ mod tests {
         })
     }
 
-    fn prepare_a3_scope_fixture(db: &crate::Database) -> anyhow::Result<()> {
+    pub(crate) fn prepare_a3_scope_fixture(db: &crate::Database) -> anyhow::Result<()> {
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO tree_nodes
@@ -4055,7 +4101,7 @@ mod tests {
         Ok(())
     }
 
-    fn request(db: &crate::Database) -> Nir1EntityRelationRevisionRequest {
+    pub(crate) fn request(db: &crate::Database) -> Nir1EntityRelationRevisionRequest {
         let authority_revision = db
             .with_read_transaction(|conn| {
                 super::load_live_project_scope_authority(
@@ -4073,7 +4119,7 @@ mod tests {
         }
     }
 
-    fn request_for_run(
+    pub(crate) fn request_for_run(
         db: &crate::Database,
         run_id: &str,
         proposal_key: &str,
@@ -4084,7 +4130,7 @@ mod tests {
         request
     }
 
-    fn create_typed_run(db: &crate::Database, run_id: &str) -> anyhow::Result<()> {
+    pub(crate) fn create_typed_run(db: &crate::Database, run_id: &str) -> anyhow::Result<()> {
         narrative_extraction_create_run(
             db,
             CreateRunPayload {
@@ -4104,7 +4150,7 @@ mod tests {
         Ok(())
     }
 
-    fn approve_typed_revision(
+    pub(crate) fn approve_typed_revision(
         db: &crate::Database,
         run_id: &str,
         created: &serde_json::Value,
@@ -6579,7 +6625,11 @@ mod tests {
                          created_at, created_by)
                      VALUES (?1, ?2, 1, '{}', ?3,
                              '2026-09-17T00:00:00.000Z', 'keyset-test')",
-                    params![revision_id, proposal_id, NIR1_ENTITY_RELATION_REVISION_ORIGIN],
+                    params![
+                        revision_id,
+                        proposal_id,
+                        NIR1_ENTITY_RELATION_REVISION_ORIGIN
+                    ],
                 )?;
             }
             tx.execute(
@@ -7735,14 +7785,15 @@ mod tests {
         let (error, during, after) = db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut control = StopAt(nir1_entity_relation_index::GraphWorkStage::D1);
-            let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx_with_control(
-                &tx,
-                &runtime,
-                snapshot,
-                &mut control,
-            )
-            .expect_err("D1 work cancellation must abort publication")
-            .to_string();
+            let error =
+                nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx_with_control(
+                    &tx,
+                    &runtime,
+                    snapshot,
+                    &mut control,
+                )
+                .expect_err("D1 work cancellation must abort publication")
+                .to_string();
             let during = graph_surface_snapshot(&tx)?;
             tx.rollback()?;
             let after = graph_surface_snapshot(conn)?;
@@ -9358,8 +9409,8 @@ mod tests {
     }
 
     #[test]
-    fn graph_index_rejects_oversized_revision_before_parse_and_reuses_connection() -> anyhow::Result<()>
-    {
+    fn graph_index_rejects_oversized_revision_before_parse_and_reuses_connection(
+    ) -> anyhow::Result<()> {
         let (db, runtime, created) = published_graph_fixture()?;
         let revision_id = created["revisionId"]
             .as_str()
@@ -9883,12 +9934,15 @@ mod tests {
                 if extra_relation { 515 } else { 514 },
                 "individually valid revisions may exceed the former project-wide 512 roster cap"
             );
-            assert_eq!(snapshot.edges_for_test().len(), 1 + source
-                .roster
-                .iter()
-                .map(|entry| entry.source_object_identity.clone())
-                .collect::<std::collections::BTreeSet<_>>()
-                .len());
+            assert_eq!(
+                snapshot.edges_for_test().len(),
+                1 + source
+                    .roster
+                    .iter()
+                    .map(|entry| entry.source_object_identity.clone())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+            );
         }
         Ok(())
     }

@@ -23,6 +23,14 @@ function groupExists(processGroupId) {
   }
 }
 
+function groupAliveSafely(processGroupId) {
+  try {
+    return groupExists(processGroupId);
+  } catch {
+    return true;
+  }
+}
+
 function signalGroup(processGroupId, signal) {
   if (!Number.isSafeInteger(processGroupId) || processGroupId <= 0)
     return false;
@@ -41,6 +49,17 @@ async function waitForGroupExit(processGroupId, timeoutMs) {
     await delay(20);
   }
   return !groupExists(processGroupId);
+}
+
+async function retainGroupOwnerUntilExit(processGroupId) {
+  while (true) {
+    try {
+      if (!groupExists(processGroupId)) return;
+    } catch {
+      // An unobservable group remains owned and unresolved.
+    }
+    await delay(20);
+  }
 }
 
 async function terminateProcessGroup(
@@ -78,13 +97,19 @@ function commandExecutable(command) {
     : command;
 }
 
+/**
+ * Optional bounded-close mode returns unknown cleanup with `error.lateClose`;
+ * the caller must await it to keep ownership until close and group exit.
+ */
 export async function runLocalCiCommand(
   entry,
   {
+    closeGraceMs = null,
     killGraceMs = 2_000,
     logDirectory,
     root,
     signal = null,
+    spawnProcess = spawn,
     taskId,
     termGraceMs = 2_000,
     timeoutMs = entry.timeoutMs ?? 0,
@@ -97,6 +122,15 @@ export async function runLocalCiCommand(
     throw new Error("local CI supervisor requires a safe taskId");
   }
   if (signal?.aborted) throw signal.reason ?? new Error("local CI interrupted");
+  if (
+    closeGraceMs !== null &&
+    (!Number.isSafeInteger(closeGraceMs) || closeGraceMs <= 0)
+  ) {
+    throw new Error("local CI closeGraceMs must be a positive safe integer");
+  }
+  if (typeof spawnProcess !== "function") {
+    throw new Error("local CI spawnProcess must be a function");
+  }
 
   const absoluteLogDirectory = path.resolve(root, logDirectory);
   await mkdir(absoluteLogDirectory, { recursive: true });
@@ -116,9 +150,15 @@ export async function runLocalCiCommand(
   let timedOut = false;
   let interrupted = false;
   let cleanupPromise = null;
+  let cleanupError = null;
+  let keepHandlesUntilLateClose = false;
+  let notifyStopStarted;
+  const stopStarted = new Promise((resolve) => {
+    notifyStopStarted = resolve;
+  });
 
   try {
-    child = spawn(commandExecutable(entry.command), entry.args, {
+    child = spawnProcess(commandExecutable(entry.command), entry.args, {
       cwd: path.resolve(root, entry.cwd ?? "."),
       detached: true,
       env: { ...process.env, ...(entry.env ?? {}) },
@@ -127,10 +167,25 @@ export async function runLocalCiCommand(
     });
 
     const stop = () => {
-      cleanupPromise ??= terminateProcessGroup(child.pid, {
-        killGraceMs,
-        termGraceMs,
-      });
+      if (!cleanupPromise) {
+        cleanupPromise = terminateProcessGroup(child.pid, {
+          killGraceMs,
+          termGraceMs,
+        });
+        if (closeGraceMs !== null) {
+          cleanupPromise = cleanupPromise.catch((error) => {
+            cleanupError = error;
+            return {
+              complete: false,
+              groupAlive: true,
+              killSent: false,
+              termSent: false,
+            };
+          });
+        }
+        notifyStopStarted({ cleanup: cleanupPromise });
+      }
+      return cleanupPromise;
     };
     const interrupt = () => {
       interrupted = true;
@@ -146,7 +201,7 @@ export async function runLocalCiCommand(
           }, timeoutMs)
         : null;
 
-    const closed = await new Promise((resolve) => {
+    const closePromise = new Promise((resolve) => {
       child.once("error", (error) => {
         spawnError = error;
       });
@@ -154,6 +209,76 @@ export async function runLocalCiCommand(
         resolve({ exitCode, signal: childSignal ?? null });
       });
     });
+    let closed;
+    if (closeGraceMs === null) {
+      closed = await closePromise;
+    } else {
+      const observed = await Promise.race([
+        closePromise.then((result) => ({ kind: "closed", result })),
+        stopStarted.then(async ({ cleanup }) => {
+          await cleanup;
+          return Promise.race([
+            closePromise.then((result) => ({ kind: "closed", result })),
+            delay(closeGraceMs).then(() => ({ kind: "close-unobserved" })),
+          ]);
+        }),
+      ]);
+      if (observed.kind === "close-unobserved") {
+        if (timeout) clearTimeout(timeout);
+        signal?.removeEventListener("abort", interrupt);
+        const cleanup = await cleanupPromise;
+        keepHandlesUntilLateClose = true;
+        let groupAlive = true;
+        try {
+          groupAlive = cleanup.groupAlive || groupExists(child.pid);
+        } catch {
+          // An unobservable process group remains owned and unresolved.
+        }
+        const result = {
+          closeObserved: false,
+          cleanup: {
+            ...cleanup,
+            complete: false,
+            groupAlive,
+            closeObserved: false,
+          },
+          durationMs: Math.round(performance.now() - started),
+          interrupted,
+          logs: {
+            stderr: { path: path.relative(root, stderrPath), complete: false },
+            stdout: { path: path.relative(root, stdoutPath), complete: false },
+          },
+          pid: child.pid,
+          processGroupId: child.pid,
+          signal: null,
+          exitCode: null,
+          timedOut,
+          termination: "unknown",
+          ...(spawnError ? { error: spawnError.message } : {}),
+          ...(cleanupError ? { cleanupError: cleanupError.message } : {}),
+        };
+        const lateClose = closePromise.then(async (late) => {
+          await retainGroupOwnerUntilExit(child.pid);
+          await Promise.all([stdout.close(), stderr.close()]);
+          return {
+            closeObserved: true,
+            cleanup: { ...cleanup, complete: true, groupAlive: false },
+            error: spawnError?.message ?? null,
+            exitCode: late.exitCode,
+            processGroupId: child.pid,
+            signal: late.signal,
+            termination: "late-close-and-group-exit-observed",
+          };
+        });
+        const error = new Error(
+          "local CI process group close was not observed after bounded TERM/KILL cleanup",
+        );
+        error.result = result;
+        error.lateClose = lateClose;
+        throw error;
+      }
+      closed = observed.result;
+    }
     if (timeout) clearTimeout(timeout);
     signal?.removeEventListener("abort", interrupt);
     const cleanup = cleanupPromise
@@ -164,43 +289,137 @@ export async function runLocalCiCommand(
           killSent: false,
           termSent: false,
         };
-    const survivorDetected = cleanupPromise
-      ? groupExists(child.pid)
-      : !(await waitForGroupExit(child.pid, termGraceMs));
+    let survivorDetected;
+    try {
+      survivorDetected = cleanupPromise
+        ? closeGraceMs === null
+          ? groupExists(child.pid)
+          : groupAliveSafely(child.pid)
+        : !(await waitForGroupExit(child.pid, termGraceMs));
+    } catch (error) {
+      if (closeGraceMs === null) throw error;
+      cleanupError = error;
+      survivorDetected = true;
+    }
     if (survivorDetected) {
-      const survivorCleanup = await terminateProcessGroup(child.pid, {
-        killGraceMs,
-        termGraceMs,
-      });
-      Object.assign(cleanup, survivorCleanup, { survivorDetected: true });
+      try {
+        const survivorCleanup = await terminateProcessGroup(child.pid, {
+          killGraceMs,
+          termGraceMs,
+        });
+        Object.assign(cleanup, survivorCleanup, { survivorDetected: true });
+      } catch (error) {
+        if (closeGraceMs === null) throw error;
+        cleanupError = error;
+        Object.assign(cleanup, {
+          complete: false,
+          groupAlive: true,
+          survivorDetected: true,
+        });
+      }
     }
 
-    await Promise.all([stdout.close(), stderr.close()]);
-    const result = {
-      ...closed,
-      cleanup,
-      durationMs: Math.round(performance.now() - started),
-      interrupted,
-      logs: {
-        stderr: await fileIdentity(root, stderrPath),
-        stdout: await fileIdentity(root, stdoutPath),
-      },
-      pid: child.pid,
-      timedOut,
-      ...(spawnError ? { error: spawnError.message } : {}),
-    };
     if (survivorDetected || cleanup.complete !== true) {
       const error = new Error(
         survivorDetected
           ? "local CI process group survived command close"
           : "local CI process group survived TERM and KILL",
       );
-      error.result = result;
+      if (closeGraceMs === null) {
+        await Promise.all([stdout.close(), stderr.close()]);
+        error.result = {
+          ...closed,
+          cleanup,
+          durationMs: Math.round(performance.now() - started),
+          interrupted,
+          logs: {
+            stderr: await fileIdentity(root, stderrPath),
+            stdout: await fileIdentity(root, stdoutPath),
+          },
+          pid: child.pid,
+          timedOut,
+          ...(spawnError ? { error: spawnError.message } : {}),
+        };
+        throw error;
+      }
+      error.result = {
+        ...closed,
+        closeObserved: true,
+        cleanup: {
+          ...cleanup,
+          complete: cleanup.complete,
+          closeObserved: true,
+        },
+        durationMs: Math.round(performance.now() - started),
+        interrupted,
+        logs: {
+          stderr: { path: path.relative(root, stderrPath), complete: false },
+          stdout: { path: path.relative(root, stdoutPath), complete: false },
+        },
+        pid: child.pid,
+        processGroupId: child.pid,
+        timedOut,
+        termination:
+          cleanup.complete && !groupAliveSafely(child.pid)
+            ? "close-and-group-exit-observed-after-cleanup"
+            : "unknown",
+        ...(spawnError ? { error: spawnError.message } : {}),
+        ...(cleanupError ? { cleanupError: cleanupError.message } : {}),
+      };
+      if (cleanup.complete !== true) {
+        keepHandlesUntilLateClose = true;
+        error.lateClose = retainGroupOwnerUntilExit(child.pid).then(
+          async () => {
+            await Promise.all([stdout.close(), stderr.close()]);
+            return {
+              closeObserved: true,
+              cleanup: { ...cleanup, complete: true, groupAlive: false },
+              error: spawnError?.message ?? null,
+              exitCode: closed.exitCode,
+              processGroupId: child.pid,
+              signal: closed.signal,
+              termination: "late-group-exit-observed",
+            };
+          },
+        );
+      }
       throw error;
     }
-    return result;
+
+    await Promise.all([stdout.close(), stderr.close()]);
+    const logs = {
+      stderr: await fileIdentity(root, stderrPath),
+      stdout: await fileIdentity(root, stdoutPath),
+    };
+    if (closeGraceMs === null) {
+      return {
+        ...closed,
+        cleanup,
+        durationMs: Math.round(performance.now() - started),
+        interrupted,
+        logs,
+        pid: child.pid,
+        timedOut,
+        ...(spawnError ? { error: spawnError.message } : {}),
+      };
+    }
+    return {
+      ...closed,
+      closeObserved: true,
+      cleanup: { ...cleanup, closeObserved: true },
+      durationMs: Math.round(performance.now() - started),
+      interrupted,
+      logs,
+      pid: child.pid,
+      processGroupId: child.pid,
+      timedOut,
+      termination: "close-and-group-exit-observed",
+      ...(spawnError ? { error: spawnError.message } : {}),
+      ...(cleanupError ? { cleanupError: cleanupError.message } : {}),
+    };
   } catch (error) {
-    await Promise.allSettled([stdout.close(), stderr.close()]);
+    if (!keepHandlesUntilLateClose)
+      await Promise.allSettled([stdout.close(), stderr.close()]);
     throw error;
   }
 }

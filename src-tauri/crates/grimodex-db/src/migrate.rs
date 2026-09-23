@@ -3773,6 +3773,74 @@ impl Database {
                 ON narrative_scene_scope_bindings(project_id, version);
             ",
         )?;
+        // SCHEMA_VERSION 37 / NIR-1 D2b: immutable references to existing
+        // message/artifact bodies and one durable attempt terminal. These
+        // rows record observations; they do not authorize dispatch or history.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS nir1_generation_attempts (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL,
+                binding_json TEXT NOT NULL CHECK(json_valid(binding_json)),
+                payload_digest TEXT NOT NULL,
+                input_digest TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms > created_at_ms),
+                claimed_at_ms INTEGER,
+                terminal_json TEXT CHECK(terminal_json IS NULL OR json_valid(terminal_json)),
+                terminal_digest TEXT,
+                completed_at_ms INTEGER,
+                output_version_id TEXT,
+                CHECK((terminal_json IS NULL AND terminal_digest IS NULL AND completed_at_ms IS NULL)
+                   OR (terminal_json IS NOT NULL AND terminal_digest IS NOT NULL AND completed_at_ms IS NOT NULL)),
+                CHECK(output_version_id IS NULL OR terminal_json IS NOT NULL)
+            );
+            CREATE INDEX IF NOT EXISTS idx_nir1_generation_attempts_session
+                ON nir1_generation_attempts(project_id, session_id, id);
+            CREATE INDEX IF NOT EXISTS idx_nir1_generation_attempts_pending
+                ON nir1_generation_attempts(project_id, id) WHERE terminal_json IS NULL;
+            CREATE TABLE IF NOT EXISTS nir1_generation_message_versions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL UNIQUE,
+                origin TEXT NOT NULL CHECK(origin IN ('human', 'generated')),
+                body_digest TEXT NOT NULL,
+                parent_attempt_id TEXT REFERENCES nir1_generation_attempts(id),
+                created_at_ms INTEGER NOT NULL,
+                invalidated INTEGER NOT NULL DEFAULT 0 CHECK(invalidated IN (0, 1)),
+                CHECK((origin = 'human' AND parent_attempt_id IS NULL)
+                   OR (origin = 'generated' AND parent_attempt_id IS NOT NULL))
+            );
+            CREATE INDEX IF NOT EXISTS idx_nir1_generation_message_versions_session
+                ON nir1_generation_message_versions(project_id, session_id, id);
+            CREATE TABLE IF NOT EXISTS nir1_generation_input_refs (
+                attempt_id TEXT NOT NULL REFERENCES nir1_generation_attempts(id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                reference_json TEXT NOT NULL CHECK(json_valid(reference_json)),
+                PRIMARY KEY(attempt_id, ordinal)
+            );
+            CREATE TABLE IF NOT EXISTS nir1_generation_qualification_refs (
+                attempt_id TEXT NOT NULL REFERENCES nir1_generation_attempts(id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                reference_json TEXT NOT NULL CHECK(json_valid(reference_json)),
+                PRIMARY KEY(attempt_id, ordinal)
+            );",
+        )?;
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS nir1_generation_invalidate_message_delete;
+             DROP TRIGGER IF EXISTS nir1_generation_invalidate_message_update;
+             DROP TRIGGER IF EXISTS nir1_generation_invalidate_message_insert;",
+        )?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_GENERATION_MESSAGE_DELETE_TRIGGER_SQL,
+        )?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_GENERATION_MESSAGE_UPDATE_TRIGGER_SQL,
+        )?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_GENERATION_MESSAGE_INSERT_TRIGGER_SQL,
+        )?;
         Self::repair_narrative_v2_monotonicity_trigger(&conn)?;
         Self::repair_timelapse_creation_baseline_triggers(&conn)?;
 
@@ -4010,7 +4078,7 @@ impl Database {
             // A1 owns the SCHEMA 36 boundary. A schema-35 user_version is the
             // durable marker for the ordinary pre-A1 upgrade path; current /
             // post-A1 workspaces retain fail-closed missing-row semantics.
-            if current < SCHEMA_VERSION {
+            if current < 36 {
                 // A1 migration compatibility is Native-owned: every pre-A1
                 // scene gets one persisted legacy marker and a fresh
                 // incarnation id. This runs in the schema savepoint so a
@@ -9821,6 +9889,58 @@ mod tests {
     }
 
     #[test]
+    fn generation_storage_upgrade_preserves_missing_a1_scope_binding() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('scope-v36', 'Existing A1 project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                 VALUES ('scope-v36-scene', 'scope-v36', 'scene', 'Scene', 'a0')",
+                [],
+            )?;
+            conn.execute_batch(
+                "DROP TRIGGER nir1_generation_invalidate_message_delete;
+                 DROP TRIGGER nir1_generation_invalidate_message_update;
+                 DROP TRIGGER nir1_generation_invalidate_message_insert;
+                 DROP TABLE nir1_generation_input_refs;
+                 DROP TABLE nir1_generation_qualification_refs;
+                 DROP TABLE nir1_generation_message_versions;
+                 DROP TABLE nir1_generation_attempts;",
+            )?;
+            conn.pragma_update(None, "user_version", 36)?;
+            assert!(
+                !grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                    conn
+                )?
+            );
+            Ok(())
+        })
+        .expect("seed schema 36 without generation storage or a scene scope row");
+
+        db.migrate().expect("upgrade generation storage");
+        db.with_conn(|conn| {
+            assert!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
+            let error = crate::narrative_extraction::read_narrative_scene_scope(
+                conn,
+                "scope-v36",
+                "scope-v36-scene",
+            )
+            .expect_err("schema 36 missing authority must not be reclassified as legacy");
+            assert!(error
+                .to_string()
+                .contains("NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE"));
+            Ok(())
+        })
+        .expect("verify generation storage and retained unavailable A1 authority");
+    }
+
+    #[test]
     fn migration_backfills_scene_scope_rows_from_schema_35_pre_a1_workspace() {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
         db.migrate().expect("create current schema");
@@ -9838,16 +9958,9 @@ mod tests {
                 "DROP TABLE narrative_scene_scope_bindings;
                  DROP TABLE narrative_scope_registries;",
             )?;
-            assert_eq!(
-                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
-                35,
-                "this shadow fixture models the ordinary origin/master schema-35 base"
-            );
-            conn.pragma_update(
-                None,
-                "user_version",
-                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
-            )?;
+            // This fixture is specifically pre-A1, independently of the
+            // immediately previous schema supported by the current binary.
+            conn.pragma_update(None, "user_version", 35)?;
             Ok(())
         })
         .expect("seed a pre-A1 schema marker without A1 storage");

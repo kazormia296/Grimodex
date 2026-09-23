@@ -177,6 +177,17 @@ impl NirChronicleIndexRuntime {
         Arc::clone(&self.cancellation_epoch)
     }
 
+    /// Dedicated readers share the workspace runtime epoch, while keeping
+    /// their own connection-local committed-state identity.
+    pub(crate) fn native_reader_epoch(&self) -> Result<Option<u64>> {
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => anyhow::bail!("NIR1 runtime lock poisoned"),
+        };
+        Ok((state.active && !state.stopped).then_some(state.epoch))
+    }
+
     pub(super) fn owner(&self) -> u64 {
         self.owner
     }
