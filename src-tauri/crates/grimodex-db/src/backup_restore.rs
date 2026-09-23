@@ -2871,7 +2871,7 @@ mod tests {
         .expect("seed a pre-A1 scene without a scope binding");
         backup_active(&state, &backup_path);
 
-        // Model an ordinary origin/master schema-35 backup: the scene exists,
+        // Model a historical schema-35 backup: the scene exists,
         // but A1's scope tables have not been introduced yet.
         let candidate = Database::new(&backup_path).expect("open backup candidate");
         candidate
@@ -2880,11 +2880,11 @@ mod tests {
                     "DROP TABLE narrative_scene_scope_bindings;
                      DROP TABLE narrative_scope_registries;",
                 )?;
-                conn.pragma_update(
-                    None,
-                    "user_version",
-                    grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
-                )?;
+                // This is specifically pre-A1, not the moving previous schema.
+                conn.pragma_update(None, "user_version", 35)?;
+                let version: i32 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                assert_eq!(version, 35, "restore fixture must remain pre-A1");
                 Ok(())
             })
             .expect("stamp schema-35 pre-A1 candidate");
