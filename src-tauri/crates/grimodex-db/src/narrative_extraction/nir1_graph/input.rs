@@ -364,6 +364,7 @@ mod tests {
 /// a conservative upper bound (multiple entities may share one scene).
 /// This is scalar input/cardinality accounting, not a bound on JSON/PM
 /// expansion or heap size.
+#[cfg(test)]
 pub(super) fn preflight_disclosure(
     conn: &Connection,
     project: &str,

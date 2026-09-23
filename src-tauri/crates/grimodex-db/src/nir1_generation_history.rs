@@ -227,11 +227,13 @@ pub struct HistorySnapshot {
     pub attempts: BTreeMap<AttemptId, AttemptSnapshot>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SnapshotError {
     DuplicateAttempt(AttemptId),
 }
 
+#[cfg(test)]
 impl HistorySnapshot {
     pub fn from_attempts(
         attempts: impl IntoIterator<Item = AttemptSnapshot>,
@@ -257,6 +259,8 @@ pub struct Candidate {
     pub adopted_input_ordinals: Vec<usize>,
 }
 
+/// Pure traversal test ledger; storage adapters use their shared turn ledger.
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryBudget {
     pub remaining_nodes: usize,
@@ -264,6 +268,7 @@ pub struct HistoryBudget {
     pub remaining_qualification_refs: usize,
 }
 
+#[cfg(test)]
 impl HistoryBudget {
     pub fn new(
         remaining_nodes: usize,
@@ -303,6 +308,10 @@ impl HistoryBudget {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    dead_code,
+    reason = "current-authority mapping remains incomplete; no production qualifier is activated"
+)]
 pub enum QualificationStatus {
     Current,
     Pending,
@@ -382,6 +391,7 @@ pub trait HistoryBudgetLedger {
     fn consume_qualification_refs(&mut self, count: usize) -> Result<(), Failure>;
 }
 
+#[cfg(test)]
 impl HistoryBudgetLedger for HistoryBudget {
     fn consume_node(&mut self) -> Result<(), Failure> {
         HistoryBudget::consume_node(self)
@@ -1003,11 +1013,11 @@ mod generation_storage_adapter {
                         MessageOrigin::Generated => parent_attempt_id.is_some(),
                         MessageOrigin::Human => parent_attempt_id.is_none(),
                     };
-                    let role_matches = match (&message.version.origin, &input.role) {
+                    let role_matches = matches!(
+                        (&message.version.origin, &input.role),
                         (MessageOrigin::Generated, InputRole::Assistant)
-                        | (MessageOrigin::Human, InputRole::User) => true,
-                        _ => false,
-                    };
+                            | (MessageOrigin::Human, InputRole::User)
+                    );
                     message.version.project_id == attempt.binding.project_id
                         && message.version.session_id == attempt.binding.session_id
                         && message.version.parent_attempt_id.as_ref() == parent_attempt_id.as_ref()

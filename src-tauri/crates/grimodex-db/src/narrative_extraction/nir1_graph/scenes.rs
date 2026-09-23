@@ -418,16 +418,17 @@ pub(super) fn read_scene_source_bounded(
     // lets both stages charge the caller-owned cumulative budget without
     // manufacturing a second per-Scene budget or moving the admission after
     // serde_json/canonical allocations.
-    let budget_cell = RefCell::new(&mut *budget);
-    let canonical = canonical_scene_storage_with_admission(
-        &content,
-        max_storage_bytes,
-        remaining_for_canonical,
-        check,
-        &mut |bytes| budget_cell.borrow_mut().admit(0, bytes),
-        &mut |bytes| budget_cell.borrow_mut().admit(0, bytes),
-    )?;
-    drop(budget_cell);
+    let canonical = {
+        let budget_cell = RefCell::new(&mut *budget);
+        canonical_scene_storage_with_admission(
+            &content,
+            max_storage_bytes,
+            remaining_for_canonical,
+            check,
+            &mut |bytes| budget_cell.borrow_mut().admit(0, bytes),
+            &mut |bytes| budget_cell.borrow_mut().admit(0, bytes),
+        )?
+    };
     let source = SceneSourceBinding {
         source_kind: "scene-body",
         source_key: format!("{SOURCE_KEY_PREFIX}{}", pin.scene_id),

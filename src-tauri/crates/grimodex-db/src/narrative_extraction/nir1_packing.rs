@@ -514,6 +514,13 @@ pub(super) fn read_nir1_source_raw_context_item(
 /// Graph target bodies and caller-provided Raw labels/text are not inputs.
 /// Source reading charges its Raw bytes here, and the pooled selector skips a
 /// second Raw reservation while still using the same cumulative budget.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "internal Source/pool composition is not a product Native request adapter"
+    )
+)]
 pub(super) fn read_and_pack_native_a2_context_with_source_raw_in_tx(
     conn: &Connection,
     request: NativeNir1SourcePooledPackingRequest<'_>,

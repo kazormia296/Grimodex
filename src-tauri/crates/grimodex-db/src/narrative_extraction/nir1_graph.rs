@@ -6,9 +6,23 @@
 
 mod candidates;
 mod input;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "retained-memory seams remain unconnected; Graph memory acceptance is HOLD"
+    )
+)]
 mod memory;
 #[cfg(test)]
 mod oracle_tests;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Scene join foundations await confirmed target-body authority; Graph remains closed"
+    )
+)]
 mod scenes;
 #[cfg(test)]
 mod tests;
@@ -1121,7 +1135,7 @@ fn query_in_snapshot(
     ordered_edges.extend(edges.into_values());
     let response_scope_bytes = scope_revision
         .as_ref()
-        .map_or(0, |value| retained_string(value));
+        .map_or(0, retained_string);
     usage.admit_retained(
         std::mem::size_of::<Nir1GraphResponse>()
             + retained_string(&request.project_id)

@@ -54,6 +54,7 @@ pub(super) fn source_input_bytes(entity: &str) -> anyhow::Result<usize> {
 /// Page the reverse source index without filtering consumer kinds: decoys must
 /// consume the caller's admission budget too. The caller owns the snapshot and
 /// cumulative row/byte budgets; byte cost is the sum of both returned strings.
+#[cfg(test)]
 pub(super) fn read_candidate_page(
     conn: &Connection,
     project: &str,

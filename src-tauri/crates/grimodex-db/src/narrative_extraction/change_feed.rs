@@ -507,54 +507,6 @@ fn collect_canonical_blocks<E>(
     Ok(())
 }
 
-/// Project already-parsed Scene JSON with the caller's cancellation/deadline
-/// check. Count and admit UTF-8 output bytes before allocating the output;
-/// both passes use the same canonical visitor and bounded string pieces.
-/// This returns text only, never disclosure or Source authority.
-pub(crate) fn canonical_scene_value_with_check(
-    document: &Value,
-    max_output_bytes: usize,
-    check: &mut dyn FnMut() -> anyhow::Result<()>,
-) -> anyhow::Result<String> {
-    canonical_scene_value_with_admission(document, max_output_bytes, check, &mut |_| Ok(()))
-}
-
-fn canonical_scene_value_with_admission(
-    document: &Value,
-    max_output_bytes: usize,
-    check: &mut dyn FnMut() -> anyhow::Result<()>,
-    admit_output: &mut dyn FnMut(usize) -> anyhow::Result<()>,
-) -> anyhow::Result<String> {
-    let mut output_bytes = 0_usize;
-    collect_canonical_blocks(
-        document,
-        &mut 0,
-        &mut |piece| {
-            output_bytes = output_bytes
-                .checked_add(piece.len())
-                .filter(|bytes| *bytes <= max_output_bytes)
-                .ok_or_else(|| anyhow::anyhow!("NEX_CANONICAL_TEXT_OUTPUT_LIMIT"))?;
-            Ok(())
-        },
-        check,
-    )?;
-    check()?;
-    admit_output(output_bytes)?;
-    let mut output = String::new();
-    output.try_reserve_exact(output_bytes)?;
-    collect_canonical_blocks(
-        document,
-        &mut 0,
-        &mut |piece| {
-            output.push_str(piece);
-            Ok(())
-        },
-        check,
-    )?;
-    check()?;
-    Ok(output)
-}
-
 /// A request-local projection produced while the JSON visitor walks one node.
 /// The parser keeps only the two projections needed to resolve arbitrary
 /// ProseMirror field order: a node's block form and its inline form. It never
@@ -1330,6 +1282,7 @@ impl<'de, 'p, 'a> DeserializeSeed<'de> for StreamingSceneNodeSeed<'p, 'a> {
 /// bounds the canonical projection before its result is allocated.  Invalid
 /// JSON is unavailable to this path; the legacy unbounded helper below keeps
 /// its existing storage fallback for change-feed digests.
+#[cfg(test)]
 pub(crate) fn canonical_scene_storage_with_check(
     storage: &str,
     max_input_bytes: usize,

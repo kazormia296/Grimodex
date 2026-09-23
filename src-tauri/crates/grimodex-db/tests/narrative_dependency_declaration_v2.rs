@@ -103,8 +103,8 @@ fn migration_adds_schema_33_sealed_declaration_storage() {
         .expect("inspect D1 schema");
 
     // D1's declaration tables are introduced at SCHEMA 33; the current
-    // migration continues through the NIR-1 SCHEMA 36 checkpoint.
-    assert_eq!(version, 36);
+    // migration continues through the latest NIR-1 checkpoint.
+    assert_eq!(version, grimodex_core::SCHEMA_VERSION);
     assert_eq!(
         tables,
         vec![
@@ -384,8 +384,8 @@ fn rewinding_the_marker_and_removing_d1_objects_replays_migration() {
         .with_conn(|conn| Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?))
         .expect("read replayed marker");
     // Replaying from the historical SCHEMA 32 parent runs D1 (33) and then
-    // reaches the current NIR-1 checkpoint (36).
-    assert_eq!(version, 36);
+    // reaches the current NIR-1 checkpoint.
+    assert_eq!(version, grimodex_core::SCHEMA_VERSION);
     assert!(verify_dependency_declaration_storage(&db).expect("verify replayed schema"));
 }
 

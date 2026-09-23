@@ -22,6 +22,10 @@ pub(super) const RETAINED_LIMIT_ERROR: &str = "NIR1_GRAPH_RETAINED_LIMIT";
 pub(super) enum RetainedPart {
     Request = 0,
     CandidatePage = 1,
+    #[expect(
+        dead_code,
+        reason = "Revision-cache charging is not yet integrated; the hard-memory claim remains HOLD"
+    )]
     RevisionCache = 2,
     A2A3Material = 3,
     GraphMaps = 4,
@@ -217,6 +221,10 @@ pub(super) fn retained_binding(binding: &Nir1GraphMaterialBinding) -> Result<usi
     Ok(total)
 }
 
+#[expect(
+    dead_code,
+    reason = "material accounting is an unconnected foundation, not hard-memory acceptance"
+)]
 pub(super) fn retained_material(material: &QualifiedGraphMaterial) -> Result<usize> {
     let mut total = size_of::<QualifiedGraphMaterial>();
     add(&mut total, retained_string(&material.revision_id)?)?;
@@ -241,6 +249,10 @@ pub(super) fn retained_material(material: &QualifiedGraphMaterial) -> Result<usi
     Ok(total)
 }
 
+#[expect(
+    dead_code,
+    reason = "response accounting is an unconnected foundation, not hard-memory acceptance"
+)]
 pub(super) fn retained_response(response: &Nir1GraphResponse) -> Result<usize> {
     let mut total = size_of::<Nir1GraphResponse>();
     add(&mut total, retained_string(&response.project_id)?)?;

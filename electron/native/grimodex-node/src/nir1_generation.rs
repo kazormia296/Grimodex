@@ -904,10 +904,7 @@ mod tests {
             let mut total_bytes = 0;
             let mut saw_terminal = false;
             let mut completion = Completion::UnexpectedEof;
-            loop {
-                let Some(tag) = read_tag(stream)? else {
-                    break;
-                };
+            while let Some(tag) = read_tag(stream)? {
                 match tag {
                     TEXT | THINKING => {
                         ensure!(!saw_terminal, "fixture data after terminal");

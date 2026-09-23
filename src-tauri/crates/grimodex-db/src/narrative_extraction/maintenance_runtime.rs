@@ -1450,9 +1450,7 @@ impl GraphWorkControl for MaintenanceCycleGraphControl<'_, '_> {
         let Some(inner) = inner else {
             return cycle_stop.map(|stop| Arc::new(move || stop.load(Ordering::Acquire)) as GraphProgressCallback);
         };
-        let Some(cycle_stop) = cycle_stop else {
-            return None;
-        };
+        let cycle_stop = cycle_stop?;
         Some(Arc::new(move || {
             cycle_stop.load(Ordering::Acquire) || inner()
         }))

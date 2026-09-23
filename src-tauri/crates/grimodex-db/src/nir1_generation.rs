@@ -307,6 +307,10 @@ impl GenerationHistoryReadBudget {
 /// is returned only as owned values after scalar length admission. There is no
 /// borrowed connection or JSON value in this type.
 #[derive(Clone, Debug)]
+#[expect(
+    dead_code,
+    reason = "snapshot body/metadata remain internal until history authority and disclosure wiring is approved"
+)]
 pub(crate) struct GenerationHistoryMessage {
     pub version: MessageVersion,
     pub chat_role: String,
@@ -322,6 +326,10 @@ pub(crate) struct GenerationHistoryMessage {
 #[derive(Clone, Debug)]
 pub(crate) struct GenerationHistoryArtifact {
     pub artifact_id: String,
+    #[expect(
+        dead_code,
+        reason = "artifact history lineage qualification remains HOLD"
+    )]
     pub project_id: String,
     pub payload_digest: String,
     pub producer_attempt_id: Option<String>,
@@ -1111,18 +1119,7 @@ fn read_message_body_after_preflight_in_tx(
 /// before calling `read_message_version_in_tx`, so the turn ledger covers the
 /// same transient/owned materialization path as direct message reads.
 fn message_version_materialization_bytes_in_tx(conn: &Connection, id: &str) -> Result<usize> {
-    let lengths: (
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        Option<i64>,
-        i64,
-        i64,
-        Option<i64>,
-        i64,
-    ) = conn
+    let lengths = conn
         .query_row(
             "SELECT octet_length(v.project_id),octet_length(v.session_id),
                     octet_length(v.message_id),octet_length(v.origin),
@@ -1238,10 +1235,6 @@ impl<'connection> GenerationHistorySnapshotReader<'connection> {
 
     pub(crate) fn checkpoint(&self) -> Result<()> {
         self.cancellation.checkpoint()
-    }
-
-    pub(crate) fn is_cancelled(&self) -> bool {
-        self.cancellation.is_cancelled()
     }
 
     fn restore<T>(value: std::result::Result<T, String>) -> Result<T> {
