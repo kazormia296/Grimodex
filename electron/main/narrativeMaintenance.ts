@@ -74,7 +74,8 @@ interface PendingNarrativeMaintenanceWork extends NarrativeMaintenanceWork {
   workspaceBinding?: NarrativeMaintenanceWorkspaceBinding | null;
 }
 
-interface CapacityBlockedDelivery {
+interface RetryableDelivery {
+  readonly kind: "capacity" | "uncertain";
   readonly sequence: number;
   readonly fingerprint: string;
   readonly work: readonly PendingNarrativeMaintenanceWork[];
@@ -122,10 +123,9 @@ export interface NarrativeMaintenanceDeliveryFailure {
 }
 
 /**
- * A cycle is only drained after the backend explicitly accepts it.  In
- * particular, workspace-unavailable is not an empty/successful cycle: the
- * scheduler must put the claimed work back on its queue so a later wake can
- * deliver the original trigger.
+ * A cycle is only drained after the backend explicitly accepts it. For a
+ * Native-owned post-cycle workspace invalidation, only a terminal receipt or
+ * explicit no-start proof can identify work that is safe to retry.
  */
 export type NarrativeMaintenanceCycleResult =
   | { status: "accepted"; hasMore: boolean; preempted?: boolean }
@@ -251,6 +251,10 @@ export interface NarrativeMaintenanceSchedulerOptions {
   warn?: (...args: unknown[]) => void;
   /** Ask the main-only discovery owner to re-read the current authority. */
   onWorkspaceBindingMismatch?: () => void | Promise<void>;
+  /** Start bounded discovery after exact completion proof and its delivery ACK. */
+  onCompletionRecoveryAcknowledged?: (
+    currentBinding: NarrativeMaintenanceWorkspaceBinding,
+  ) => void | Promise<void>;
   /** Let the main-only discovery owner advance Rust-owned durable phases. */
   onCycleAccepted?: () => void | Promise<void>;
   /**
@@ -712,9 +716,9 @@ function sameMaintenanceWorkShape(
 }
 
 /**
- * Selectively retain the work that Native says was interrupted.  `null`
- * means the receipt cannot prove coverage of the wire batch; callers must
- * preserve the scheduler's older all-batch retry behavior in that case.
+ * Selectively retain work Native says was interrupted or never started.
+ * `null` means the receipt cannot prove coverage of the wire batch, so it
+ * cannot safely select either work to retry or work to omit.
  *
  * Native registers normalized/effective keys, including follow-ups discovered
  * during the cycle.  Initial wire items are matched by exact canonical key,
@@ -732,6 +736,7 @@ function interruptedMaintenanceWorkToRequeue(
 
   const remaining = [...backendBatch];
   const requeue: PendingNarrativeMaintenanceWork[] = [];
+  // Receipt rows are executions, so the same canonical key may appear again.
   for (const terminalWork of receipt.works) {
     const effective = parseCanonicalMaintenanceWorkKey(terminalWork.workKey);
     if (effective === null) return null;
@@ -968,7 +973,7 @@ function deliveryAckRetired(raw: unknown): boolean {
   throw new Error("native maintenance delivery ACK returned invalid status");
 }
 
-function deliveryFenceWasCommitted(raw: unknown): boolean {
+function deliveryFenceResolution(raw: unknown): "fenced" | "out-of-order" {
   let value: unknown = raw;
   if (typeof raw === "string") {
     try {
@@ -985,15 +990,15 @@ function deliveryFenceWasCommitted(raw: unknown): boolean {
   // compatibility adapter uses a small status object. Accept both shapes but
   // only classify an explicit fence as record-less terminal proof.
   if (record.status === "fenced" || record.status === "already-fenced") {
-    return true;
+    return "fenced";
   }
-  if (Object.prototype.hasOwnProperty.call(record, "Fenced")) return true;
-  if (Object.prototype.hasOwnProperty.call(record, "AlreadyFenced")) return true;
+  if (Object.prototype.hasOwnProperty.call(record, "Fenced")) return "fenced";
+  if (Object.prototype.hasOwnProperty.call(record, "AlreadyFenced")) return "fenced";
   if (
     record.status === "out-of-order" ||
     Object.prototype.hasOwnProperty.call(record, "OutOfOrder")
   ) {
-    return false;
+    return "out-of-order";
   }
   throw new Error("native maintenance delivery fence returned invalid status");
 }
@@ -1210,6 +1215,25 @@ export function createNarrativeMaintenanceScheduler(
     binding: NarrativeMaintenanceAttemptBinding | null;
     /** The recovery receipt ACK succeeded, but transport retirement may not. */
     recoveryAcked?: boolean;
+    /** Workspace replacement alone cannot resolve work-completion evidence. */
+    completionUnresolved?: boolean;
+    completionNoStartReceipt?: boolean;
+    completionAttemptId?: string;
+    completionProofAccepted?: boolean;
+    completionRetryDisposition?:
+      | "accepted"
+      | "coalesced"
+      | "ci-terminal-fault-handled"
+      | "deferred";
+    completionDeliveryAcked?: boolean;
+    completionClaimReleased?: boolean;
+    completionWork?: readonly PendingNarrativeMaintenanceWork[];
+    completionEnqueuedWork?: Map<string, PendingNarrativeMaintenanceWork>;
+    completionRecoveryApplied?: boolean;
+    completionRecoveryDescriptorId?: number;
+    completionRecoveryBinding?: NarrativeMaintenanceWorkspaceBinding | null;
+    completionRediscoveryPending?: boolean;
+    completionWakeProjects?: readonly string[];
     delivery?: {
       fingerprint: string;
       sequence: number;
@@ -1226,6 +1250,12 @@ export function createNarrativeMaintenanceScheduler(
   // an unfinished Run remains recoverable without requiring another ordinary
   // delivery cell.
   const deliveryLedger = new NarrativeMaintenanceDeliveryLedger();
+  // A positive overlapping ACK may already have removed this sealed sequence.
+  const deliveryLocallyRetired = (sequence: number): boolean =>
+    sequence <= deliveryLedger.H &&
+    !deliveryLedger.recordsSnapshot().some((record) => record.sequence === sequence);
+  const retireLocalFence = (sequence: number): boolean =>
+    deliveryLedger.retireFenced(sequence) || deliveryLocallyRetired(sequence);
   const deliverySequences = new Map<string, number>();
   /**
    * ACK is a transport operation, not a cycle result. Keep a failed ACK in a
@@ -1233,11 +1263,9 @@ export function createNarrativeMaintenanceScheduler(
    * re-dispatching the batch or reusing its fingerprint for a new occurrence.
    */
   const pendingDeliveryAcks = new Map<number, { fingerprint: string; fenced?: boolean }>();
-  // Native capacity rejection does not advance its H+1. Keep the exact
-  // admitted main-side record and payload together so the next attempt cannot
-  // select a different batch, allocate H+2, or fence the still-retryable
-  // sequence. New queue entries remain pending behind this exact retry.
-  let capacityBlockedDelivery: CapacityBlockedDelivery | null = null;
+  // Retain exact H+1 payloads after capacity rejection or an unproven resolve.
+  // New queue entries remain pending until this tuple gets Native proof.
+  let retryableDelivery: RetryableDelivery | null = null;
   let deliveryAckRetryTimer: ReturnType<typeof setTimeout> | null = null;
   const sharedCoordinator = backend ? processCoordinator : null;
   // hasMore is a durable native backlog signal, so retain the project that
@@ -1353,8 +1381,7 @@ export function createNarrativeMaintenanceScheduler(
         !blockedProjects.has(entry.projectId),
     );
 
-  const hasCapacityBlockedDelivery = (): boolean =>
-    capacityBlockedDelivery !== null;
+  const hasRetryableDelivery = (): boolean => retryableDelivery !== null;
 
   const scheduleRunnableBacklogIfIdle = (): void => {
     if (
@@ -1370,7 +1397,7 @@ export function createNarrativeMaintenanceScheduler(
       return;
     }
     if (
-      hasCapacityBlockedDelivery() ||
+      hasRetryableDelivery() ||
       hasRunnablePendingWork() ||
       hasRunnableWake()
     ) {
@@ -1456,22 +1483,19 @@ export function createNarrativeMaintenanceScheduler(
       changed = true;
     }
     if (
-      capacityBlockedDelivery !== null &&
-      workspaceBindingKey(capacityBlockedDelivery.workspaceBinding) ===
+      retryableDelivery !== null &&
+      workspaceBindingKey(retryableDelivery.workspaceBinding) ===
         workspaceBindingKey(original)
     ) {
-      // A capacity rejection owns the exact H+1 sequence and fingerprint, so
-      // it cannot be moved back through `pending` without changing the
-      // admission identity. Rebind the retained owner in place; the next
-      // retry keeps its sequence/fingerprint while carrying the proven
-      // replacement authority.
-      capacityBlockedDelivery = {
-        ...capacityBlockedDelivery,
-        work: capacityBlockedDelivery.work.map((work) => ({
+      // The exact H+1 sequence/fingerprint cannot move back through `pending`.
+      // Rebind its payload only after Native proves this authority transition.
+      retryableDelivery = {
+        ...retryableDelivery,
+        work: retryableDelivery.work.map((work) => ({
           ...work,
           workspaceBinding: rebound,
         })),
-        wakeEntries: capacityBlockedDelivery.wakeEntries.map((entry) => ({
+        wakeEntries: retryableDelivery.wakeEntries.map((entry) => ({
           ...entry,
           wakeKey: scopedWakeKey(entry.projectId, rebound),
           workspaceBinding: rebound,
@@ -1483,6 +1507,335 @@ export function createNarrativeMaintenanceScheduler(
     if (changed) noteMutation();
     return changed;
   };
+
+  const requestWorkspaceBindingRediscovery = (): void => {
+    try {
+      const rediscovery = options.onWorkspaceBindingMismatch?.();
+      void Promise.resolve(rediscovery).catch((callbackError: unknown) => {
+        warn(
+          "[narrative-maintenance] authority rediscovery callback failed:",
+          callbackError,
+        );
+      });
+    } catch (callbackError) {
+      warn(
+        "[narrative-maintenance] authority rediscovery callback failed:",
+        callbackError,
+      );
+    }
+  };
+
+  const queueCompletionEnqueue = (
+    owner: NonNullable<typeof terminalReceiptFailure>,
+    work: NarrativeMaintenanceRequest,
+    binding: NarrativeMaintenanceWorkspaceBinding | null | undefined,
+  ): boolean => {
+    if (
+      owner.completionUnresolved !== true ||
+      !owner.completionWork?.some(
+        (claimed) =>
+          canonicalNarrativeMaintenanceWorkKey(claimed) ===
+          canonicalNarrativeMaintenanceWorkKey(work),
+      )
+    ) {
+      return false;
+    }
+    const queued: PendingNarrativeMaintenanceWork = {
+      projectId: work.projectId,
+      runKind: work.runKind,
+      workKey: work.workKey,
+      semanticEpochId: work.semanticEpochId ?? null,
+      reasons: [work.reason],
+      ...(binding !== undefined ? { workspaceBinding: binding } : {}),
+    };
+    const key = scopedWorkKey(queued);
+    const existing = owner.completionEnqueuedWork?.get(key);
+    owner.completionEnqueuedWork ??= new Map();
+    owner.completionEnqueuedWork.set(
+      key,
+      existing
+        ? {
+            ...existing,
+            reasons: existing.reasons.includes(work.reason)
+              ? existing.reasons
+              : [...existing.reasons, work.reason],
+          }
+        : queued,
+    );
+    noteMutation();
+    return true;
+  };
+
+  const capturePendingCompletionEnqueues = (
+    owner: NonNullable<typeof terminalReceiptFailure>,
+  ): void => {
+    if (owner.completionWork === undefined) return;
+    const claimedKeys = new Set(
+      owner.completionWork.map(canonicalNarrativeMaintenanceWorkKey),
+    );
+    let changed = false;
+    for (const [key, work] of [...pending.entries()]) {
+      if (!claimedKeys.has(canonicalNarrativeMaintenanceWorkKey(work))) continue;
+      pending.delete(key);
+      const existing = owner.completionEnqueuedWork?.get(key);
+      owner.completionEnqueuedWork ??= new Map();
+      owner.completionEnqueuedWork.set(
+        key,
+        existing
+          ? {
+              ...existing,
+              reasons: [
+                ...existing.reasons,
+                ...work.reasons.filter((reason) => !existing.reasons.includes(reason)),
+              ],
+            }
+          : work,
+      );
+      changed = true;
+    }
+    if (changed) noteMutation();
+  };
+
+  const removeRecoveredCompletionClaim = (
+    owner: NonNullable<typeof terminalReceiptFailure>,
+  ): void => {
+    if (owner.completionWork === undefined) return;
+    const bindings = [
+      ...new Map(
+        [
+          ...owner.completionWork.map((work) => work.workspaceBinding),
+          ...(owner.completionRecoveryApplied
+            ? [owner.completionRecoveryBinding]
+            : []),
+        ].map((binding) => [workspaceBindingKey(binding), binding] as const),
+      ).values(),
+    ];
+    let changed = false;
+    for (const work of owner.completionWork) {
+      for (const binding of bindings) {
+        const key = scopedWorkKey({ ...work, workspaceBinding: binding });
+        changed = pending.delete(key) || changed;
+        changed = deferredWorkKeys.delete(key) || changed;
+      }
+    }
+    if (changed) noteMutation();
+  };
+
+  const releaseCompletionEnqueuedWork = (
+    owner: NonNullable<typeof terminalReceiptFailure>,
+    afterRecovery: boolean,
+    park = false,
+  ): void => {
+    const enqueued = owner.completionEnqueuedWork;
+    if (enqueued === undefined) return;
+    let currentBinding: NarrativeMaintenanceWorkspaceBinding | null | undefined;
+    try {
+      currentBinding = captureWorkspaceBinding();
+    } catch {
+      currentBinding = null;
+    }
+    for (const work of enqueued.values()) {
+      let releasedWork = work;
+      if (
+        afterRecovery &&
+        owner.completionRecoveryApplied === true &&
+        owner.binding !== null &&
+        owner.completionRecoveryBinding !== null &&
+        owner.completionRecoveryBinding !== undefined &&
+        workspaceBindingKey(work.workspaceBinding) ===
+          workspaceBindingKey(owner.binding)
+      ) {
+        releasedWork = {
+          ...work,
+          workspaceBinding: owner.completionRecoveryBinding,
+        };
+      }
+      requeueWork(releasedWork);
+      const key = scopedWorkKey(releasedWork);
+      if (
+        !park &&
+        workspaceBindingKey(currentBinding) ===
+          workspaceBindingKey(releasedWork.workspaceBinding)
+      ) {
+        deferredWorkKeys.delete(key);
+      } else {
+        deferredWorkKeys.add(key);
+      }
+    }
+    owner.completionEnqueuedWork = undefined;
+    noteMutation();
+  };
+
+  const requestCompletionRecoveryDiscovery = (
+    binding: NarrativeMaintenanceWorkspaceBinding,
+  ): void => {
+    try {
+      const discovery = options.onCompletionRecoveryAcknowledged?.(binding);
+      void Promise.resolve(discovery).catch((callbackError: unknown) => {
+        warn(
+          "[narrative-maintenance] exact completion rediscovery callback failed:",
+          callbackError,
+        );
+      });
+    } catch (callbackError) {
+      warn(
+        "[narrative-maintenance] exact completion rediscovery callback failed:",
+        callbackError,
+      );
+    }
+  };
+
+  const releaseDeferredCompletionFailure = (
+    owner: NonNullable<typeof terminalReceiptFailure>,
+  ): void => {
+    if (
+      terminalReceiptFailure !== owner ||
+      owner.completionRetryDisposition !== "deferred" ||
+      owner.completionDeliveryAcked !== true
+    ) {
+      return;
+    }
+    releaseCompletionEnqueuedWork(owner, false);
+    terminalReceiptFailure = null;
+    noteMutation();
+    scheduleRunnableBacklogIfIdle();
+  };
+
+  const releaseCompletionProofFailure = (
+    owner: NonNullable<typeof terminalReceiptFailure>,
+  ): void => {
+    if (
+      terminalReceiptFailure !== owner ||
+      owner.completionProofAccepted !== true
+    ) {
+      return;
+    }
+    owner.completionDeliveryAcked = true;
+    let currentBinding: NarrativeMaintenanceWorkspaceBinding | null | undefined;
+    try {
+      currentBinding = captureWorkspaceBinding();
+    } catch {
+      currentBinding = null;
+    }
+    if (
+      owner.binding !== null &&
+      (currentBinding === null ||
+        currentBinding === undefined ||
+        workspaceBindingKey(currentBinding) !== workspaceBindingKey(owner.binding))
+    ) {
+      owner.completionRediscoveryPending = true;
+    }
+    const rediscoveryBinding =
+      owner.completionRediscoveryPending === true ? currentBinding : undefined;
+    if (
+      owner.completionRediscoveryPending === true &&
+      (rediscoveryBinding === null || rediscoveryBinding === undefined)
+    ) {
+      schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+      return;
+    }
+    if (
+      owner.binding !== null &&
+      currentBinding !== null &&
+      currentBinding !== undefined &&
+      workspaceBindingKey(currentBinding) !== workspaceBindingKey(owner.binding)
+    ) {
+      for (const work of owner.completionWork ?? []) {
+        const key = scopedWorkKey({ ...work, workspaceBinding: owner.binding });
+        if (pending.has(key)) deferredWorkKeys.add(key);
+      }
+      for (const projectId of owner.completionWakeProjects ?? []) {
+        const key = scopedWakeKey(projectId, owner.binding);
+        if (durableWakeProjects.has(key)) deferredWakeProjects.add(key);
+      }
+    } else if (
+      owner.completionNoStartReceipt === true &&
+      owner.binding !== null &&
+      currentBinding !== null &&
+      currentBinding !== undefined &&
+      workspaceBindingKey(currentBinding) === workspaceBindingKey(owner.binding)
+    ) {
+      for (const work of owner.completionWork ?? []) {
+        deferredWorkKeys.delete(
+          scopedWorkKey({ ...work, workspaceBinding: owner.binding }),
+        );
+      }
+    }
+    releaseCompletionEnqueuedWork(owner, false);
+    terminalReceiptFailure = null;
+    noteMutation();
+    if (rediscoveryBinding !== undefined && rediscoveryBinding !== null) {
+      requestCompletionRecoveryDiscovery(rediscoveryBinding);
+    }
+    scheduleRunnableBacklogIfIdle();
+  };
+
+  const markNoStartFenceProof = (
+    fingerprint: string,
+    sequence: number,
+  ): NonNullable<typeof terminalReceiptFailure> | null => {
+    const owner = terminalReceiptFailure;
+    if (
+      owner?.completionUnresolved !== true ||
+      owner.completionNoStartReceipt !== true ||
+      owner.delivery?.fingerprint !== fingerprint ||
+      owner.delivery.sequence !== sequence
+    ) {
+      return null;
+    }
+    owner.completionProofAccepted = true;
+    noteMutation();
+    if (owner.binding !== null) {
+      try {
+        const currentBinding = captureWorkspaceBinding();
+        if (
+          currentBinding === null ||
+          currentBinding === undefined ||
+          workspaceBindingKey(currentBinding) !== workspaceBindingKey(owner.binding)
+        ) {
+          owner.completionRediscoveryPending = true;
+        }
+      } catch {
+        owner.completionRediscoveryPending = true;
+      }
+    }
+    return owner;
+  };
+
+  const releaseRecoveredCompletionFailure = (
+    owner: NonNullable<typeof terminalReceiptFailure>,
+  ): void => {
+    if (terminalReceiptFailure !== owner) return; // Already released.
+    if (owner.completionUnresolved === true) {
+      owner.completionDeliveryAcked = true;
+      let rediscoveryBinding: NarrativeMaintenanceWorkspaceBinding | null | undefined;
+      if (owner.completionRediscoveryPending === true) {
+        try {
+          rediscoveryBinding = captureWorkspaceBinding();
+        } catch {
+          rediscoveryBinding = null;
+        }
+        if (rediscoveryBinding === null || rediscoveryBinding === undefined) {
+          schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+          return;
+        }
+      }
+      if (owner.completionClaimReleased !== true) {
+        removeRecoveredCompletionClaim(owner);
+        releaseCompletionEnqueuedWork(owner, true);
+        owner.completionClaimReleased = true;
+      }
+      if (terminalReceiptFailure === owner) terminalReceiptFailure = null;
+      noteMutation();
+      if (rediscoveryBinding !== undefined && rediscoveryBinding !== null) {
+        requestCompletionRecoveryDiscovery(rediscoveryBinding);
+      }
+      return;
+    }
+    if (terminalReceiptFailure === owner) terminalReceiptFailure = null;
+    noteMutation();
+  };
+
   const persistDeliveryFailure = async (
     failure: NarrativeMaintenanceDeliveryFailure,
   ): Promise<boolean> => {
@@ -1522,6 +1875,7 @@ export function createNarrativeMaintenanceScheduler(
   const retryPendingDeliveryAcks = async (): Promise<void> => {
     const ack = backend?.ackNarrativeMaintenanceDelivery;
     if (typeof ack !== "function") return;
+    let releasedCompletionOwner = false;
     for (const [sequence, entry] of [...pendingDeliveryAcks]) {
       try {
         const retired = deliveryAckRetired(
@@ -1529,29 +1883,50 @@ export function createNarrativeMaintenanceScheduler(
         );
         if (!retired) continue;
         const retiredLocally = entry.fenced
-          ? deliveryLedger.retireFenced(sequence)
+          ? retireLocalFence(sequence)
           : deliveryLedger.ack(sequence);
-        if (!retiredLocally) {
+        if (!retiredLocally && !deliveryLocallyRetired(sequence)) {
           throw new Error("delivery ACK arrived before terminal result application");
         }
-        pendingDeliveryAcks.delete(sequence);
+        // Native identity is sequence/fingerprint, not the retry entry object.
+        if (pendingDeliveryAcks.get(sequence)?.fingerprint === entry.fingerprint) {
+          pendingDeliveryAcks.delete(sequence);
+        }
         if (deliverySequences.get(entry.fingerprint) === sequence) {
           deliverySequences.delete(entry.fingerprint);
         }
-        // A recovery receipt may already have been ACKed while its original
-        // delivery ACK was transiently pending.  Retiring that exact
-        // transport record completes the failed-cleanup ownership pair; keep
-        // the marker until this point, then release it so dispose() can
-        // finish without treating a fully retired recovery as unresolved.
         if (
-          terminalReceiptFailure?.recoveryAcked === true &&
+          retryableDelivery?.sequence === sequence &&
+          retryableDelivery.fingerprint === entry.fingerprint
+        ) {
+          retryableDelivery = null;
+        }
+        // A recovery or completion proof may already be accepted while its
+        // exact delivery ACK is pending. Keep the owner marker until Native
+        // retires that transport record, then release it for disposal.
+        if (
+          (terminalReceiptFailure?.recoveryAcked === true ||
+            terminalReceiptFailure?.completionProofAccepted === true ||
+            terminalReceiptFailure?.completionRetryDisposition === "deferred") &&
           terminalReceiptFailure.delivery?.sequence === sequence &&
           terminalReceiptFailure.delivery.fingerprint === entry.fingerprint
         ) {
-          terminalReceiptFailure = null;
-          noteMutation();
+          releasedCompletionOwner =
+            terminalReceiptFailure.completionUnresolved === true;
+          if (terminalReceiptFailure.recoveryAcked === true) {
+            releaseRecoveredCompletionFailure(terminalReceiptFailure);
+          } else if (
+            terminalReceiptFailure.completionRetryDisposition === "deferred"
+          ) {
+            terminalReceiptFailure.completionDeliveryAcked = true;
+            releaseDeferredCompletionFailure(terminalReceiptFailure);
+          } else {
+            releaseCompletionProofFailure(terminalReceiptFailure);
+          }
         }
       } catch (error) {
+        // Another ACK caller may have retired the local cell while this response was pending.
+        if (deliveryLocallyRetired(sequence)) continue;
         warn(
           `[narrative-maintenance] retaining delivery ACK sequence ${sequence} for retry:`,
           error,
@@ -1559,12 +1934,22 @@ export function createNarrativeMaintenanceScheduler(
       }
     }
     if (pendingDeliveryAcks.size > 0) scheduleDeliveryAckRetry();
+    if (releasedCompletionOwner) scheduleRunnableBacklogIfIdle();
   };
 
   const retireDelivery = async (
     fingerprint: string,
     sequence: number,
   ): Promise<boolean> => {
+    // The caller has applied an exact terminal result. From this point only
+    // transport ACK owns the sequence; replaying its execution-shaped result
+    // could invent a second completion owner when Native omits attemptId.
+    if (
+      retryableDelivery?.sequence === sequence &&
+      retryableDelivery.fingerprint === fingerprint
+    ) {
+      retryableDelivery = null;
+    }
     try {
       deliveryLedger.markTerminal(sequence);
       const ack = backend?.ackNarrativeMaintenanceDelivery;
@@ -1577,6 +1962,7 @@ export function createNarrativeMaintenanceScheduler(
           await Promise.resolve(ack.call(backend, sequence)),
         );
         if (!retired) {
+          if (deliveryLocallyRetired(sequence)) return true;
           pendingDeliveryAcks.set(sequence, { fingerprint });
           scheduleDeliveryAckRetry();
           warn(
@@ -1585,15 +1971,24 @@ export function createNarrativeMaintenanceScheduler(
           return false;
         }
       }
-      if (!deliveryLedger.ack(sequence)) {
+      if (!deliveryLedger.ack(sequence) && !deliveryLocallyRetired(sequence)) {
         throw new Error("delivery ACK arrived before terminal result application");
       }
       pendingDeliveryAcks.delete(sequence);
       if (deliverySequences.get(fingerprint) === sequence) {
         deliverySequences.delete(fingerprint);
       }
+      if (
+        retryableDelivery?.sequence === sequence &&
+        retryableDelivery.fingerprint === fingerprint
+      ) {
+        retryableDelivery = null;
+      }
       return true;
     } catch (error) {
+      // A concurrent exact ACK may already have removed the local record;
+      // never resurrect transport ownership after that positive proof.
+      if (deliveryLocallyRetired(sequence)) return true;
       // Keep the sequence mapped when retirement cannot be proven. A later
       // retry must replay this exact delivery instead of allocating a new
       // sequence and potentially duplicating a Native side effect.
@@ -1765,6 +2160,17 @@ export function createNarrativeMaintenanceScheduler(
     ) {
       return false;
     }
+    const owner = terminalReceiptFailure;
+    if (
+      owner.completionUnresolved === true &&
+      owner.completionRecoveryApplied !== true
+    ) {
+      return false;
+    }
+    if (owner.completionUnresolved === true) {
+      releaseRecoveredCompletionFailure(owner);
+      return terminalReceiptFailure !== owner;
+    }
     terminalReceiptFailure = null;
     return true;
   };
@@ -1817,6 +2223,25 @@ export function createNarrativeMaintenanceScheduler(
       warn("[narrative-maintenance] recovery receipt ACK failed:", error);
       return false;
     }
+  };
+
+  const acknowledgeAppliedCompletionRecovery = async (
+    owner: NonNullable<typeof terminalReceiptFailure>,
+  ): Promise<boolean> => {
+    const descriptorId = owner.completionRecoveryDescriptorId;
+    if (
+      owner.completionRecoveryApplied !== true ||
+      descriptorId === undefined
+    ) {
+      return false;
+    }
+    if (owner.recoveryAcked === true) return true;
+    const acknowledged = await acknowledgeRecoveredRecovery({
+      descriptorId,
+      reason: "maintenance-recovery-complete",
+    });
+    if (acknowledged) owner.recoveryAcked = true;
+    return acknowledged;
   };
 
   const applyRecoveredRecoveryProof = (recovery: {
@@ -1902,10 +2327,17 @@ export function createNarrativeMaintenanceScheduler(
     ) {
       return false;
     }
-    rebindRetainedWorkspaceBinding(
-      recovered,
-      rebound,
-    );
+    rebindRetainedWorkspaceBinding(recovered, rebound);
+    const completionOwner = terminalReceiptFailure;
+    if (
+      completionOwner?.completionUnresolved === true &&
+      recoveryReceiptMatchesFailedBinding({ recoveredBinding: recovered })
+    ) {
+      completionOwner.completionRecoveryApplied = true;
+      completionOwner.completionRecoveryDescriptorId = recovery.descriptorId as number;
+      completionOwner.completionRecoveryBinding = rebound;
+      completionOwner.completionRediscoveryPending = true;
+    }
     return true;
   };
 
@@ -1949,14 +2381,119 @@ export function createNarrativeMaintenanceScheduler(
         nativeTerminalReceiptAttemptIds.add(attemptId);
         nativeAttemptIds.delete(attemptId);
         // A terminal receipt is still authoritative even when cleanup could
-        // not prove connection reuse. Keep the receipt in the controller so
-        // workspace switching can discard the old Native authority, while
-        // retaining a fail-closed marker that prevents ordinary maintenance
-        // from resuming on the quarantined connection.
+        // not prove connection reuse. Workspace replacement may clear that
+        // cleanup quarantine, but an unresolved completion owner also needs
+        // its delivery to retire before the marker can be removed.
         const reuseError = terminalReceiptReuseError(parsedReceipt);
-        terminalReceiptFailure = reuseError
-          ? { error: reuseError, binding: parsedReceipt.workspaceBinding }
+        const unresolvedCompletionOwner =
+          terminalReceiptFailure?.completionUnresolved === true
+            ? terminalReceiptFailure
+            : null;
+        const receiptMatchesCompletionOwner =
+          unresolvedCompletionOwner !== null &&
+          unresolvedCompletionOwner.completionAttemptId ===
+            parsedReceipt.attemptId &&
+          unresolvedCompletionOwner.binding !== null &&
+          workspaceBindingKey(unresolvedCompletionOwner.binding) ===
+            workspaceBindingKey(parsedReceipt.workspaceBinding);
+        if (unresolvedCompletionOwner === null) {
+          terminalReceiptFailure = reuseError
+            ? { error: reuseError, binding: parsedReceipt.workspaceBinding }
+            : null;
+        } else if (receiptMatchesCompletionOwner && reuseError !== null) {
+          unresolvedCompletionOwner.error = reuseError;
+        }
+        const completionOwner = receiptMatchesCompletionOwner
+          ? unresolvedCompletionOwner
           : null;
+        if (
+          reuseError === null &&
+          completionOwner !== null &&
+          completionOwner.delivery !== undefined &&
+          completionOwner.completionWork !== undefined
+        ) {
+          const unfinished =
+            parsedReceipt.state === "succeeded"
+              ? []
+              : interruptedMaintenanceWorkToRequeue(
+                  completionOwner.completionWork,
+                  parsedReceipt,
+                  completionOwner.binding,
+                );
+          if (unfinished !== null) {
+            let completionBindingIsCurrent = false;
+            try {
+              const currentBinding = captureWorkspaceBinding();
+              completionBindingIsCurrent =
+                completionOwner.binding !== null &&
+                currentBinding !== null &&
+                currentBinding !== undefined &&
+                workspaceBindingKey(currentBinding) ===
+                  workspaceBindingKey(completionOwner.binding);
+            } catch (bindingError) {
+              warn(
+                "[narrative-maintenance] current binding unavailable while applying terminal proof:",
+                bindingError,
+              );
+            }
+            for (const original of completionOwner.completionWork) {
+              const key = scopedWorkKey(original);
+              const queued = pending.get(key);
+              if (!queued) {
+                deferredWorkKeys.delete(key);
+                continue;
+              }
+              const remainingReasons = queued.reasons.filter(
+                (reason) => !original.reasons.includes(reason),
+              );
+              if (remainingReasons.length === 0) {
+                pending.delete(key);
+                deferredWorkKeys.delete(key);
+              } else {
+                pending.set(key, { ...queued, reasons: remainingReasons });
+                if (completionBindingIsCurrent) deferredWorkKeys.delete(key);
+              }
+            }
+            for (const work of unfinished) {
+              requeueWork(work);
+              const key = scopedWorkKey(work);
+              if (completionBindingIsCurrent) {
+                deferredWorkKeys.delete(key);
+              } else {
+                deferredWorkKeys.add(key);
+              }
+            }
+            for (const projectId of completionOwner.completionWakeProjects ?? []) {
+              const wakeKey = scopedWakeKey(
+                projectId,
+                completionOwner.binding,
+              );
+              durableWakeProjects.set(wakeKey, {
+                projectId,
+                workspaceBinding: completionOwner.binding,
+              });
+              if (completionBindingIsCurrent) {
+                deferredWakeProjects.delete(wakeKey);
+              } else {
+                deferredWakeProjects.add(wakeKey);
+              }
+            }
+            if (!completionBindingIsCurrent) {
+              // Exact proof owns a fresh scan after its delivery ACK. Resolve
+              // the binding only at release so another workspace switch cannot
+              // strand the handoff on an obsolete authority.
+              completionOwner.completionRediscoveryPending = true;
+            }
+            completionOwner.completionProofAccepted = true;
+            const deliveryRetired = await retireDelivery(
+              completionOwner.delivery.fingerprint,
+              completionOwner.delivery.sequence,
+            );
+            if (deliveryRetired && terminalReceiptFailure === completionOwner) {
+              releaseCompletionProofFailure(completionOwner);
+            }
+          }
+        }
       }
       const localReceipt = await localCancellation;
       if (
@@ -2056,7 +2593,31 @@ export function createNarrativeMaintenanceScheduler(
               reboundBinding?: unknown;
             } | null);
 
-      if (recovery === null || recovery?.status === "none") return;
+      if (recovery === null || recovery?.status === "none") {
+        const completionOwner = terminalReceiptFailure;
+        if (
+          completionOwner?.completionUnresolved === true &&
+          completionOwner.completionRecoveryApplied === true
+        ) {
+          if (!(await acknowledgeAppliedCompletionRecovery(completionOwner))) {
+            throw new Error(
+              "NEX_MAINTENANCE_RECOVERY_ACK_PENDING: exact completion recovery ACK was not acknowledged",
+            );
+          }
+          const failedDelivery = completionOwner.delivery;
+          if (
+            failedDelivery !== undefined &&
+            !(await retireDelivery(
+              failedDelivery.fingerprint,
+              failedDelivery.sequence,
+            ))
+          ) {
+            return;
+          }
+          releaseRecoveredCompletionFailure(completionOwner);
+        }
+        return;
+      }
 
       if (
         recovery?.status !== "reconciled" ||
@@ -2158,7 +2719,39 @@ export function createNarrativeMaintenanceScheduler(
       return;
     }
 
-    if (terminalReceiptFailure !== null) {
+    const completionHandoff = terminalReceiptFailure;
+    if (
+      completionHandoff?.completionRediscoveryPending === true &&
+      completionHandoff.completionDeliveryAcked === true &&
+      (completionHandoff.completionProofAccepted === true ||
+        completionHandoff.completionRecoveryApplied === true)
+    ) {
+      if (completionHandoff.completionRecoveryApplied === true) {
+        releaseRecoveredCompletionFailure(completionHandoff);
+      } else {
+        releaseCompletionProofFailure(completionHandoff);
+      }
+      if (terminalReceiptFailure === completionHandoff) {
+        schedule(NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS);
+      }
+      releaseEarlyCycleClaim();
+      if (terminalReceiptFailure === null) scheduleRunnableBacklogIfIdle();
+      return;
+    }
+
+    const retryingUnresolvedCompletionDelivery =
+      terminalReceiptFailure?.completionUnresolved === true &&
+      terminalReceiptFailure.completionProofAccepted !== true &&
+      terminalReceiptFailure.completionRecoveryApplied !== true &&
+      terminalReceiptFailure.recoveryAcked !== true &&
+      terminalReceiptFailure.delivery !== undefined &&
+      retryableDelivery !== null &&
+      terminalReceiptFailure.delivery.sequence === retryableDelivery.sequence &&
+      terminalReceiptFailure.delivery.fingerprint === retryableDelivery.fingerprint;
+    if (
+      terminalReceiptFailure !== null &&
+      !retryingUnresolvedCompletionDelivery
+    ) {
       // A failed cleanup receipt closes ordinary delivery until Native proves
       // the exact descriptor root was reconciled and a current binding was
       // published. Never send queued work to an authority whose retirement
@@ -2184,45 +2777,53 @@ export function createNarrativeMaintenanceScheduler(
                   activeBinding?: unknown;
                   reboundBinding?: unknown;
                 } | null);
-          const failedDelivery = terminalReceiptFailure?.delivery;
-          const proofApplied = applyRecoveredRecoveryProof(recovery ?? {});
-          const recoveryMatches = recoveryReceiptMatchesFailedBinding(
-            recovery ?? {},
-          );
+          const completionOwner = terminalReceiptFailure;
+          const failedDelivery = completionOwner?.delivery;
+          const storedCompletionRecovery =
+            completionOwner?.completionUnresolved === true &&
+            completionOwner.completionRecoveryApplied === true &&
+            completionOwner.completionRecoveryDescriptorId !== undefined;
+          const proofApplied =
+            storedCompletionRecovery ||
+            applyRecoveredRecoveryProof(recovery ?? {});
+          const recoveryMatches =
+            storedCompletionRecovery ||
+            recoveryReceiptMatchesFailedBinding(recovery ?? {});
           // A completed descriptor receipt is replayable until its exact
-          // failed-cleanup marker has been retired.  Do not ACK a mismatched
-          // receipt: doing so would discard the only main-side evidence that
-          // the quarantined binding is still unsafe to reuse.
+          // failed-cleanup marker has been retired.  A proof already applied
+          // by an earlier call retains its descriptor ID so an ACK response
+          // lost after Native retirement can be retried idempotently.
           const shouldAckRecovery =
             proofApplied &&
-            (terminalReceiptFailure === null ||
-              recoveryMatches) &&
-            terminalReceiptFailure?.recoveryAcked !== true;
-          const receiptAcked = proofApplied && recoveryMatches
-            ? terminalReceiptFailure?.recoveryAcked === true ||
-              (shouldAckRecovery &&
-                (await acknowledgeRecoveredRecovery(recovery ?? {})))
-            : false;
-          if (
-            receiptAcked &&
-            terminalReceiptFailure !== null &&
-            recoveryMatches
-          ) {
-            terminalReceiptFailure.recoveryAcked = true;
+            (completionOwner === null || recoveryMatches) &&
+            completionOwner?.recoveryAcked !== true;
+          const receiptAcked = storedCompletionRecovery
+            ? await acknowledgeAppliedCompletionRecovery(completionOwner)
+            : proofApplied && recoveryMatches
+              ? completionOwner?.recoveryAcked === true ||
+                (shouldAckRecovery &&
+                  (await acknowledgeRecoveredRecovery(recovery ?? {})))
+              : false;
+          if (receiptAcked && completionOwner !== null && recoveryMatches) {
+            completionOwner.recoveryAcked = true;
           }
           const deliveryAcked =
             receiptAcked &&
             (failedDelivery === undefined ||
-              (await retireDelivery(
-                failedDelivery.fingerprint,
-                failedDelivery.sequence,
-              )));
+              (!pendingDeliveryAcks.has(failedDelivery.sequence) &&
+                (await retireDelivery(
+                  failedDelivery.fingerprint,
+                  failedDelivery.sequence,
+                ))));
           // Keep the cleanup-failure marker until both the descriptor ACK and
           // the old transport record have been retired.  If either ACK fails,
-          // the next cycle reuses the exact ownership proof instead of losing
-          // the delivery identity with this stack frame.
+          // the next cycle retries the exact descriptor ACK and delivery.
           if (proofApplied && deliveryAcked) {
-            clearRecoveredTerminalReceiptFailure(recovery ?? {});
+            if (storedCompletionRecovery && completionOwner !== null) {
+              releaseRecoveredCompletionFailure(completionOwner);
+            } else {
+              clearRecoveredTerminalReceiptFailure(recovery ?? {});
+            }
           }
           if (deliveryAcked) {
             schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
@@ -2238,9 +2839,9 @@ export function createNarrativeMaintenanceScheduler(
       return;
     }
 
-    const capacityRetry = capacityBlockedDelivery;
+    const deliveryRetry = retryableDelivery;
     if (
-      capacityRetry === null &&
+      deliveryRetry === null &&
       pending.size === 0 &&
       durableWakeProjects.size === 0
     ) {
@@ -2306,7 +2907,7 @@ export function createNarrativeMaintenanceScheduler(
     }
 
     const candidates =
-      capacityRetry === null
+      deliveryRetry === null
         ? [...pending.values()].filter(
             (work) => !deferredWorkKeys.has(scopedWorkKey(work)),
           )
@@ -2324,7 +2925,7 @@ export function createNarrativeMaintenanceScheduler(
       )
       .slice(0, NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE);
     const wakeCandidates =
-      capacityRetry === null
+      deliveryRetry === null
         ? [...durableWakeProjects.entries()]
             .map(([wakeKey, entry]) => ({ wakeKey, ...entry }))
             .filter(({ wakeKey }) => !deferredWakeProjects.has(wakeKey))
@@ -2344,10 +2945,10 @@ export function createNarrativeMaintenanceScheduler(
     // empty batch, but only after its durable project has been claimed.
     const projectIds = [
       ...new Set(
-        capacityRetry !== null
+        deliveryRetry !== null
           ? [
-              ...capacityRetry.work.map((work) => work.projectId),
-              ...capacityRetry.wakeEntries.map((entry) => entry.projectId),
+              ...deliveryRetry.work.map((work) => work.projectId),
+              ...deliveryRetry.wakeEntries.map((entry) => entry.projectId),
             ]
           : [
               ...chunkCandidates.map((work) => work.projectId),
@@ -2365,9 +2966,9 @@ export function createNarrativeMaintenanceScheduler(
       (projectId) => !claimedProjectSet.has(projectId),
     );
     const batch =
-      capacityRetry !== null
+      deliveryRetry !== null
         ? blockedProjectIds.length === 0
-          ? [...capacityRetry.work]
+          ? [...deliveryRetry.work]
           : []
         : chunkCandidates.filter((work) =>
             claimedProjectSet.has(work.projectId),
@@ -2380,9 +2981,9 @@ export function createNarrativeMaintenanceScheduler(
     // Ordinary work and a durable empty wake have separate ACK scopes. Keep
     // the wake pending when a work batch is available and issue it later.
     let sendingWakeEntries =
-      capacityRetry !== null
+      deliveryRetry !== null
         ? blockedProjectIds.length === 0
-          ? [...capacityRetry.wakeEntries]
+          ? [...deliveryRetry.wakeEntries]
           : []
         : backendBatch.length === 0
           ? selectedWakeEntries.filter((entry) =>
@@ -2393,7 +2994,7 @@ export function createNarrativeMaintenanceScheduler(
       ...new Set(sendingWakeEntries.map((entry) => entry.projectId)),
     ];
     let cycleBinding =
-      capacityRetry?.workspaceBinding ??
+      deliveryRetry?.workspaceBinding ??
       backendBatch[0]?.workspaceBinding ??
       (sendingWakeProjects.length > 0
         ? sendingWakeEntries[0]!.workspaceBinding
@@ -2419,7 +3020,7 @@ export function createNarrativeMaintenanceScheduler(
       return;
     }
     let deliveryFingerprint =
-      capacityRetry?.fingerprint ??
+      deliveryRetry?.fingerprint ??
       narrativeMaintenanceDeliveryFingerprint(
         backendBatch,
         sendingWakeProjects,
@@ -2455,7 +3056,7 @@ export function createNarrativeMaintenanceScheduler(
       )?.[0];
       return pendingSequence ?? deliveryLedger.H + 1;
     };
-    let deliverySequence = capacityRetry?.sequence ?? resolveDeliverySequence();
+    let deliverySequence = deliveryRetry?.sequence ?? resolveDeliverySequence();
     if (typeof reconcileRecovery === "function") {
       try {
         const raw = await reconcileRecovery.call(backend);
@@ -2482,6 +3083,36 @@ export function createNarrativeMaintenanceScheduler(
           recovery?.status === "reconciled"
         ) {
           const proofApplied = applyRecoveredRecoveryProof(recovery);
+          const recoveryMatches =
+            terminalReceiptFailure !== null &&
+            recoveryReceiptMatchesFailedBinding(recovery);
+          const completionOwner = terminalReceiptFailure;
+          if (proofApplied && recoveryMatches && completionOwner !== null) {
+            const recoveryAcked =
+              completionOwner.recoveryAcked === true ||
+              (await acknowledgeRecoveredRecovery(recovery));
+            if (recoveryAcked) completionOwner.recoveryAcked = true;
+            const failedDelivery = completionOwner.delivery;
+            const deliveryAcked =
+              recoveryAcked &&
+              (failedDelivery === undefined ||
+                (!pendingDeliveryAcks.has(failedDelivery.sequence) &&
+                  (await retireDelivery(
+                    failedDelivery.fingerprint,
+                    failedDelivery.sequence,
+                  ))));
+            if (deliveryAcked) {
+              clearRecoveredTerminalReceiptFailure(recovery);
+            }
+            sharedCoordinator?.release(claimedProjects);
+            schedule(
+              deliveryAcked
+                ? NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS
+                : NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS,
+            );
+            releaseEarlyCycleClaim();
+            return;
+          }
           const markerWasCleared =
             proofApplied && clearRecoveredTerminalReceiptFailure(recovery);
           if (
@@ -2558,7 +3189,7 @@ export function createNarrativeMaintenanceScheduler(
     // record, so the next attempt is a fresh Native admission even though the
     // main-side ledger still has the exact tuple reserved.
     const replayingDelivery =
-      duplicateDeliveryRecord && capacityRetry === null;
+      duplicateDeliveryRecord && deliveryRetry?.kind !== "capacity";
     if (!duplicateDeliveryRecord) {
       deliverySequences.set(deliveryFingerprint, deliverySequence);
     }
@@ -2573,6 +3204,9 @@ export function createNarrativeMaintenanceScheduler(
     let nextDelayMs = NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS;
     let shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
     let workspaceUnavailable = false;
+    let workspaceUnavailableRequeue:
+      | readonly PendingNarrativeMaintenanceWork[]
+      | null = null;
     let deliveryCapacity = false;
     let notAdmitted = false;
     let workspaceMismatch = false;
@@ -2595,6 +3229,7 @@ export function createNarrativeMaintenanceScheduler(
     let nativeTerminalReceipt: Awaited<
       ReturnType<typeof parseNarrativeMaintenanceTerminalReceipt>
     > | null = null;
+    let deliveryFenceCommitted = false;
     let deliveryRetired = false;
     let deliveryRetirement: Promise<boolean> | null = null;
     const terminalReceiptAllowsDeliveryRetirement = (): boolean =>
@@ -2604,9 +3239,28 @@ export function createNarrativeMaintenanceScheduler(
       !nativeAttemptIds.has(cycleAttemptId ?? "");
     const retireCurrentDelivery = async (): Promise<void> => {
       if (deliveryRetired) return;
+      if (deliveryFenceCommitted) {
+        // The record-less ACK owner retains its `{ fenced: true }` barrier.
+        // Its retry timer alone may retire that exact Native sequence.
+        if (!pendingDeliveryAcks.has(deliverySequence)) deliveryRetired = true;
+        return;
+      }
       deliveryRetirement ??= retireDelivery(deliveryFingerprint, deliverySequence);
       if (await deliveryRetirement) {
         deliveryRetired = true;
+        const completionOwner = terminalReceiptFailure;
+        if (
+          completionOwner?.completionUnresolved === true &&
+          completionOwner.delivery?.sequence === deliverySequence &&
+          completionOwner.delivery.fingerprint === deliveryFingerprint
+        ) {
+          if (completionOwner.completionRetryDisposition === "deferred") {
+            completionOwner.completionDeliveryAcked = true;
+            releaseDeferredCompletionFailure(completionOwner);
+          } else if (completionOwner.completionProofAccepted === true) {
+            releaseCompletionProofFailure(completionOwner);
+          }
+        }
       } else {
         // Permit a later retry to issue the same idempotent ACK again.
         deliveryRetirement = null;
@@ -2634,6 +3288,41 @@ export function createNarrativeMaintenanceScheduler(
           deferredWakeProjects.delete(wakeKey);
         }
         shouldSchedule = true;
+      }
+    };
+    const transferCompletionRetry = (
+      disposition: "accepted" | "coalesced" | "ci-terminal-fault-handled",
+    ): void => {
+      const completionOwner = terminalReceiptFailure;
+      if (
+        deliveryRetry === null ||
+        completionOwner?.completionUnresolved !== true ||
+        completionOwner.delivery?.sequence !== deliveryRetry.sequence ||
+        completionOwner.delivery.fingerprint !== deliveryRetry.fingerprint
+      ) {
+        return;
+      }
+      if (completionOwner.completionClaimReleased !== true) {
+        removeRecoveredCompletionClaim(completionOwner);
+        completionOwner.completionClaimReleased = true;
+      }
+      completionOwner.completionProofAccepted = true;
+      completionOwner.completionRetryDisposition = disposition;
+      if (completionOwner.binding !== null) {
+        let currentBinding: NarrativeMaintenanceWorkspaceBinding | null | undefined;
+        try {
+          currentBinding = captureWorkspaceBinding();
+        } catch {
+          currentBinding = null;
+        }
+        if (
+          currentBinding === null ||
+          currentBinding === undefined ||
+          workspaceBindingKey(currentBinding) !==
+            workspaceBindingKey(completionOwner.binding)
+        ) {
+          completionOwner.completionRediscoveryPending = true;
+        }
       }
     };
     try {
@@ -2667,15 +3356,21 @@ export function createNarrativeMaintenanceScheduler(
       const cycleResult = normalizeCycleResult(result);
       settledCycleResult = cycleResult;
       if (
-        capacityRetry !== null &&
+        cycleResult.status === "accepted" ||
+        cycleResult.status === "coalesced"
+      ) {
+        transferCompletionRetry(cycleResult.status);
+      }
+      if (
+        deliveryRetry !== null &&
         !(
           cycleResult.status === "workspace-unavailable" &&
           cycleResult.reason === "maintenance-delivery-capacity"
         )
       ) {
-        // The exact blocked request has received a non-capacity response. The
-        // normal terminal/error path now owns its requeue or retirement.
-        capacityBlockedDelivery = null;
+        // The exact retry has received a non-capacity response. The normal
+        // terminal/error path now owns its requeue or retirement.
+        retryableDelivery = null;
       }
       const terminalFaultHandled =
         cycleResult.status === "ci-terminal-fault-handled";
@@ -2733,6 +3428,7 @@ export function createNarrativeMaintenanceScheduler(
             "native terminal fault ACK binding mismatch; durable run identity cannot be proven",
           );
         }
+        transferCompletionRetry(cycleResult.status);
       }
       if (cycleResult.status === "workspace-unavailable") {
         if (cycleResult.reason === "maintenance-delivery-capacity") {
@@ -2758,6 +3454,14 @@ export function createNarrativeMaintenanceScheduler(
       }
       if (cycleResult.status === "deferred") {
         deferredCycle = true;
+        if (
+          deliveryRetry !== null &&
+          terminalReceiptFailure?.completionUnresolved === true &&
+          terminalReceiptFailure.delivery?.sequence === deliveryRetry.sequence &&
+          terminalReceiptFailure.delivery.fingerprint === deliveryRetry.fingerprint
+        ) {
+          terminalReceiptFailure.completionRetryDisposition = "deferred";
+        }
         throw new Error(
           "native maintenance cycle deferred an unenabled adapter",
         );
@@ -2867,18 +3571,28 @@ export function createNarrativeMaintenanceScheduler(
         await retireCurrentDelivery();
       }
     } catch (error) {
-      // A lost/failed N-API admission must converge through the Native
-      // high-water fence. If a record was already accepted, the shared core
-      // returns OutOfOrder/Replay and leaves that owner intact; if Native did
-      // not reach admission, the current H+1 can be sealed without creating a
-      // second execution on the next retry.
+      // Resolve ambiguous admission only as a committed fence when Native
+      // explicitly proves one. Otherwise retain and replay the exact delivery
+      // tuple; Native sequence/fingerprint idempotency prevents duplicate work.
+      let deliveryResolutionRetry = false;
       const resolveNative = backend?.resolveNarrativeMaintenanceDelivery;
       if (!deliveryCapacity && typeof resolveNative === "function") {
         try {
-          const fenceCommitted = deliveryFenceWasCommitted(
+          const fenceResolution = deliveryFenceResolution(
             await Promise.resolve(resolveNative.call(backend, deliverySequence)),
           );
-          if (fenceCommitted) {
+          if (fenceResolution === "fenced") {
+            deliveryFenceCommitted = true;
+            if (
+              retryableDelivery?.sequence === deliverySequence &&
+              retryableDelivery.fingerprint === deliveryFingerprint
+            ) {
+              retryableDelivery = null;
+            }
+            const noStartCompletionOwner = markNoStartFenceProof(
+              deliveryFingerprint,
+              deliverySequence,
+            );
             // A fenced sequence has no Native DeliveryRecord, so the normal
             // terminal-record ACK path can never converge. Retire both
             // ledgers only after Native has acknowledged the explicit fence.
@@ -2889,36 +3603,74 @@ export function createNarrativeMaintenanceScheduler(
                     await Promise.resolve(ack.call(backend, deliverySequence)),
                   )
                 : true;
-            if (nativeRetired && deliveryLedger.retireFenced(deliverySequence)) {
+            if (nativeRetired && retireLocalFence(deliverySequence)) {
               pendingDeliveryAcks.delete(deliverySequence);
               if (deliverySequences.get(deliveryFingerprint) === deliverySequence) {
                 deliverySequences.delete(deliveryFingerprint);
               }
               deliveryRetired = true;
               deliveryRetirement = Promise.resolve(true);
-            } else if (!nativeRetired) {
+              if (noStartCompletionOwner !== null) {
+                releaseCompletionProofFailure(noStartCompletionOwner);
+              }
+            } else {
               pendingDeliveryAcks.set(deliverySequence, {
                 fingerprint: deliveryFingerprint,
                 fenced: true,
               });
               scheduleDeliveryAckRetry();
             }
+          } else {
+            const completionOwner = terminalReceiptFailure;
+            const exactBindingNoStart =
+              deliveryRetry !== null &&
+              deliveryRetry.sequence === deliverySequence &&
+              deliveryRetry.fingerprint === deliveryFingerprint &&
+              settledCycleResult?.status === "workspace-unavailable" &&
+              (settledCycleResult.reason ===
+                "maintenance-workspace-binding-mismatch" ||
+                settledCycleResult.reason ===
+                  "maintenance-workspace-snapshot-changed") &&
+              completionOwner?.completionUnresolved === true &&
+              completionOwner.completionNoStartReceipt === true &&
+              completionOwner.delivery?.sequence === deliverySequence &&
+              completionOwner.delivery.fingerprint === deliveryFingerprint;
+            if (exactBindingNoStart && completionOwner !== null) {
+              completionOwner.completionProofAccepted = true;
+            } else {
+              deliveryResolutionRetry = true;
+            }
           }
         } catch (fenceError) {
+          if (deliveryFenceCommitted) {
+            // The fence is committed; retain its exact ACK-only barrier after
+            // an ACK error rather than admitting any later delivery.
+            pendingDeliveryAcks.set(deliverySequence, {
+              fingerprint: deliveryFingerprint,
+              fenced: true,
+            });
+            scheduleDeliveryAckRetry();
+          } else {
+            deliveryResolutionRetry = true;
+          }
           warn("[narrative-maintenance] Native delivery fence failed:", fenceError);
         }
       }
-      // A capacity response is a known pre-admission rejection. Native did
-      // not advance H and created no record, so fencing or retiring this
-      // sequence would make the exact H+1 request unretryable. Keep the exact
-      // payload as a scheduler-owned retry and leave the main record pending.
-      // Other work may accumulate in `pending`, but it cannot change this
-      // fingerprint until this request is admitted or a later binding/error
-      // path proves that a fence is required.
-      if (!deliveryCapacity) {
-        capacityBlockedDelivery = null;
+      if (!deliveryCapacity && !deliveryResolutionRetry) {
+        retryableDelivery = null;
+      }
+      if (deliveryResolutionRetry) {
+        retryableDelivery = {
+          kind: "uncertain",
+          sequence: deliverySequence,
+          fingerprint: deliveryFingerprint,
+          work: backendBatch.map((work) => ({ ...work, reasons: [...work.reasons] })),
+          wakeEntries: sendingWakeEntries.map((entry) => ({ ...entry })),
+          workspaceBinding: cycleBinding,
+        };
       }
       if (!disposed) {
+        let unresolvedWorkspaceCompletion = false;
         const attemptSnapshotBeforeCleanup = cycleAttemptId
           ? activeAttemptController.snapshot(cycleAttemptId)
           : null;
@@ -2983,13 +3735,94 @@ export function createNarrativeMaintenanceScheduler(
         }
         if (
           nativeDeliveryMethodsAvailable &&
-          terminalReceiptFailure !== null &&
-          nativeTerminalReceipt !== null
+          terminalReceiptFailure !== null
         ) {
           terminalReceiptFailure.delivery = {
             fingerprint: deliveryFingerprint,
             sequence: deliverySequence,
           };
+        }
+        const provenNoStartWithoutAttempt =
+          cycleAttemptId === null &&
+          nativeTerminalReceipt === null &&
+          settledCycleResult?.status === "workspace-unavailable" &&
+          settledCycleResult.reason === "lifecycle-no-workspace";
+        const cycleAttemptHasNativeOwner =
+          cycleAttemptId !== null &&
+          (nativeAttemptIds.has(cycleAttemptId) ||
+            nativeTerminalReceiptAttemptIds.has(cycleAttemptId));
+        const nativeWorkspaceUnavailableNeedsReceipt =
+          workspaceUnavailable &&
+          (cycleAttemptHasNativeOwner ||
+            replayingDelivery ||
+            nativeDeliveryMethodsAvailable) &&
+          !provenNoStartWithoutAttempt &&
+          !deliveryFenceCommitted &&
+          !(deliveryRetired && nativeTerminalReceipt === null) &&
+          nativeTerminalReceipt?.state !== "succeeded";
+        if (nativeWorkspaceUnavailableNeedsReceipt) {
+          workspaceUnavailableRequeue = interruptedMaintenanceWorkToRequeue(
+            backendBatch,
+            nativeTerminalReceipt,
+            cycleBinding,
+          );
+          if (workspaceUnavailableRequeue === null) {
+            // Keep the original delivery and work parked until an exact
+            // receipt or workspace recovery resolves who owns completion.
+            const existingCompletionOwner = terminalReceiptFailure;
+            const sameCompletionDelivery =
+              existingCompletionOwner?.completionUnresolved === true &&
+              existingCompletionOwner.delivery?.sequence === deliverySequence &&
+              existingCompletionOwner.delivery.fingerprint === deliveryFingerprint;
+            terminalReceiptFailure ??= {
+              error: new Error(
+                "NEX_MAINTENANCE_TERMINAL_RECEIPT_UNRESOLVED: workspace became unavailable without complete per-work terminal proof",
+              ),
+              binding: cycleBinding ?? null,
+            };
+            const completionOwner = terminalReceiptFailure;
+            completionOwner.completionUnresolved = true;
+            unresolvedWorkspaceCompletion = true;
+            const noStartReceipt =
+              nativeTerminalReceipt !== null &&
+              cycleAttemptId !== null &&
+              nativeTerminalReceipt.attemptId === cycleAttemptId &&
+              workspaceBindingKey(nativeTerminalReceipt.workspaceBinding) ===
+                workspaceBindingKey(cycleBinding) &&
+              nativeTerminalReceipt.works.length === 0 &&
+              nativeTerminalReceipt.cleanup.status === "clean" &&
+              nativeTerminalReceipt.connectionReusable;
+            if (!sameCompletionDelivery) {
+              completionOwner.completionAttemptId = cycleAttemptId ?? undefined;
+              completionOwner.completionWork = backendBatch.map((work) => ({
+                ...work,
+                reasons: [...work.reasons],
+              }));
+              completionOwner.completionNoStartReceipt = noStartReceipt;
+              completionOwner.completionWakeProjects = [
+                ...sendingWakeProjects,
+              ];
+            } else {
+              if (
+                completionOwner.completionAttemptId === undefined &&
+                cycleAttemptId !== null
+              ) {
+                completionOwner.completionAttemptId = cycleAttemptId;
+              }
+              if (
+                noStartReceipt &&
+                completionOwner.completionAttemptId === cycleAttemptId
+              ) {
+                completionOwner.completionNoStartReceipt = true;
+              }
+            }
+            capturePendingCompletionEnqueues(completionOwner);
+            completionOwner.delivery = {
+              fingerprint: deliveryFingerprint,
+              sequence: deliverySequence,
+            };
+            workspaceMismatch = true;
+          }
         }
         const attemptSnapshot = cycleAttemptId
           ? activeAttemptController.snapshot(cycleAttemptId)
@@ -3008,7 +3841,8 @@ export function createNarrativeMaintenanceScheduler(
           settleAttempt(cycleAttemptId, "interrupted");
         }
         if (deliveryCapacity) {
-          capacityBlockedDelivery = {
+          retryableDelivery = {
+            kind: "capacity",
             sequence: deliverySequence,
             fingerprint: deliveryFingerprint,
             work: backendBatch.map((work) => ({
@@ -3022,9 +3856,8 @@ export function createNarrativeMaintenanceScheduler(
             "[narrative-maintenance] Native delivery capacity is full; retaining the exact H+1 request for retry",
           );
           nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
-          // The exact blocked batch is held by capacityBlockedDelivery rather
-          // than requeued. This prevents a newly enqueued item from changing
-          // the fingerprint or causing an OutOfOrder H+2 submission.
+          // Keep the exact batch in the retry owner rather than letting newer
+          // enqueues change its fingerprint or cause an OutOfOrder H+2.
           shouldSchedule = true;
         } else if (nativeTerminalReceipt?.state === "succeeded") {
           // Native already committed this cycle before the late cancellation
@@ -3065,7 +3898,7 @@ export function createNarrativeMaintenanceScheduler(
             await retireCurrentDelivery();
           }
           shouldSchedule = false;
-        } else if (interruptedCycle) {
+        } else if (interruptedCycle && !unresolvedWorkspaceCompletion) {
           const selectivelyRequeued = interruptedMaintenanceWorkToRequeue(
             backendBatch,
             nativeTerminalReceipt,
@@ -3098,6 +3931,14 @@ export function createNarrativeMaintenanceScheduler(
           }
           shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
           if (
+            workspaceUnavailable &&
+            settledCycleResult?.status === "workspace-unavailable" &&
+            settledCycleResult.reason ===
+              "maintenance-workspace-changed-during-cycle"
+          ) {
+            requestWorkspaceBindingRediscovery();
+          }
+          if (
             settledCycleResult?.status === "accepted" &&
             settledCycleResult.preempted === true &&
             settledCycleResult.hasMore &&
@@ -3127,29 +3968,17 @@ export function createNarrativeMaintenanceScheduler(
           warn(
             "[narrative-maintenance] workspace binding changed; parking trigger until the replacement workspace re-enqueues it",
           );
-          try {
-            const rediscovery = options.onWorkspaceBindingMismatch?.();
-            void Promise.resolve(rediscovery).catch(
-              (callbackError: unknown) => {
-                warn(
-                  "[narrative-maintenance] authority rediscovery callback failed:",
-                  callbackError,
-                );
-              },
-            );
-          } catch (callbackError) {
-            warn(
-              "[narrative-maintenance] authority rediscovery callback failed:",
-              callbackError,
-            );
-          }
+          requestWorkspaceBindingRediscovery();
           // A stale authority must not hot-loop while open/restore is in
           // progress. The parked scope is excluded by deferredWorkKeys /
           // deferredWakeProjects, so other workspace scopes can continue
           // without requiring an unrelated enqueue to wake the scheduler.
           if (
             terminalReceiptAllowsDeliveryRetirement() ||
-            deliveryHasNoNativeOwner()
+            (terminalReceiptFailure?.completionProofAccepted === true &&
+              terminalReceiptFailure.delivery?.sequence === deliverySequence &&
+              terminalReceiptFailure.delivery.fingerprint === deliveryFingerprint) ||
+            (deliveryHasNoNativeOwner() && terminalReceiptFailure === null)
           ) {
             await retireCurrentDelivery();
           }
@@ -3171,20 +4000,27 @@ export function createNarrativeMaintenanceScheduler(
           warn(
             "[narrative-maintenance] lifecycle request was not admitted; retaining maintenance trigger",
           );
+          const unresolvedExactRetry =
+            deliveryResolutionRetry &&
+            terminalReceiptFailure?.completionUnresolved === true &&
+            terminalReceiptFailure.delivery?.sequence === deliverySequence &&
+            terminalReceiptFailure.delivery.fingerprint === deliveryFingerprint;
           if (
-            terminalReceiptAllowsDeliveryRetirement() ||
-            deliveryHasNoNativeOwner()
+            !unresolvedExactRetry &&
+            (terminalReceiptAllowsDeliveryRetirement() ||
+              deliveryHasNoNativeOwner())
           ) {
             await retireCurrentDelivery();
           }
           nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
           shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
         } else if (workspaceUnavailable) {
-          // This is an expected, recoverable state while a workspace is
-          // closed or switching.  It is not a failed delivery and must not
-          // consume the bounded error retry budget: dropping this batch would
-          // lose the only trigger until another event happens to arrive.
-          for (const work of backendBatch) requeueWork(work);
+          // Native post-cycle retries use complete receipt coverage; an exact
+          // no-start/fence proof permits the original trigger. Legacy adapters
+          // without Native receipt capability retain their compatibility fallback.
+          for (const work of workspaceUnavailableRequeue ?? backendBatch) {
+            requeueWork(work);
+          }
           for (const projectId of sendingWakeProjects) {
             const wakeKey = scopedWakeKey(projectId, cycleBinding);
             durableWakeProjects.set(wakeKey, {
@@ -3192,17 +4028,22 @@ export function createNarrativeMaintenanceScheduler(
               workspaceBinding: cycleBinding,
             });
           }
+          if (
+            settledCycleResult?.status === "workspace-unavailable" &&
+            settledCycleResult.reason ===
+              "maintenance-workspace-changed-during-cycle"
+          ) {
+            requestWorkspaceBindingRediscovery();
+          }
           warn(
-            "[narrative-maintenance] active workspace unavailable; retaining maintenance trigger",
+            "[narrative-maintenance] active workspace unavailable; retaining receipt-proven unfinished work",
           );
           if (
             terminalReceiptAllowsDeliveryRetirement() ||
-            deliveryHasNoNativeOwner()
+            (!nativeWorkspaceUnavailableNeedsReceipt &&
+              deliveryHasNoNativeOwner() &&
+              terminalReceiptFailure === null)
           ) {
-            // The workspace-unavailable result proves that this delivery did
-            // not start work. Requeued work gets a fresh sequence after the
-            // lifecycle state changes; retaining this pending record would
-            // otherwise consume capacity across repeated closed periods.
             await retireCurrentDelivery();
           }
           nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
@@ -3371,7 +4212,10 @@ export function createNarrativeMaintenanceScheduler(
         !disposed &&
         terminalReceiptFailure === null &&
         !haltForProcessInterruption &&
-        (shouldSchedule || hasRunnablePendingWork() || hasRunnableWake())
+        (shouldSchedule ||
+          hasRetryableDelivery() ||
+          hasRunnablePendingWork() ||
+          hasRunnableWake())
       ) {
         const blockedProjects = new Set(blockedProjectIds);
         const hasNewUnblockedPendingWork =
@@ -3412,6 +4256,7 @@ export function createNarrativeMaintenanceScheduler(
         !disposed &&
         !inFlight &&
         timer === null &&
+        !hasRetryableDelivery() &&
         pending.size === 0 &&
         durableWakeProjects.size === 0 &&
         deferredWorkKeys.size === 0 &&
@@ -3500,11 +4345,14 @@ export function createNarrativeMaintenanceScheduler(
     return {
       resume: (workspaceSwitchSucceeded = true) => {
         if (!activeWorkspaceSwitchOwners.delete(owner)) return;
-        if (workspaceSwitchSucceeded && terminalReceiptFailure !== null) {
+        if (
+          workspaceSwitchSucceeded &&
+          terminalReceiptFailure !== null &&
+          terminalReceiptFailure.completionUnresolved !== true
+        ) {
           // Native's successful workspace swap has quarantined/discarded the
-          // old connection. The failed receipt remains observable in the
-          // process-local controller, but it no longer blocks admission for
-          // the new workspace generation.
+          // old connection. A completion-unresolved delivery remains owned
+          // until exact terminal/recovery proof and transport retirement.
           terminalReceiptFailure = null;
         }
         if (
@@ -3516,13 +4364,19 @@ export function createNarrativeMaintenanceScheduler(
           return;
         }
         quiescing = false;
+        const completionHandoffPending =
+          terminalReceiptFailure?.completionUnresolved === true &&
+          terminalReceiptFailure.completionDeliveryAcked === true &&
+          (terminalReceiptFailure.completionProofAccepted === true ||
+            terminalReceiptFailure.completionRecoveryApplied === true);
         if (
           started &&
           !inFlight &&
           activeAttemptId === null &&
           pendingAttemptBegins.size === 0 &&
           timer === null &&
-          (hasCapacityBlockedDelivery() ||
+          (completionHandoffPending ||
+            hasRetryableDelivery() ||
             hasRunnablePendingWork() ||
             hasRunnableWake())
         ) {
@@ -3543,6 +4397,12 @@ export function createNarrativeMaintenanceScheduler(
       explicitBinding === undefined
         ? captureWorkspaceBinding()
         : normalizeWorkspaceBinding(explicitBinding);
+    if (
+      terminalReceiptFailure !== null &&
+      queueCompletionEnqueue(terminalReceiptFailure, work, capturedBinding)
+    ) {
+      return;
+    }
     const key = `${workspaceBindingKey(capturedBinding)}\u0000${canonicalNarrativeMaintenanceWorkKey(work)}`;
     deferredWorkKeys.delete(key);
     deferredWakeProjects.delete(scopedWakeKey(work.projectId, capturedBinding));
@@ -3653,7 +4513,7 @@ export function createNarrativeMaintenanceScheduler(
           !disposed &&
           !schedulerBusy &&
           timer === null &&
-          !hasCapacityBlockedDelivery() &&
+          !hasRetryableDelivery() &&
           pending.size === 0 &&
           durableWakeProjects.size === 0 &&
           deferredWorkKeys.size === 0 &&
@@ -3710,7 +4570,7 @@ export function createNarrativeMaintenanceScheduler(
         terminalReceiptFailure === null &&
         started &&
         timer === null &&
-        (hasCapacityBlockedDelivery() ||
+        (hasRetryableDelivery() ||
           hasRunnablePendingWork() ||
           hasRunnableWake())
       ) {
@@ -3759,7 +4619,7 @@ export function createNarrativeMaintenanceScheduler(
         deliveryAckRetryTimer = null;
       }
       pending.clear();
-      capacityBlockedDelivery = null;
+      retryableDelivery = null;
       durableWakeProjects.clear();
       durableWakeRetryCounts.clear();
       // The active attempt has returned a terminal Native receipt before the
