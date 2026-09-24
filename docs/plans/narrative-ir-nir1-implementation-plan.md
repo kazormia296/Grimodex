@@ -4,7 +4,11 @@
 
 2026-09-08追記: [A5候補2](nir1-a5-candidate-2.md)のIR専用floor、Raw順序維持＋最大1件追加、復旧正例probeの別版実装とL5検証が承認された。以下の初回A5算法は比較履歴として残し、現候補は追加policy版に従う。固定Gold・B/D/T・安全境界・受入れ条件は維持する。
 
-## Current snapshot (2026-09-22)
+## Current snapshot (2026-09-24, post-#608)
+
+#608の内部基盤はmaster `fb967eb9` にマージ済み。生成attempt／receipt／bounded recovery、canonical Graph reader、共通snapshot Packingと標準ビルド証跡producerは利用可能だが、実Open／Restore hook、最終request接続、履歴の実authority、Graphの同時資源上限・target-body開示・製品評価、local送信は未完了である。最初の実装PRはR-hook、並行してD-final（内部のみ）とC-resource（診断・既存契約内改善）を進める。[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)のpost-#608 HOLD対応表と[post-B実行計画](nir1-post-b-execution-plan.md)を参照。Graph公開とlocal生成公開のAND条件を維持し、Graph単独公開で送信を開かない。旧候補 `cdc2580` のQuickは#608 HEAD `27ae54e` の検証証跡ではない。
+
+### Previous snapshot (2026-09-22)
 
 PR #591の限定A2と#600/#601共有lifecycleはmasterへマージ済みである。2026-09-22 B-close追記: #604を親とするstacked実装で、lifecycle SQL上界・WAL/journal/backup/Restore copyを含む総一時logical disk上界、必須lifecycle境界、数値容量契約とN/N+1検証を完了した。19-path / 114-childの測定と、確定値に対する8成功・4安全拒否のrelease childを分けて記録する。数値と適用範囲はユーザーが明示確認した。詳細は [B-close completion evidence](nir1-b-close-completion-2026-09-22.md)。Graph、Packing、AI dispatchは未activateで、NIR-1全体受入れは未完了。ユーザー指定により本候補のFull CI・独立受入れレビューは省略し、mergeは依頼範囲外として行っていない。 downstream threat modelはdraft。NIR-1 overall acceptance remains incomplete.
 

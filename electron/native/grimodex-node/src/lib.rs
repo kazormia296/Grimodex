@@ -9833,7 +9833,28 @@ impl Backend {
             // participant. Future post-effect launches may bind again; the
             // old detached runs remain cancelled in their own terminal path.
             self.state.post_effect_abort.clear_abort_all();
-            result.and_then(|wire| attach_workspace_lifecycle_proof(wire, &lifecycle))
+            let wire = result?;
+            let opened_ready = serde_json::from_str::<serde_json::Value>(&wire)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .is_some_and(|status| matches!(status.as_str(), "ready" | "migrated"));
+            let wire = attach_workspace_lifecycle_proof(wire, &lifecycle)?;
+            let recovery_revision = (lifecycle.status == WorkspaceLifecycleStatus::Ready
+                && opened_ready)
+                .then_some(lifecycle.revision);
+            drop(_workspace_operation);
+            if let Some(revision) = recovery_revision {
+                crate::nir1_generation::start_generation_recovery_after_ready(
+                    Arc::clone(&self.state),
+                    revision,
+                );
+            }
+            Ok(wire)
         }
     }
 
@@ -10067,7 +10088,7 @@ impl Backend {
     }
 
     async fn restore_backup_supervised(self, file_name: String) -> Result<String> {
-        let _workspace_operation = match self.state.begin_workspace_operation() {
+        let mut workspace_operation = Some(match self.state.begin_workspace_operation() {
             Ok(operation) => operation,
             Err(error) => {
                 return restore_not_admitted_outcome(
@@ -10076,7 +10097,7 @@ impl Backend {
                 )
                 .map_err(|_| app_err_to_napi(AppError::Anyhow(error)));
             }
-        };
+        });
         // The legacy/native admission marker is retained only as a compatibility
         // guard while all new lifecycle ownership lives in the shared core. If
         // another workspace owner already closed that marker, do not admit a
@@ -10294,7 +10315,7 @@ impl Backend {
             // joining the existing shutdown drain, or shutdown would wait for
             // the Restore response that is itself waiting for Closed. Only
             // the shared core can prove that the remaining owners are gone.
-            drop(_workspace_operation);
+            drop(workspace_operation.take());
             let closed = self.shutdown_workspace_lifecycle().await?;
             lifecycle = serde_json::from_str(&closed).map_err(|error| {
                 Error::from_reason(format!("invalid shutdown lifecycle view: {error}"))
@@ -10303,7 +10324,11 @@ impl Backend {
 
         if result.is_ok() {
             self.state.post_effect_abort.clear_abort_all();
-            return match lifecycle.status {
+            let recovery_revision = (lifecycle.status == WorkspaceLifecycleStatus::Ready
+                && lifecycle.activation
+                    == workspace_lifecycle_view::WorkspaceLifecycleActivation::Ready)
+                .then_some(lifecycle.revision);
+            let outcome = match lifecycle.status {
                 WorkspaceLifecycleStatus::Ready => serialize_restore_outcome(
                     "restored",
                     "succeeded",
@@ -10332,6 +10357,16 @@ impl Backend {
                     "restore lifecycle did not reach a terminal state",
                 )),
             };
+            if outcome.is_ok() {
+                if let Some(revision) = recovery_revision {
+                    drop(workspace_operation.take());
+                    crate::nir1_generation::start_generation_recovery_after_ready(
+                        Arc::clone(&self.state),
+                        revision,
+                    );
+                }
+            }
+            return outcome;
         }
 
         match lifecycle.status {

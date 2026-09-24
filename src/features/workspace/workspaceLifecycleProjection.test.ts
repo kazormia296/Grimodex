@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceState } from "./workspaceState";
 
 vi.mock("@/lib/tauri", () => ({
@@ -37,6 +37,7 @@ import {
   collectEditorRecoveryDrafts,
   retainEditorRecoveryDraft,
   clearRetainedEditorRecoveryDraft,
+  _resetRetainedEditorRecoveryDraftsForTests,
 } from "@/features/editor/editorSaveRegistry";
 
 type TestState = WorkspaceState & Record<string, unknown>;
@@ -83,12 +84,18 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetWorkspaceLifecycleProjectionForTest();
+    _resetRetainedEditorRecoveryDraftsForTests();
     state = makeState();
     setCurrentImeWorkspaceIdentity(null);
     useEditorSessionStore.getState().resetForProject();
   });
 
-  it("preserves a dirty detached draft while repeated recovery invalidates runtime and IME identity", () => {
+  afterEach(() => {
+    _resetRetainedEditorRecoveryDraftsForTests();
+    useEditorSessionStore.getState().resetForProject();
+  });
+
+  it("preserves a dirty detached draft through Unchanged and repeated RecoveryRequired projection", () => {
     const document = {
       kind: "tree",
       id: "recovery-scene",
@@ -103,9 +110,41 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
     retainEditorRecoveryDraft(document, instance, draft);
     setCurrentImeWorkspaceIdentity({ path: "W1", openRevision: 1 });
     try {
+      applyWorkspaceLifecycleProjectionForTest(
+        get,
+        set,
+        lifecycle(1, "ready", "old-token"),
+      );
+      applyWorkspaceLifecycleProjectionForTest(
+        get,
+        set,
+        lifecycle(2, "transition", "old-token"),
+      );
+      expect(state.workspaceHydrated).toBe(false);
+      expect(
+        applyWorkspaceLifecycleUnchangedProof(
+          get,
+          set,
+          lifecycle(3, "ready", "old-token"),
+        ),
+      ).toBe(true);
+      expect(state).toMatchObject({
+        view: "editor",
+        workspaceHydrated: true,
+        workspaceLifecycleRevision: 3,
+        workspaceLifecycleStatus: "ready",
+        workspaceLifecycleBindingToken: "old-token",
+      });
+      expect(useEditorSessionStore.getState().isDocumentDirty(document)).toBe(
+        true,
+      );
+      expect(collectEditorRecoveryDrafts()).toContainEqual(
+        expect.objectContaining(draft),
+      );
+
       const recovery = {
         schemaVersion: 1,
-        revision: 2,
+        revision: 4,
         status: "recovery-required",
         activation: "requires-open",
         bindingToken: "recovery-token",
@@ -128,6 +167,9 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
         expect.objectContaining(draft),
       );
       expect(resumeWorkspaceBindingAfterExplicitOpen).not.toHaveBeenCalled();
+      expect(
+        resumeWorkspaceBindingAfterLifecycleUnchanged,
+      ).toHaveBeenCalledOnce();
     } finally {
       clearRetainedEditorRecoveryDraft(document, instance);
       useEditorSessionStore.getState().resetForProject();
@@ -178,7 +220,19 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
     expect(resumeWorkspaceBindingAfterExplicitOpen).toHaveBeenCalledOnce();
   });
 
-  it("keeps an in-progress explicit Open alive when its Ready races hydration", () => {
+  it("keeps an in-progress Open draft while exact Ready races hydration", () => {
+    const document = {
+      kind: "tree",
+      id: "open-scene",
+      storage: "database",
+    } as const;
+    const instance = createEditorInstanceId("open-editor");
+    const draft = {
+      plainText: "未保存のOpen本文",
+      prosemirror: { type: "doc", content: [] },
+    };
+    useEditorSessionStore.getState().setDocumentDirty(document, true, instance);
+    retainEditorRecoveryDraft(document, instance, draft);
     state = makeState({
       workspaceLifecycleRevision: 2,
       workspaceLifecycleStatus: "transition",
@@ -202,6 +256,9 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
       lifecycle(3, "ready", "new-token"),
     );
 
+    // Projection-only boundary: model Native's exact Open Ready proof while
+    // the renderer's explicit Project hydration owner is still pending. The
+    // owner performs old-scope draft cleanup only after hydration succeeds.
     expect(state).toMatchObject({
       workspaceHydrated: false,
       workspaceSwitchInProgress: true,
@@ -209,6 +266,13 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
       workspaceLifecycleBindingToken: "new-token",
     });
     expect(invalidateWorkspaceProjectLoads).not.toHaveBeenCalled();
+    expect(useEditorSessionStore.getState().isDocumentDirty(document)).toBe(
+      true,
+    );
+    expect(collectEditorRecoveryDrafts()).toContainEqual(
+      expect.objectContaining(draft),
+    );
+    expect(resumeWorkspaceBindingAfterExplicitOpen).not.toHaveBeenCalled();
     expect(
       isExplicitWorkspaceHydrationCurrent({
         workspacePath: "W2",

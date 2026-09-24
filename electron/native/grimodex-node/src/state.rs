@@ -2567,6 +2567,14 @@ pub struct AppState {
     pub workspace_shutdown_requested: Arc<AtomicBool>,
     /// Exact-binding single-flight keys for unpublished NIR-1 cold recovery.
     pub(crate) nir1_generation_recovery_bindings: Mutex<Vec<LiveBinding>>,
+    /// Monotonic, single-binding ledger for best-effort post-Ready recovery.
+    pub(crate) nir1_generation_recovery_statuses: Mutex<GenerationRecoveryHookLedger>,
+    #[cfg(test)]
+    pub(crate) nir1_generation_recovery_worker_probe:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    #[cfg(test)]
+    pub(crate) nir1_generation_recovery_launch_probe:
+        Mutex<Option<std::sync::mpsc::Sender<GenerationRecoveryLaunchObservation>>>,
     /// Lease-only baton for a retired maintenance authority. The SQLite
     /// handle inside the pinned authority has already been closed and marked
     /// unusable; retaining this Arc keeps the shared lease continuous until a
@@ -2587,6 +2595,35 @@ pub struct AppState {
     /// Bounded-by-watermark ACK tombstones make recovery ACK retry idempotent
     /// after the first call has already retired its process-local receipt.
     pub(crate) narrative_maintenance_recovery_acks: Mutex<NarrativeMaintenanceRecoveryAckLedger>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GenerationRecoveryHookState {
+    Scheduled,
+    Running,
+    Incomplete,
+    Complete,
+}
+
+pub(crate) struct GenerationRecoveryHookEntry {
+    pub(crate) binding: LiveBinding,
+    pub(crate) state: GenerationRecoveryHookState,
+    pub(crate) ready_revision: u64,
+}
+
+#[cfg(test)]
+pub(crate) struct GenerationRecoveryLaunchObservation {
+    pub(crate) ready_revision: u64,
+    pub(crate) binding: LiveBinding,
+    pub(crate) open_lock_available: bool,
+    pub(crate) active_operation_count: usize,
+    pub(crate) participant_count: usize,
+}
+
+#[derive(Default)]
+pub(crate) struct GenerationRecoveryHookLedger {
+    pub(crate) latest_ready_revision: u64,
+    pub(crate) entry: Option<GenerationRecoveryHookEntry>,
 }
 
 pub struct WorkspaceOperationGuard {
@@ -2694,6 +2731,11 @@ impl AppState {
             workspace_operation_notify: Arc::new(Notify::new()),
             workspace_shutdown_requested: Arc::new(AtomicBool::new(false)),
             nir1_generation_recovery_bindings: Mutex::new(Vec::new()),
+            nir1_generation_recovery_statuses: Mutex::new(GenerationRecoveryHookLedger::default()),
+            #[cfg(test)]
+            nir1_generation_recovery_worker_probe: Mutex::new(None),
+            #[cfg(test)]
+            nir1_generation_recovery_launch_probe: Mutex::new(None),
             narrative_maintenance_recovery_batons: Mutex::new(HashMap::new()),
             narrative_maintenance_recovery_bindings: Mutex::new(HashMap::new()),
             narrative_maintenance_recovery_receipts: Mutex::new(BTreeMap::new()),
