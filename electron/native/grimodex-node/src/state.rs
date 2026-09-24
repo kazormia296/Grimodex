@@ -143,6 +143,9 @@ struct NarrativeMaintenanceRecoveryState {
     panic_after_admission_close: bool,
     #[cfg(test)]
     workspace_worker_probe: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+    #[cfg(test)]
+    restore_before_open_lock_probe:
+        Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -699,6 +702,8 @@ impl Default for NarrativeMaintenanceRecoveryGate {
                 panic_after_admission_close: false,
                 #[cfg(test)]
                 workspace_worker_probe: None,
+                #[cfg(test)]
+                restore_before_open_lock_probe: None,
             }),
         }
     }
@@ -730,6 +735,34 @@ impl NarrativeMaintenanceRecoveryGate {
             release
                 .recv_timeout(std::time::Duration::from_secs(30))
                 .expect("Restore installed release");
+        }
+    }
+
+    #[cfg(test)]
+    pub fn arm_restore_before_open_lock_probe(
+        &self,
+        reached: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        self.state
+            .lock()
+            .expect("recovery gate")
+            .restore_before_open_lock_probe = Some((reached, release));
+    }
+
+    #[cfg(test)]
+    pub fn observe_restore_before_open_lock_probe(&self) {
+        let probe = self
+            .state
+            .lock()
+            .expect("recovery gate")
+            .restore_before_open_lock_probe
+            .take();
+        if let Some((reached, release)) = probe {
+            reached.send(()).expect("Restore pre-lock observer");
+            release
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("Restore pre-lock release");
         }
     }
 
@@ -3897,6 +3930,8 @@ mod tests {
                 panic_after_admission_close: false,
                 #[cfg(test)]
                 workspace_worker_probe: None,
+                #[cfg(test)]
+                restore_before_open_lock_probe: None,
             }),
         };
         let first_rollover = near_max.mark_workspace_swapped();
@@ -3919,6 +3954,8 @@ mod tests {
                 panic_after_admission_close: false,
                 #[cfg(test)]
                 workspace_worker_probe: None,
+                #[cfg(test)]
+                restore_before_open_lock_probe: None,
             }),
         };
         let at_max_rollover = at_max.mark_workspace_swapped();
