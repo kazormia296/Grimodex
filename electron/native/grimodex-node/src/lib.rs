@@ -9833,7 +9833,28 @@ impl Backend {
             // participant. Future post-effect launches may bind again; the
             // old detached runs remain cancelled in their own terminal path.
             self.state.post_effect_abort.clear_abort_all();
-            result.and_then(|wire| attach_workspace_lifecycle_proof(wire, &lifecycle))
+            let wire = result?;
+            let opened_ready = serde_json::from_str::<serde_json::Value>(&wire)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .is_some_and(|status| matches!(status.as_str(), "ready" | "migrated"));
+            let wire = attach_workspace_lifecycle_proof(wire, &lifecycle)?;
+            let recovery_revision = (lifecycle.status == WorkspaceLifecycleStatus::Ready
+                && opened_ready)
+                .then_some(lifecycle.revision);
+            drop(_workspace_operation);
+            if let Some(revision) = recovery_revision {
+                crate::nir1_generation::start_generation_recovery_after_ready(
+                    Arc::clone(&self.state),
+                    revision,
+                );
+            }
+            Ok(wire)
         }
     }
 
@@ -10067,7 +10088,7 @@ impl Backend {
     }
 
     async fn restore_backup_supervised(self, file_name: String) -> Result<String> {
-        let _workspace_operation = match self.state.begin_workspace_operation() {
+        let mut workspace_operation = Some(match self.state.begin_workspace_operation() {
             Ok(operation) => operation,
             Err(error) => {
                 return restore_not_admitted_outcome(
@@ -10076,7 +10097,7 @@ impl Backend {
                 )
                 .map_err(|_| app_err_to_napi(AppError::Anyhow(error)));
             }
-        };
+        });
         // The legacy/native admission marker is retained only as a compatibility
         // guard while all new lifecycle ownership lives in the shared core. If
         // another workspace owner already closed that marker, do not admit a
@@ -10154,6 +10175,12 @@ impl Backend {
             // open lock. The restore core receives this same guard, so a
             // concurrent workspace open cannot borrow the closed gate and
             // later make the restore re-resolve a different workspace.
+            #[cfg(test)]
+            if owns_close {
+                state
+                    .narrative_maintenance_recovery_gate
+                    .observe_restore_before_open_lock_probe();
+            }
             let open_guard = state
                 .ws
                 .open_lock
@@ -10294,7 +10321,7 @@ impl Backend {
             // joining the existing shutdown drain, or shutdown would wait for
             // the Restore response that is itself waiting for Closed. Only
             // the shared core can prove that the remaining owners are gone.
-            drop(_workspace_operation);
+            drop(workspace_operation.take());
             let closed = self.shutdown_workspace_lifecycle().await?;
             lifecycle = serde_json::from_str(&closed).map_err(|error| {
                 Error::from_reason(format!("invalid shutdown lifecycle view: {error}"))
@@ -10303,7 +10330,11 @@ impl Backend {
 
         if result.is_ok() {
             self.state.post_effect_abort.clear_abort_all();
-            return match lifecycle.status {
+            let recovery_revision = (lifecycle.status == WorkspaceLifecycleStatus::Ready
+                && lifecycle.activation
+                    == workspace_lifecycle_view::WorkspaceLifecycleActivation::Ready)
+                .then_some(lifecycle.revision);
+            let outcome = match lifecycle.status {
                 WorkspaceLifecycleStatus::Ready => serialize_restore_outcome(
                     "restored",
                     "succeeded",
@@ -10332,6 +10363,16 @@ impl Backend {
                     "restore lifecycle did not reach a terminal state",
                 )),
             };
+            if outcome.is_ok() {
+                if let Some(revision) = recovery_revision {
+                    drop(workspace_operation.take());
+                    crate::nir1_generation::start_generation_recovery_after_ready(
+                        Arc::clone(&self.state),
+                        revision,
+                    );
+                }
+            }
+            return outcome;
         }
 
         match lifecycle.status {
@@ -17067,86 +17108,139 @@ mod narrative_maintenance_admission_unwind_tests {
             .expect("restore candidate");
         drop(authority);
 
-        // Hold the shared restore/open lock on a dedicated thread so the
-        // first restore remains in the interval after its admission close
-        // but before authority mutation. This makes the second restore's
-        // pre-lock decision and the maintenance begin race deterministic.
-        // The guard lives on the holder thread (never across an await),
-        // so the test also satisfies clippy::await_holding_lock.
+        struct RestoreTestReleases {
+            before_open_lock: Option<std::sync::mpsc::Sender<()>>,
+            open_lock: Option<std::sync::mpsc::Sender<()>>,
+            holder: Option<std::thread::JoinHandle<()>>,
+        }
+        impl RestoreTestReleases {
+            fn release_and_join(&mut self) -> (bool, bool, std::thread::Result<()>) {
+                let before_open_lock = self
+                    .before_open_lock
+                    .take()
+                    .is_some_and(|release| release.send(()).is_ok());
+                let open_lock = self
+                    .open_lock
+                    .take()
+                    .is_some_and(|release| release.send(()).is_ok());
+                let holder = self.holder.take().expect("open lock holder").join();
+                (before_open_lock, open_lock, holder)
+            }
+        }
+        impl Drop for RestoreTestReleases {
+            fn drop(&mut self) {
+                if let Some(release) = self.before_open_lock.take() {
+                    let _ = release.send(());
+                }
+                if let Some(release) = self.open_lock.take() {
+                    let _ = release.send(());
+                }
+                if let Some(holder) = self.holder.take() {
+                    let _ = holder.join();
+                }
+            }
+        }
+
+        // Hold the shared restore/open lock on a dedicated thread. The scoped
+        // test rendezvous below pauses the first Restore after admission closes
+        // and before it can request this lock.
         let backend = Arc::new(backend);
         let (open_held_tx, open_held_rx) = std::sync::mpsc::channel();
         let (open_release_tx, open_release_rx) = std::sync::mpsc::channel::<()>();
+        let (before_open_lock_tx, before_open_lock_rx) = std::sync::mpsc::channel();
+        let (before_open_lock_release_tx, before_open_lock_release_rx) =
+            std::sync::mpsc::channel::<()>();
         let holder_backend = Arc::clone(&backend);
         let open_holder = std::thread::spawn(move || {
             let _open_guard = holder_backend.state.ws.open_lock.lock().expect("open lock");
             open_held_tx.send(()).expect("open lock held signal");
             open_release_rx.recv().expect("open lock release signal");
         });
-        open_held_rx.recv().expect("open lock held");
+        let mut releases = RestoreTestReleases {
+            before_open_lock: Some(before_open_lock_release_tx),
+            open_lock: Some(open_release_tx),
+            holder: Some(open_holder),
+        };
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .arm_restore_before_open_lock_probe(before_open_lock_tx, before_open_lock_release_rx);
+        open_held_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("open lock held");
+
         let first_backend = Arc::clone(&backend);
         let first = napi::tokio::spawn(async move {
             first_backend.restore_backup(backup_name.to_string()).await
         });
-        let mut admission_closed = false;
-        for _ in 0..10_000 {
-            if backend
+        let before_open_lock = before_open_lock_rx.recv_timeout(std::time::Duration::from_secs(30));
+
+        let (second, second_prelock, begin_error) = if before_open_lock.is_ok() {
+            let (second_tx, second_rx) = std::sync::mpsc::channel();
+            let second_backend = Arc::clone(&backend);
+            let second = napi::tokio::spawn(async move {
+                let result = second_backend.restore_backup(backup_name.to_string()).await;
+                second_tx
+                    .send(
+                        result
+                            .as_ref()
+                            .map(|_| ())
+                            .map_err(|error| error.to_string()),
+                    )
+                    .expect("second restore result receiver");
+                result
+            });
+            let second_prelock = second_rx.recv_timeout(std::time::Duration::from_secs(1));
+            let begin_error = backend
                 .state
                 .narrative_maintenance_recovery_gate
-                .maintenance_admission_is_closed()
-            {
-                admission_closed = true;
-                break;
-            }
-            napi::tokio::task::yield_now().await;
-        }
-        assert!(
-            admission_closed,
-            "first restore must close admission before waiting for open_lock"
-        );
+                .register_attempt("restore-interleaving-maintenance", &binding)
+                .err()
+                .map(|error| error.to_string());
+            (Some(second), Some(second_prelock), begin_error)
+        } else {
+            (None, None, None)
+        };
 
-        let (second_tx, second_rx) = std::sync::mpsc::channel();
-        let second_backend = Arc::clone(&backend);
-        let second = napi::tokio::spawn(async move {
-            let result = second_backend.restore_backup(backup_name.to_string()).await;
-            second_tx
-                .send(
-                    result
-                        .as_ref()
-                        .map(|_| ())
-                        .map_err(|error| error.to_string()),
-                )
-                .expect("second restore result receiver");
-            result
-        });
-        let second_prelock = second_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("second restore must be rejected before waiting for open_lock");
-        let begin_error = backend
-            .state
-            .narrative_maintenance_recovery_gate
-            .register_attempt("restore-interleaving-maintenance", &binding)
-            .expect_err("maintenance begin must remain closed during first restore");
+        let (before_open_lock_released, open_lock_released, holder_join) =
+            releases.release_and_join();
+        // Do not time out and drop these handles: that would detach Restore's
+        // supervisor. In Full, the native.tests task's 900 s process timeout
+        // is the hard bound if a native worker never returns.
+        let first_result = first.await;
+        let second_result = match second {
+            Some(second) => Some(second.await),
+            None => None,
+        };
+
         assert!(
-            begin_error
-                .to_string()
-                .contains("NEX_MAINTENANCE_ADMISSION_CLOSED"),
+            before_open_lock.is_ok(),
+            "first restore must close admission before waiting for open_lock: {before_open_lock:?}"
+        );
+        assert!(
+            before_open_lock_released,
+            "first restore rendezvous must be released"
+        );
+        assert!(open_lock_released, "open lock holder must be released");
+        assert!(holder_join.is_ok(), "open lock holder must be joined");
+        let begin_error = begin_error.expect("maintenance admission check ran after close");
+        assert!(
+            begin_error.contains("NEX_MAINTENANCE_ADMISSION_CLOSED"),
             "unexpected maintenance begin error: {begin_error}"
         );
         assert!(
-            second_prelock.as_ref().is_ok(),
-            "second restore must return a strict rejection outcome: {second_prelock:?}"
+            matches!(second_prelock.as_ref(), Some(Ok(Ok(())))),
+            "second restore must return a strict rejection outcome before open_lock: {second_prelock:?}"
         );
 
-        open_release_tx.send(()).expect("open lock release");
-        let first_outcome = first
-            .await
+        let first_outcome = first_result
             .expect("first restore task")
             .expect("first restore response");
         let first_json: serde_json::Value =
             serde_json::from_str(&first_outcome).expect("first restore outcome JSON");
         assert_eq!(first_json["status"], "restored");
-        let second_outcome = second
-            .await
+        let second_outcome = second_result
+            .expect("second restore was started")
             .expect("second restore task")
             .expect("second restore response");
         let second_json: serde_json::Value =
@@ -17158,7 +17252,6 @@ mod narrative_maintenance_admission_unwind_tests {
             .narrative_maintenance_recovery_gate
             .maintenance_admission_is_closed());
 
-        open_holder.join().expect("open lock holder");
         drop(backend);
         let _ = std::fs::remove_dir_all(root);
     }

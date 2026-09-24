@@ -1,13 +1,28 @@
 # NIR-1 L6〜L9 実行計画
 
-更新日: 2026-09-17
+更新日: 2026-09-24（初版: 2026-09-17）
 
-基点: master@9f6aba5f
+初版基点: master@9f6aba5f
 Tree: b7f97fc7dbbb5243da090b41dbc884ecfdc0ec2b
 
 状態: 2026-09-17現在、#596/#597 foundations、#598 A3 review remediation、#599 typed Packing review remediationがmasterにある。Graph、Packing、AI dispatchは未activateで、Bはcapacity-remediation-in-progressである。proposal/5の契約は確認済みだが、supported capacityの数値、whole-project build、B activationは未完了である。downstream threat modelはdraft、NIR-1全体のruntime integration・activation・受入れは未完了である。#591のA2限定完了とR0台帳は履歴として保持する。
 
 2026-09-22 B-close追記: #604を親とするstacked実装で、lifecycle SQL上界・WAL/journal/backup/Restore copyを含む総一時logical disk上界、必須lifecycle境界、数値容量契約とN/N+1検証を完了した。19-path / 114-childの測定と、確定値に対する8成功・4安全拒否のrelease childを分けて記録する。数値と適用範囲はユーザーが明示確認した。詳細は [B-close completion evidence](nir1-b-close-completion-2026-09-22.md)。Graph、Packing、AI dispatchは未activateで、NIR-1全体受入れは未完了。ユーザー指定により本候補のFull CI・独立受入れレビューは省略し、mergeは依頼範囲外として行っていない。
+
+2026-09-24 post-#608現在地: #608の内部生成attempt／receipt／bounded recovery、canonical Graph reader、Source-backed Raw＋typed Revisionの共通snapshot Packing、標準ビルド証跡producerはmaster `fb967eb9` にマージ済み。上記の2026-09-17/22記録は当時の候補についての履歴であり、#608後のGraph・local送信が公開された証拠ではない。#608候補 `27ae54e` と旧候補 `cdc2580` のQuickを混同しない。次の最初の実装PRはR-hookであり、D-final内部接続とC-resource診断は並行可。[post-B実行計画](nir1-post-b-execution-plan.md)の依存と公開条件を維持する。
+
+| post-#608の残HOLD | 閉じる実装スライス・受入れ境界 |
+| --- | --- |
+| Open／Restoreの回復起動、同bindingの再入・取消とcaller outcome | R-hook。生成開始barrierの実消費はD-transport |
+| 実Source/Revisionからの最終payload・採用入力参照の同時確定 | D-final。履歴authorityや送信可能性は含めない |
+| 履歴tupleのfield/writer、immutable保存、Artifact producer関係 | H-store。未承認mappingは差分確認まで保存しない |
+| 実authorityの毎turn再認可・正常な会話継続 | H-current。過去来歴／今回資格／今回requestを別々に検証 |
+| trusted local transport、回復barrier、一回限りdispatch・terminal保存 | D-transport。製品入口は閉じたまま |
+| 同時2 MiB／8 msの実証、SQL・一時領域・cleanup | C-resource。新しい強制方式は確認前に採用しない |
+| Graph先本文の独立した開示authority・正常開示 | C-body。作者宣言などの未確定契約は明示確認後 |
+| Related Scenes実接続、実Graph G-01〜G-08、P再評価 | C-product。成立後にGraphのみ公開、local送信は閉じる |
+| 最終request→local生成→次turn、P-01〜P-12 | D-dispatch。C-productと履歴・transportが揃った後に対応localのみ公開 |
+| 固定比較と実製品Journey、全必須HOLDの独立受入れ | E-acceptance。HOLDが残ればNIR-1は未完了 |
 
 ## 概要
 

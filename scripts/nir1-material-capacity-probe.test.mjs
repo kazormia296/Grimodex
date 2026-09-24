@@ -116,7 +116,7 @@ function makePipeLeakingChild(directory, { detached = false } = {}) {
   const binary = path.join(directory, "pipe-leaking-child.sh");
   const child = detached
     // Record the real escaped PID only after setsid and env -i have succeeded.
-    ? `setsid env -i /bin/sh -c 'printf "%s" "$$" > "$1"; exec sleep 2' sh "$3" &`
+    ? `setsid env -i /bin/sh -c 'printf "%s" "$$" > "$1"; exec sleep 2' sh "$3" &\nwhile [ ! -s "$3" ]; do sleep 0.001; done`
     : "sleep 2 &";
   writeFileSync(binary, `#!/bin/sh\n${child}\nexit 0\n`);
   chmodSync(binary, 0o755);
@@ -761,6 +761,7 @@ for (const delayedCapture of [false, true]) {
           return true;
         },
       );
+      assert.ok(existsSync(descendantPidPath), "escaped child must publish its PID readiness marker before lifecycle assertions");
       const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
       assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
       assert.ok(Date.now() - started < 1000, "setsid descendants must remain bounded");

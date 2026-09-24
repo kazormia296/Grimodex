@@ -9,6 +9,7 @@ import {
   createNarrativeMaintenanceScheduler,
   NARRATIVE_MAINTENANCE_MAX_RETRIES,
   scheduleNarrativeMaintenanceProcessInterruption,
+  type NarrativeMaintenanceCycleRequest,
   type NarrativeMaintenanceCycleResult,
   type NarrativeMaintenanceRequest,
   type NarrativeMaintenanceSchedulerOptions,
@@ -618,6 +619,815 @@ describe("narrative maintenance scheduler", () => {
     },
   );
 
+  it("does not replay a Verify reported complete by an interrupted post-cycle receipt", async () => {
+    const binding = { authorityId: "authority-replay", generation: 4 };
+    const verifyWork = {
+      ...work(
+        "project-maintenance-replay",
+        "dependency-verify",
+        "verify:epoch-replay",
+        "verify-requested",
+      ),
+      semanticEpochId: "epoch-replay",
+    };
+    const workKey = canonicalNarrativeMaintenanceWorkKey(verifyWork);
+
+    const runCase = async (
+      reason: string,
+      workStatus: "succeeded" | "not-started",
+    ) => {
+      const firstCycleStarted = deferred<NarrativeMaintenanceCycleRequest>();
+      const firstCycleResult = deferred<NarrativeMaintenanceCycleResult>();
+      const firstCancellation = deferred<string>();
+      const firstReceipt = deferred<string>();
+      const firstCycleSettled = deferred<void>();
+      const retryCycleSettled = deferred<void>();
+      const retryRequests: NarrativeMaintenanceCycleRequest[] = [];
+      let firstAttemptId: string | null = null;
+      let cycleCalls = 0;
+
+      const receipt = (
+        attemptId: string,
+        state: "interrupted" | "succeeded",
+        status: "succeeded" | "not-started",
+      ) =>
+        JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state,
+          stopReason: null,
+          generation: binding.generation,
+          workspaceBinding: binding,
+          publishedGeneration: state === "succeeded" ? binding.generation : null,
+          works: [{ workKey, status }],
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        });
+
+      const runNarrativeMaintenanceCycle = vi.fn(
+        (request: NarrativeMaintenanceCycleRequest) => {
+          cycleCalls += 1;
+          if (cycleCalls === 1) {
+            firstCycleStarted.resolve(request);
+            return firstCycleResult.promise;
+          }
+          retryRequests.push(request);
+          return Promise.resolve(acceptedCycle());
+        },
+      );
+      const beginNarrativeMaintenanceAttempt = vi.fn(
+        (attemptId: string, receivedBinding: typeof binding) => {
+          firstAttemptId ??= attemptId;
+          return JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: receivedBinding.authorityId,
+            generation: receivedBinding.generation,
+          });
+        },
+      );
+      const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+        if (attemptId === firstAttemptId) {
+          firstCancellation.resolve(attemptId);
+          return firstReceipt.promise;
+        }
+        return Promise.resolve(receipt(attemptId, "succeeded", "succeeded"));
+      });
+      const { scheduler } = createScheduler(
+        {
+          getNarrativeMaintenanceWorkspaceBinding: () => binding,
+          runNarrativeMaintenanceCycle,
+          beginNarrativeMaintenanceAttempt,
+          cancelNarrativeMaintenanceAttempt,
+        },
+        vi.fn(),
+        {
+          onCycleSettled: ({ cycleGeneration }) => {
+            if (cycleGeneration === 1) firstCycleSettled.resolve();
+            if (cycleGeneration === 2) retryCycleSettled.resolve();
+          },
+        },
+      );
+
+      let cycleReleased = false;
+      let receiptReleased = false;
+      try {
+        scheduler.request(verifyWork);
+        scheduler.start();
+        await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+        const firstRequest = await firstCycleStarted.promise;
+
+        // Model Rust's late post-cycle workspace check: the Verify work is
+        // complete, but dropping its not-yet-success-finalized guard yields an
+        // interrupted attempt receipt with per-work success and clean cleanup.
+        firstCycleResult.resolve({ status: "workspace-unavailable", reason });
+        cycleReleased = true;
+        const cancelledAttemptId = await firstCancellation.promise;
+        firstReceipt.resolve(
+          receipt(cancelledAttemptId, "interrupted", workStatus),
+        );
+        receiptReleased = true;
+        await firstCycleSettled.promise;
+
+        await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+        if (retryRequests.length > 0) await retryCycleSettled.promise;
+        return { firstRequest, retryRequests };
+      } finally {
+        if (!cycleReleased) {
+          firstCycleResult.resolve({ status: "workspace-unavailable", reason });
+        }
+        if (!receiptReleased) {
+          firstReceipt.resolve(
+            receipt(
+              firstAttemptId ?? "maintenance-replay-test-attempt",
+              "interrupted",
+              workStatus,
+            ),
+          );
+        }
+        await scheduler.dispose();
+      }
+    };
+
+    const postCycleLoss = await runCase(
+      "maintenance-workspace-changed-during-cycle",
+      "succeeded",
+    );
+    const preExecutionLoss = await runCase(
+      "lifecycle-no-workspace",
+      "not-started",
+    );
+
+    expect(postCycleLoss.firstRequest.work).toEqual([
+      expect.objectContaining({
+        projectId: verifyWork.projectId,
+        runKind: verifyWork.runKind,
+        workKey: verifyWork.workKey,
+        semanticEpochId: verifyWork.semanticEpochId,
+      }),
+    ]);
+    expect(preExecutionLoss.retryRequests.map((request) => request.work)).toEqual(
+      [preExecutionLoss.firstRequest.work],
+    );
+    expect(postCycleLoss.retryRequests.map((request) => request.work)).toEqual(
+      [],
+    );
+  });
+
+  it("retries only unfinished work covered by a complete post-cycle receipt", async () => {
+    const binding = { authorityId: "authority-mixed-replay", generation: 5 };
+    const completedWork = work(
+      "project-mixed-replay",
+      "backfill",
+      "backfill:v2",
+      "opened",
+    );
+    const interruptedWork = work(
+      "project-mixed-replay",
+      "dependency-verify",
+      "verify:v2",
+      "verify-requested",
+    );
+    const completedKey = canonicalNarrativeMaintenanceWorkKey(completedWork);
+    const interruptedKey = canonicalNarrativeMaintenanceWorkKey(interruptedWork);
+    let firstAttemptId: string | null = null;
+    let cycleCount = 0;
+    const requests: NarrativeMaintenanceCycleRequest[] = [];
+    const runNarrativeMaintenanceCycle = vi.fn(
+      (request: NarrativeMaintenanceCycleRequest) => {
+        requests.push(request);
+        cycleCount += 1;
+        return Promise.resolve(
+          cycleCount === 1
+            ? {
+                status: "workspace-unavailable" as const,
+                reason: "maintenance-workspace-changed-during-cycle",
+              }
+            : acceptedCycle(),
+        );
+      },
+    );
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) => {
+        firstAttemptId ??= attemptId;
+        return JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        });
+      },
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      const isFirstAttempt = attemptId === firstAttemptId;
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: isFirstAttempt ? "interrupted" : "succeeded",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: isFirstAttempt ? null : binding.generation,
+        works: isFirstAttempt
+          ? [
+              { workKey: completedKey, status: "succeeded" },
+              { workKey: interruptedKey, status: "interrupted" },
+            ]
+          : [{ workKey: interruptedKey, status: "succeeded" }],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    });
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+    });
+
+    scheduler.request(completedWork);
+    scheduler.request(interruptedWork);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.work).toHaveLength(2);
+    expect(requests[1]?.work.map(canonicalNarrativeMaintenanceWorkKey)).toEqual([
+      interruptedKey,
+    ]);
+  });
+
+  it("handles repeated Verify executions as distinct receipt rows and rediscovery trigger", async () => {
+    const binding = { authorityId: "authority-repeated-work", generation: 10 };
+    const replacementBinding = {
+      authorityId: "authority-repeated-work-replacement",
+      generation: 11,
+    };
+    let currentBinding = binding;
+    const verifyWork = work(
+      "project-repeated-work",
+      "dependency-verify",
+      "verify:epoch-repeated",
+      "verify-requested",
+    );
+    const rebuildWork = work(
+      "project-repeated-work",
+      "semantic-index-rebuild",
+      "rebuild:epoch-repeated",
+      "verify-followup",
+    );
+    const verifyKey = canonicalNarrativeMaintenanceWorkKey(verifyWork);
+    const rebuildKey = canonicalNarrativeMaintenanceWorkKey(rebuildWork);
+
+    const runCase = async (
+      lastVerifyStatus: "succeeded" | "interrupted" | "not-started",
+    ) => {
+      currentBinding = binding;
+      let firstAttemptId: string | null = null;
+      const requests: NarrativeMaintenanceCycleRequest[] = [];
+      const rediscover = vi.fn();
+      const runNarrativeMaintenanceCycle = vi.fn(
+        (request: NarrativeMaintenanceCycleRequest) => {
+          requests.push(request);
+          if (requests.length === 1) {
+            currentBinding = replacementBinding;
+            return Promise.resolve({
+              status: "workspace-unavailable" as const,
+              reason: "maintenance-workspace-changed-during-cycle",
+            });
+          }
+          return Promise.resolve(acceptedCycle());
+        },
+      );
+      const beginNarrativeMaintenanceAttempt = vi.fn(
+        (attemptId: string, receivedBinding: typeof binding) => {
+          firstAttemptId ??= attemptId;
+          return JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: receivedBinding.authorityId,
+            generation: receivedBinding.generation,
+          });
+        },
+      );
+      const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+        const isFirstAttempt = attemptId === firstAttemptId;
+        return JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state: isFirstAttempt ? "interrupted" : "succeeded",
+          stopReason: null,
+          generation: binding.generation,
+          workspaceBinding: binding,
+          publishedGeneration: isFirstAttempt ? null : binding.generation,
+          works: isFirstAttempt
+            ? [
+                { workKey: verifyKey, status: "succeeded" },
+                { workKey: rebuildKey, status: "succeeded" },
+                { workKey: verifyKey, status: lastVerifyStatus },
+              ]
+            : (requests[1]?.work ?? []).map((item) => ({
+                workKey: canonicalNarrativeMaintenanceWorkKey(item),
+                status: "succeeded",
+              })),
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        });
+      });
+      const scheduler = createScheduler(
+        {
+          getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+          runNarrativeMaintenanceCycle,
+          beginNarrativeMaintenanceAttempt,
+          cancelNarrativeMaintenanceAttempt,
+          ackNarrativeMaintenanceDelivery: vi.fn().mockResolvedValue({
+            status: "retired",
+          }),
+        },
+        vi.fn(),
+        { onWorkspaceBindingMismatch: rediscover },
+      ).scheduler;
+
+      scheduler.request(verifyWork);
+      scheduler.request(rebuildWork);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      await scheduler.dispose();
+      return { requests, rediscover };
+    };
+
+    const allSucceeded = await runCase("succeeded");
+    const interruptedFollowup = await runCase("interrupted");
+    const notStartedFollowup = await runCase("not-started");
+
+    expect(allSucceeded.requests).toHaveLength(1);
+    expect(allSucceeded.rediscover).toHaveBeenCalledOnce();
+    for (const unfinished of [interruptedFollowup, notStartedFollowup]) {
+      expect(unfinished.requests).toHaveLength(2);
+      expect(unfinished.requests[1]?.workspaceBinding).toEqual(binding);
+      expect(
+        unfinished.requests[1]?.work.map(
+          canonicalNarrativeMaintenanceWorkKey,
+        ),
+      ).toEqual([verifyKey]);
+      expect(unfinished.rediscover).toHaveBeenCalledOnce();
+    }
+  });
+
+  it.each(["incomplete", "cross-binding", "malformed"] as const)(
+    "parks a post-cycle %s receipt without replaying the batch",
+    async (receiptFault) => {
+      const binding = { authorityId: "authority-unresolved", generation: 6 };
+      const otherBinding = { authorityId: "authority-other", generation: 6 };
+      const firstWork = work(
+        "project-unresolved",
+        "backfill",
+        "backfill:v2",
+        "opened",
+      );
+      const secondWork = work(
+        "project-unresolved",
+        "dependency-verify",
+        "verify:v2",
+        "verify-requested",
+      );
+      const firstKey = canonicalNarrativeMaintenanceWorkKey(firstWork);
+      const secondKey = canonicalNarrativeMaintenanceWorkKey(secondWork);
+      let attemptId: string | null = null;
+      const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue({
+        status: "workspace-unavailable",
+        reason: "maintenance-workspace-changed-during-cycle",
+      });
+      const beginNarrativeMaintenanceAttempt = vi.fn(
+        (receivedAttemptId: string, receivedBinding: typeof binding) => {
+          attemptId = receivedAttemptId;
+          return JSON.stringify({
+            status: "open",
+            attemptId: receivedAttemptId,
+            authorityId: receivedBinding.authorityId,
+            generation: receivedBinding.generation,
+          });
+        },
+      );
+      const cancelNarrativeMaintenanceAttempt = vi.fn(
+        (receivedAttemptId: string) =>
+          receiptFault === "malformed"
+            ? "not-json"
+            : JSON.stringify({
+                schemaVersion: 1,
+                attemptId: receivedAttemptId,
+                state: "interrupted",
+                stopReason: null,
+                generation: binding.generation,
+                workspaceBinding:
+                  receiptFault === "cross-binding" ? otherBinding : binding,
+                publishedGeneration: null,
+                works:
+                  receiptFault === "incomplete"
+                    ? [{ workKey: firstKey, status: "succeeded" }]
+                    : [
+                        { workKey: firstKey, status: "succeeded" },
+                        { workKey: secondKey, status: "interrupted" },
+                      ],
+                cleanup: { status: "clean" },
+                connectionReusable: true,
+              }),
+      );
+      const ackNarrativeMaintenanceDelivery = vi.fn().mockResolvedValue({
+        status: "retired",
+      });
+      const onWorkspaceBindingMismatch = vi.fn();
+      const { scheduler } = createScheduler(
+        {
+          getNarrativeMaintenanceWorkspaceBinding: () => binding,
+          runNarrativeMaintenanceCycle,
+          beginNarrativeMaintenanceAttempt,
+          cancelNarrativeMaintenanceAttempt,
+          ackNarrativeMaintenanceDelivery,
+        },
+        vi.fn(),
+        { onWorkspaceBindingMismatch },
+      );
+
+      scheduler.request(firstWork);
+      scheduler.request(secondWork);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+      expect(attemptId).toBeTypeOf("string");
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      expect(onWorkspaceBindingMismatch).toHaveBeenCalledOnce();
+      expect(ackNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
+      await expect(scheduler.dispose()).rejects.toThrow();
+    },
+  );
+
+  it("keeps a clean incomplete receipt parked when quiescence adopts it before invalidation", async () => {
+    const originalBinding = { authorityId: "authority-quiesce-receipt", generation: 11 };
+    let binding = originalBinding;
+    const firstWork = work(
+      "project-quiesce-receipt",
+      "backfill",
+      "backfill:v2",
+      "opened",
+    );
+    const secondWork = work(
+      "project-quiesce-receipt",
+      "dependency-verify",
+      "verify:v2",
+      "verify-requested",
+    );
+    const firstKey = canonicalNarrativeMaintenanceWorkKey(firstWork);
+    const cycleResult = deferred<NarrativeMaintenanceCycleResult>();
+    const cycleStarted = deferred<void>();
+    let attemptId: string | null = null;
+    const runNarrativeMaintenanceCycle = vi.fn(() => {
+      cycleStarted.resolve();
+      return cycleResult.promise;
+    });
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (receivedAttemptId: string, receivedBinding: typeof originalBinding) => {
+        attemptId = receivedAttemptId;
+        return JSON.stringify({
+          status: "open",
+          attemptId: receivedAttemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        });
+      },
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn(
+      (receivedAttemptId: string) =>
+        JSON.stringify({
+          schemaVersion: 1,
+          attemptId: receivedAttemptId,
+          state: "interrupted",
+          stopReason: null,
+          generation: originalBinding.generation,
+          workspaceBinding: originalBinding,
+          publishedGeneration: null,
+          works: [{ workKey: firstKey, status: "succeeded" }],
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        }),
+    );
+    const ackNarrativeMaintenanceDelivery = vi.fn().mockResolvedValue({
+      status: "retired",
+    });
+    const onWorkspaceBindingMismatch = vi.fn();
+    const { scheduler } = createScheduler(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+        ackNarrativeMaintenanceDelivery,
+      },
+      vi.fn(),
+      { onWorkspaceBindingMismatch },
+    );
+
+    scheduler.request(firstWork);
+    scheduler.request(secondWork);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await cycleStarted.promise;
+
+    const quiescence = scheduler.quiesceForWorkspaceSwitch?.();
+    await Promise.resolve();
+    const adopted = await scheduler.cancelNarrativeMaintenanceAttempt?.(
+      attemptId!,
+      "closed",
+    );
+    expect(adopted).toMatchObject({ state: "interrupted" });
+
+    cycleResult.resolve({
+      status: "workspace-unavailable",
+      reason: "maintenance-workspace-changed-during-cycle",
+    });
+    const lease = await quiescence;
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(onWorkspaceBindingMismatch).toHaveBeenCalledOnce();
+    expect(ackNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
+    binding = { authorityId: "authority-quiesce-replacement", generation: 12 };
+    lease?.resume(true);
+    await expect(scheduler.dispose()).rejects.toThrow(
+      /TERMINAL_RECEIPT_UNRESOLVED/,
+    );
+    expect(ackNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
+  });
+
+  it("retires a parked delivery only after later exact terminal proof", async () => {
+    const binding = { authorityId: "authority-late-terminal", generation: 13 };
+    const firstWork = work(
+      "project-late-terminal",
+      "backfill",
+      "backfill:v2",
+      "opened",
+    );
+    const secondWork = work(
+      "project-late-terminal",
+      "dependency-verify",
+      "verify:v2",
+      "verify-requested",
+    );
+    const firstKey = canonicalNarrativeMaintenanceWorkKey(firstWork);
+    const secondKey = canonicalNarrativeMaintenanceWorkKey(secondWork);
+    const cycleSettled = deferred<void>();
+    const firstCancelStarted = deferred<void>();
+    const firstCancelResponse = deferred<string>();
+    const secondCycleSettled = deferred<void>();
+    const requests: NarrativeMaintenanceCycleRequest[] = [];
+    const runNarrativeMaintenanceCycle = vi.fn(
+      (request: NarrativeMaintenanceCycleRequest) => {
+        requests.push(request);
+        return Promise.resolve(
+          requests.length === 1
+            ? {
+                status: "workspace-unavailable" as const,
+                reason: "maintenance-workspace-changed-during-cycle",
+              }
+            : acceptedCycle(),
+        );
+      },
+    );
+    let firstAttemptId: string | null = null;
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) => {
+        firstAttemptId ??= attemptId;
+        return JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        });
+      },
+    );
+    const terminalReceipt = (
+      attemptId: string,
+      state: "interrupted" | "succeeded",
+      works: Array<{ workKey: string; status: "succeeded" | "not-started" }>,
+    ) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state,
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: state === "succeeded" ? binding.generation : null,
+        works,
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      if (
+        attemptId === firstAttemptId &&
+        cancelNarrativeMaintenanceAttempt.mock.calls.length === 1
+      ) {
+        firstCancelStarted.resolve();
+        return firstCancelResponse.promise;
+      }
+      return attemptId === firstAttemptId
+        ? terminalReceipt(attemptId, "interrupted", [
+            { workKey: firstKey, status: "succeeded" },
+            { workKey: secondKey, status: "not-started" },
+          ])
+        : terminalReceipt(attemptId, "succeeded", [
+            { workKey: secondKey, status: "succeeded" },
+          ]);
+    });
+    const ackNarrativeMaintenanceDelivery = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "pending" })
+      .mockResolvedValue({ status: "retired" });
+    const { scheduler } = createScheduler(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+        ackNarrativeMaintenanceDelivery,
+      },
+      vi.fn(),
+      {
+        onCycleSettled: ({ cycleGeneration }) => {
+          if (cycleGeneration === 1) cycleSettled.resolve();
+          if (cycleGeneration === 2) secondCycleSettled.resolve();
+        },
+      },
+    );
+
+    scheduler.request(firstWork);
+    scheduler.request(secondWork);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await firstCancelStarted.promise;
+
+    // The new occurrence arrives after A left the queue but before its failed
+    // receipt has created the completion owner.
+    scheduler.request(firstWork);
+    scheduler.request(firstWork);
+    firstCancelResponse.resolve("not-json");
+    await cycleSettled.promise;
+    expect(ackNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
+
+    const lease = await scheduler.quiesceForWorkspaceSwitch?.();
+
+    expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledTimes(2);
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    lease?.resume(true);
+    expect(scheduler.getQuiescenceState?.().queueIdle).toBe(false);
+    await vi.advanceTimersByTimeAsync(
+      ERROR_RETRY_DELAY_MS + BACKLOG_DELAY_MS,
+    );
+    await secondCycleSettled.promise;
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(requests[1]?.work.map(canonicalNarrativeMaintenanceWorkKey)).toEqual([
+      secondKey,
+      firstKey,
+    ]);
+    expect(
+      requests[1]?.work.filter(
+        (item) => canonicalNarrativeMaintenanceWorkKey(item) === firstKey,
+      ),
+    ).toHaveLength(1);
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
+    expect(ackNarrativeMaintenanceDelivery.mock.calls).toEqual([
+      [1],
+      [1],
+      [2],
+    ]);
+  });
+
+  it.each(["same-binding", "replacement-binding"] as const)(
+    "does not let unrelated manual attempt B resolve parked attempt A (%s)",
+    async (bindingCase) => {
+      const originalBinding = {
+        authorityId: "authority-parked-attempt-a",
+        generation: 15,
+      };
+      const replacementBinding = {
+        authorityId: "authority-manual-attempt-b",
+        generation: 16,
+      };
+      let currentBinding: typeof originalBinding = originalBinding;
+      const parkedWork = work(
+        "project-parked-attempt-a",
+        "backfill",
+        "backfill:v2",
+        "opened",
+      );
+      const parkedKey = canonicalNarrativeMaintenanceWorkKey(parkedWork);
+      const cycleSettled = deferred<void>();
+      let parkedAttemptId: string | null = null;
+      const attemptBindings = new Map<string, typeof originalBinding>();
+      const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue({
+        status: "workspace-unavailable",
+        reason: "maintenance-workspace-changed-during-cycle",
+      });
+      const beginNarrativeMaintenanceAttempt = vi.fn(
+        (attemptId: string, binding: typeof originalBinding) => {
+          parkedAttemptId ??= attemptId;
+          attemptBindings.set(attemptId, binding);
+          return JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: binding.authorityId,
+            generation: binding.generation,
+          });
+        },
+      );
+      const terminalReceipt = (
+        attemptId: string,
+        binding: typeof originalBinding,
+        state: "interrupted" | "succeeded",
+        works: Array<{ workKey: string; status: "succeeded" | "not-started" }>,
+      ) =>
+        JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state,
+          stopReason: null,
+          generation: binding.generation,
+          workspaceBinding: binding,
+          publishedGeneration: state === "succeeded" ? binding.generation : null,
+          works,
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        });
+      const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) =>
+        attemptId === parkedAttemptId &&
+        cancelNarrativeMaintenanceAttempt.mock.calls.length === 1
+          ? terminalReceipt(attemptId, originalBinding, "interrupted", [])
+          : attemptId === parkedAttemptId
+            ? terminalReceipt(attemptId, originalBinding, "interrupted", [
+                { workKey: parkedKey, status: "succeeded" },
+              ])
+            : terminalReceipt(
+                attemptId,
+                attemptBindings.get(attemptId)!,
+                "succeeded",
+                [{ workKey: parkedKey, status: "succeeded" }],
+              ),
+      );
+      const ackNarrativeMaintenanceDelivery = vi
+        .fn()
+        .mockResolvedValue({ status: "retired" });
+      const { scheduler } = createScheduler(
+        {
+          getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+          runNarrativeMaintenanceCycle,
+          beginNarrativeMaintenanceAttempt,
+          cancelNarrativeMaintenanceAttempt,
+          ackNarrativeMaintenanceDelivery,
+        },
+        vi.fn(),
+        {
+          onCycleSettled: ({ cycleGeneration }) => {
+            if (cycleGeneration === 1) cycleSettled.resolve();
+          },
+        },
+      );
+
+      scheduler.request(parkedWork);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      await cycleSettled.promise;
+      expect(parkedAttemptId).toEqual(expect.any(String));
+
+      scheduler.request(parkedWork);
+      const manualBinding =
+        bindingCase === "same-binding"
+          ? originalBinding
+          : replacementBinding;
+      currentBinding = manualBinding;
+      await scheduler.beginNarrativeMaintenanceAttempt?.(
+        "manual-attempt-b",
+        manualBinding,
+      );
+      await expect(
+        scheduler.cancelNarrativeMaintenanceAttempt?.(
+          "manual-attempt-b",
+          "closed",
+        ),
+      ).resolves.toMatchObject({
+        attemptId: "manual-attempt-b",
+        state: "succeeded",
+      });
+
+      expect(ackNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
+      await expect(scheduler.dispose()).rejects.toThrow(
+        /TERMINAL_RECEIPT_UNRESOLVED/,
+      );
+    },
+  );
+
   it("retires an unavailable delivery after a clean Native terminal receipt", async () => {
     const binding = { authorityId: "authority-unavailable", generation: 2 };
     const workItem = work(
@@ -676,6 +1486,1675 @@ describe("narrative maintenance scheduler", () => {
     expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
     expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledOnce();
     expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledWith(1);
+  });
+
+  it.each(["pending", "rejected"] as const)(
+    "does not replay a proven exact result while its Native ACK is %s",
+    async (firstAckOutcome) => {
+      const binding = {
+        authorityId: "authority-proven-ack-pending",
+        generation: 14,
+      };
+      const workItem = work(
+        "project-proven-ack-pending",
+        "backfill",
+        "backfill:v2",
+        "opened",
+      );
+      const workKey = canonicalNarrativeMaintenanceWorkKey(workItem);
+      const cycleRequests: NarrativeMaintenanceCycleRequest[] = [];
+      const replayedResult = {
+        status: "workspace-unavailable" as const,
+        reason: "lifecycle-no-workspace",
+      };
+      const runNarrativeMaintenanceCycle = vi.fn(
+        (request: NarrativeMaintenanceCycleRequest) => {
+          cycleRequests.push(request);
+          return Promise.resolve(replayedResult);
+        },
+      );
+      const beginNarrativeMaintenanceAttempt = vi.fn(
+        (attemptId: string, receivedBinding: typeof binding) =>
+          JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: receivedBinding.authorityId,
+            generation: receivedBinding.generation,
+          }),
+      );
+      const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) =>
+        JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state: "interrupted",
+          stopReason: null,
+          generation: binding.generation,
+          workspaceBinding: binding,
+          publishedGeneration: null,
+          works: [{ workKey, status: "succeeded" }],
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        }),
+      );
+      const resolveNarrativeMaintenanceDelivery = vi.fn().mockResolvedValue({
+        OutOfOrder: { expected: 2, received: 1 },
+      });
+      let ackCalls = 0;
+      const ackNarrativeMaintenanceDelivery = vi.fn(async (sequence: number) => {
+        if (sequence !== 1) return { status: "retired" as const };
+        ackCalls += 1;
+        if (ackCalls === 1 && firstAckOutcome === "rejected") {
+          throw new Error("delivery ACK response lost");
+        }
+        return ackCalls <= 3
+          ? { status: "pending" as const }
+          : { status: "retired" as const };
+      });
+      const { scheduler } = createScheduler({
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+        resolveNarrativeMaintenanceDelivery,
+        ackNarrativeMaintenanceDelivery,
+      });
+
+      scheduler.request(workItem);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      expect(resolveNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+      expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS * 4);
+
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      expect(cycleRequests[0]?.attemptId).toBeTypeOf("string");
+      expect(
+        ackNarrativeMaintenanceDelivery.mock.calls.every(
+          ([sequence]) => sequence === 1,
+        ),
+      ).toBe(true);
+      await expect(scheduler.dispose()).resolves.toBeUndefined();
+    },
+  );
+
+  it("requests rediscovery when later exact proof belongs to a replaced workspace", async () => {
+    const originalBinding = {
+      authorityId: "authority-late-proof-original",
+      generation: 20,
+    };
+    const replacementBinding = {
+      authorityId: "authority-late-proof-replacement",
+      generation: 21,
+    };
+    let currentBinding = originalBinding;
+    const completedWork = work(
+      "project-late-proof-replacement",
+      "backfill",
+      "backfill:v2",
+      "opened",
+    );
+    const unfinishedWork = work(
+      "project-late-proof-replacement",
+      "dependency-verify",
+      "verify:v2",
+      "verify-requested",
+    );
+    const completedKey = canonicalNarrativeMaintenanceWorkKey(completedWork);
+    const unfinishedKey = canonicalNarrativeMaintenanceWorkKey(unfinishedWork);
+    const cycleSettled = deferred<void>();
+    let attemptId: string | null = null;
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue({
+      status: "workspace-unavailable",
+      reason: "maintenance-workspace-changed-during-cycle",
+    });
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (receivedAttemptId: string, binding: typeof originalBinding) => {
+        attemptId = receivedAttemptId;
+        return JSON.stringify({
+          status: "open",
+          attemptId: receivedAttemptId,
+          authorityId: binding.authorityId,
+          generation: binding.generation,
+        });
+      },
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((receivedAttemptId: string) =>
+      cancelNarrativeMaintenanceAttempt.mock.calls.length === 1
+        ? "not-json"
+        : JSON.stringify({
+            schemaVersion: 1,
+            attemptId: receivedAttemptId,
+            state: "interrupted",
+            stopReason: null,
+            generation: originalBinding.generation,
+            workspaceBinding: originalBinding,
+            publishedGeneration: null,
+            works: [
+              { workKey: completedKey, status: "succeeded" },
+              { workKey: unfinishedKey, status: "not-started" },
+            ],
+            cleanup: { status: "clean" },
+            connectionReusable: true,
+          }),
+    );
+    const ackNarrativeMaintenanceDelivery = vi
+      .fn()
+      .mockResolvedValue({ status: "retired" });
+    const onWorkspaceBindingMismatch = vi.fn();
+    const onCompletionRecoveryAcknowledged = vi.fn();
+    const { scheduler } = createScheduler(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+        ackNarrativeMaintenanceDelivery,
+      },
+      vi.fn(),
+      {
+        onCycleSettled: ({ cycleGeneration }) => {
+          if (cycleGeneration === 1) cycleSettled.resolve();
+        },
+        onWorkspaceBindingMismatch,
+        onCompletionRecoveryAcknowledged,
+      },
+    );
+
+    scheduler.request(completedWork);
+    scheduler.request(unfinishedWork);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await cycleSettled.promise;
+    expect(onWorkspaceBindingMismatch).toHaveBeenCalledOnce();
+
+    currentBinding = replacementBinding;
+    await expect(
+      scheduler.cancelNarrativeMaintenanceAttempt?.(attemptId!, "closed"),
+    ).resolves.toMatchObject({ attemptId, state: "interrupted" });
+    expect(onWorkspaceBindingMismatch).toHaveBeenCalledOnce();
+    expect(onCompletionRecoveryAcknowledged).toHaveBeenCalledExactlyOnceWith(
+      replacementBinding,
+    );
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["immediate fence ACK", false],
+    ["delayed fence ACK", true],
+  ] as const)(
+    "uses recordless delivery fence as no-start proof with an empty Native receipt (%s)",
+    async (_label, delayedAck) => {
+      const binding = { authorityId: "authority-recordless-fence", generation: 18 };
+      const workItem = work(
+        "project-recordless-fence",
+        "backfill",
+        "backfill:v2",
+        "opened",
+      );
+      const cycleSettled = deferred<void>();
+      const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue({
+        status: "workspace-unavailable",
+        reason: "freshness-recovery-required",
+      });
+      const beginNarrativeMaintenanceAttempt = vi.fn(
+        (attemptId: string, receivedBinding: typeof binding) =>
+          JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: receivedBinding.authorityId,
+            generation: receivedBinding.generation,
+          }),
+      );
+      const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) =>
+        JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state: "interrupted",
+          stopReason: null,
+          generation: binding.generation,
+          workspaceBinding: binding,
+          publishedGeneration: null,
+          works: [],
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        }),
+      );
+      const resolveNarrativeMaintenanceDelivery = vi.fn().mockResolvedValue({
+        Fenced: { sequence: 1 },
+      });
+      const ackNarrativeMaintenanceDelivery = vi
+        .fn()
+        .mockResolvedValueOnce(
+          delayedAck ? { status: "pending" } : { status: "retired" },
+        )
+        .mockResolvedValue({ status: "retired" });
+      const { scheduler } = createScheduler(
+        {
+          getNarrativeMaintenanceWorkspaceBinding: () => binding,
+          runNarrativeMaintenanceCycle,
+          beginNarrativeMaintenanceAttempt,
+          cancelNarrativeMaintenanceAttempt,
+          resolveNarrativeMaintenanceDelivery,
+          ackNarrativeMaintenanceDelivery,
+        },
+        vi.fn(),
+        {
+          onCycleSettled: ({ cycleGeneration }) => {
+            if (cycleGeneration === 1) cycleSettled.resolve();
+          },
+        },
+      );
+
+      scheduler.request(workItem);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      await cycleSettled.promise;
+
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      expect(cancelNarrativeMaintenanceAttempt).toHaveBeenCalledOnce();
+      expect(
+        JSON.parse(cancelNarrativeMaintenanceAttempt.mock.results[0]!.value as string)
+          .works,
+      ).toEqual([]);
+      expect(resolveNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+      expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledWith(1);
+      expect(await ackNarrativeMaintenanceDelivery.mock.results[0]?.value).toEqual(
+        delayedAck ? { status: "pending" } : { status: "retired" },
+      );
+      expect(scheduler.getQuiescenceState?.().queueIdle).toBe(false);
+      await expect(scheduler.dispose()).resolves.toBeUndefined();
+      expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledTimes(
+        delayedAck ? 2 : 1,
+      );
+      expect(ackNarrativeMaintenanceDelivery).toHaveBeenLastCalledWith(1);
+    },
+  );
+
+  it("keeps a recordless fence ACK barrier through repeated and concurrent retirement", async () => {
+    const binding = { authorityId: "authority-fence-ack-race", generation: 19 };
+    const workItem = work(
+      "project-fence-ack-race",
+      "backfill",
+      "backfill:v2",
+      "opened",
+    );
+    const cycleSettled = deferred<void>();
+    const cycleRequests: NarrativeMaintenanceCycleRequest[] = [];
+    const runNarrativeMaintenanceCycle = vi.fn(
+      (request: NarrativeMaintenanceCycleRequest) => {
+        cycleRequests.push(request);
+        return Promise.resolve(
+          cycleRequests.length === 1
+            ? {
+                status: "workspace-unavailable" as const,
+                reason: "freshness-recovery-required",
+              }
+            : acceptedCycle(),
+        );
+      },
+    );
+    const attemptBindings = new Map<string, typeof binding>();
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) => {
+        attemptBindings.set(attemptId, receivedBinding);
+        return JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        });
+      },
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      const receiptBinding = attemptBindings.get(attemptId)!;
+      const succeeded = cancelNarrativeMaintenanceAttempt.mock.calls.length > 1;
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: succeeded ? "succeeded" : "interrupted",
+        stopReason: succeeded ? null : "closed",
+        generation: receiptBinding.generation,
+        workspaceBinding: receiptBinding,
+        publishedGeneration: succeeded ? receiptBinding.generation : null,
+        works: succeeded
+          ? [
+              {
+                workKey: canonicalNarrativeMaintenanceWorkKey(workItem),
+                status: "succeeded",
+              },
+            ]
+          : [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    });
+    const resolveNarrativeMaintenanceDelivery = vi.fn().mockResolvedValue({
+      Fenced: { sequence: 1 },
+    });
+    const deferredConcurrentAck = deferred<{ status: "retired" }>();
+    let sequenceOneAcks = 0;
+    const ackNarrativeMaintenanceDelivery = vi.fn(
+      async (sequence: number): Promise<{ status: "pending" | "retired" }> => {
+        if (sequence !== 1) return { status: "retired" };
+        sequenceOneAcks += 1;
+        if (sequenceOneAcks <= 3) return { status: "pending" };
+        if (sequenceOneAcks === 4) return deferredConcurrentAck.promise;
+        return { status: "retired" };
+      },
+    );
+    const { scheduler, warn } = createScheduler(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+        resolveNarrativeMaintenanceDelivery,
+        ackNarrativeMaintenanceDelivery,
+      },
+      vi.fn(),
+      {
+        onCycleSettled: ({ cycleGeneration }) => {
+          if (cycleGeneration === 1) cycleSettled.resolve();
+        },
+      },
+    );
+
+    scheduler.request(workItem);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await cycleSettled.promise;
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    try {
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      expect(resolveNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+      expect(ackNarrativeMaintenanceDelivery.mock.calls).toEqual([[1], [1], [1]]);
+    } catch (error) {
+      deferredConcurrentAck.resolve({ status: "retired" });
+      throw error;
+    }
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    deferredConcurrentAck.resolve({ status: "retired" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(cycleRequests[1]?.deliverySequence).toBe(2);
+    expect(resolveNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+    expect(renderedWarnings(warn).join("\n")).not.toContain(
+      "delivery ACK arrived before terminal result application",
+    );
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["immediate fence ACK", false],
+    ["delayed fence ACK", true],
+  ] as const)(
+    "preserves no-start proof through sequence-invalid replay and AlreadyFenced (%s)",
+    async (_label, delayedAck) => {
+      const binding = { authorityId: "authority-completion-fence-retry", generation: 5 };
+      const workItem = work(
+        "project-completion-fence-retry",
+        "backfill",
+        "backfill:v2",
+        "workspace-open",
+      );
+      const workKey = canonicalNarrativeMaintenanceWorkKey(workItem);
+      const cycleRequests: NarrativeMaintenanceCycleRequest[] = [];
+      const workspaceUnavailable = {
+        status: "workspace-unavailable" as const,
+        reason: "lifecycle-no-workspace",
+      };
+      const runNarrativeMaintenanceCycle = vi.fn(
+        (request: NarrativeMaintenanceCycleRequest) => {
+          cycleRequests.push(request);
+          return Promise.resolve(
+            cycleRequests.length === 1
+              ? workspaceUnavailable
+              : cycleRequests.length <= 3
+                ? {
+                    status: "workspace-unavailable" as const,
+                    reason: "maintenance-delivery-sequence-invalid",
+                  }
+                : acceptedCycle(),
+          );
+        },
+      );
+      const attemptBindings = new Map<string, typeof binding>();
+      const beginNarrativeMaintenanceAttempt = vi.fn(
+        (attemptId: string, receivedBinding: typeof binding) => {
+          attemptBindings.set(attemptId, receivedBinding);
+          return JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: receivedBinding.authorityId,
+            generation: receivedBinding.generation,
+          });
+        },
+      );
+      const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+        const receiptBinding = attemptBindings.get(attemptId)!;
+        const first = cancelNarrativeMaintenanceAttempt.mock.calls.length === 1;
+        return JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state: first ? "interrupted" : "succeeded",
+          stopReason: null,
+          generation: receiptBinding.generation,
+          workspaceBinding: receiptBinding,
+          publishedGeneration: first ? null : receiptBinding.generation,
+          works: first
+            ? []
+            : [{ workKey, status: "succeeded" }],
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        });
+      });
+      const resolveNarrativeMaintenanceDelivery = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("fence reply was lost after commit"))
+        .mockRejectedValueOnce(new Error("resolve failed after sequence-invalid replay"))
+        .mockResolvedValue({ AlreadyFenced: { sequence: 1 } });
+      let fenceAckCalls = 0;
+      const ackNarrativeMaintenanceDelivery = vi.fn(async (sequence: number) => {
+        if (sequence !== 1) return { status: "retired" as const };
+        fenceAckCalls += 1;
+        return delayedAck && fenceAckCalls === 1
+          ? { status: "pending" as const }
+          : { status: "retired" as const };
+      });
+      const { scheduler } = createScheduler({
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+        resolveNarrativeMaintenanceDelivery,
+        ackNarrativeMaintenanceDelivery,
+      });
+
+      scheduler.request(workItem);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      expect(resolveNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+      expect(cycleRequests[1]).toMatchObject({
+        deliverySequence: cycleRequests[0]?.deliverySequence,
+        deliveryFingerprint: cycleRequests[0]?.deliveryFingerprint,
+        work: cycleRequests[0]?.work,
+      });
+      expect(resolveNarrativeMaintenanceDelivery.mock.calls).toEqual([[1], [1]]);
+
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(3);
+      expect(cycleRequests[2]).toMatchObject({
+        deliverySequence: cycleRequests[0]?.deliverySequence,
+        deliveryFingerprint: cycleRequests[0]?.deliveryFingerprint,
+        work: cycleRequests[0]?.work,
+      });
+      expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledWith(1);
+
+      await vi.advanceTimersByTimeAsync(
+        ERROR_RETRY_DELAY_MS + (delayedAck ? BACKLOG_DELAY_MS : 0),
+      );
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(4);
+      expect(cycleRequests[3]?.deliverySequence).toBe(2);
+      expect(cycleRequests[3]?.work).toEqual([
+        expect.objectContaining({ workKey: workItem.workKey }),
+      ]);
+      expect(resolveNarrativeMaintenanceDelivery.mock.calls).toEqual([
+        [1],
+        [1],
+        [1],
+      ]);
+      expect(ackNarrativeMaintenanceDelivery.mock.calls).toEqual(
+        delayedAck ? [[1], [1], [2]] : [[1], [2]],
+      );
+      await expect(scheduler.dispose()).resolves.toBeUndefined();
+    },
+  );
+
+  it.each([
+    ["retired", false],
+    ["pending", false],
+    ["rejected", false],
+    ["pending", true],
+  ] as const)(
+    "releases an exact accepted retry only after its ordinary ACK (%s, capacity=%s)",
+    async (firstAck, capacityBeforeAcceptance) => {
+      const binding = { authorityId: "authority-completion-accepted-retry", generation: 7 };
+      const originalWork = work(
+        "project-completion-accepted-retry",
+        "backfill",
+        "backfill:v2",
+        "workspace-open",
+      );
+      const laterWork = work(
+        "project-completion-accepted-retry",
+        "dependency-verify",
+        "verify:v2",
+        "verify-requested",
+      );
+      const requests: NarrativeMaintenanceCycleRequest[] = [];
+      const runNarrativeMaintenanceCycle = vi.fn(
+        (request: NarrativeMaintenanceCycleRequest) => {
+          requests.push(request);
+          if (requests.length === 1) {
+            return Promise.resolve({
+              status: "workspace-unavailable" as const,
+              reason: "lifecycle-no-workspace",
+            });
+          }
+          if (requests.length === 2 && capacityBeforeAcceptance) {
+            return Promise.resolve({
+              status: "workspace-unavailable" as const,
+              reason: "maintenance-delivery-capacity",
+            });
+          }
+          return Promise.resolve(acceptedCycle());
+        },
+      );
+      const attemptBindings = new Map<string, typeof binding>();
+      const beginNarrativeMaintenanceAttempt = vi.fn(
+        (attemptId: string, receivedBinding: typeof binding) => {
+          attemptBindings.set(attemptId, receivedBinding);
+          return JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: receivedBinding.authorityId,
+            generation: receivedBinding.generation,
+          });
+        },
+      );
+      const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+        const receiptBinding = attemptBindings.get(attemptId)!;
+        const first = cancelNarrativeMaintenanceAttempt.mock.calls.length === 1;
+        const request = requests.find((cycle) => cycle.attemptId === attemptId);
+        return JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state: first ? "interrupted" : "succeeded",
+          stopReason: null,
+          generation: receiptBinding.generation,
+          workspaceBinding: receiptBinding,
+          publishedGeneration: first ? null : receiptBinding.generation,
+          works: first
+            ? []
+            : (request?.work ?? []).map((item) => ({
+                workKey: canonicalNarrativeMaintenanceWorkKey(item),
+                status: "succeeded",
+              })),
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        });
+      });
+      const resolveNarrativeMaintenanceDelivery = vi.fn().mockRejectedValueOnce(
+        new Error("resolve rejected before Native admission"),
+      );
+      let sequenceOneAckCalls = 0;
+      const ackNarrativeMaintenanceDelivery = vi.fn(async (sequence: number) => {
+        if (sequence !== 1) return { status: "retired" as const };
+        sequenceOneAckCalls += 1;
+        if (sequenceOneAckCalls === 1 && firstAck === "rejected") {
+          throw new Error("ordinary delivery ACK rejected");
+        }
+        if (sequenceOneAckCalls === 1 && firstAck === "pending") {
+          return { status: "pending" as const };
+        }
+        return { status: "retired" as const };
+      });
+      const { scheduler } = createScheduler({
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+        resolveNarrativeMaintenanceDelivery,
+        ackNarrativeMaintenanceDelivery,
+      });
+
+      scheduler.request(originalWork);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      scheduler.request(laterWork);
+
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      if (capacityBeforeAcceptance) {
+        expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      }
+      const acceptedRequestIndex = capacityBeforeAcceptance ? 2 : 1;
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+        acceptedRequestIndex + 1,
+      );
+      expect(requests[acceptedRequestIndex]).toMatchObject({
+        deliverySequence: requests[0]?.deliverySequence,
+        deliveryFingerprint: requests[0]?.deliveryFingerprint,
+        work: requests[0]?.work,
+      });
+      if (firstAck !== "retired") {
+        expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+          acceptedRequestIndex + 1,
+        );
+        expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledWith(1);
+        await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      }
+      await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+        acceptedRequestIndex + 2,
+      );
+      expect(requests[acceptedRequestIndex + 1]?.deliverySequence).toBe(2);
+      expect(requests[acceptedRequestIndex + 1]?.work).toEqual([
+        expect.objectContaining({ workKey: laterWork.workKey }),
+      ]);
+      expect(requests[acceptedRequestIndex + 1]?.work).not.toContainEqual(
+        expect.objectContaining({ workKey: originalWork.workKey }),
+      );
+      expect(ackNarrativeMaintenanceDelivery.mock.calls).toEqual(
+        firstAck === "retired"
+          ? [[1], [2]]
+          : [[1], [1], [2]],
+      );
+      await expect(scheduler.dispose()).resolves.toBeUndefined();
+    },
+  );
+
+  it.each([
+    ["coalesced", "pending", false, false],
+    ["coalesced", "rejected", false, false],
+    ["coalesced", "pending", false, true],
+    ["deferred", "pending", false, false],
+    ["deferred", "rejected", false, false],
+    ["deferred", "pending", true, false],
+    ["deferred", "rejected", true, false],
+    ["deferred", "pending", false, true],
+    ["ci-terminal-fault-handled", "pending", false, false],
+    ["ci-terminal-fault-handled", "rejected", false, false],
+  ] as const)(
+    "hands an exact %s retry to its owner only after ACK (%s, replacement=%s, capacity=%s)",
+    async (status, firstAck, replacementEnqueue, capacityBeforeResult) => {
+      const binding = { authorityId: `authority-completion-${status}`, generation: 8 };
+      const replacementBinding = {
+        authorityId: `authority-completion-${status}-replacement`,
+        generation: 9,
+      };
+      let currentBinding: typeof binding | typeof replacementBinding = binding;
+      const originalWork = work(
+        `project-completion-${status}`,
+        "backfill",
+        "backfill:v2",
+        "workspace-open",
+      );
+      const laterWork = work(
+        originalWork.projectId,
+        "dependency-verify",
+        "verify:v2",
+        "verify-requested",
+      );
+      const requests: NarrativeMaintenanceCycleRequest[] = [];
+      const runNarrativeMaintenanceCycle = vi.fn(
+        (request: NarrativeMaintenanceCycleRequest) => {
+          requests.push(request);
+          if (requests.length === 1) {
+            return Promise.resolve({
+              status: "workspace-unavailable" as const,
+              reason: "lifecycle-no-workspace",
+            });
+          }
+          if (requests.length === 2 && capacityBeforeResult) {
+            return Promise.resolve({
+              status: "workspace-unavailable" as const,
+              reason: "maintenance-delivery-capacity",
+            });
+          }
+          if (requests.length === (capacityBeforeResult ? 3 : 2)) {
+            return Promise.resolve(
+              status === "coalesced"
+                ? { status: "coalesced" as const, hasMore: true }
+                : status === "deferred"
+                  ? { status: "deferred" as const, hasMore: false }
+                  : {
+                      status: "ci-terminal-fault-handled" as const,
+                      fault: "contract-violation" as const,
+                      runId: "run-completion-fault",
+                      authorityId: binding.authorityId,
+                      generation: binding.generation,
+                    },
+            );
+          }
+          return Promise.resolve(acceptedCycle());
+        },
+      );
+      const attemptBindings = new Map<string, typeof binding>();
+      const beginNarrativeMaintenanceAttempt = vi.fn(
+        (attemptId: string, receivedBinding: typeof binding) => {
+          attemptBindings.set(attemptId, receivedBinding);
+          return JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: receivedBinding.authorityId,
+            generation: receivedBinding.generation,
+          });
+        },
+      );
+      const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+        const receivedBinding = attemptBindings.get(attemptId)!;
+        const request = requests.find((cycle) => cycle.attemptId === attemptId);
+        const interrupted = cancelNarrativeMaintenanceAttempt.mock.calls.length === 1;
+        return JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state: interrupted ? "interrupted" : "succeeded",
+          stopReason: interrupted ? null : null,
+          generation: receivedBinding.generation,
+          workspaceBinding: receivedBinding,
+          publishedGeneration: interrupted ? null : receivedBinding.generation,
+          works: interrupted
+            ? []
+            : (request?.work ?? []).map((item) => ({
+                workKey: canonicalNarrativeMaintenanceWorkKey(item),
+                status: "succeeded",
+              })),
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        });
+      });
+      const resolveNarrativeMaintenanceDelivery = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("resolve rejected before Native admission"))
+        .mockResolvedValue({
+          OutOfOrder: { expected: 2, received: 1 },
+        });
+      let sequenceOneAckCalls = 0;
+      const ackNarrativeMaintenanceDelivery = vi.fn(async (sequence: number) => {
+        if (sequence !== 1) return { status: "retired" as const };
+        sequenceOneAckCalls += 1;
+        if (sequenceOneAckCalls === 1 && firstAck === "rejected") {
+          throw new Error("ordinary delivery ACK rejected");
+        }
+        if (sequenceOneAckCalls === 1 && firstAck === "pending") {
+          return { status: "pending" as const };
+        }
+        return { status: "retired" as const };
+      });
+      const { scheduler } = createScheduler({
+        getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+        resolveNarrativeMaintenanceDelivery,
+        ackNarrativeMaintenanceDelivery,
+      });
+
+      scheduler.request(originalWork);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      scheduler.request(laterWork);
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      if (capacityBeforeResult) {
+        expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      }
+      const statusCycleIndex = capacityBeforeResult ? 2 : 1;
+      expect(requests).toHaveLength(statusCycleIndex + 1);
+      expect(requests[statusCycleIndex]).toMatchObject({
+        deliverySequence: requests[0]?.deliverySequence,
+        deliveryFingerprint: requests[0]?.deliveryFingerprint,
+        work: requests[0]?.work,
+      });
+      expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledWith(1);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+        statusCycleIndex + 1,
+      );
+      if (status === "deferred") {
+        if (replacementEnqueue) {
+          currentBinding = replacementBinding;
+          scheduler.requestWithBinding(
+            { ...originalWork, reason: originalWork.reason },
+            replacementBinding,
+          );
+        } else {
+          scheduler.request({ ...originalWork, reason: originalWork.reason });
+        }
+      }
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+      if (status === "coalesced") {
+        const continuationIndex = statusCycleIndex + 1;
+        await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+        expect(requests[continuationIndex]?.deliverySequence).toBe(2);
+        expect(requests[continuationIndex]?.work).toEqual([
+          expect.objectContaining({ workKey: laterWork.workKey }),
+        ]);
+        await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+        expect(requests[continuationIndex + 1]?.deliverySequence).toBe(3);
+        expect(requests[continuationIndex + 1]?.work).toEqual([]);
+        expect(requests[continuationIndex + 1]?.wakeProjectIds).toEqual([
+          originalWork.projectId,
+        ]);
+      } else if (status === "deferred") {
+        await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+        expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+          statusCycleIndex + (replacementEnqueue ? 3 : 2),
+        );
+        const backlogIndex = statusCycleIndex + 1;
+        expect(requests[backlogIndex]?.deliverySequence).toBe(2);
+        if (replacementEnqueue) {
+          expect(requests[backlogIndex]?.work).toEqual([
+            expect.objectContaining({ workKey: laterWork.workKey }),
+          ]);
+          expect(requests[backlogIndex]?.work).not.toContainEqual(
+            expect.objectContaining({ workKey: originalWork.workKey }),
+          );
+          expect(requests[backlogIndex + 1]?.deliverySequence).toBe(3);
+          expect(requests[backlogIndex + 1]?.workspaceBinding).toEqual(replacementBinding);
+          expect(requests[backlogIndex + 1]?.work).toEqual([
+            expect.objectContaining({
+              workKey: originalWork.workKey,
+              reasons: [originalWork.reason],
+            }),
+          ]);
+        } else {
+          expect(requests[backlogIndex]?.work).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ workKey: laterWork.workKey }),
+              expect.objectContaining({
+                workKey: originalWork.workKey,
+                reasons: [originalWork.reason],
+              }),
+            ]),
+          );
+        }
+      } else {
+        expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+          statusCycleIndex + 2,
+        );
+        expect(requests[statusCycleIndex + 1]?.deliverySequence).toBe(2);
+        expect(requests[statusCycleIndex + 1]?.work).toEqual([
+          expect.objectContaining({ workKey: laterWork.workKey }),
+        ]);
+        expect(requests[statusCycleIndex + 1]?.work).not.toContainEqual(
+          expect.objectContaining({ workKey: originalWork.workKey }),
+        );
+      }
+      await expect(scheduler.dispose()).resolves.toBeUndefined();
+    },
+  );
+
+  it("retains a proof handoff until a current binding is available after delivery ACK", async () => {
+    const originalBinding = { authorityId: "authority-delayed-binding-a", generation: 1 };
+    const proofBinding = { authorityId: "authority-delayed-binding-b", generation: 2 };
+    const currentBindingC = { authorityId: "authority-delayed-binding-c", generation: 3 };
+    let currentBinding: typeof originalBinding | typeof proofBinding | typeof currentBindingC | null = originalBinding;
+    const oldWork = work(
+      "project-delayed-binding",
+      "backfill",
+      "backfill:v2",
+      "workspace-open",
+    );
+    const discoveredWork = work(
+      "project-delayed-binding",
+      "dependency-verify",
+      "verify:current",
+      "workspace-open",
+    );
+    const requests: NarrativeMaintenanceCycleRequest[] = [];
+    const runNarrativeMaintenanceCycle = vi.fn(
+      (request: NarrativeMaintenanceCycleRequest) => {
+        requests.push(request);
+        return Promise.resolve(
+          requests.length === 1
+            ? {
+                status: "workspace-unavailable" as const,
+                reason: "maintenance-workspace-changed-during-cycle",
+              }
+            : acceptedCycle(),
+        );
+      },
+    );
+    const attemptBindings = new Map<
+      string,
+      typeof originalBinding | typeof proofBinding | typeof currentBindingC
+    >();
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (
+        attemptId: string,
+        binding: typeof originalBinding | typeof proofBinding | typeof currentBindingC,
+      ) => {
+        attemptBindings.set(attemptId, binding);
+        return JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: binding.authorityId,
+          generation: binding.generation,
+        });
+      },
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      const binding = attemptBindings.get(attemptId)!;
+      const call = cancelNarrativeMaintenanceAttempt.mock.calls.length;
+      if (call === 1) return "not-json";
+      const request = requests.find((cycle) => cycle.attemptId === attemptId);
+      const succeeded = call > 2;
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: succeeded ? "succeeded" : "interrupted",
+        stopReason: succeeded ? null : "closed",
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: succeeded ? binding.generation : null,
+        works: succeeded
+          ? (request?.work ?? []).map((item) => ({
+              workKey: canonicalNarrativeMaintenanceWorkKey(item),
+              status: "succeeded",
+            }))
+          : [
+              {
+                workKey: canonicalNarrativeMaintenanceWorkKey(oldWork),
+                status: "not-started",
+              },
+            ],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    });
+    let firstDeliveryAck = true;
+    const ackNarrativeMaintenanceDelivery = vi.fn(async (sequence: number) => {
+      if (sequence === 1 && firstDeliveryAck) {
+        firstDeliveryAck = false;
+        return { status: "pending" as const };
+      }
+      return { status: "retired" as const };
+    });
+    let scheduler!: ReturnType<typeof createNarrativeMaintenanceScheduler>;
+    const onCompletionRecoveryAcknowledged = vi.fn(
+      (binding: typeof currentBindingC) => {
+        scheduler.requestWithBinding(discoveredWork, binding);
+      },
+    );
+    scheduler = createScheduler(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+        ackNarrativeMaintenanceDelivery,
+      },
+      vi.fn(),
+      { onCompletionRecoveryAcknowledged },
+    ).scheduler;
+
+    scheduler.requestWithBinding(oldWork, originalBinding);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    const oldAttemptId = requests[0]?.attemptId;
+    expect(oldAttemptId).toBeTypeOf("string");
+
+    currentBinding = proofBinding;
+    await expect(
+      scheduler.cancelNarrativeMaintenanceAttempt?.(oldAttemptId!, "closed"),
+    ).resolves.toMatchObject({ attemptId: oldAttemptId, state: "interrupted" });
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+
+    currentBinding = null;
+    const lease = await scheduler.quiesceForWorkspaceSwitch?.();
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(ackNarrativeMaintenanceDelivery.mock.calls).toEqual([[1], [1]]);
+    expect(onCompletionRecoveryAcknowledged).not.toHaveBeenCalled();
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+    currentBinding = currentBindingC;
+    scheduler.requestWithBinding(
+      { ...oldWork, reason: "same-key-after-switch" },
+      currentBindingC,
+    );
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    lease?.resume();
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(onCompletionRecoveryAcknowledged).toHaveBeenCalledExactlyOnceWith(
+      currentBindingC,
+    );
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(requests[1]?.workspaceBinding).toEqual(currentBindingC);
+    expect(requests[1]?.deliverySequence).toBe(2);
+    expect(requests[1]?.work).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ workKey: discoveredWork.workKey }),
+        expect.objectContaining({
+          workKey: oldWork.workKey,
+          reasons: ["same-key-after-switch"],
+        }),
+      ]),
+    );
+    expect(requests[1]?.work).not.toContainEqual(
+      expect.objectContaining({
+        workKey: oldWork.workKey,
+        reasons: ["workspace-open"],
+      }),
+    );
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
+  });
+
+  it.each(["workspace-unavailable", "not-admitted"] as const)(
+    "keeps an unproven completion delivery on the same H+1 sequence after %s",
+    async (retryStatus) => {
+    const binding = { authorityId: "authority-completion-no-fence", generation: 6 };
+    const workItem = work(
+      "project-completion-no-fence",
+      "backfill",
+      "backfill:v2",
+      "workspace-open",
+    );
+    const cycleRequests: NarrativeMaintenanceCycleRequest[] = [];
+    const runNarrativeMaintenanceCycle = vi.fn(
+      (request: NarrativeMaintenanceCycleRequest) => {
+        cycleRequests.push(request);
+        return Promise.resolve(
+          cycleRequests.length === 1 || retryStatus === "workspace-unavailable"
+            ? {
+                status: "workspace-unavailable" as const,
+                reason: "lifecycle-no-workspace",
+              }
+            : { status: "not-admitted" as const, reason: "lifecycle-active" },
+        );
+      },
+    );
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: "interrupted",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: null,
+        works: [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      }),
+    );
+    const resolveNarrativeMaintenanceDelivery = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("resolve failed before admission"))
+      .mockResolvedValue({
+        OutOfOrder: { expected: 2, received: 1 },
+      });
+    const ackNarrativeMaintenanceDelivery = vi.fn();
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+      resolveNarrativeMaintenanceDelivery,
+      ackNarrativeMaintenanceDelivery,
+    });
+
+    scheduler.request(workItem);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(3);
+    expect(cycleRequests.map((request) => request.deliverySequence)).toEqual([
+      1,
+      1,
+      1,
+    ]);
+    expect(cycleRequests.map((request) => request.deliveryFingerprint)).toEqual([
+      cycleRequests[0]?.deliveryFingerprint,
+      cycleRequests[0]?.deliveryFingerprint,
+      cycleRequests[0]?.deliveryFingerprint,
+    ]);
+    expect(resolveNarrativeMaintenanceDelivery).toHaveBeenCalledTimes(3);
+    expect(ackNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
+    await expect(scheduler.dispose()).rejects.toThrow(
+      /TERMINAL_RECEIPT_UNRESOLVED/,
+    );
+    },
+  );
+
+  it.each([
+    ["maintenance-workspace-binding-mismatch", "retired", false],
+    ["maintenance-workspace-binding-mismatch", "pending", false],
+    ["maintenance-workspace-binding-mismatch", "rejected", false],
+    ["maintenance-workspace-binding-mismatch", "pending", true],
+    ["maintenance-workspace-snapshot-changed", "retired", false],
+    ["maintenance-workspace-snapshot-changed", "pending", false],
+    ["lifecycle-no-workspace", "none", false],
+  ] as const)(
+    "hands an exact stale-binding no-start result to B only after ACK (%s, %s, capacity=%s)",
+    async (retryReason, firstAck, capacityBeforeMismatch) => {
+      const bindingA = { authorityId: "authority-stale-retry-a", generation: 41 };
+      const bindingB = { authorityId: "authority-stale-retry-b", generation: 42 };
+      let currentBinding: typeof bindingA | typeof bindingB = bindingA;
+      const oldWork = work(
+        "project-stale-retry",
+        "backfill",
+        "backfill:v2",
+        "workspace-open",
+      );
+      const newRequest = { ...oldWork, reason: "foreground-after-switch" };
+      const discoveredWork = work(
+        oldWork.projectId,
+        "dependency-verify",
+        "verify:binding-b",
+        "workspace-open",
+      );
+      const requests: NarrativeMaintenanceCycleRequest[] = [];
+      const runNarrativeMaintenanceCycle = vi.fn(
+        (request: NarrativeMaintenanceCycleRequest) => {
+          requests.push(request);
+          if (requests.length === 1) {
+            return Promise.resolve({
+              status: "workspace-unavailable" as const,
+              reason: "lifecycle-no-workspace",
+            });
+          }
+          if (requests.length === 2 && capacityBeforeMismatch) {
+            return Promise.resolve({
+              status: "workspace-unavailable" as const,
+              reason: "maintenance-delivery-capacity",
+            });
+          }
+          if (requests.length === (capacityBeforeMismatch ? 3 : 2)) {
+            return Promise.resolve({
+              status: "workspace-unavailable" as const,
+              reason: retryReason,
+            });
+          }
+          return Promise.resolve(acceptedCycle());
+        },
+      );
+      const attemptBindings = new Map<
+        string,
+        typeof bindingA | typeof bindingB
+      >();
+      const beginNarrativeMaintenanceAttempt = vi.fn(
+        (attemptId: string, binding: typeof bindingA | typeof bindingB) => {
+          attemptBindings.set(attemptId, binding);
+          return JSON.stringify({
+            status: "open",
+            attemptId,
+            authorityId: binding.authorityId,
+            generation: binding.generation,
+          });
+        },
+      );
+      const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+        const binding = attemptBindings.get(attemptId)!;
+        return JSON.stringify({
+          schemaVersion: 1,
+          attemptId,
+          state: "interrupted",
+          stopReason: null,
+          generation: binding.generation,
+          workspaceBinding: binding,
+          publishedGeneration: null,
+          works: [],
+          cleanup: { status: "clean" },
+          connectionReusable: true,
+        });
+      });
+      const resolveNarrativeMaintenanceDelivery = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("resolve response lost"))
+        .mockResolvedValue({ OutOfOrder: { expected: 2, received: 1 } });
+      let sequenceOneAckCalls = 0;
+      const ackNarrativeMaintenanceDelivery = vi.fn(async (sequence: number) => {
+        if (sequence !== 1) return { status: "retired" as const };
+        sequenceOneAckCalls += 1;
+        if (firstAck === "none") return { status: "retired" as const };
+        if (sequenceOneAckCalls === 1 && firstAck === "pending") {
+          return { status: "pending" as const };
+        }
+        if (sequenceOneAckCalls === 1 && firstAck === "rejected") {
+          throw new Error("ordinary ACK response lost");
+        }
+        return { status: "retired" as const };
+      });
+      let scheduler!: ReturnType<typeof createNarrativeMaintenanceScheduler>;
+      const onCompletionRecoveryAcknowledged = vi.fn((binding) => {
+        scheduler.requestWithBinding(discoveredWork, binding);
+      });
+      const warn = vi.fn();
+      scheduler = createNarrativeMaintenanceScheduler(
+        {
+          getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+          runNarrativeMaintenanceCycle,
+          beginNarrativeMaintenanceAttempt,
+          cancelNarrativeMaintenanceAttempt,
+          resolveNarrativeMaintenanceDelivery,
+          ackNarrativeMaintenanceDelivery,
+        },
+        { warn, onCompletionRecoveryAcknowledged },
+      );
+      schedulers.push(scheduler);
+
+      scheduler.requestWithBinding(oldWork, bindingA);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      currentBinding = bindingB;
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      if (capacityBeforeMismatch) {
+        expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      }
+      const proofRequestIndex = capacityBeforeMismatch ? 2 : 1;
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+        proofRequestIndex + 1,
+      );
+      expect(
+        requests.map((request) => request.deliverySequence),
+      ).toEqual(Array.from({ length: proofRequestIndex + 1 }, () => 1));
+      expect(requests[proofRequestIndex]?.workspaceBinding).toEqual(bindingA);
+      expect(resolveNarrativeMaintenanceDelivery.mock.calls).toEqual([[1], [1]]);
+
+      const exactNoStartReason =
+        retryReason === "maintenance-workspace-binding-mismatch" ||
+        retryReason === "maintenance-workspace-snapshot-changed";
+      if (!exactNoStartReason) {
+        expect(ackNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
+        scheduler.requestWithBinding(newRequest, bindingB);
+        expect(onCompletionRecoveryAcknowledged).not.toHaveBeenCalled();
+        await expect(scheduler.dispose()).rejects.toThrow(
+          /TERMINAL_RECEIPT_UNRESOLVED/,
+        );
+        return;
+      }
+      if (firstAck !== "retired") {
+        expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+        expect(onCompletionRecoveryAcknowledged).not.toHaveBeenCalled();
+      }
+      scheduler.requestWithBinding(newRequest, bindingB);
+      if (firstAck !== "retired") {
+        expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+          proofRequestIndex + 1,
+        );
+        await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      }
+      expect(onCompletionRecoveryAcknowledged).toHaveBeenCalledExactlyOnceWith(
+        bindingB,
+      );
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + BACKLOG_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+        proofRequestIndex + 2,
+      );
+      expect(requests[proofRequestIndex + 1]?.deliverySequence).toBe(2);
+      expect(requests[proofRequestIndex + 1]?.workspaceBinding).toEqual(bindingB);
+      expect(requests[proofRequestIndex + 1]?.work).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            workKey: newRequest.workKey,
+            reasons: [newRequest.reason],
+          }),
+          expect.objectContaining({ workKey: discoveredWork.workKey }),
+        ]),
+      );
+      expect(requests[proofRequestIndex + 1]?.work).not.toContainEqual(
+        expect.objectContaining({
+          workKey: oldWork.workKey,
+          reasons: [oldWork.reason],
+        }),
+      );
+      expect(scheduler.getQuiescenceState?.().queueIdle).toBe(false);
+      await expect(scheduler.dispose()).resolves.toBeUndefined();
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.stringContaining("TERMINAL_RECEIPT_UNRESOLVED"),
+      );
+    },
+  );
+
+  it.each([
+    "retired",
+    "duplicate-retired",
+    "rejected",
+    "drain-rejects-first",
+  ] as const)(
+    "does not resurrect ordinary ACK ownership after concurrent recovery drain (%s timer response)",
+    async (timerResponse) => {
+    const failedBinding = { authorityId: "authority-replay-recovery", generation: 31 };
+    const recoveredBinding = { authorityId: "authority-replay-recovery-new", generation: 32 };
+    let currentBinding = failedBinding;
+    const workItem = work(
+      "project-replay-recovery",
+      "backfill",
+      "backfill:v2",
+      "workspace-open",
+    );
+    const requests: NarrativeMaintenanceCycleRequest[] = [];
+    const runNarrativeMaintenanceCycle = vi.fn(
+      (request: NarrativeMaintenanceCycleRequest) => {
+        requests.push(request);
+        if (requests.length === 1) {
+          return Promise.resolve({
+            status: "workspace-unavailable" as const,
+            reason: "maintenance-recovery-required",
+            descriptorId: 41,
+          });
+        }
+        return Promise.resolve(
+          request.deliverySequence === 1
+            ? {
+                status: "workspace-unavailable" as const,
+                reason: "maintenance-delivery-replay-pending",
+              }
+            : acceptedCycle(),
+        );
+      },
+    );
+    const attemptBindings = new Map<string, typeof failedBinding>();
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, binding: typeof failedBinding) => {
+        attemptBindings.set(attemptId, binding);
+        return JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: binding.authorityId,
+          generation: binding.generation,
+        });
+      },
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      const receiptBinding = attemptBindings.get(attemptId)!;
+      const first = cancelNarrativeMaintenanceAttempt.mock.calls.length === 1;
+      const request = requests.find((cycle) => cycle.attemptId === attemptId);
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: first ? "interrupted" : "succeeded",
+        stopReason: first ? "closed" : null,
+        generation: receiptBinding.generation,
+        workspaceBinding: receiptBinding,
+        publishedGeneration: first ? null : receiptBinding.generation,
+        works: first
+          ? []
+          : (request?.work ?? []).map((item) => ({
+              workKey: canonicalNarrativeMaintenanceWorkKey(item),
+              status: "succeeded",
+            })),
+        cleanup: first
+          ? { status: "failed", error: "rollback failed" }
+          : { status: "clean" },
+        connectionReusable: !first,
+      });
+    });
+    const resolveNarrativeMaintenanceDelivery = vi.fn().mockResolvedValue({
+      OutOfOrder: { expected: 2, received: 1 },
+    });
+    let recoveryAcknowledged = false;
+    const reconcileNarrativeMaintenanceRecovery = vi.fn(async () =>
+      reconcileNarrativeMaintenanceRecovery.mock.calls.length === 1 ||
+      recoveryAcknowledged
+        ? { status: "none" as const }
+        : {
+            status: "reconciled" as const,
+            descriptorId: 41,
+            reason: "maintenance-recovery-complete",
+            recoveredBinding: failedBinding,
+            activeBinding: recoveredBinding,
+            reboundBinding: recoveredBinding,
+          },
+    );
+    let recoveryAckCalls = 0;
+    const ackNarrativeMaintenanceRecovery = vi.fn(async () => {
+      recoveryAckCalls += 1;
+      recoveryAcknowledged = true;
+      if (recoveryAckCalls === 1) {
+        throw new Error("recovery ACK response lost after Native retirement");
+      }
+      return {
+        status: "acknowledged",
+        descriptorId: 41,
+        acknowledged: true,
+      };
+    });
+    const timerAck = deferred<{ status: "retired" }>();
+    const drainAck = deferred<{ status: "retired" }>();
+    let deliveryAckCalls = 0;
+    const ackNarrativeMaintenanceDelivery = vi.fn(async (sequence: number) => {
+      if (sequence !== 1) return { status: "retired" as const };
+      deliveryAckCalls += 1;
+      if (deliveryAckCalls === 1) throw new Error("delivery ACK unavailable");
+      if (deliveryAckCalls === 2) return timerAck.promise;
+      if (deliveryAckCalls === 3) return drainAck.promise;
+      throw new Error("subsequent delivery ACK unavailable");
+    });
+    let scheduler!: ReturnType<typeof createNarrativeMaintenanceScheduler>;
+    const onCompletionRecoveryAcknowledged = vi.fn((binding) => {
+      scheduler.requestWithBinding(workItem, binding);
+    });
+    const warn = vi.fn();
+    scheduler = createScheduler(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+        resolveNarrativeMaintenanceDelivery,
+        reconcileNarrativeMaintenanceRecovery,
+        ackNarrativeMaintenanceRecovery,
+        ackNarrativeMaintenanceDelivery,
+      },
+      warn,
+      { onCompletionRecoveryAcknowledged },
+    ).scheduler;
+
+    scheduler.requestWithBinding(workItem, failedBinding);
+    expect(scheduler.getQuiescenceState?.().queueIdle).toBe(false);
+    scheduler.start();
+    expect(scheduler.getQuiescenceState?.().timerScheduled).toBe(true);
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(requests[0]?.deliverySequence).toBe(1);
+    expect(resolveNarrativeMaintenanceDelivery).toHaveBeenCalledWith(1);
+
+    const lease = await scheduler.quiesceForWorkspaceSwitch?.();
+    currentBinding = recoveredBinding;
+    await expect(
+      scheduler.reconcileRecoveryBeforeWorkspaceOpen?.("/workspace/recovered"),
+    ).rejects.toThrow(/RECOVERY_ACK_PENDING/);
+    expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledOnce();
+    lease?.resume();
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(ackNarrativeMaintenanceRecovery.mock.calls).toEqual([
+      ["41"],
+      ["41"],
+    ]);
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS * 2);
+    expect(ackNarrativeMaintenanceDelivery.mock.calls.slice(0, 2)).toEqual([
+      [1],
+      [1],
+    ]);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+    const leaseAgain = await scheduler.quiesceForWorkspaceSwitch?.();
+    const draining = scheduler.reconcileRecoveryBeforeWorkspaceOpen?.(
+      "/workspace/recovered",
+    );
+    await vi.waitFor(() => {
+      expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledTimes(3);
+    });
+    if (timerResponse === "drain-rejects-first") {
+      drainAck.reject(new Error("recovery drain ACK response lost"));
+      await draining;
+      timerAck.resolve({ status: "retired" });
+    } else if (timerResponse !== "rejected") {
+      timerAck.resolve({ status: "retired" });
+      await Promise.resolve();
+      await Promise.resolve();
+      if (timerResponse === "retired") {
+        drainAck.reject(new Error("late recovery ACK response lost"));
+      } else {
+        drainAck.resolve({ status: "retired" });
+      }
+    } else {
+      drainAck.resolve({ status: "retired" });
+      await draining;
+      timerAck.reject(new Error("late timer ACK response lost"));
+    }
+    await draining;
+    await Promise.resolve();
+    await Promise.resolve();
+    if (timerResponse === "drain-rejects-first") {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      const sequenceOneAcks = ackNarrativeMaintenanceDelivery.mock.calls.filter(
+        ([sequence]) => sequence === 1,
+      );
+      expect(sequenceOneAcks).toHaveLength(3);
+    }
+    leaseAgain?.resume();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + BACKLOG_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(requests[1]?.deliverySequence).toBe(2);
+    expect(requests[1]?.deliveryFingerprint).not.toBe(
+      requests[0]?.deliveryFingerprint,
+    );
+    expect(onCompletionRecoveryAcknowledged).toHaveBeenCalledExactlyOnceWith(
+      recoveredBinding,
+    );
+    expect(resolveNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+    expect(
+      renderedWarnings(warn).some((message) =>
+        message.includes("retaining delivery ACK sequence 1 for retry"),
+      ),
+    ).toBe(false);
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
+    if (timerResponse === "drain-rejects-first") {
+      expect(
+        ackNarrativeMaintenanceDelivery.mock.calls.filter(
+          ([sequence]) => sequence === 1,
+        ),
+      ).toHaveLength(3);
+    }
+  });
+
+  it("replays the exact delivery when fence resolution fails before Native commits", async () => {
+    const binding = { authorityId: "authority-uncommitted-fence", generation: 4 };
+    const firstWork = work(
+      "project-uncommitted-fence",
+      "backfill",
+      "backfill:v2",
+      "first",
+    );
+    const laterWork = work(
+      "project-uncommitted-fence",
+      "dependency-verify",
+      "verify:v2",
+      "later",
+    );
+    const cycleRequests: NarrativeMaintenanceCycleRequest[] = [];
+    const runNarrativeMaintenanceCycle = vi.fn(
+      (request: NarrativeMaintenanceCycleRequest) => {
+        cycleRequests.push(request);
+        return cycleRequests.length === 1
+          ? Promise.reject(new Error("lost before Native delivery admission"))
+          : Promise.resolve(acceptedCycle());
+      },
+    );
+    const attemptBindings = new Map<string, typeof binding>();
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) => {
+        attemptBindings.set(attemptId, receivedBinding);
+        return JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        });
+      },
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      const receiptBinding = attemptBindings.get(attemptId)!;
+      const succeeded = cancelNarrativeMaintenanceAttempt.mock.calls.length > 1;
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: succeeded ? "succeeded" : "interrupted",
+        stopReason: succeeded ? null : "closed",
+        generation: receiptBinding.generation,
+        workspaceBinding: receiptBinding,
+        publishedGeneration: succeeded ? receiptBinding.generation : null,
+        works: succeeded
+          ? cycleRequests[cycleRequests.length - 1]!.work.map((item) => ({
+              workKey: canonicalNarrativeMaintenanceWorkKey(item),
+              status: "succeeded",
+            }))
+          : [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    });
+    const resolveNarrativeMaintenanceDelivery = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("resolve failed before fence commit"))
+      .mockResolvedValue({ status: "fenced" });
+    const ackNarrativeMaintenanceDelivery = vi.fn(
+      async (): Promise<{ status: "pending" | "retired" }> =>
+        cycleRequests.length === 1
+          ? { status: "pending" }
+          : { status: "retired" },
+    );
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+      resolveNarrativeMaintenanceDelivery,
+      ackNarrativeMaintenanceDelivery,
+    });
+
+    scheduler.request(firstWork);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(resolveNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+    expect(ackNarrativeMaintenanceDelivery).not.toHaveBeenCalled();
+
+    scheduler.request(laterWork);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(cycleRequests[1]).toMatchObject({
+      deliverySequence: cycleRequests[0]?.deliverySequence,
+      deliveryFingerprint: cycleRequests[0]?.deliveryFingerprint,
+      work: cycleRequests[0]?.work,
+    });
+    expect(cycleRequests[1]?.deliverySequence).toBe(1);
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledExactlyOnceWith(1);
+
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(3);
+    expect(cycleRequests[2]?.deliverySequence).toBe(2);
+    expect(cycleRequests[2]?.work).toEqual([
+      expect.objectContaining({ workKey: laterWork.workKey }),
+    ]);
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
   });
 
   it("retries the exact H+1 delivery after Native capacity frees", async () => {
@@ -1042,6 +3521,87 @@ describe("narrative maintenance scheduler", () => {
     // unavailable-scoped entry: no further cycle fires.
     await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS * 3);
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries an exact lifecycle-no-workspace rejection with delivery APIs and no binding", async () => {
+    let binding: { authorityId: string; generation: number } | null = null;
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "workspace-unavailable",
+        reason: "lifecycle-no-workspace",
+      })
+      .mockResolvedValue(acceptedCycle());
+    const ackNarrativeMaintenanceDelivery = vi.fn().mockResolvedValue({
+      status: "retired",
+    });
+    const beginNarrativeMaintenanceAttempt = vi.fn();
+    const cancelNarrativeMaintenanceAttempt = vi.fn();
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      ackNarrativeMaintenanceDelivery,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+    });
+
+    scheduler.request(
+      work("project-no-workspace", "backfill", "backfill:v2", "opened"),
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    binding = { authorityId: "authority-restored", generation: 9 };
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(beginNarrativeMaintenanceAttempt).not.toHaveBeenCalled();
+    expect(cancelNarrativeMaintenanceAttempt).not.toHaveBeenCalled();
+    expect(ackNarrativeMaintenanceDelivery.mock.calls).toEqual([[1], [2]]);
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0].deliverySequence).toBe(
+      2,
+    );
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
+  });
+
+  it("keeps legacy workspace-unavailable retries when lifecycle begin falls back locally", async () => {
+    const binding = { authorityId: "authority-local-attempt-fallback", generation: 19 };
+    const workItem = work(
+      "project-local-attempt-fallback",
+      "backfill",
+      "backfill:v2",
+      "opened",
+    );
+    const requests: NarrativeMaintenanceCycleRequest[] = [];
+    const runNarrativeMaintenanceCycle = vi.fn(
+      (request: NarrativeMaintenanceCycleRequest) => {
+        requests.push(request);
+        return Promise.resolve(
+          requests.length === 1
+            ? { status: "workspace-unavailable" as const }
+            : acceptedCycle(),
+        );
+      },
+    );
+    const beginNarrativeMaintenanceAttempt = vi.fn().mockResolvedValue(undefined);
+    const cancelNarrativeMaintenanceAttempt = vi.fn();
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+    });
+
+    scheduler.request(workItem);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+
+    expect(beginNarrativeMaintenanceAttempt).toHaveBeenCalledTimes(2);
+    expect(cancelNarrativeMaintenanceAttempt).not.toHaveBeenCalled();
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(requests[1]?.work).toEqual(requests[0]?.work);
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
   });
 
   it("retains a project-scoped durable wake when its workspace is unavailable", async () => {
@@ -2681,43 +5241,81 @@ describe("narrative maintenance scheduler", () => {
       "backfill:v2",
       "open",
     );
-    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue({
-      status: "workspace-unavailable",
-    });
+    const rediscoveredWork = {
+      ...workItem,
+      reason: "rediscovered-after-recovery",
+    };
+    const cycleRequests: NarrativeMaintenanceCycleRequest[] = [];
+    const runNarrativeMaintenanceCycle = vi.fn(
+      (request: NarrativeMaintenanceCycleRequest) => {
+        cycleRequests.push(request);
+        return Promise.resolve(
+          cycleRequests.length === 1
+            ? {
+                status: "workspace-unavailable" as const,
+                reason: "maintenance-workspace-changed-during-cycle",
+              }
+            : acceptedCycle(),
+        );
+      },
+    );
+    const attemptBindings = new Map<string, typeof failedBinding>();
     const beginNarrativeMaintenanceAttempt = vi.fn(
-      (attemptId: string, binding: typeof failedBinding) =>
-        JSON.stringify({
+      (attemptId: string, binding: typeof failedBinding) => {
+        attemptBindings.set(attemptId, binding);
+        return JSON.stringify({
           status: "open",
           attemptId,
           authorityId: binding.authorityId,
           generation: binding.generation,
-        }),
+        });
+      },
     );
-    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) =>
-      JSON.stringify({
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      const binding = attemptBindings.get(attemptId)!;
+      const failedCleanup = cancelNarrativeMaintenanceAttempt.mock.calls.length === 1;
+      return JSON.stringify({
         schemaVersion: 1,
         attemptId,
-        state: "interrupted",
-        stopReason: "closed",
-        generation: failedBinding.generation,
-        workspaceBinding: failedBinding,
-        publishedGeneration: null,
-        works: [],
-        cleanup: { status: "failed", error: "rollback failed" },
-        connectionReusable: false,
-      }),
-    );
+        state: failedCleanup ? "interrupted" : "succeeded",
+        stopReason: failedCleanup ? "closed" : null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: failedCleanup ? null : binding.generation,
+        works: failedCleanup
+          ? []
+          : [
+              {
+                workKey: canonicalNarrativeMaintenanceWorkKey(rediscoveredWork),
+                status: "succeeded",
+              },
+            ],
+        cleanup: failedCleanup
+          ? { status: "failed", error: "rollback failed" }
+          : { status: "clean" },
+        connectionReusable: !failedCleanup,
+      });
+    });
     const reconcileNarrativeMaintenanceRecovery = vi
       .fn()
       .mockResolvedValueOnce({ status: "none" })
-      .mockResolvedValue({
+      .mockResolvedValueOnce({
         status: "reconciled",
         descriptorId: 92,
         reason: "maintenance-recovery-complete",
         recoveredBinding: failedBinding,
         activeBinding: recoveredBinding,
         reboundBinding: recoveredBinding,
-      });
+      })
+      .mockResolvedValueOnce({
+        status: "reconciled",
+        descriptorId: 92,
+        reason: "maintenance-recovery-complete",
+        recoveredBinding: failedBinding,
+        activeBinding: recoveredBinding,
+        reboundBinding: recoveredBinding,
+      })
+      .mockResolvedValue({ status: "none" });
     const ackNarrativeMaintenanceRecovery = vi
       .fn()
       .mockRejectedValueOnce(new Error("recovery ACK temporarily unavailable"))
@@ -2729,15 +5327,24 @@ describe("narrative maintenance scheduler", () => {
     const ackNarrativeMaintenanceDelivery = vi.fn().mockResolvedValue({
       status: "retired",
     });
-    const { scheduler } = createScheduler({
-      getNarrativeMaintenanceWorkspaceBinding: () => recoveredBinding,
-      runNarrativeMaintenanceCycle,
-      beginNarrativeMaintenanceAttempt,
-      cancelNarrativeMaintenanceAttempt,
-      reconcileNarrativeMaintenanceRecovery,
-      ackNarrativeMaintenanceRecovery,
-      ackNarrativeMaintenanceDelivery,
+    let scheduler!: ReturnType<typeof createNarrativeMaintenanceScheduler>;
+    const onWorkspaceBindingMismatch = vi.fn();
+    const onCompletionRecoveryAcknowledged = vi.fn((currentBinding) => {
+      scheduler.requestWithBinding(rediscoveredWork, currentBinding);
     });
+    scheduler = createScheduler(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => recoveredBinding,
+        runNarrativeMaintenanceCycle,
+        beginNarrativeMaintenanceAttempt,
+        cancelNarrativeMaintenanceAttempt,
+        reconcileNarrativeMaintenanceRecovery,
+        ackNarrativeMaintenanceRecovery,
+        ackNarrativeMaintenanceDelivery,
+      },
+      vi.fn(),
+      { onWorkspaceBindingMismatch, onCompletionRecoveryAcknowledged },
+    ).scheduler;
 
     scheduler.requestWithBinding(workItem, failedBinding);
     scheduler.start();
@@ -2754,6 +5361,19 @@ describe("narrative maintenance scheduler", () => {
     expect(ackNarrativeMaintenanceRecovery).toHaveBeenCalledTimes(2);
     expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledOnce();
     expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledWith(1);
+    expect(onWorkspaceBindingMismatch).toHaveBeenCalledOnce();
+    expect(onCompletionRecoveryAcknowledged).toHaveBeenCalledExactlyOnceWith(
+      recoveredBinding,
+    );
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    expect(cycleRequests[1]?.workspaceBinding).toEqual(recoveredBinding);
+    expect(cycleRequests[1]?.work).toEqual([
+      expect.objectContaining({
+        workKey: rediscoveredWork.workKey,
+        reasons: [rediscoveredWork.reason],
+      }),
+    ]);
   });
 
   it.each(["pump", "target-open"])("clears %s recovery ownership after a later retry retires the old delivery", async (recoveryPath) => {

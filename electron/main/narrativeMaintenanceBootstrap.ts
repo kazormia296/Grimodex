@@ -66,6 +66,9 @@ export function bootstrapNarrativeMaintenance(
     onWorkspaceBindingMismatch: () => {
       coordinator?.requestRediscovery();
     },
+    onCompletionRecoveryAcknowledged: (currentBinding) => {
+      coordinator?.requestRecoveryRediscovery(currentBinding);
+    },
     onCycleAccepted: () => {
       coordinator?.requestRediscovery();
       // Accepted cycles double as a wake-outbox drain point so an Epoch

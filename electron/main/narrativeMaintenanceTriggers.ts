@@ -47,6 +47,10 @@ export interface NarrativeMaintenanceTriggerCoordinator {
   /** Re-enter the durable BeforeCutover preparation chain after NOT_READY. */
   requestBeforeCutoverPreparation(): void;
   requestRediscovery(): void;
+  /** Start bounded discovery after exact completion proof and its delivery ACK. */
+  requestRecoveryRediscovery(
+    currentBinding: NarrativeMaintenanceWorkspaceBinding,
+  ): void;
   /**
    * Deliver Epoch-rotation wakes committed to the durable outbox. Each
    * pending row starts a discovery chain and is acknowledged only after the
@@ -324,6 +328,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     workspaceBinding: NarrativeMaintenanceWorkspaceBinding;
     generation: number;
   } | null = null;
+  let retryWakeOutboxAfterRecoveryDiscovery = false;
   let wakeOutboxDrainInFlight = false;
   let wakeOutboxDrainSucceeded = false;
   let wakeOutboxDrainFailed = false;
@@ -334,6 +339,10 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     generation: number;
     response: NarrativeMaintenanceDiscoveryResult;
     workspaceBinding: NarrativeMaintenanceWorkspaceBinding;
+  } | null = null;
+  let recoveryDiscoveryBinding: {
+    generation: number;
+    binding: NarrativeMaintenanceWorkspaceBinding;
   } | null = null;
 
   const setWakeOutboxState = (next: {
@@ -441,6 +450,35 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           return;
         }
         completedResponse = response;
+        const recoveryBinding =
+          recoveryDiscoveryBinding?.generation === discoveryGeneration
+            ? recoveryDiscoveryBinding
+            : null;
+        if (recoveryBinding !== null) {
+          const getBinding = backend?.getNarrativeMaintenanceWorkspaceBinding;
+          let currentBinding: NarrativeMaintenanceWorkspaceBinding | null = null;
+          try {
+            if (typeof getBinding !== "function") {
+              throw new Error("native workspace binding is unavailable");
+            }
+            currentBinding = normalizeOptionalBinding(getBinding.call(backend));
+          } catch (error) {
+            warn(
+              "[narrative-maintenance] exact recovery discovery binding recheck failed:",
+              error,
+            );
+            return;
+          }
+          if (
+            !sameBinding(recoveryBinding.binding, response.workspaceBinding) ||
+            !sameBinding(recoveryBinding.binding, currentBinding)
+          ) {
+            warn(
+              "[narrative-maintenance] exact recovery discovery binding changed before registration",
+            );
+            return;
+          }
+        }
         // A durable wake belongs to the authority that listed it.  Verify
         // the discovery response and the live binding *before* scheduler
         // registration: otherwise a replacement workspace response could
@@ -483,6 +521,9 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           response.work,
           response.workspaceBinding,
         );
+        if (recoveryBinding !== null && recoveryDiscoveryBinding === recoveryBinding) {
+          recoveryDiscoveryBinding = null;
+        }
         // A durable wake cannot be ACKed merely because a timer was armed.
         // Its native discovery response must have been fully validated and
         // registered with the scheduler under the same live workspace
@@ -649,6 +690,14 @@ export function createNarrativeMaintenanceTriggerCoordinator(
               callbackError,
             );
           }
+        }
+        if (
+          retryWakeOutboxAfterRecoveryDiscovery &&
+          discoveryGeneration === chainGeneration &&
+          !disposed
+        ) {
+          retryWakeOutboxAfterRecoveryDiscovery = false;
+          void drainWakeOutbox();
         }
       }
     })();
@@ -833,6 +882,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       // The wake payload is only "this workspace has a rotated Epoch"; the
       // discovery planner reads the durable state machine, so one discovery
       // chain covers every pending row.
+      recoveryDiscoveryBinding = null;
       const generation = ++chainGeneration;
       rediscoveryAttempts = 0;
       lastDiscoveryFingerprint = null;
@@ -868,6 +918,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       // epoch wakes carry stronger authority and must remain pending while a
       // before-cutover callback is being delivered.
       if (beforeCutoverChainActive() || higherValueWakeActive()) return;
+      recoveryDiscoveryBinding = null;
       const generation = ++chainGeneration;
       noteMutation();
       rediscoveryAttempts = 0;
@@ -884,6 +935,61 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       }
       pendingEvent = null;
       armTimer("before-cutover", 0, generation);
+    },
+    requestRecoveryRediscovery(currentBinding): void {
+      if (disposed) return;
+      const getBinding = backend?.getNarrativeMaintenanceWorkspaceBinding;
+      let liveBinding: NarrativeMaintenanceWorkspaceBinding | null = null;
+      try {
+        if (typeof getBinding !== "function") {
+          throw new Error("native workspace binding is unavailable");
+        }
+        liveBinding = normalizeOptionalBinding(getBinding.call(backend));
+      } catch (error) {
+        warn(
+          "[narrative-maintenance] exact recovery binding unavailable:",
+          error,
+        );
+        return;
+      }
+      if (!sameBinding(currentBinding, liveBinding)) {
+        warn(
+          "[narrative-maintenance] exact recovery binding is no longer current",
+        );
+        return;
+      }
+      // Exact completion proof starts a fresh bounded planner read directly;
+      // it is not synthesized as a workspace or Epoch observer event.
+      const generation = ++chainGeneration;
+      noteMutation();
+      rediscoveryAttempts = 0;
+      lastDiscoveryFingerprint = null;
+      const pendingAck = pendingWakeOutboxAck;
+      if (pendingAck !== null) {
+        if (sameBinding(pendingAck.workspaceBinding, currentBinding)) {
+          pendingWakeOutboxAck = { ...pendingAck, generation };
+        } else {
+          pendingWakeOutboxAck = null;
+          retryWakeOutboxAfterRecoveryDiscovery = true;
+          setWakeOutboxState({
+            inFlight: false,
+            succeeded: false,
+            failed: true,
+            pendingRows: true,
+          });
+        }
+      }
+      const reason = lastWakeReason ?? "workspace-opened";
+      lastWakeReason = reason;
+      recoveryDiscoveryBinding = { generation, binding: currentBinding };
+      clearTimer();
+      pendingRetryDelayMs = null;
+      if (discoveryInFlight) {
+        pendingEvent = { reason, generation };
+        return;
+      }
+      pendingEvent = null;
+      armTimer(reason, 0, generation);
     },
     handleBackendEvent(channel, payload): void {
       if (
@@ -917,6 +1023,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           return;
         }
       }
+      recoveryDiscoveryBinding = null;
       const generation = ++chainGeneration;
       noteMutation();
       rediscoveryAttempts = 0;

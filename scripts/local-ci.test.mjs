@@ -3873,6 +3873,8 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
   assert.deepEqual(nativeTestsTask.after, ["bootstrap.install"]);
   assert.equal(nativeTestsTask.lane, "cargo-native");
   assert.equal(nativeTestsTask.slots, 2);
+  assert.ok(nativeTestsTask.timeoutMs > 0);
+  assert.equal(nativeTestsTask.timeoutMs, 900_000);
   assert.equal(nativeTestsTask.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
   assert.equal(nativeTestsTask.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
   assert.equal(nativeTestsTask.command.env.CARGO_BUILD_JOBS, "2");

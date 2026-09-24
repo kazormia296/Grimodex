@@ -129,6 +129,149 @@ describe("narrative maintenance trigger coordinator", () => {
     expect(scheduler.requestManyWithBinding).not.toHaveBeenCalled();
   });
 
+  it("starts exact recovery discovery with a generic planner scan when no wake reason remains", async () => {
+    const binding = { authorityId: "recovered-current-authority", generation: 14 };
+    const scheduler = makeScheduler();
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery(binding.authorityId, binding.generation, [
+        [backfill("recovered-current-project")],
+      ]),
+    );
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        discoverNarrativeMaintenanceWork,
+      },
+      scheduler,
+    );
+
+    coordinator.requestRecoveryRediscovery(binding);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledExactlyOnceWith(
+      "workspace-opened",
+    );
+    expect(scheduler.requestManyWithBinding).toHaveBeenCalledWith(
+      [expect.objectContaining({ projectId: "recovered-current-project" })],
+      binding,
+    );
+    await coordinator.dispose();
+  });
+
+  it("rejects exact recovery discovery if its proven binding is no longer current", async () => {
+    const expectedBinding = { authorityId: "recovered-authority", generation: 14 };
+    const currentBinding = { authorityId: "later-authority", generation: 15 };
+    const scheduler = makeScheduler();
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery(expectedBinding.authorityId, expectedBinding.generation, [
+        [backfill("stale-recovery-project")],
+      ]),
+    );
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+        discoverNarrativeMaintenanceWork,
+      },
+      scheduler,
+    );
+
+    coordinator.requestRecoveryRediscovery(expectedBinding);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(discoverNarrativeMaintenanceWork).not.toHaveBeenCalled();
+    expect(scheduler.requestManyWithBinding).not.toHaveBeenCalled();
+    await coordinator.dispose();
+  });
+
+  it("carries a same-binding outbox ACK into proof-scoped rediscovery", async () => {
+    const binding = { authorityId: "authority-outbox-recovery", generation: 18 };
+    const scheduler = makeScheduler();
+    const ackNarrativeMaintenanceWakeOutbox = vi
+      .fn()
+      .mockResolvedValue({ status: "accepted", acknowledged: 1 });
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery(binding.authorityId, binding.generation, [
+        [backfill("outbox-recovery-project")],
+      ]),
+    );
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => binding,
+        listNarrativeMaintenanceWakeOutbox: vi
+          .fn()
+          .mockResolvedValue([{ id: "wake-recovery" }]),
+        ackNarrativeMaintenanceWakeOutbox,
+        discoverNarrativeMaintenanceWork,
+      },
+      scheduler,
+    );
+
+    await coordinator.drainWakeOutbox();
+    expect(coordinator.getQuiescenceState?.().wakeAckPending).toBe(true);
+    coordinator.requestRecoveryRediscovery(binding);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledOnce();
+    expect(scheduler.requestManyWithBinding).toHaveBeenCalledWith(
+      [expect.objectContaining({ projectId: "outbox-recovery-project" })],
+      binding,
+    );
+    expect(ackNarrativeMaintenanceWakeOutbox).toHaveBeenCalledExactlyOnceWith(
+      ["wake-recovery"],
+      binding,
+    );
+    expect(coordinator.getQuiescenceState?.().wakeAckPending).toBe(false);
+    await coordinator.dispose();
+  });
+
+  it("never carries a stale wake ACK into replacement-binding discovery", async () => {
+    const originalBinding = { authorityId: "authority-outbox-old", generation: 18 };
+    const replacementBinding = {
+      authorityId: "authority-outbox-new",
+      generation: 19,
+    };
+    let currentBinding = originalBinding;
+    const scheduler = makeScheduler();
+    const listNarrativeMaintenanceWakeOutbox = vi
+      .fn()
+      .mockResolvedValueOnce([{ id: "old-authority-wake" }])
+      .mockResolvedValueOnce([]);
+    const ackNarrativeMaintenanceWakeOutbox = vi
+      .fn()
+      .mockResolvedValue({ status: "accepted", acknowledged: 1 });
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery(replacementBinding.authorityId, replacementBinding.generation, [
+        [backfill("replacement-outbox-project")],
+      ]),
+    );
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+        listNarrativeMaintenanceWakeOutbox,
+        ackNarrativeMaintenanceWakeOutbox,
+        discoverNarrativeMaintenanceWork,
+      },
+      scheduler,
+    );
+
+    await coordinator.drainWakeOutbox();
+    currentBinding = replacementBinding;
+    coordinator.requestRecoveryRediscovery(replacementBinding);
+    await vi.runAllTimersAsync();
+
+    expect(scheduler.requestManyWithBinding).toHaveBeenCalledWith(
+      [expect.objectContaining({ projectId: "replacement-outbox-project" })],
+      replacementBinding,
+    );
+    expect(listNarrativeMaintenanceWakeOutbox).toHaveBeenCalledTimes(2);
+    expect(ackNarrativeMaintenanceWakeOutbox).not.toHaveBeenCalledWith(
+      ["old-authority-wake"],
+      replacementBinding,
+    );
+    expect(coordinator.getQuiescenceState?.().wakeAckPending).toBe(false);
+    await coordinator.dispose();
+  });
+
   it("routes an expected C2-ZC NOT_READY wake through BeforeCutover discovery", async () => {
     const scheduler = makeScheduler();
     const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
