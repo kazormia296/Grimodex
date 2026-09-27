@@ -47,6 +47,10 @@ impl Fixture {
     }
 
     fn with_direction(direction: &str) -> Result<Self> {
+        Self::with_extra_relation(direction, false)
+    }
+
+    fn with_extra_relation(direction: &str, extra_relation: bool) -> Result<Self> {
         let directory = TestDirectory(
             std::env::temp_dir().join(format!("nir1-c-graph-{}", uuid::Uuid::new_v4())),
         );
@@ -60,6 +64,14 @@ impl Fixture {
                 "UPDATE codex_relations SET directionality=?1 WHERE id='nir1-edge'",
                 [direction],
             )?;
+            if extra_relation {
+                conn.execute(
+                    "INSERT INTO codex_relations
+                     (id,project_id,from_codex_id,to_codex_id,relation_type,directionality,version,updated_at)
+                     VALUES ('nir1-edge-b','default-project','nir1-alice','nir1-bob','related',?1,1,'2026-09-12T00:00:00Z')",
+                    [direction],
+                )?;
+            }
             Ok(())
         })?;
         run_incremental_freshness_cycle(&db)?;
@@ -71,6 +83,13 @@ impl Fixture {
             entity.scope.phase = "draft".into();
         }
         typed.bundle.relations[0].directionality = direction.into();
+        if extra_relation {
+            let mut relation = typed.bundle.relations[0].clone();
+            relation.edge_id = "nir1-edge-b".into();
+            relation.relation_type = "related".into();
+            relation.source_token = "v1@2026-09-12T00:00:00Z:relation:nir1-edge-b".into();
+            typed.bundle.relations.push(relation);
+        }
         let created = create_nir1_entity_relation_revision(&db, typed)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
@@ -144,12 +163,27 @@ fn production_query_has_an_available_8ms_success_path() -> Result<()> {
     let started = Instant::now();
     let response = reader.query(&graph_request("nir1-alice"))?;
     let elapsed = started.elapsed();
+    eprintln!(
+        "production graph query: status={} reason={:?} elapsed={elapsed:?}",
+        response.status, response.reason
+    );
+    if response.status != "available" {
+        // Diagnostic only: distinguish the 8 ms deadline from a fixture or
+        // qualification failure without relaxing the production assertion.
+        let diagnostic_started = Instant::now();
+        let diagnostic = query(&mut reader, "nir1-alice")?;
+        eprintln!(
+            "generous-deadline diagnostic: status={} reason={:?} elapsed={:?}",
+            diagnostic.status,
+            diagnostic.reason,
+            diagnostic_started.elapsed()
+        );
+    }
     assert_eq!(response.status, "available", "{:?}", response.reason);
     assert!(
         elapsed < Duration::from_millis(8),
         "production query exceeded its 8ms wall budget: {elapsed:?}"
     );
-    eprintln!("production graph query elapsed: {elapsed:?}");
     Ok(())
 }
 
@@ -161,6 +195,32 @@ fn assert_unavailable(response: &Nir1GraphResponse, reason: &str) {
         "failure must not expose a partial graph"
     );
     assert!(response.scope_revision.is_none());
+}
+
+#[test]
+fn registered_graph_preserves_multi_edge_order_and_bindings() -> Result<()> {
+    let fixture = Fixture::with_extra_relation("directed", true)?;
+    let mut reader = fixture.registered_reader()?;
+    let response = query(&mut reader, "nir1-alice")?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    let graph = response.graph.unwrap();
+    assert_eq!(graph.edges.len(), 2);
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .map(|edge| edge.relation.edge_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["nir1-edge", "nir1-edge-b"]
+    );
+    for edge in &graph.edges {
+        assert_eq!(edge.binding.revision_id, fixture.revision);
+        assert_eq!(edge.from.entity_id, "nir1-alice");
+        assert_eq!(edge.to.entity_id, "nir1-bob");
+        assert!(!edge.binding.decision_token.is_empty());
+        assert!(!edge.binding.freshness_token.is_empty());
+    }
+    Ok(())
 }
 
 #[test]
@@ -338,6 +398,26 @@ fn exhausted_deadline_or_sql_budget_rolls_back_actual_connection() -> Result<()>
     }
     // Exhaustion must not strand an open read transaction or poison the owner.
     assert_eq!(query(&mut reader, "nir1-alice")?.status, "available");
+    Ok(())
+}
+
+#[cfg(feature = "nir1-material-diagnostics")]
+#[test]
+fn diagnostic_stage_observation_reports_deadline_and_stamp_flags_only() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut reader = fixture.registered_reader()?;
+    let (result, observation) = reader.query_with_stage_observation_and_deadline(
+        &graph_request("nir1-alice"),
+        Duration::ZERO,
+        100_000,
+    );
+    assert_unavailable(&result?, "query-budget-or-validation-failed");
+    assert!(observation.work_result_error);
+    assert!(observation.post_stamp_error);
+    assert!(observation.deadline_observed_at_collapse);
+    assert!(observation.unattributed);
+    assert!(observation.cleanup_post_stamp_ns.is_some());
+    assert!(reader.connection.as_ref().unwrap().is_autocommit());
     Ok(())
 }
 

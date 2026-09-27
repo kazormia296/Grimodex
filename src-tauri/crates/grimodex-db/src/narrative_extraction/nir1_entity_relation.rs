@@ -474,13 +474,9 @@ fn build_typed_material_basis(
     conn: &Connection,
     project_id: &str,
     bundle: &EntityRelationBundle,
+    authority: &NarrativeProjectScopeAuthorityV1,
     observed_at: &str,
 ) -> anyhow::Result<MaterialBasis> {
-    let authority = load_live_project_scope_authority(
-        conn,
-        project_id,
-        &format!("project:scope-authority:{project_id}"),
-    )?;
     let scope_source_key = authority.source.source_key.clone();
     let mut source_basis = bundle
         .entities
@@ -505,7 +501,7 @@ fn build_typed_material_basis(
         .chain(std::iter::once(MaterialSourceBasisEntry {
             source_kind: "project-scope-authority".into(),
             source_key: scope_source_key.clone(),
-            revision_token: authority.source.revision_token,
+            revision_token: authority.source.revision_token.clone(),
             revision_observed_at: Some(observed_at.into()),
         }))
         .collect::<Vec<_>>();
@@ -1387,7 +1383,7 @@ fn create_in_tx(
     bundle.revision_id = revision_id.clone();
     validate_entity_relation_bundle(&bundle)
         .map_err(|error| anyhow::anyhow!("NIR1_ENTITY_RELATION_INPUT_INVALID: {error}"))?;
-    validate_live_sources(conn, &request.project_id, &bundle)?;
+    let authority = validate_live_sources(conn, &request.project_id, &bundle)?;
 
     let payload = StoredNir1EntityRelationPayload {
         schema_version: 1,
@@ -1404,7 +1400,8 @@ fn create_in_tx(
     let proposal_set_id = Uuid::new_v4().to_string();
     let proposal_id = Uuid::new_v4().to_string();
     let created_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-    let material = build_typed_material_basis(conn, &request.project_id, &bundle, &created_at)?;
+    let material =
+        build_typed_material_basis(conn, &request.project_id, &bundle, &authority, &created_at)?;
     let envelope = build_typed_envelope(
         &request.run_id,
         &revision_id,
@@ -1839,12 +1836,51 @@ pub fn find_nir1_entity_relation_revision_run(
     .map_err(Into::into)
 }
 
+enum TypedRevisionCoreReadWithScopeAuthority {
+    Draft {
+        revision: Box<Nir1EntityRelationRevision>,
+    },
+    Available {
+        revision: Box<Nir1EntityRelationRevision>,
+        authority: NarrativeProjectScopeAuthorityV1,
+    },
+    Unavailable {
+        reason: String,
+    },
+}
+
+impl TypedRevisionCoreReadWithScopeAuthority {
+    fn into_current_read(self) -> Nir1EntityRelationRevisionCurrentRead {
+        match self {
+            Self::Draft { revision } => Nir1EntityRelationRevisionCurrentRead::Draft(revision),
+            Self::Available { revision, .. } => {
+                Nir1EntityRelationRevisionCurrentRead::Available(revision)
+            }
+            Self::Unavailable { reason } => {
+                Nir1EntityRelationRevisionCurrentRead::Unavailable { reason }
+            }
+        }
+    }
+}
+
 fn read_typed_revision_core(
     conn: &Connection,
     project_id: &str,
     revision_id: &str,
     allow_draft: bool,
 ) -> anyhow::Result<Nir1EntityRelationRevisionCurrentRead> {
+    Ok(
+        read_typed_revision_core_with_scope_authority(conn, project_id, revision_id, allow_draft)?
+            .into_current_read(),
+    )
+}
+
+fn read_typed_revision_core_with_scope_authority(
+    conn: &Connection,
+    project_id: &str,
+    revision_id: &str,
+    allow_draft: bool,
+) -> anyhow::Result<TypedRevisionCoreReadWithScopeAuthority> {
     if conn.is_autocommit() {
         anyhow::bail!("NIR1_ENTITY_RELATION_REQUIRES_READ_TRANSACTION");
     }
@@ -2053,18 +2089,22 @@ fn read_typed_revision_core(
     if validate_entity_relation_bundle(&payload.bundle).is_err() {
         return Ok(unavailable("source-revision-changed"));
     }
-    if let Err(error) = validate_live_sources(conn, project_id, &payload.bundle) {
-        if is_validation_terminated(&error) {
-            return Err(error);
-        }
-        return Ok(unavailable("source-revision-changed"));
-    }
-    let expected_material =
-        match build_typed_material_basis(conn, project_id, &payload.bundle, &revision_created_at) {
-            Ok(material) => material,
-            Err(error) if is_validation_terminated(&error) => return Err(error),
-            Err(_) => return Ok(unavailable("revision-material-mismatch")),
-        };
+    let authority = match validate_live_sources(conn, project_id, &payload.bundle) {
+        Ok(authority) => authority,
+        Err(error) if is_validation_terminated(&error) => return Err(error),
+        Err(_) => return Ok(unavailable("source-revision-changed")),
+    };
+    let expected_material = match build_typed_material_basis(
+        conn,
+        project_id,
+        &payload.bundle,
+        &authority,
+        &revision_created_at,
+    ) {
+        Ok(material) => material,
+        Err(error) if is_validation_terminated(&error) => return Err(error),
+        Err(_) => return Ok(unavailable("revision-material-mismatch")),
+    };
     if expected_material != material_basis {
         return Ok(unavailable("revision-material-mismatch"));
     }
@@ -2105,9 +2145,12 @@ fn read_typed_revision_core(
         decision,
     });
     if human_approved {
-        Ok(Nir1EntityRelationRevisionCurrentRead::Available(revision))
+        Ok(TypedRevisionCoreReadWithScopeAuthority::Available {
+            revision,
+            authority,
+        })
     } else {
-        Ok(Nir1EntityRelationRevisionCurrentRead::Draft(revision))
+        Ok(TypedRevisionCoreReadWithScopeAuthority::Draft { revision })
     }
 }
 
@@ -2136,15 +2179,46 @@ pub fn evaluate_nir1_entity_relation_disclosure(
         "NIR1_ENTITY_RELATION_A3_INVALID_READ_REQUEST"
     );
 
-    // Keep this exact current reader as the first and mandatory gate.  In
-    // particular, a stale or draft Revision is never made eligible by a
-    // later Scope match.
-    let revision = match read_nir1_entity_relation_revision(conn, project_id, revision_id)? {
-        Nir1EntityRelationRevisionRead::Available(revision) => revision,
-        Nir1EntityRelationRevisionRead::Unavailable { reason } => {
+    // Keep the exact typed A2 current reader as the mandatory first gate. It
+    // returns its validated Scope authority through a private carrier so A3
+    // consumes the same caller-owned read snapshot without reloading it.
+    let (revision, authority) = match read_typed_revision_core_with_scope_authority(
+        conn,
+        project_id,
+        revision_id,
+        false,
+    )? {
+        TypedRevisionCoreReadWithScopeAuthority::Available {
+            revision,
+            authority,
+        } => (revision, authority),
+        TypedRevisionCoreReadWithScopeAuthority::Draft { .. } => {
+            return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
+                reason: "revision-not-human-approved".into(),
+            });
+        }
+        TypedRevisionCoreReadWithScopeAuthority::Unavailable { reason } => {
             return Ok(Nir1EntityRelationDisclosureRead::Unavailable { reason });
         }
     };
+    evaluate_nir1_entity_relation_disclosure_with_authority(
+        conn,
+        project_id,
+        revision_id,
+        query_scene_id,
+        revision,
+        authority,
+    )
+}
+
+fn evaluate_nir1_entity_relation_disclosure_with_authority(
+    conn: &Connection,
+    project_id: &str,
+    revision_id: &str,
+    query_scene_id: &str,
+    revision: Box<Nir1EntityRelationRevision>,
+    authority: NarrativeProjectScopeAuthorityV1,
+) -> anyhow::Result<Nir1EntityRelationDisclosureRead> {
     anyhow::ensure!(
         revision.project_id == project_id && revision.revision_id == revision_id,
         "NIR1_ENTITY_RELATION_A3_REVISION_IDENTITY_MISMATCH"
@@ -2153,25 +2227,6 @@ pub fn evaluate_nir1_entity_relation_disclosure(
     let freshness_token =
         canonical_json_digest(&serde_json::to_value(&revision.canonical_freshness)?)?;
 
-    let authority = match load_live_project_scope_authority(
-        conn,
-        project_id,
-        &format!("project:scope-authority:{project_id}"),
-    ) {
-        Ok(authority) => authority,
-        Err(error) if is_validation_terminated(&error) => return Err(error),
-        Err(error)
-            if error.downcast_ref::<rusqlite::Error>().is_some()
-                || error.downcast_ref::<std::io::Error>().is_some() =>
-        {
-            return Err(error)
-        }
-        Err(_) => {
-            return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
-                reason: "a3-scope-authority-unavailable".into(),
-            });
-        }
-    };
     // Story inheritance is derived once for this read snapshot and reused by
     // the query-axis guard, phase resolver, explicit Scope checks, and reveal
     // comparator. Recomputing it per pair would both waste work and make it
@@ -3310,8 +3365,8 @@ fn read_scene_viewpoint(
     Ok(viewpoint)
 }
 
-fn unavailable(reason: &str) -> Nir1EntityRelationRevisionCurrentRead {
-    Nir1EntityRelationRevisionCurrentRead::Unavailable {
+fn unavailable(reason: &str) -> TypedRevisionCoreReadWithScopeAuthority {
+    TypedRevisionCoreReadWithScopeAuthority::Unavailable {
         reason: reason.into(),
     }
 }
@@ -3323,7 +3378,7 @@ fn validate_live_sources(
     conn: &Connection,
     project_id: &str,
     bundle: &EntityRelationBundle,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<NarrativeProjectScopeAuthorityV1> {
     let authority = load_live_project_scope_authority(
         conn,
         project_id,
@@ -3433,7 +3488,7 @@ fn validate_live_sources(
             relation.edge_id
         );
     }
-    Ok(())
+    Ok(authority)
 }
 
 fn validate_scope_binding(
@@ -4200,6 +4255,54 @@ pub(super) mod tests {
                 created_by: Some("renderer-reviewer".into()),
             },
         )
+    }
+
+    fn evaluate_a3_with_reloaded_scope_reference(
+        conn: &rusqlite::Connection,
+        project_id: &str,
+        revision_id: &str,
+        query_scene_id: &str,
+    ) -> anyhow::Result<Nir1EntityRelationDisclosureRead> {
+        let revision =
+            match super::read_nir1_entity_relation_revision(conn, project_id, revision_id)? {
+                Nir1EntityRelationRevisionRead::Available(revision) => revision,
+                Nir1EntityRelationRevisionRead::Unavailable { reason } => {
+                    return Ok(Nir1EntityRelationDisclosureRead::Unavailable { reason });
+                }
+            };
+        let authority = super::load_live_project_scope_authority(
+            conn,
+            project_id,
+            &format!("project:scope-authority:{project_id}"),
+        )?;
+        super::evaluate_nir1_entity_relation_disclosure_with_authority(
+            conn,
+            project_id,
+            revision_id,
+            query_scene_id,
+            revision,
+            authority,
+        )
+    }
+
+    fn assert_disclosure_reads_equivalent(
+        reused: &Nir1EntityRelationDisclosureRead,
+        reloaded: &Nir1EntityRelationDisclosureRead,
+    ) {
+        match (reused, reloaded) {
+            (
+                Nir1EntityRelationDisclosureRead::Eligible(reused),
+                Nir1EntityRelationDisclosureRead::Eligible(reloaded),
+            ) => assert!(
+                super::disclosure_identity_matches(reused, reloaded),
+                "reused and reloaded A3 proofs differ"
+            ),
+            (
+                Nir1EntityRelationDisclosureRead::Unavailable { reason: reused },
+                Nir1EntityRelationDisclosureRead::Unavailable { reason: reloaded },
+            ) => assert_eq!(reused, reloaded),
+            _ => panic!("reused and reloaded A3 results differ"),
+        }
     }
 
     #[test]
@@ -5481,6 +5584,46 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn typed_material_basis_matches_independently_loaded_scope_authority() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let bundle = request(&db).bundle;
+        let observed_at = "2026-09-15T00:00:00.000Z";
+        let (authority, reused_material, reloaded_material) = db.with_read_transaction(|conn| {
+            let authority = super::validate_live_sources(conn, "default-project", &bundle)?;
+            let reused_material = super::build_typed_material_basis(
+                conn,
+                "default-project",
+                &bundle,
+                &authority,
+                observed_at,
+            )?;
+            let independently_loaded = super::load_live_project_scope_authority(
+                conn,
+                "default-project",
+                "project:scope-authority:default-project",
+            )?;
+            let reloaded_material = super::build_typed_material_basis(
+                conn,
+                "default-project",
+                &bundle,
+                &independently_loaded,
+                observed_at,
+            )?;
+            Ok((authority, reused_material, reloaded_material))
+        })?;
+
+        assert_eq!(reused_material, reloaded_material);
+        let scope_source = reused_material
+            .source_basis
+            .iter()
+            .find(|source| source.source_kind == "project-scope-authority")
+            .expect("scope authority is in the material basis");
+        assert_eq!(scope_source.revision_token, authority.source.revision_token);
+        Ok(())
+    }
+
+    #[test]
     fn typed_revision_is_native_bound_and_requires_explicit_human_approval() -> anyhow::Result<()> {
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
@@ -5561,6 +5704,12 @@ pub(super) mod tests {
         let error = create_nir1_entity_relation_revision(&db, payload)
             .expect_err("source token must be tied to current Codex row");
         assert!(error.to_string().contains("NIR1_ENTITY_SOURCE_STALE"));
+
+        let mut stale_relation = request(&db);
+        stale_relation.bundle.relations[0].source_token = "stale-relation-token".into();
+        let error = create_nir1_entity_relation_revision(&db, stale_relation)
+            .expect_err("Relation source token must be tied to current Relation row");
+        assert!(error.to_string().contains("NIR1_RELATION_SOURCE_STALE"));
 
         let mut cross_project = request(&db);
         cross_project.bundle.project_id = "other-project".into();
@@ -6699,9 +6848,23 @@ pub(super) mod tests {
             .to_owned();
         approve_typed_revision(&db, "nir1-run", &created)?;
 
-        let proof = db.with_read_transaction(|conn| {
-            evaluate_nir1_entity_relation_disclosure(conn, "default-project", &revision_id, "nir1")
+        let (proof, reloaded_reference) = db.with_read_transaction(|conn| {
+            Ok((
+                evaluate_nir1_entity_relation_disclosure(
+                    conn,
+                    "default-project",
+                    &revision_id,
+                    "nir1",
+                )?,
+                evaluate_a3_with_reloaded_scope_reference(
+                    conn,
+                    "default-project",
+                    &revision_id,
+                    "nir1",
+                )?,
+            ))
         })?;
+        assert_disclosure_reads_equivalent(&proof, &reloaded_reference);
         let mut proof = match proof {
             Nir1EntityRelationDisclosureRead::Eligible(proof) => proof,
             Nir1EntityRelationDisclosureRead::Unavailable { reason } => {
@@ -6949,9 +7112,23 @@ pub(super) mod tests {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("typed revision id missing"))?;
 
-        let read = db.with_read_transaction(|conn| {
-            evaluate_nir1_entity_relation_disclosure(conn, "default-project", revision_id, "nir1")
+        let (read, reloaded_reference) = db.with_read_transaction(|conn| {
+            Ok((
+                evaluate_nir1_entity_relation_disclosure(
+                    conn,
+                    "default-project",
+                    revision_id,
+                    "nir1",
+                )?,
+                evaluate_a3_with_reloaded_scope_reference(
+                    conn,
+                    "default-project",
+                    revision_id,
+                    "nir1",
+                )?,
+            ))
         })?;
+        assert_disclosure_reads_equivalent(&read, &reloaded_reference);
         assert!(matches!(
             read,
             Nir1EntityRelationDisclosureRead::Unavailable { ref reason }

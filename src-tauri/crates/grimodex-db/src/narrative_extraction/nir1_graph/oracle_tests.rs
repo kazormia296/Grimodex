@@ -8,9 +8,10 @@ use crate::narrative_extraction::nir1_entity_relation_index::{
     prepare_graph_index_build, publish_nir1_entity_relation_index_in_tx,
 };
 use crate::workspace_lifecycle::WorkspaceLifecycleCore;
-use grimodex_core::narrative_nir1::ScopeValue;
+use grimodex_core::canonical_json::canonical_json_digest;
+use grimodex_core::narrative_nir1::{EntityRelationBundle, ScopeValue};
 use rusqlite::params;
-use std::collections::{BTreeMap, BTreeSet};
+use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,7 +34,15 @@ struct OracleFixture {
     authority: Arc<WorkspaceAuthority>,
     lifecycle: WorkspaceLifecycleCore,
     target_revision: String,
+    expected_bundle: EntityRelationBundle,
+    generation: i64,
     _directory: TestDirectory,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum DeniedBridge {
+    Unapproved,
+    FutureScope,
 }
 
 struct RegistrationOwner;
@@ -54,6 +63,10 @@ impl GraphWorkControl for RegistrationOwner {
 
 impl OracleFixture {
     fn new() -> Result<Self> {
+        Self::with_denied_bridge(None)
+    }
+
+    fn with_denied_bridge(bridge: Option<DeniedBridge>) -> Result<Self> {
         let directory = TestDirectory(
             std::env::temp_dir().join(format!("nir1-c-graph-oracle-{}", uuid::Uuid::new_v4())),
         );
@@ -71,9 +84,12 @@ impl OracleFixture {
                 params![UNRELATED_ENTITY, PROJECT],
             )?;
             conn.execute(
-                "UPDATE codex_relations SET directionality='directed'
-                  WHERE id='nir1-edge'",
-                [],
+                "INSERT INTO codex_relations
+                    (id, project_id, from_codex_id, to_codex_id, relation_type,
+                     directionality, version, updated_at)
+                 VALUES ('nir1-edge-b', ?1, 'nir1-alice', 'nir1-bob', 'related',
+                         'directed', 1, '2026-09-12T00:00:00Z')",
+                [PROJECT],
             )?;
             Ok(())
         })?;
@@ -86,7 +102,15 @@ impl OracleFixture {
             };
             entity.scope.phase = "draft".into();
         }
-        target.bundle.relations[0].directionality = "directed".into();
+        let mut second_relation = target.bundle.relations[0].clone();
+        second_relation.edge_id = "nir1-edge-b".into();
+        second_relation.relation_type = "related".into();
+        second_relation.source_token = "v1@2026-09-12T00:00:00Z:relation:nir1-edge-b".into();
+        target.bundle.relations.push(second_relation);
+        let expected_bundle = target.bundle.clone();
+        // Storage order differs from the declared output order: sorting the
+        // actual result in the assertion would hide an ordering regression.
+        target.bundle.relations.reverse();
         let target_created = create_nir1_entity_relation_revision(&db, target)?;
         approve_typed_revision(&db, "nir1-run", &target_created)?;
 
@@ -114,18 +138,67 @@ impl OracleFixture {
         evidence.end_utf16 = "Unrelated".encode_utf16().count();
         unrelated.bundle.entities.truncate(1);
         unrelated.bundle.relations.clear();
+        let unrelated_entity = unrelated.bundle.entities[0].clone();
         let _unrelated_created = create_nir1_entity_relation_revision(&db, unrelated)?;
         approve_typed_revision(&db, "nir1-run", &_unrelated_created)?;
+
+        if let Some(bridge) = bridge {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO codex_relations
+                        (id, project_id, from_codex_id, to_codex_id, relation_type,
+                         directionality, version, updated_at)
+                     VALUES ('oracle-denied-bridge', ?1, 'nir1-alice', ?2, 'knows',
+                             'directed', 1, '2026-09-12T00:00:00Z')",
+                    params![PROJECT, UNRELATED_ENTITY],
+                )?;
+                Ok(())
+            })?;
+            let mut denied = request(&db);
+            denied.proposal_key = "nir1:oracle-denied:1".into();
+            denied.bundle.entities = vec![expected_bundle.entities[0].clone(), unrelated_entity];
+            if matches!(bridge, DeniedBridge::FutureScope) {
+                denied.bundle.entities[1].scope.reading = ScopeValue::Exact {
+                    value: "scene:a3-future".into(),
+                };
+            }
+            let relation = &mut denied.bundle.relations[0];
+            relation.edge_id = "oracle-denied-bridge".into();
+            relation.to_entity_id = UNRELATED_ENTITY.into();
+            relation.source_token = "v1@2026-09-12T00:00:00Z:relation:oracle-denied-bridge".into();
+            relation.evidence_ids[1] = "oracle-unrelated-evidence".into();
+            let created = create_nir1_entity_relation_revision(&db, denied)?;
+            if matches!(bridge, DeniedBridge::FutureScope) {
+                approve_typed_revision(&db, "nir1-run", &created)?;
+            }
+            let revision = created["revisionId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("denied bridge revision missing"))?;
+            db.with_conn(|conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_dependency_edges
+                     WHERE project_id=?1 AND consumer_kind='proposal-revision'
+                       AND consumer_key=?2 AND source_object_identity='codex:nir1-alice'",
+                    params![PROJECT, revision],
+                    |row| row.get(0),
+                )?;
+                ensure!(
+                    count == 1,
+                    "denied bridge must be a real indexed seed candidate"
+                );
+                Ok(())
+            })?;
+        }
 
         let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
         let runtime = authority.nir_chronicle_index_runtime();
         let snapshot = authority
             .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))?;
-        authority.with_conn(|conn| {
+        let generation = authority.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
-            publish_nir1_entity_relation_index_in_tx(&tx, runtime, snapshot)?;
+            let published = publish_nir1_entity_relation_index_in_tx(&tx, runtime, snapshot)?;
             tx.commit()?;
-            Ok(())
+            Ok(published.generation)
         })?;
 
         Ok(Self {
@@ -135,7 +208,117 @@ impl OracleFixture {
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("oracle target revision has no revisionId"))?
                 .to_owned(),
+            expected_bundle,
+            generation,
             _directory: directory,
+        })
+    }
+
+    // The roster/material comes from inputs saved before the canonical writer,
+    // not from candidate rows or A2/A3. Read only canonical binding metadata
+    // for the exact fixture Revision; no qualification/traversal is duplicated.
+    fn expected_response(&self) -> Result<Value> {
+        self.authority.with_read_transaction(|conn| {
+            let (proposal_id, decision_json): (String, String) = conn.query_row(
+                "SELECT proposal_id, json_object(
+                    'id', id, 'decision', decision, 'decisionJson', decision_json,
+                    'createdAt', created_at, 'createdBy', created_by,
+                    'actorKind', actor_kind, 'actorId', actor_id,
+                    'authorityScope', authority_scope,
+                    'overrideFieldPathsJson', override_field_paths_json)
+                 FROM narrative_proposal_decisions WHERE revision_id=?1",
+                [&self.target_revision],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let decision: Value = serde_json::from_str(&decision_json)?;
+            assert_eq!(decision["decision"], "approved");
+            let freshness_json: String = conn.query_row(
+                "SELECT json_object(
+                    'semanticEpochId', f.semantic_epoch_id,
+                    'dependencySetDigest', f.dependency_set_digest,
+                    'declarationSetId', d.id,
+                    'declarationSetDigest', d.dependency_set_digest,
+                    'lastEvaluatedRunId', f.last_evaluated_run_id,
+                    'edgeCount', ?4,
+                    'feedAcknowledgedThroughSequence', c.acknowledged_through_sequence,
+                    'feedHeadSequence', MAX(
+                        (SELECT COALESCE(MAX(canonical_sequence),0)
+                         FROM narrative_change_events WHERE project_id=?1),
+                        (SELECT COALESCE(MAX(source_change_event_sequence),0)
+                         FROM narrative_change_transactions WHERE project_id=?1)))
+                 FROM narrative_consumer_freshness f
+                 JOIN narrative_dependency_declaration_heads h
+                   ON h.project_id=f.project_id AND h.consumer_kind=f.consumer_kind
+                  AND h.consumer_key=f.consumer_key
+                 JOIN narrative_dependency_declaration_sets d
+                   ON d.id=h.active_declaration_set_id
+                 JOIN narrative_change_cursors c ON c.project_id=f.project_id
+                  AND c.consumer_id=?3
+                 WHERE f.project_id=?1 AND f.consumer_kind='proposal-revision'
+                   AND f.consumer_key=?2",
+                params![
+                    PROJECT,
+                    self.target_revision,
+                    crate::narrative_extraction::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID,
+                    // Two Entity, two Relation and one Scope authority sources.
+                    5,
+                ],
+                |row| row.get(0),
+            )?;
+            let freshness: Value = serde_json::from_str(&freshness_json)?;
+            let (scene_source, scene_scope, incarnation): (String, String, String) = conn
+                .query_row(
+                    "SELECT 'v' || t.version || '@' || t.updated_at,
+                        s.source_token, s.scene_incarnation_id
+                 FROM tree_nodes t JOIN narrative_scene_scope_bindings s
+                   ON s.project_id=t.project_id AND s.scene_id=t.id
+                 WHERE t.project_id=?1 AND t.id='nir1'",
+                    [PROJECT],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+            let entities = &self.expected_bundle.entities;
+            let authority_revision = &entities[0].scope.authority_revision;
+            // This fixture has no POV, phases or foreshadows; auto falls back
+            // to reading order. These expectations do not consult A3 output.
+            let reveal = json!({
+                "projectId": PROJECT, "querySceneId": "nir1",
+                "phaseResolutionMode": "auto", "effectiveAxis": "reading",
+                "scopeAuthorityRevision": authority_revision, "queryViewpoint": null,
+                "phaseState": (["nir1-alice", "nir1-bob"].map(|id| json!({
+                    "entityId": id, "baseContextMode": "mentioned", "phases": [],
+                    "applicablePhaseIds": [], "effectiveContextMode": "mentioned",
+                }))),
+                "entities": (["nir1-alice", "nir1-bob"].map(|id| json!({
+                    "entityId": id, "foreshadows": [],
+                }))),
+            });
+            let binding = json!({
+                "revisionId": self.target_revision, "decisionId": decision["id"],
+                "decisionToken": canonical_json_digest(&json!({
+                    "proposalId": proposal_id, "revisionId": self.target_revision,
+                    "decisions": [decision],
+                }))?,
+                "freshnessToken": canonical_json_digest(&freshness)?,
+                "scopeAuthorityRevision": authority_revision,
+                "querySceneSourceToken": scene_source, "querySceneScopeToken": scene_scope,
+                "querySceneIncarnationId": incarnation,
+                "revealStateToken": canonical_json_digest(&reveal)?,
+            });
+            Ok(json!({
+                "status": "available", "projectId": PROJECT, "querySceneId": "nir1",
+                "scopeRevision": authority_revision, "reason": null,
+                "graph": {
+                    "seedEntityId": "nir1-alice", "generation": self.generation,
+                    "nodes": [
+                        { "entity": entities[0], "hop": 0, "bindings": [binding] },
+                        { "entity": entities[1], "hop": 1, "bindings": [binding] },
+                    ],
+                    "edges": self.expected_bundle.relations.iter().map(|relation| json!({
+                        "relation": relation, "from": entities[0], "to": entities[1],
+                        "binding": binding,
+                    })).collect::<Vec<_>>(),
+                },
+            }))
         })
     }
 
@@ -274,13 +457,14 @@ fn graph_request(seed_entity_id: &str) -> Nir1GraphRequest {
     }
 }
 
-// The expected roster is deliberately written from the fixture contract. It
-// does not inspect the published index or enumerate candidate rows, so a
-// query can only pass by returning the target revision's exact material.
+// Freeze the full canonical projection before querying. This includes output
+// order, both complete endpoint/Evidence values and every binding field, not
+// just a set of IDs that could hide duplicates or partial material.
 #[test]
 fn seed_local_query_matches_explicit_roster_with_keyset_decoys() -> Result<()> {
     let fixture = OracleFixture::new()?;
     fixture.add_keyset_and_unrelated_decoys()?;
+    let expected = fixture.expected_response()?;
     let mut reader = fixture.registered_reader()?;
     let response = reader.query_with_deadline(
         &graph_request("nir1-alice"),
@@ -292,48 +476,25 @@ fn seed_local_query_matches_explicit_roster_with_keyset_decoys() -> Result<()> {
         "oracle query unavailable: {:?}",
         response.reason
     );
-    let graph = response
-        .graph
-        .ok_or_else(|| anyhow::anyhow!("oracle query returned no graph"))?;
-    assert_eq!(graph.seed_entity_id, "nir1-alice");
-    assert!(graph.generation > 0);
+    assert_eq!(serde_json::to_value(&response)?, expected);
+    Ok(())
+}
 
-    let actual_nodes = graph
-        .nodes
-        .iter()
-        .map(|node| (node.entity.entity_id.clone(), node.hop))
-        .collect::<Vec<_>>();
-    let mut sorted_nodes = actual_nodes.clone();
-    sorted_nodes.sort();
-    assert_eq!(
-        sorted_nodes,
-        vec![("nir1-alice".into(), 0), ("nir1-bob".into(), 1)]
-    );
-    assert_eq!(
-        actual_nodes.len(),
-        BTreeMap::<String, u8>::from_iter(actual_nodes.iter().cloned()).len(),
-        "query returned duplicate node identities"
-    );
-
-    let actual_edges = graph
-        .edges
-        .iter()
-        .map(|edge| {
-            (
-                edge.binding.revision_id.clone(),
-                edge.relation.edge_id.clone(),
-                edge.from.entity_id.clone(),
-                edge.to.entity_id.clone(),
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    let expected_edges = BTreeSet::from([(
-        fixture.target_revision.clone(),
-        "nir1-edge".to_owned(),
-        "nir1-alice".to_owned(),
-        "nir1-bob".to_owned(),
-    )]);
-    assert_eq!(actual_edges, expected_edges);
+#[test]
+fn ineligible_bridges_do_not_reach_an_otherwise_qualified_entity() -> Result<()> {
+    for bridge in [DeniedBridge::Unapproved, DeniedBridge::FutureScope] {
+        let fixture = OracleFixture::with_denied_bridge(Some(bridge))?;
+        // Unrelated has its own approved, disclosable Revision. Even omitting
+        // a denied edge is insufficient if traversal leaks its endpoint node.
+        let expected = fixture.expected_response()?;
+        let mut reader = fixture.registered_reader()?;
+        let response = reader.query_with_deadline(
+            &graph_request("nir1-alice"),
+            Duration::from_secs(2),
+            100_000,
+        )?;
+        assert_eq!(serde_json::to_value(&response)?, expected, "{bridge:?}");
+    }
     Ok(())
 }
 

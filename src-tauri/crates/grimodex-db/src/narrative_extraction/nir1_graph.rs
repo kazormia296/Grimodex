@@ -54,6 +54,8 @@ use super::source_revision::{validation_terminated, ValidationTerminationReason}
 use crate::state::WorkspaceAuthority;
 use crate::workspace_lifecycle::WorkspaceParticipant;
 
+#[cfg(feature = "nir1-material-diagnostics")]
+pub(crate) use self::input::{A2SqlObservation, A3SqlObservation};
 use self::memory::{RetainedLedger, RetainedPart};
 
 const QUERY_SQL_STEPS: u64 = 100_000;
@@ -65,6 +67,77 @@ const QUERY_MAX_PAGES: usize = 32;
 // is a fail-closed guard, not an allocator measurement or a completion claim.
 const TRANSIENT_JSON_MULTIPLIER: usize = 8;
 const TRANSIENT_BYTES_PER_ROW: usize = 4 * 1024;
+
+#[cfg(feature = "nir1-material-diagnostics")]
+#[derive(Debug, Default)]
+pub(crate) struct StageObservation {
+    pub(crate) pre_snapshot_identity_seal_ns: Option<u64>,
+    pub(crate) indexed_candidate_page_ns: Option<u64>,
+    pub(crate) a2_preflight_ns: Option<u64>,
+    pub(crate) a2_sql: A2SqlObservation,
+    pub(crate) a3_preflight_ns: Option<u64>,
+    pub(crate) a3_sql: A3SqlObservation,
+    pub(crate) a3_evaluation_ns: Option<u64>,
+    pub(crate) cleanup_post_stamp_ns: Option<u64>,
+    pub(crate) work_result_error: bool,
+    pub(crate) post_stamp_error: bool,
+    pub(crate) deadline_observed_at_collapse: bool,
+    pub(crate) unattributed: bool,
+    timing_overflow_mask: u8,
+}
+
+#[cfg(not(feature = "nir1-material-diagnostics"))]
+#[derive(Default)]
+struct StageObservation;
+
+#[cfg(feature = "nir1-material-diagnostics")]
+#[derive(Clone, Copy)]
+enum ObservedStage {
+    PreSnapshotIdentitySeal,
+    IndexedCandidatePage,
+    A2Preflight,
+    A3Preflight,
+    A3Evaluation,
+    CleanupPostStamp,
+}
+
+#[cfg(feature = "nir1-material-diagnostics")]
+fn record_observed_stage(
+    observation: &mut Option<&mut StageObservation>,
+    stage: ObservedStage,
+    started: Option<Instant>,
+) {
+    let (Some(observation), Some(started)) = (observation.as_deref_mut(), started) else {
+        return;
+    };
+    let (index, slot) = match stage {
+        ObservedStage::PreSnapshotIdentitySeal => {
+            (0, &mut observation.pre_snapshot_identity_seal_ns)
+        }
+        ObservedStage::IndexedCandidatePage => (1, &mut observation.indexed_candidate_page_ns),
+        ObservedStage::A2Preflight => (2, &mut observation.a2_preflight_ns),
+        ObservedStage::A3Preflight => (3, &mut observation.a3_preflight_ns),
+        ObservedStage::A3Evaluation => (4, &mut observation.a3_evaluation_ns),
+        ObservedStage::CleanupPostStamp => (5, &mut observation.cleanup_post_stamp_ns),
+    };
+    let bit = 1 << index;
+    if observation.timing_overflow_mask & bit != 0 {
+        return;
+    }
+    let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).ok();
+    let total = match (*slot, elapsed_ns) {
+        (Some(previous), Some(elapsed)) => previous.checked_add(elapsed),
+        (None, Some(elapsed)) => Some(elapsed),
+        (_, None) => None,
+    };
+    if let Some(total) = total {
+        *slot = Some(total);
+    } else {
+        *slot = None;
+        observation.timing_overflow_mask |= bit;
+        observation.unattributed = true;
+    }
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -207,12 +280,6 @@ impl QualifiedGraphMaterial {
         self.entities
             .iter()
             .find(|entity| entity.entity_id == entity_id)
-    }
-
-    fn relation(&self, edge_id: &str) -> Option<&Arc<GraphEdgeInput>> {
-        self.relations
-            .iter()
-            .find(|relation| relation.edge_id == edge_id)
     }
 }
 
@@ -397,6 +464,37 @@ impl Nir1GraphReader {
         duration: Duration,
         sql_steps: u64,
     ) -> Result<Nir1GraphResponse> {
+        self.query_with_deadline_observed(request, duration, sql_steps, None)
+    }
+
+    #[cfg(feature = "nir1-material-diagnostics")]
+    pub(crate) fn query_with_stage_observation(
+        &mut self,
+        request: &Nir1GraphRequest,
+    ) -> (Result<Nir1GraphResponse>, StageObservation) {
+        self.query_with_stage_observation_and_deadline(request, QUERY_DEADLINE, QUERY_SQL_STEPS)
+    }
+
+    #[cfg(feature = "nir1-material-diagnostics")]
+    fn query_with_stage_observation_and_deadline(
+        &mut self,
+        request: &Nir1GraphRequest,
+        duration: Duration,
+        sql_steps: u64,
+    ) -> (Result<Nir1GraphResponse>, StageObservation) {
+        let mut observation = StageObservation::default();
+        let result =
+            self.query_with_deadline_observed(request, duration, sql_steps, Some(&mut observation));
+        (result, observation)
+    }
+
+    fn query_with_deadline_observed(
+        &mut self,
+        request: &Nir1GraphRequest,
+        duration: Duration,
+        sql_steps: u64,
+        mut _observation: Option<&mut StageObservation>,
+    ) -> Result<Nir1GraphResponse> {
         let deadline = Instant::now() + duration;
         validate_request(request)?;
         if self.check().is_err() {
@@ -425,73 +523,132 @@ impl Nir1GraphReader {
             Some(Arc::clone(&budget)),
             &mut owner,
             |_, control| {
-                ensure!(
-                    ReadIdentity::read_unpinned(conn)?.as_ref() == Some(&identity),
-                    "NIR1_GRAPH_QUERY_DRIFT"
+                #[cfg(feature = "nir1-material-diagnostics")]
+                let pre_snapshot_started = _observation.as_ref().map(|_| Instant::now());
+                let pre_snapshot_result = (|| -> Result<()> {
+                    ensure!(
+                        ReadIdentity::read_unpinned(conn)?.as_ref() == Some(&identity),
+                        "NIR1_GRAPH_QUERY_DRIFT"
+                    );
+                    // A short identity read can finish after the deadline without
+                    // reaching the progress cadence. Do not open the snapshot
+                    // transaction after that late read.
+                    control.check(GraphWorkStage::Page)?;
+                    conn.execute_batch("BEGIN DEFERRED")?;
+                    ensure!(
+                        ReadIdentity::read(conn)?.as_ref() == Some(&identity),
+                        "NIR1_GRAPH_QUERY_DRIFT"
+                    );
+                    ensure!(
+                        read_seal(conn, &request.project_id)?.as_ref() == Some(&expected_seal),
+                        "NIR1_GRAPH_QUERY_SEAL_DRIFT"
+                    );
+                    Ok(())
+                })();
+                #[cfg(feature = "nir1-material-diagnostics")]
+                record_observed_stage(
+                    &mut _observation,
+                    ObservedStage::PreSnapshotIdentitySeal,
+                    pre_snapshot_started,
                 );
-                // A short identity read can finish after the deadline without
-                // reaching the progress cadence. Do not open the snapshot
-                // transaction after that late read.
-                control.check(GraphWorkStage::Page)?;
-                conn.execute_batch("BEGIN DEFERRED")?;
-                ensure!(
-                    ReadIdentity::read(conn)?.as_ref() == Some(&identity),
-                    "NIR1_GRAPH_QUERY_DRIFT"
-                );
-                ensure!(
-                    read_seal(conn, &request.project_id)?.as_ref() == Some(&expected_seal),
-                    "NIR1_GRAPH_QUERY_SEAL_DRIFT"
-                );
-                query_in_snapshot(conn, request, &expected_seal, control)
+                pre_snapshot_result?;
+                query_in_snapshot(conn, request, &expected_seal, control, &mut _observation)
             },
         );
-        let result = self.finish_read(result, Some(owner_scope))?;
-        let conn = self
-            .connection
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_READER_CLOSED"))?;
-        let current =
-            nir1_capacity::with_capacity_scope(conn, Some(budget), &mut owner, |_, control| {
-                let identity = ReadIdentity::read_unpinned(conn)?;
-                control.check(GraphWorkStage::ResultAssembly)?;
-                Ok(identity)
-            });
-        let current_identity = match current {
-            Ok(identity) => identity,
-            Err(_) => {
-                // A capacity/deadline failure during the post-cleanup stamp
-                // is a bounded query failure.  It is not evidence of an
-                // identity drift and must not consume registration.
-                return Ok(unavailable_response(
-                    request,
-                    "query-budget-or-validation-failed",
-                ));
+        #[cfg(feature = "nir1-material-diagnostics")]
+        if result.is_err() {
+            if let Some(observation) = _observation.as_deref_mut() {
+                observation.work_result_error = true;
             }
-        };
-        let identity_drift = current_identity.as_ref() != Some(&identity);
-        let query_drift = result.as_ref().err().is_some_and(|error| {
-            error.chain().any(|cause| {
-                matches!(
-                    cause.to_string().as_str(),
-                    "NIR1_GRAPH_QUERY_DRIFT" | "NIR1_GRAPH_QUERY_SEAL_DRIFT"
-                )
-            })
-        });
-        if identity_drift || query_drift {
-            self.registration = None;
-            return Ok(unavailable_response(request, "registration-drift"));
         }
-        if self.check().is_err() || Instant::now() >= deadline {
-            self.registration = None;
-            return Ok(unavailable_response(request, "query-invalidated"));
+        #[cfg(feature = "nir1-material-diagnostics")]
+        let cleanup_post_stamp_started = _observation.as_ref().map(|_| Instant::now());
+        let query_outcome = (|| -> Result<Nir1GraphResponse> {
+            let result = self.finish_read(result, Some(owner_scope))?;
+            let conn = self
+                .connection
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_READER_CLOSED"))?;
+            let current =
+                nir1_capacity::with_capacity_scope(conn, Some(budget), &mut owner, |_, control| {
+                    let identity = ReadIdentity::read_unpinned(conn)?;
+                    control.check(GraphWorkStage::ResultAssembly)?;
+                    Ok(identity)
+                });
+            let current_identity = match current {
+                Ok(identity) => identity,
+                Err(_) => {
+                    // A capacity/deadline failure during the post-cleanup stamp
+                    // is a bounded query failure.  It is not evidence of an
+                    // identity drift and must not consume registration.
+                    #[cfg(feature = "nir1-material-diagnostics")]
+                    if let Some(observation) = _observation.as_deref_mut() {
+                        observation.post_stamp_error = true;
+                        observation.deadline_observed_at_collapse |= Instant::now() >= deadline;
+                        observation.unattributed = true;
+                    }
+                    return Ok(unavailable_response(
+                        request,
+                        "query-budget-or-validation-failed",
+                    ));
+                }
+            };
+            let identity_drift = current_identity.as_ref() != Some(&identity);
+            let query_drift = result.as_ref().err().is_some_and(|error| {
+                error.chain().any(|cause| {
+                    matches!(
+                        cause.to_string().as_str(),
+                        "NIR1_GRAPH_QUERY_DRIFT" | "NIR1_GRAPH_QUERY_SEAL_DRIFT"
+                    )
+                })
+            });
+            if identity_drift || query_drift {
+                self.registration = None;
+                #[cfg(feature = "nir1-material-diagnostics")]
+                if let Some(observation) = _observation.as_deref_mut() {
+                    observation.unattributed = true;
+                }
+                return Ok(unavailable_response(request, "registration-drift"));
+            }
+            let reader_invalidated = self.check().is_err();
+            let deadline_observed = !reader_invalidated && Instant::now() >= deadline;
+            if reader_invalidated || deadline_observed {
+                self.registration = None;
+                #[cfg(feature = "nir1-material-diagnostics")]
+                if let Some(observation) = _observation.as_deref_mut() {
+                    observation.deadline_observed_at_collapse |= deadline_observed;
+                    observation.unattributed |= reader_invalidated;
+                }
+                return Ok(unavailable_response(request, "query-invalidated"));
+            }
+            match result {
+                Ok(response) => Ok(response),
+                Err(_) => {
+                    #[cfg(feature = "nir1-material-diagnostics")]
+                    if let Some(observation) = _observation.as_deref_mut() {
+                        observation.unattributed = true;
+                    }
+                    Ok(unavailable_response(
+                        request,
+                        "query-budget-or-validation-failed",
+                    ))
+                }
+            }
+        })();
+        #[cfg(feature = "nir1-material-diagnostics")]
+        {
+            record_observed_stage(
+                &mut _observation,
+                ObservedStage::CleanupPostStamp,
+                cleanup_post_stamp_started,
+            );
+            if query_outcome.is_err() {
+                if let Some(observation) = _observation.as_deref_mut() {
+                    observation.unattributed = true;
+                }
+            }
         }
-        match result {
-            Ok(response) => Ok(response),
-            Err(_) => Ok(unavailable_response(
-                request,
-                "query-budget-or-validation-failed",
-            )),
-        }
+        query_outcome
     }
 
     fn control(&self, deadline: Option<Instant>) -> ReaderControl {
@@ -583,6 +740,22 @@ impl Nir1GraphReader {
         }
         self.participant = None;
         Ok(())
+    }
+
+    #[cfg(feature = "nir1-material-diagnostics")]
+    pub(super) fn sqlite_memory_for_diagnostic(
+        &self,
+    ) -> Result<super::nir1_graph_memory_diagnostics::SqliteConnectionMemory> {
+        let conn = self
+            .connection
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_READER_CLOSED"))?;
+        super::nir1_graph_memory_diagnostics::sqlite_connection_memory_status(conn)
+    }
+
+    #[cfg(feature = "nir1-material-diagnostics")]
+    pub(crate) fn is_closed_for_diagnostic(&self) -> bool {
+        self.connection.is_none() && self.participant.is_none()
     }
 
     pub fn workspace_identity(&self) -> u64 {
@@ -856,6 +1029,7 @@ fn query_in_snapshot(
     request: &Nir1GraphRequest,
     seal: &Seal,
     control: &mut dyn GraphWorkControl,
+    _observation: &mut Option<&mut StageObservation>,
 ) -> Result<Nir1GraphResponse> {
     let mut usage = QueryUsage::default();
     usage.admit(
@@ -916,7 +1090,9 @@ fn query_in_snapshot(
             }
             let page_limit = (MAX_GRAPH_RECORDS - usage.rows).min(16);
             usage.admit_retained(candidates::candidate_page_scratch_bytes(page_limit)?)?;
-            let page = candidates::read_candidate_page_with_admission(
+            #[cfg(feature = "nir1-material-diagnostics")]
+            let candidate_page_started = _observation.as_ref().map(|_| Instant::now());
+            let page_result = candidates::read_candidate_page_with_admission(
                 conn,
                 &request.project_id,
                 &entity_id,
@@ -924,7 +1100,14 @@ fn query_in_snapshot(
                 MAX_GRAPH_RECORDS - usage.rows,
                 MAX_GRAPH_INPUT_BYTES - usage.bytes,
                 |rows, bytes| usage.admit(rows, bytes),
-            )?;
+            );
+            #[cfg(feature = "nir1-material-diagnostics")]
+            record_observed_stage(
+                _observation,
+                ObservedStage::IndexedCandidatePage,
+                candidate_page_started,
+            );
+            let page = page_result?;
             usage.pages += 1;
             let count = page.len();
             for row in page {
@@ -945,8 +1128,8 @@ fn query_in_snapshot(
             }
         }
         usage.admit_retained(
-            std::mem::size_of::<Vec<(String, String)>>()
-                + MAX_GRAPH_EDGES * std::mem::size_of::<(String, String)>(),
+            std::mem::size_of::<Vec<(Arc<GraphEdgeInput>, String)>>()
+                + MAX_GRAPH_EDGES * std::mem::size_of::<(Arc<GraphEdgeInput>, String)>(),
         )?;
         let mut incident = Vec::with_capacity(MAX_GRAPH_EDGES);
         for revision_id in candidates {
@@ -957,16 +1140,34 @@ fn query_in_snapshot(
                         + 8 * std::mem::size_of::<usize>(),
                 )?;
                 control.check(GraphWorkStage::A2)?;
-                let qualified = if let Some(admission) = input::preflight_revision(
+                #[cfg(feature = "nir1-material-diagnostics")]
+                let a2_started = _observation.as_ref().map(|_| Instant::now());
+                #[cfg(feature = "nir1-material-diagnostics")]
+                let revision_preflight = input::preflight_revision_observed(
                     conn,
                     &request.project_id,
                     &revision_id,
                     MAX_GRAPH_RECORDS - usage.rows,
                     MAX_GRAPH_INPUT_BYTES - usage.bytes,
-                )? {
+                    _observation.as_deref_mut().map(|value| &mut value.a2_sql),
+                );
+                #[cfg(not(feature = "nir1-material-diagnostics"))]
+                let revision_preflight = input::preflight_revision(
+                    conn,
+                    &request.project_id,
+                    &revision_id,
+                    MAX_GRAPH_RECORDS - usage.rows,
+                    MAX_GRAPH_INPUT_BYTES - usage.bytes,
+                );
+                #[cfg(feature = "nir1-material-diagnostics")]
+                record_observed_stage(_observation, ObservedStage::A2Preflight, a2_started);
+                let qualified = if let Some(admission) = revision_preflight? {
                     let revision_admission = admission;
                     usage.admit(revision_admission.rows, revision_admission.bytes)?;
-                    let disclosure_admission = input::preflight_disclosure_with_payload_bytes(
+                    #[cfg(feature = "nir1-material-diagnostics")]
+                    let a3_preflight_started = _observation.as_ref().map(|_| Instant::now());
+                    #[cfg(feature = "nir1-material-diagnostics")]
+                    let disclosure_preflight = input::preflight_disclosure_observed(
                         conn,
                         &request.project_id,
                         &revision_id,
@@ -974,7 +1175,25 @@ fn query_in_snapshot(
                         revision_admission.payload_bytes,
                         MAX_GRAPH_RECORDS - usage.rows,
                         MAX_GRAPH_INPUT_BYTES - usage.bytes,
-                    )?;
+                        _observation.as_deref_mut().map(|value| &mut value.a3_sql),
+                    );
+                    #[cfg(not(feature = "nir1-material-diagnostics"))]
+                    let disclosure_preflight = input::preflight_disclosure_with_payload_bytes(
+                        conn,
+                        &request.project_id,
+                        &revision_id,
+                        &request.query_scene_id,
+                        revision_admission.payload_bytes,
+                        MAX_GRAPH_RECORDS - usage.rows,
+                        MAX_GRAPH_INPUT_BYTES - usage.bytes,
+                    );
+                    #[cfg(feature = "nir1-material-diagnostics")]
+                    record_observed_stage(
+                        _observation,
+                        ObservedStage::A3Preflight,
+                        a3_preflight_started,
+                    );
+                    let disclosure_admission = disclosure_preflight?;
                     usage.admit(disclosure_admission.rows, disclosure_admission.bytes)?;
                     usage.admit_retained(transient_material_reserve(
                         revision_admission
@@ -987,12 +1206,17 @@ fn query_in_snapshot(
                             .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_RETAINED_LIMIT"))?,
                     )?)?;
                     control.check(GraphWorkStage::A2)?;
+                    #[cfg(feature = "nir1-material-diagnostics")]
+                    let a3_started = _observation.as_ref().map(|_| Instant::now());
                     let qualified = evaluate_nir1_entity_relation_disclosure(
                         conn,
                         &request.project_id,
                         &revision_id,
                         &request.query_scene_id,
-                    )?;
+                    );
+                    #[cfg(feature = "nir1-material-diagnostics")]
+                    record_observed_stage(_observation, ObservedStage::A3Evaluation, a3_started);
+                    let qualified = qualified?;
                     control.check(GraphWorkStage::A2)?;
                     match qualified {
                         Nir1EntityRelationDisclosureRead::Eligible(value) => {
@@ -1027,11 +1251,10 @@ fn query_in_snapshot(
                         && relation.to_entity_id == entity_id)
                 {
                     usage.admit_retained(
-                        retained_string(&relation.edge_id)
-                            + retained_string(&revision_id)
-                            + std::mem::size_of::<(String, String)>(),
+                        retained_string(&revision_id)
+                            + std::mem::size_of::<(Arc<GraphEdgeInput>, String)>(),
                     )?;
-                    incident.push((relation.edge_id.clone(), revision_id.clone()));
+                    incident.push((Arc::clone(relation), revision_id.clone()));
                 }
             }
             // An explicitly selected qualified isolated Entity is still a node.
@@ -1045,16 +1268,14 @@ fn query_in_snapshot(
                 )?;
             }
         }
-        incident.sort();
-        for (edge_id, revision_id) in incident {
+        incident.sort_by(|a, b| a.0.edge_id.cmp(&b.0.edge_id).then(a.1.cmp(&b.1)));
+        for (relation, revision_id) in incident {
             control.check(GraphWorkStage::Edge)?;
             let material = revisions
                 .get(&revision_id)
                 .and_then(Option::as_ref)
                 .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_REVISION_MISSING"))?;
-            let relation = material
-                .relation(&edge_id)
-                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_EDGE_MISSING"))?;
+            let edge_id = &relation.edge_id;
             let target = if relation.from_entity_id == entity_id {
                 &relation.to_entity_id
             } else {
@@ -1077,7 +1298,7 @@ fn query_in_snapshot(
                     + std::mem::size_of::<Nir1GraphEdge>()
                     + 4 * std::mem::size_of::<usize>(),
             )?;
-            let key = (revision_id.clone(), edge_id);
+            let key = (revision_id.clone(), edge_id.clone());
             if edges.contains_key(&key) {
                 continue;
             }
@@ -1109,7 +1330,7 @@ fn query_in_snapshot(
             edges.insert(
                 key,
                 Nir1GraphEdge {
-                    relation: Arc::clone(relation),
+                    relation: Arc::clone(&relation),
                     from: Arc::clone(from),
                     to: Arc::clone(to),
                     binding: Arc::clone(&material.binding),
@@ -1133,9 +1354,7 @@ fn query_in_snapshot(
     });
     let mut ordered_edges = Vec::with_capacity(MAX_GRAPH_EDGES);
     ordered_edges.extend(edges.into_values());
-    let response_scope_bytes = scope_revision
-        .as_ref()
-        .map_or(0, retained_string);
+    let response_scope_bytes = scope_revision.as_ref().map_or(0, retained_string);
     usage.admit_retained(
         std::mem::size_of::<Nir1GraphResponse>()
             + retained_string(&request.project_id)
