@@ -68,6 +68,12 @@ cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
   -p grimodex-db --bin nir1-c-query-worker
 test -f "$worker_file"
 
+NIR1_Q2_FIXTURE_PATH="$fixture_path" \
+NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+  cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --lib native_worker_returns_fixed_q2_frame_from_real_workspace_owner \
+    -- --ignored --nocapture --test-threads=1
+
 cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
   -p grimodex-db --lib malformed_child_frame_rejected_before_view \
   -- --nocapture --test-threads=1
@@ -77,8 +83,3 @@ cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
 cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
   -p grimodex-db --bin nir1-c-query-worker shared_query_region_bounds_rust_and_sqlite_allocations \
   -- --nocapture --test-threads=1
-NIR1_Q2_FIXTURE_PATH="$fixture_path" \
-NIR1_C_QUERY_WORKER_BIN="$worker_path" \
-  cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
-    -p grimodex-db --lib native_worker_returns_fixed_q2_frame_from_real_workspace_owner \
-    -- --ignored --nocapture --test-threads=1
