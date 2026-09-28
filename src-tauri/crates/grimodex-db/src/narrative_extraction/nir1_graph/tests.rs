@@ -1122,14 +1122,22 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
         let call_started = Instant::now();
         let query_result = owner.query_once(&request);
         let returned_elapsed = call_started.elapsed();
-        let outcome = match &query_result {
-            Ok(_) => "lease".to_owned(),
-            Err(error) => format!("refused: {error:#}"),
-        };
-        eprintln!("Native Q2 worker call-entry-to-return: {returned_elapsed:?}; outcome={outcome}");
+        if query_result.is_err() {
+            let error = query_result
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("Q2 diagnostic result changed"))?;
+            let phases = owner.query_phase_diagnostics_for_test();
+            eprintln!(
+                "Native Q2 worker phase diagnostic (test instrumentation; diagnostic only): call_entry_to_return={returned_elapsed:?}; admission_to_lease=None; outcome=refused; phases={phases:?}"
+            );
+            return Err(error);
+        }
         let lease = query_result?;
         let admission_elapsed = lease.elapsed();
-        eprintln!("Native Q2 worker admission-to-lease: {admission_elapsed:?}");
+        let phases = lease.query_phase_diagnostics_for_test();
+        eprintln!(
+            "Native Q2 worker phase diagnostic (test instrumentation; diagnostic only): call_entry_to_return={returned_elapsed:?}; admission_to_lease={admission_elapsed:?}; outcome=lease; phases={phases:?}"
+        );
         ensure!(
             returned_elapsed <= Duration::from_millis(8),
             "Native Q2 worker returned after deadline: {returned_elapsed:?}"

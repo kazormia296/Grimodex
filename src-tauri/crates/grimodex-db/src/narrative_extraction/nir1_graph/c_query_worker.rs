@@ -205,6 +205,22 @@ struct ChildSession {
     eof: bool,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct QueryPhaseDiagnostics {
+    frame_binding_validated_at: Option<Duration>,
+    reader_eof_observed_at: Option<Duration>,
+    first_try_wait_success_at: Option<Duration>,
+    first_post_frame_try_wait_none_at: Option<Duration>,
+    first_post_frame_try_wait_success_at: Option<Duration>,
+    post_frame_try_wait_none_count: u32,
+    post_frame_park_count: u32,
+    reader_join_start_at: Option<Duration>,
+    reader_join_end_at: Option<Duration>,
+    final_binding_check_start_at: Option<Duration>,
+    final_binding_check_end_at: Option<Duration>,
+}
+
 /// Holds one Native workspace snapshot. A result lease borrows this owner, so
 /// its fixed storage and child admission cannot be reused before lease drop.
 pub struct CQueryWorkerOwner {
@@ -224,6 +240,8 @@ pub struct CQueryWorkerOwner {
     test_abnormal_exit_observed: bool,
     #[cfg(test)]
     test_normal_exit_and_eof_observed: bool,
+    #[cfg(test)]
+    query_phase_diagnostics: QueryPhaseDiagnostics,
 }
 
 impl CQueryWorkerOwner {
@@ -256,6 +274,8 @@ impl CQueryWorkerOwner {
             test_abnormal_exit_observed: false,
             #[cfg(test)]
             test_normal_exit_and_eof_observed: false,
+            #[cfg(test)]
+            query_phase_diagnostics: QueryPhaseDiagnostics::default(),
         }
     }
 
@@ -346,6 +366,11 @@ impl CQueryWorkerOwner {
     }
 
     #[cfg(test)]
+    pub(super) fn query_phase_diagnostics_for_test(&self) -> QueryPhaseDiagnostics {
+        self.query_phase_diagnostics
+    }
+
+    #[cfg(test)]
     pub(super) fn quarantined_resources_held_for_test(&self) -> bool {
         self.region.quarantined
             && self.snapshot.is_some()
@@ -368,14 +393,28 @@ impl CQueryWorkerOwner {
         ensure!(!self.region.started, "NIR1_GRAPH_WORKER_ONE_QUERY_ONLY");
         let request_len = request_len(request)?;
         let admitted_at = Instant::now();
+        #[cfg(test)]
+        {
+            self.query_phase_diagnostics = QueryPhaseDiagnostics::default();
+        }
         self.region.started = true;
         let result = self
             .query_claimed(request, request_len, admitted_at)
             .and_then(|()| {
+                #[cfg(test)]
+                {
+                    self.query_phase_diagnostics.final_binding_check_start_at =
+                        Some(admitted_at.elapsed());
+                }
                 self.snapshot
                     .as_ref()
                     .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?
                     .check_current_binding()?;
+                #[cfg(test)]
+                {
+                    self.query_phase_diagnostics.final_binding_check_end_at =
+                        Some(admitted_at.elapsed());
+                }
                 let elapsed = admitted_at.elapsed();
                 if elapsed > QUERY_DEADLINE {
                     anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
@@ -583,7 +622,38 @@ impl CQueryWorkerOwner {
                 .as_ref()
                 .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?
                 .check_current_binding()?;
+            #[cfg(test)]
+            let try_wait_pending = self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.exit.is_none());
             self.poll_exit()?;
+            #[cfg(test)]
+            if try_wait_pending {
+                let observed_at = admitted_at.elapsed();
+                let exit_observed = self
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.exit.is_some());
+                if exit_observed {
+                    self.query_phase_diagnostics
+                        .first_try_wait_success_at
+                        .get_or_insert(observed_at);
+                    if self.region.result_len > 0 {
+                        self.query_phase_diagnostics
+                            .first_post_frame_try_wait_success_at
+                            .get_or_insert(observed_at);
+                    }
+                } else if self.region.result_len > 0 {
+                    self.query_phase_diagnostics
+                        .first_post_frame_try_wait_none_at
+                        .get_or_insert(observed_at);
+                    self.query_phase_diagnostics.post_frame_try_wait_none_count = self
+                        .query_phase_diagnostics
+                        .post_frame_try_wait_none_count
+                        .saturating_add(1);
+                }
+            }
             if admitted_at.elapsed() >= QUERY_DEADLINE {
                 anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
             }
@@ -594,6 +664,15 @@ impl CQueryWorkerOwner {
                 .and_then(|storage| storage.first())
                 .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
             let events = native.mailbox.events.load(Ordering::Acquire);
+            #[cfg(test)]
+            if events & READER_EOF != 0
+                && self
+                    .query_phase_diagnostics
+                    .reader_eof_observed_at
+                    .is_none()
+            {
+                self.query_phase_diagnostics.reader_eof_observed_at = Some(admitted_at.elapsed());
+            }
             if events & READER_TRAILING != 0 {
                 anyhow::bail!("NIR1_GRAPH_WORKER_TRAILING_PIPE_DATA");
             }
@@ -661,7 +740,13 @@ impl CQueryWorkerOwner {
                     .as_ref()
                     .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?
                     .check_current_binding()?;
-                self.region.elapsed = Some(admitted_at.elapsed());
+                let frame_binding_validated_at = admitted_at.elapsed();
+                self.region.elapsed = Some(frame_binding_validated_at);
+                #[cfg(test)]
+                {
+                    self.query_phase_diagnostics.frame_binding_validated_at =
+                        Some(frame_binding_validated_at);
+                }
                 self.region.result_len = len;
             }
             if self.region.result_len > 0
@@ -670,6 +755,9 @@ impl CQueryWorkerOwner {
                     .as_ref()
                     .is_some_and(|session| session.eof && session.exit.is_some())
             {
+                #[cfg(test)]
+                self.finish_session(admitted_at)?;
+                #[cfg(not(test))]
                 self.finish_session()?;
                 return Ok(());
             }
@@ -684,6 +772,13 @@ impl CQueryWorkerOwner {
             else {
                 anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
             };
+            #[cfg(test)]
+            if self.region.result_len > 0 {
+                self.query_phase_diagnostics.post_frame_park_count = self
+                    .query_phase_diagnostics
+                    .post_frame_park_count
+                    .saturating_add(1);
+            }
             thread::park_timeout(timeout);
         }
     }
@@ -739,7 +834,7 @@ impl CQueryWorkerOwner {
         }
     }
 
-    fn finish_session(&mut self) -> Result<()> {
+    fn finish_session(&mut self, #[cfg(test)] admitted_at: Instant) -> Result<()> {
         let session = self
             .session
             .as_ref()
@@ -754,9 +849,16 @@ impl CQueryWorkerOwner {
             .take()
             .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_SESSION"))?;
         if let Some(reader) = session.reader.take() {
-            reader
-                .join()
-                .map_err(|_| anyhow!("NIR1_GRAPH_WORKER_READER_PANIC"))?;
+            #[cfg(test)]
+            {
+                self.query_phase_diagnostics.reader_join_start_at = Some(admitted_at.elapsed());
+            }
+            let join_result = reader.join();
+            #[cfg(test)]
+            {
+                self.query_phase_diagnostics.reader_join_end_at = Some(admitted_at.elapsed());
+            }
+            join_result.map_err(|_| anyhow!("NIR1_GRAPH_WORKER_READER_PANIC"))?;
         }
         Ok(())
     }
@@ -879,6 +981,11 @@ impl CQueryResultLease<'_> {
 
     pub fn elapsed(&self) -> Duration {
         self.owner.region.elapsed.unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(super) fn query_phase_diagnostics_for_test(&self) -> QueryPhaseDiagnostics {
+        self.owner.query_phase_diagnostics_for_test()
     }
 }
 
