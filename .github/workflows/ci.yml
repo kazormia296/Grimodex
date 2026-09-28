@@ -891,6 +891,7 @@ jobs:
 
   nir1-c-query-worker:
     name: C-query worker (${{ matrix.os }})
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
