@@ -2587,10 +2587,17 @@ mod tests {
             .expect("page-limited owner released");
         let mut item_limits = GenerationRecoveryLimits::SAFETY_LIMITS;
         item_limits.items = 1;
+        // Isolate the item cutoff from independent sweep/operation deadlines;
+        // keep both finite in case this test stalls.
+        item_limits.time = Duration::from_secs(30);
+        item_limits.operation_time = Duration::from_secs(5);
         let error = coordinator
             .recover_all_pending_attempts_with_limits(item_limits)
             .expect_err("item limit is incomplete");
-        assert!(error.to_string().contains("SWEEP_ITEM_LIMIT"));
+        assert!(
+            error.to_string().contains("SWEEP_ITEM_LIMIT"),
+            "unexpected error: {error:#}"
+        );
         assert!(storage::read_terminal(db.db(), &first_id)
             .expect("first committed terminal")
             .is_some());
