@@ -338,7 +338,12 @@ impl GenerationRecoveryCoordinator {
                 after_project_id.as_deref(),
                 MAX_RECOVERY_PAGE_SIZE,
                 budget.operation(),
-            )?;
+            )
+            .map_err(|error| {
+                #[cfg(test)]
+                eprintln!("NIR1_RECOVERY_BOUNDED_OP=project-page");
+                error
+            })?;
             summary.project_pages += 1;
             if projects.is_empty() {
                 break;
@@ -355,7 +360,12 @@ impl GenerationRecoveryCoordinator {
                         after_attempt_id.as_deref(),
                         MAX_RECOVERY_PAGE_SIZE,
                         budget.operation(),
-                    )?;
+                    )
+                    .map_err(|error| {
+                        #[cfg(test)]
+                        eprintln!("NIR1_RECOVERY_BOUNDED_OP=attempt-page");
+                        error
+                    })?;
                     summary.attempt_pages += 1;
                     if attempts.is_empty() {
                         break;
@@ -367,7 +377,12 @@ impl GenerationRecoveryCoordinator {
                             &attempt_id,
                             now_ms()?,
                             budget.operation(),
-                        )?;
+                        )
+                        .map_err(|error| {
+                            #[cfg(test)]
+                            eprintln!("NIR1_RECOVERY_BOUNDED_OP=recover-attempt");
+                            error
+                        })?;
                         summary.recovered += 1;
                         after_attempt_id = Some(attempt_id);
                     }
