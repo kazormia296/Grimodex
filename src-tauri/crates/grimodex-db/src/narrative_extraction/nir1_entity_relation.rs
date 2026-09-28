@@ -889,7 +889,7 @@ fn materialize_typed_authorities_in_tx(
         .map(|edge| {
             Ok((
                 edge.id.clone(),
-                evaluate_typed_edge(conn, project_id, edge)?,
+                evaluate_typed_edge(conn, project_id, edge, None)?,
             ))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -1028,6 +1028,7 @@ fn resolve_typed_source_token(
     conn: &Connection,
     project_id: &str,
     source_object_identity: &str,
+    scope_authority: Option<&NarrativeProjectScopeAuthorityV1>,
 ) -> anyhow::Result<Option<String>> {
     if let Some(entity_id) = source_object_identity.strip_prefix("codex:") {
         if entity_id.trim().is_empty() {
@@ -1068,6 +1069,14 @@ fn resolve_typed_source_token(
     }
     let expected_scope = format!("project:scope-authority:{project_id}");
     if source_object_identity == expected_scope {
+        if let Some(authority) = scope_authority {
+            anyhow::ensure!(
+                authority.project_id.as_str() == project_id
+                    && authority.source.source_key == expected_scope,
+                "NIR1_ENTITY_RELATION_SCOPE_AUTHORITY_BINDING_MISMATCH"
+            );
+            return Ok(Some(authority.source.revision_token.clone()));
+        }
         return load_live_project_scope_authority(conn, project_id, source_object_identity)
             .map(|authority| Some(authority.source.revision_token));
     }
@@ -1078,6 +1087,7 @@ fn evaluate_typed_edge(
     conn: &Connection,
     project_id: &str,
     edge: &DependencyEdge,
+    scope_authority: Option<&NarrativeProjectScopeAuthorityV1>,
 ) -> anyhow::Result<super::evaluator::EdgeObservation> {
     let read_set: Vec<String> =
         parse_json_with_active_work(conn, &edge.read_set_json).map_err(|error| {
@@ -1091,8 +1101,12 @@ fn evaluate_typed_edge(
         read_set.len() == 1,
         "NIR1_ENTITY_RELATION_V1_READ_SET_INVALID"
     );
-    let current_revision_token =
-        resolve_typed_source_token(conn, project_id, &edge.source_object_identity)?;
+    let current_revision_token = resolve_typed_source_token(
+        conn,
+        project_id,
+        &edge.source_object_identity,
+        scope_authority,
+    )?;
     Ok(evaluate_edge(&EdgeComparisonInput {
         stored_revision_token: read_set.into_iter().next(),
         current_revision_token: current_revision_token.clone(),
@@ -1132,7 +1146,7 @@ pub(crate) fn evaluate_typed_edge_for_incremental(
     project_id: &str,
     edge: &DependencyEdge,
 ) -> anyhow::Result<super::evaluator::EdgeObservation> {
-    evaluate_typed_edge(conn, project_id, edge)
+    evaluate_typed_edge(conn, project_id, edge, None)
 }
 
 pub(crate) fn typed_source_token_for_incremental(
@@ -1140,7 +1154,7 @@ pub(crate) fn typed_source_token_for_incremental(
     project_id: &str,
     source_object_identity: &str,
 ) -> anyhow::Result<Option<String>> {
-    resolve_typed_source_token(conn, project_id, source_object_identity)
+    resolve_typed_source_token(conn, project_id, source_object_identity, None)
 }
 
 fn typed_run_matches_current_epoch(
@@ -1165,13 +1179,15 @@ fn typed_run_matches_current_epoch(
 
 /// Read the existing canonical V1/D1 Freshness authority for the typed
 /// consumer. The generic reader is intentionally not called because its
-/// membership and Source resolvers must remain family-scoped deny paths.
+/// membership and Source resolvers must remain family-scoped deny paths. Reuse
+/// the caller's validated Scope authority for the same SQLite read snapshot.
 fn read_typed_canonical_freshness(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
     revision_id: &str,
     material: &MaterialBasis,
+    scope_authority: &NarrativeProjectScopeAuthorityV1,
 ) -> anyhow::Result<Option<Nir1EntityRelationFreshness>> {
     if !is_generic_freshness_canonical(conn)? {
         return Ok(None);
@@ -1312,7 +1328,7 @@ fn read_typed_canonical_freshness(
         if edge.owning_run_id.as_deref() != Some(run_id) {
             return Ok(None);
         }
-        let observation = evaluate_typed_edge(conn, project_id, edge)?;
+        let observation = evaluate_typed_edge(conn, project_id, edge, Some(scope_authority))?;
         if observation.freshness != EvidenceFreshness::Fresh
             || observation.build_action != BuildAction::None
             || observation.reason_code.is_some()
@@ -2020,7 +2036,6 @@ fn read_typed_revision_core_with_scope_authority(
     if !typed_run_matches_current_epoch(conn, project_id, &run_id)? {
         return Ok(unavailable("revision-restore-invalidated"));
     }
-
     let payload: StoredNir1EntityRelationPayload =
         match parse_json_with_active_work(conn, &payload_json) {
             Ok(payload) => payload,
@@ -2062,7 +2077,10 @@ fn read_typed_revision_core_with_scope_authority(
         return Ok(unavailable("revision-envelope-invalid"));
     }
     let payload_value = serde_json::to_value(&payload)?;
-    let bundle_digest = canonical_json_digest(&serde_json::to_value(&payload.bundle)?)?;
+    let bundle_value = payload_value
+        .get("bundle")
+        .ok_or_else(|| anyhow::anyhow!("NIR1_ENTITY_RELATION_PAYLOAD_BUNDLE_MISSING"))?;
+    let bundle_digest = canonical_json_digest(bundle_value)?;
     let payload_digest = canonical_json_digest(&payload_value)?;
     check_active_work(conn)?;
     drop(payload_value);
@@ -2126,6 +2144,7 @@ fn read_typed_revision_core_with_scope_authority(
         &run_id,
         revision_id,
         &expected_material,
+        &authority,
     )? {
         Some(snapshot) => snapshot,
         None => return Ok(unavailable("canonical-freshness-unavailable")),
@@ -6198,7 +6217,7 @@ pub(super) mod tests {
                 .map(|edge| {
                     Ok((
                         edge.id.clone(),
-                        super::evaluate_typed_edge(conn, "default-project", edge)?,
+                        super::evaluate_typed_edge(conn, "default-project", edge, None)?,
                     ))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;

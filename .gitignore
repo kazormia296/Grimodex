@@ -60,6 +60,9 @@ src/features/chat/calibration/embeddings.generated.json
 .superpowers/
 .worktrees/
 
+# Local Ralph run state; keep code/config under explicit review.
+.ralph/
+
 # Root Cargo outputs and local test/scratch checkouts are never source artifacts.
 /target/
 /.tmp-c2-5b-edit/

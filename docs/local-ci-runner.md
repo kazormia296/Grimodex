@@ -2,7 +2,7 @@
 
 `pnpm ci:local:quick` and `pnpm ci:local:full` read
 `scripts/local-ci-registry.json`. Full maps the existing 16 logical groups and
-52 obligations onto 60 scheduled tasks. The duplicate
+52 obligations onto 68 scheduled tasks. The duplicate
 `workspace_migration_supervisor` failpoint
 invocation is one task whose receipt result names both obligations. Supporting
 shard commands can declare an empty obligation list; the `rust.tests` terminal

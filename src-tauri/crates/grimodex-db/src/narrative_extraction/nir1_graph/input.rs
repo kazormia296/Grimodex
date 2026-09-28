@@ -109,9 +109,10 @@ impl A3SqlObservation {
         if let Some(slot) = self.timings_ns.get_mut(usize::from(ordinal)) {
             let bit = 1_u32 << ordinal;
             if self.overflow_mask & bit == 0 {
-                *slot = elapsed_nanos.try_into().ok().and_then(|elapsed: u64| {
-                    slot.unwrap_or(0).checked_add(elapsed)
-                });
+                *slot = elapsed_nanos
+                    .try_into()
+                    .ok()
+                    .and_then(|elapsed: u64| slot.unwrap_or(0).checked_add(elapsed));
                 if slot.is_none() {
                     self.overflow_mask |= bit;
                     self.unattributed = true;
@@ -617,7 +618,11 @@ mod tests {
         )
         .unwrap();
         let bytes: i64 = conn
-            .query_row(RELATED_BYTES_SQL[8], params!["project", "revision"], |row| row.get(0))
+            .query_row(
+                RELATED_BYTES_SQL[8],
+                params!["project", "revision"],
+                |row| row.get(0),
+            )
             .unwrap();
         let one_entry = ["entry", "character", "name", "summary", "now"]
             .iter()
@@ -642,7 +647,10 @@ mod tests {
             "CROSS JOIN codex_entries e",
             "FROM codex_relations e",
         ]) {
-            assert!(sql.contains(source), "A2 diagnostic SQL slot changed: {source}");
+            assert!(
+                sql.contains(source),
+                "A2 diagnostic SQL slot changed: {source}"
+            );
         }
         let mut observation = A2SqlObservation::default();
         for ordinal in 0..A2_SQL_QUERY_COUNT as u8 {
@@ -871,8 +879,14 @@ pub(super) fn preflight_disclosure_observed(
     observation: Option<&mut A3SqlObservation>,
 ) -> anyhow::Result<DisclosureAdmission> {
     preflight_disclosure_inner(
-        conn, project, revision_id, query_scene_id, payload_bytes,
-        remaining_rows, remaining_bytes, observation,
+        conn,
+        project,
+        revision_id,
+        query_scene_id,
+        payload_bytes,
+        remaining_rows,
+        remaining_bytes,
+        observation,
     )
 }
 
@@ -909,9 +923,7 @@ fn preflight_disclosure_inner(
         #[cfg(feature = "nir1-material-diagnostics")]
         let started = start_a3_sql_timer(&observation);
         let value_query: rusqlite::Result<i64> = match parameters {
-            DisclosureGlobalRowsParams::Project => {
-                conn.query_row(sql, [project], |row| row.get(0))
-            }
+            DisclosureGlobalRowsParams::Project => conn.query_row(sql, [project], |row| row.get(0)),
             DisclosureGlobalRowsParams::ProjectScene => {
                 conn.query_row(sql, params![project, query_scene_id], |row| row.get(0))
             }
@@ -920,7 +932,12 @@ fn preflight_disclosure_inner(
             }
         };
         #[cfg(feature = "nir1-material-diagnostics")]
-        record_a3_sql_query(&mut observation, 1 + _index as u8, started, value_query.is_err());
+        record_a3_sql_query(
+            &mut observation,
+            1 + _index as u8,
+            started,
+            value_query.is_err(),
+        );
         let value = value_query?;
         let multiplier = if multiplier == 0 {
             registry_reads
@@ -956,7 +973,12 @@ fn preflight_disclosure_inner(
                 row.get(0)
             });
         #[cfg(feature = "nir1-material-diagnostics")]
-        record_a3_sql_query(&mut observation, 10 + _index as u8, started, value_query.is_err());
+        record_a3_sql_query(
+            &mut observation,
+            10 + _index as u8,
+            started,
+            value_query.is_err(),
+        );
         let value = value_query?;
         let multiplier = if multiplier == 0 {
             registry_reads
@@ -978,7 +1000,12 @@ fn preflight_disclosure_inner(
         let value_query: rusqlite::Result<i64> =
             conn.query_row(sql, params![project, revision_id], |row| row.get(0));
         #[cfg(feature = "nir1-material-diagnostics")]
-        record_a3_sql_query(&mut observation, 18 + _index as u8, started, value_query.is_err());
+        record_a3_sql_query(
+            &mut observation,
+            18 + _index as u8,
+            started,
+            value_query.is_err(),
+        );
         let value = value_query?;
         bytes = bytes
             .checked_add(usize::try_from(value).map_err(|_| anyhow::anyhow!(ERROR))?)
@@ -1241,7 +1268,11 @@ mod disclosure_tests {
         )
         .unwrap();
         let bytes: i64 = conn
-            .query_row(DISCLOSURE_MATERIAL_BYTES_SQL[0], params!["project", "r"], |row| row.get(0))
+            .query_row(
+                DISCLOSURE_MATERIAL_BYTES_SQL[0],
+                params!["project", "r"],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(bytes, 2 * "auto".len() as i64);
     }
@@ -1260,14 +1291,21 @@ mod disclosure_tests {
         )
         .unwrap();
         let counted = || -> i64 {
-            conn.query_row(DISCLOSURE_MATERIAL_BYTES_SQL[2], params!["project", "r"], |row| row.get(0))
-                .unwrap()
+            conn.query_row(
+                DISCLOSURE_MATERIAL_BYTES_SQL[2],
+                params!["project", "r"],
+                |row| row.get(0),
+            )
+            .unwrap()
         };
         assert_eq!(counted(), 4 * "auto".len() as i64); // 2 objects × 2 phases
         conn.execute("DELETE FROM codex_entry_phases", []).unwrap();
         assert_eq!(counted(), 2 * "auto".len() as i64); // LEFT JOIN retains unphased entries
-        conn.execute("UPDATE narrative_proposal_revisions SET payload_json='{bad' WHERE id='r'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE narrative_proposal_revisions SET payload_json='{bad' WHERE id='r'",
+            [],
+        )
+        .unwrap();
         assert_eq!(counted(), 0);
     }
 
@@ -1285,12 +1323,19 @@ mod disclosure_tests {
         )
         .unwrap();
         let counted = || -> i64 {
-            conn.query_row(DISCLOSURE_MATERIAL_BYTES_SQL[4], params!["project", "r"], |row| row.get(0))
-                .unwrap()
+            conn.query_row(
+                DISCLOSURE_MATERIAL_BYTES_SQL[4],
+                params!["project", "r"],
+                |row| row.get(0),
+            )
+            .unwrap()
         };
         assert_eq!(counted(), 2 * "character".len() as i64);
-        conn.execute("UPDATE narrative_proposal_revisions SET payload_json='{bad' WHERE id='r'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE narrative_proposal_revisions SET payload_json='{bad' WHERE id='r'",
+            [],
+        )
+        .unwrap();
         assert_eq!(counted(), 0);
     }
 
@@ -1299,12 +1344,24 @@ mod disclosure_tests {
     fn observed_a3_keeps_admission_and_fixed_sql_slots() {
         let conn = fixture();
         let expected = preflight_disclosure_with_payload_bytes(
-            &conn, "project", "r", "scene", 0, MAX_GRAPH_RECORDS, INPUT_BYTES,
+            &conn,
+            "project",
+            "r",
+            "scene",
+            0,
+            MAX_GRAPH_RECORDS,
+            INPUT_BYTES,
         )
         .unwrap();
         let mut observation = A3SqlObservation::default();
         let observed = preflight_disclosure_observed(
-            &conn, "project", "r", "scene", 0, MAX_GRAPH_RECORDS, INPUT_BYTES,
+            &conn,
+            "project",
+            "r",
+            "scene",
+            0,
+            MAX_GRAPH_RECORDS,
+            INPUT_BYTES,
             Some(&mut observation),
         )
         .unwrap();
@@ -1313,10 +1370,17 @@ mod disclosure_tests {
         assert_eq!(observation.error_slot, None);
         assert_eq!(observation.overflow_mask, 0);
 
-        conn.execute_batch("DROP TABLE narrative_scope_registries").unwrap();
+        conn.execute_batch("DROP TABLE narrative_scope_registries")
+            .unwrap();
         let mut failed = A3SqlObservation::default();
         assert!(preflight_disclosure_observed(
-            &conn, "project", "r", "scene", 0, MAX_GRAPH_RECORDS, INPUT_BYTES,
+            &conn,
+            "project",
+            "r",
+            "scene",
+            0,
+            MAX_GRAPH_RECORDS,
+            INPUT_BYTES,
             Some(&mut failed),
         )
         .is_err());

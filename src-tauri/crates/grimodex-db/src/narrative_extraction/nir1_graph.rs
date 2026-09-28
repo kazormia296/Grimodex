@@ -4,6 +4,7 @@
 //! registration proves the complete B binding on this exact read connection;
 //! changed committed state requires owned maintenance, never a query-time scan.
 
+pub mod c_query_worker;
 mod candidates;
 mod input;
 #[cfg_attr(
@@ -26,6 +27,7 @@ mod oracle_tests;
 mod scenes;
 #[cfg(test)]
 mod tests;
+pub mod worker_frame;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -50,7 +52,12 @@ use super::nir1_entity_relation_index::{
     is_complete_registered_with_control, GraphProgressCallback, GraphWorkControl, GraphWorkStage,
     INDEX_KEY,
 };
-use super::source_revision::{validation_terminated, ValidationTerminationReason};
+use super::source_revision::{
+    validation_terminated, ValidationTerminated, ValidationTerminationReason,
+};
+use crate::narrative_maintenance_connection::{
+    with_narrative_maintenance_graph_control, NarrativeMaintenanceGraphControlConfig,
+};
 use crate::state::WorkspaceAuthority;
 use crate::workspace_lifecycle::WorkspaceParticipant;
 
@@ -58,8 +65,8 @@ use crate::workspace_lifecycle::WorkspaceParticipant;
 pub(crate) use self::input::{A2SqlObservation, A3SqlObservation};
 use self::memory::{RetainedLedger, RetainedPart};
 
-const QUERY_SQL_STEPS: u64 = 100_000;
-const QUERY_DEADLINE: Duration = Duration::from_millis(8);
+pub(crate) const QUERY_SQL_STEPS: u64 = 100_000;
+pub(crate) const QUERY_DEADLINE: Duration = Duration::from_millis(8);
 const QUERY_MAX_PAGES: usize = 32;
 // JSON/A2/A3 parsing allocates typed values and fixed per-record metadata
 // before the qualified material can be moved into the shared cache.  Reserve
@@ -454,8 +461,32 @@ impl Nir1GraphReader {
         }
     }
 
+    /// Register on this reader's own connection under the existing no-wait
+    /// maintenance owner; no caller-supplied flag or generation grants access.
+    pub fn register_with_worker_maintenance(&mut self, project: &str) -> Result<bool> {
+        let authority = Arc::clone(&self.authority);
+        let result = with_narrative_maintenance_graph_control(
+            &authority,
+            Duration::ZERO,
+            1_000,
+            Arc::new(AtomicBool::new(false)),
+            NarrativeMaintenanceGraphControlConfig::default(),
+            |_, control| self.register_with_control(project, control),
+        )?;
+        match result {
+            Some(result) => result.into_result(),
+            None => Ok(false),
+        }
+    }
+
     pub fn query(&mut self, request: &Nir1GraphRequest) -> Result<Nir1GraphResponse> {
-        self.query_with_deadline(request, QUERY_DEADLINE, QUERY_SQL_STEPS)
+        self.query_with_deadline_observed(request, QUERY_DEADLINE, QUERY_SQL_STEPS, None, false)
+    }
+
+    /// Diagnostic reason tags for the isolated worker binary only; not a product API.
+    #[doc(hidden)]
+    pub fn query_for_worker(&mut self, request: &Nir1GraphRequest) -> Result<Nir1GraphResponse> {
+        self.query_with_deadline_observed(request, QUERY_DEADLINE, QUERY_SQL_STEPS, None, true)
     }
 
     fn query_with_deadline(
@@ -464,7 +495,7 @@ impl Nir1GraphReader {
         duration: Duration,
         sql_steps: u64,
     ) -> Result<Nir1GraphResponse> {
-        self.query_with_deadline_observed(request, duration, sql_steps, None)
+        self.query_with_deadline_observed(request, duration, sql_steps, None, false)
     }
 
     #[cfg(feature = "nir1-material-diagnostics")]
@@ -483,8 +514,13 @@ impl Nir1GraphReader {
         sql_steps: u64,
     ) -> (Result<Nir1GraphResponse>, StageObservation) {
         let mut observation = StageObservation::default();
-        let result =
-            self.query_with_deadline_observed(request, duration, sql_steps, Some(&mut observation));
+        let result = self.query_with_deadline_observed(
+            request,
+            duration,
+            sql_steps,
+            Some(&mut observation),
+            false,
+        );
         (result, observation)
     }
 
@@ -494,6 +530,7 @@ impl Nir1GraphReader {
         duration: Duration,
         sql_steps: u64,
         mut _observation: Option<&mut StageObservation>,
+        worker_path: bool,
     ) -> Result<Nir1GraphResponse> {
         let deadline = Instant::now() + duration;
         validate_request(request)?;
@@ -526,19 +563,18 @@ impl Nir1GraphReader {
                 #[cfg(feature = "nir1-material-diagnostics")]
                 let pre_snapshot_started = _observation.as_ref().map(|_| Instant::now());
                 let pre_snapshot_result = (|| -> Result<()> {
-                    ensure!(
-                        ReadIdentity::read_unpinned(conn)?.as_ref() == Some(&identity),
-                        "NIR1_GRAPH_QUERY_DRIFT"
-                    );
-                    // A short identity read can finish after the deadline without
-                    // reaching the progress cadence. Do not open the snapshot
-                    // transaction after that late read.
+                    // The pinned identity check below detects changes before this
+                    // snapshot; the post-rollback stamp detects changes during it.
+                    // Avoid a redundant five-statement unpinned read here.
                     control.check(GraphWorkStage::Page)?;
                     conn.execute_batch("BEGIN DEFERRED")?;
                     ensure!(
                         ReadIdentity::read(conn)?.as_ref() == Some(&identity),
                         "NIR1_GRAPH_QUERY_DRIFT"
                     );
+                    // This scalar identity read may finish after the deadline
+                    // without reaching the progress cadence.
+                    control.check(GraphWorkStage::Page)?;
                     ensure!(
                         read_seal(conn, &request.project_id)?.as_ref() == Some(&expected_seal),
                         "NIR1_GRAPH_QUERY_SEAL_DRIFT"
@@ -552,9 +588,23 @@ impl Nir1GraphReader {
                     pre_snapshot_started,
                 );
                 pre_snapshot_result?;
-                query_in_snapshot(conn, request, &expected_seal, control, &mut _observation)
+                query_in_snapshot(
+                    conn,
+                    request,
+                    &expected_seal,
+                    control,
+                    &mut _observation,
+                    worker_path,
+                )
             },
         );
+        let pre_cleanup_status = worker_path.then(|| {
+            worker_work_status(
+                &result,
+                Instant::now() >= deadline,
+                budget.sql_steps_used() > sql_steps,
+            )
+        });
         #[cfg(feature = "nir1-material-diagnostics")]
         if result.is_err() {
             if let Some(observation) = _observation.as_deref_mut() {
@@ -569,15 +619,19 @@ impl Nir1GraphReader {
                 .connection
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_READER_CLOSED"))?;
-            let current =
-                nir1_capacity::with_capacity_scope(conn, Some(budget), &mut owner, |_, control| {
+            let current = nir1_capacity::with_capacity_scope(
+                conn,
+                Some(Arc::clone(&budget)),
+                &mut owner,
+                |_, control| {
                     let identity = ReadIdentity::read_unpinned(conn)?;
                     control.check(GraphWorkStage::ResultAssembly)?;
                     Ok(identity)
-                });
+                },
+            );
             let current_identity = match current {
                 Ok(identity) => identity,
-                Err(_) => {
+                Err(error) => {
                     // A capacity/deadline failure during the post-cleanup stamp
                     // is a bounded query failure.  It is not evidence of an
                     // identity drift and must not consume registration.
@@ -587,10 +641,18 @@ impl Nir1GraphReader {
                         observation.deadline_observed_at_collapse |= Instant::now() >= deadline;
                         observation.unattributed = true;
                     }
-                    return Ok(unavailable_response(
-                        request,
-                        "query-budget-or-validation-failed",
-                    ));
+                    let reason = if worker_path {
+                        worker_refusal_reason(
+                            WorkerRefusalSite::PostStamp,
+                            &error,
+                            Instant::now() >= deadline,
+                            budget.sql_steps_used() > sql_steps,
+                            pre_cleanup_status,
+                        )
+                    } else {
+                        "query-budget-or-validation-failed".to_owned()
+                    };
+                    return Ok(unavailable_response(request, &reason));
                 }
             };
             let identity_drift = current_identity.as_ref() != Some(&identity);
@@ -623,15 +685,23 @@ impl Nir1GraphReader {
             }
             match result {
                 Ok(response) => Ok(response),
-                Err(_) => {
+                Err(error) => {
                     #[cfg(feature = "nir1-material-diagnostics")]
                     if let Some(observation) = _observation.as_deref_mut() {
                         observation.unattributed = true;
                     }
-                    Ok(unavailable_response(
-                        request,
-                        "query-budget-or-validation-failed",
-                    ))
+                    let reason = if worker_path {
+                        worker_refusal_reason(
+                            WorkerRefusalSite::Work,
+                            &error,
+                            Instant::now() >= deadline,
+                            budget.sql_steps_used() > sql_steps,
+                            pre_cleanup_status,
+                        )
+                    } else {
+                        "query-budget-or-validation-failed".to_owned()
+                    };
+                    Ok(unavailable_response(request, &reason))
                 }
             }
         })();
@@ -763,6 +833,113 @@ impl Nir1GraphReader {
     }
 }
 
+#[derive(Clone, Copy)]
+enum WorkerRefusalSite {
+    Work,
+    PostStamp,
+}
+
+#[derive(Clone, Copy)]
+enum WorkerWorkStatus {
+    WorkOk,
+    WorkFailed(&'static str),
+    DeadlineAlreadyCrossed,
+}
+
+fn worker_work_status<T>(
+    result: &Result<T>,
+    deadline_elapsed: bool,
+    sql_steps_exhausted: bool,
+) -> WorkerWorkStatus {
+    if deadline_elapsed {
+        WorkerWorkStatus::DeadlineAlreadyCrossed
+    } else {
+        match result {
+            Ok(_) => WorkerWorkStatus::WorkOk,
+            Err(_) if sql_steps_exhausted => WorkerWorkStatus::WorkFailed("steps"),
+            Err(error) => WorkerWorkStatus::WorkFailed(worker_refusal_cause(error, false, false)),
+        }
+    }
+}
+
+fn worker_refusal_reason(
+    site: WorkerRefusalSite,
+    error: &anyhow::Error,
+    deadline_elapsed: bool,
+    sql_steps_exhausted: bool,
+    pre_cleanup_status: Option<WorkerWorkStatus>,
+) -> String {
+    let cause = match (site, pre_cleanup_status) {
+        (WorkerRefusalSite::Work, Some(WorkerWorkStatus::WorkFailed(cause))) => cause,
+        (WorkerRefusalSite::Work, Some(WorkerWorkStatus::DeadlineAlreadyCrossed)) => "deadline",
+        _ => worker_refusal_cause(error, deadline_elapsed, sql_steps_exhausted),
+    };
+    let site = match site {
+        WorkerRefusalSite::Work => "work",
+        WorkerRefusalSite::PostStamp => "post-stamp",
+    };
+    let status = match pre_cleanup_status {
+        Some(WorkerWorkStatus::WorkOk) => "-pre-cleanup-work-ok".to_owned(),
+        Some(WorkerWorkStatus::WorkFailed(cause)) => {
+            format!("-pre-cleanup-work-failed-{cause}")
+        }
+        Some(WorkerWorkStatus::DeadlineAlreadyCrossed) => {
+            "-pre-cleanup-deadline-already-crossed".to_owned()
+        }
+        None => String::new(),
+    };
+    format!("query-worker-{site}-{cause}{status}")
+}
+
+fn worker_refusal_cause(
+    error: &anyhow::Error,
+    deadline_elapsed: bool,
+    sql_steps_exhausted: bool,
+) -> &'static str {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(|error| matches!(error, rusqlite::Error::SqliteFailure(code, _) if code.code == rusqlite::ErrorCode::OutOfMemory))
+    }) {
+        return "sqlite-nomem";
+    }
+    for (marker, cause) in [
+        ("NIR1_GRAPH_CANDIDATE_LIMIT", "candidate-record-limit"),
+        ("NIR1_GRAPH_REVISION_RECORD_LIMIT", "revision-record-limit"),
+        (
+            "NIR1_GRAPH_DISCLOSURE_RECORD_LIMIT",
+            "disclosure-record-limit",
+        ),
+        ("NIR1_GRAPH_READ_LIMIT", "read-record-limit"),
+    ] {
+        if error.chain().any(|error| error.to_string() == marker) {
+            return cause;
+        }
+    }
+    match error.downcast_ref::<ValidationTerminated>() {
+        Some(termination) => match termination.reason {
+            ValidationTerminationReason::TimedOut => "deadline",
+            ValidationTerminationReason::CapacityExceeded => {
+                match (deadline_elapsed, sql_steps_exhausted) {
+                    (true, true) => "deadline-or-steps",
+                    (true, false) => "deadline",
+                    (false, true) => "steps",
+                    (false, false) => "validation-capacity-exceeded",
+                }
+            }
+            ValidationTerminationReason::ContextUnavailable => "validation-context-unavailable",
+            ValidationTerminationReason::Cancelled => "validation-cancelled",
+            ValidationTerminationReason::Closed => "validation-closed",
+            ValidationTerminationReason::WorkspaceGenerationChanged => {
+                "validation-workspace-generation-changed"
+            }
+            ValidationTerminationReason::ForegroundPreempted => "validation-foreground-preempted",
+            ValidationTerminationReason::CleanupFailed => "validation-cleanup-failed",
+        },
+        None => "other",
+    }
+}
+
 struct ReaderControl {
     cancelled: Arc<AtomicBool>,
     epoch_signal: Arc<AtomicU64>,
@@ -887,6 +1064,20 @@ impl QueryUsage {
             "NIR1_GRAPH_RETAINED_LIMIT"
         );
         Ok(())
+    }
+
+    fn admit_transient_material_reserve(
+        &mut self,
+        raw_bytes: usize,
+        rows: usize,
+        worker_path: bool,
+    ) -> Result<()> {
+        // The isolated worker's fixed query arena replaces this estimate; keep
+        // it for ordinary readers, which have no physical arena bound.
+        if worker_path {
+            return Ok(());
+        }
+        self.admit_retained(transient_material_reserve(raw_bytes, rows)?)
     }
 
     fn admit_output(&mut self, bytes: usize) -> Result<()> {
@@ -1030,6 +1221,7 @@ fn query_in_snapshot(
     seal: &Seal,
     control: &mut dyn GraphWorkControl,
     _observation: &mut Option<&mut StageObservation>,
+    worker_path: bool,
 ) -> Result<Nir1GraphResponse> {
     let mut usage = QueryUsage::default();
     usage.admit(
@@ -1195,7 +1387,7 @@ fn query_in_snapshot(
                     );
                     let disclosure_admission = disclosure_preflight?;
                     usage.admit(disclosure_admission.rows, disclosure_admission.bytes)?;
-                    usage.admit_retained(transient_material_reserve(
+                    usage.admit_transient_material_reserve(
                         revision_admission
                             .bytes
                             .checked_add(disclosure_admission.bytes)
@@ -1204,7 +1396,8 @@ fn query_in_snapshot(
                             .rows
                             .checked_add(disclosure_admission.rows)
                             .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_RETAINED_LIMIT"))?,
-                    )?)?;
+                        worker_path,
+                    )?;
                     control.check(GraphWorkStage::A2)?;
                     #[cfg(feature = "nir1-material-diagnostics")]
                     let a3_started = _observation.as_ref().map(|_| Instant::now());
@@ -1379,13 +1572,17 @@ fn query_in_snapshot(
         }),
         reason: None,
     };
-    let mut counter = OutputCounter {
-        bytes: 0,
-        usage: &mut usage,
-        control,
-    };
-    serde_json::to_writer(&mut counter, &response)?;
-    control.check(GraphWorkStage::Serialization)?;
+    // The worker's bounded binary frame is the actual result; a JSON count-only
+    // pass would traverse the same response again before that frame is encoded.
+    if !worker_path {
+        let mut counter = OutputCounter {
+            bytes: 0,
+            usage: &mut usage,
+            control,
+        };
+        serde_json::to_writer(&mut counter, &response)?;
+        control.check(GraphWorkStage::Serialization)?;
+    }
     Ok(response)
 }
 

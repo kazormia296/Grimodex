@@ -286,6 +286,18 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
     Object.keys(workflow.jobs).sort(),
   );
 
+  const workerScript = "scripts/nir1-c-query-worker-ci.sh";
+  const workerStep = workflow.jobs["nir1-c-query-worker"].steps.find(
+    ({ name }) => name === "Build the private Q2 fixture and run focused real-worker tests",
+  );
+  const workerTask = registry.stages.rust.commands.find(
+    ({ id }) => id === "rust.c-query-worker",
+  );
+  assert.equal(workerStep.shell, "bash");
+  assert.equal(workerStep.run, `bash ${workerScript}`);
+  assert.equal(workerTask.command, "bash");
+  assert.deepEqual(workerTask.args, [workerScript]);
+
   for (const [jobId, coverage] of Object.entries(registry.hostedJobs)) {
     if (coverage.releaseOnly) {
       assert.match(coverage.reason, /Windows|release/i, jobId);
@@ -3926,6 +3938,7 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     plan.stages.find(({ id }) => id === "rust").commands.map(({ id }) => id),
     [
       "rust.supervisor-failpoints",
+      "rust.c-query-worker",
       "rust.tests-db-integrations",
       "rust.tests-db-lib",
       "rust.tests-db-nir1-capacity",
@@ -3939,6 +3952,18 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "rust.license",
     ],
   );
+  const cQueryWorkerTask = tasksById.get("rust.c-query-worker");
+  assert.equal(cQueryWorkerTask.command.command, "bash");
+  assert.deepEqual(cQueryWorkerTask.command.args, [
+    "scripts/nir1-c-query-worker-ci.sh",
+  ]);
+  assert.equal(cQueryWorkerTask.command.cwd, ".");
+  assert.deepEqual(cQueryWorkerTask.after, ["bootstrap.install"]);
+  assert.equal(cQueryWorkerTask.lane, "cargo-shared");
+  assert.equal(cQueryWorkerTask.slots, 2);
+  assert.equal(cQueryWorkerTask.timeoutMs, 2700000);
+  assert.equal(cQueryWorkerTask.command.env.CARGO_BUILD_JOBS, "2");
+  assert.deepEqual(cQueryWorkerTask.obligations, []);
   assert.deepEqual(
     plan.stages
       .find(({ id }) => id === "frontend")
@@ -4019,8 +4044,8 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "journeys.run",
     ],
   );
-  assert.equal(plan.tasks.length, 67);
-  assert.equal(tasksById.size, 67);
+  assert.equal(plan.tasks.length, 68);
+  assert.equal(tasksById.size, 68);
   assert.equal(obligations.length, 52);
   assert.equal(new Set(obligations).size, 52);
   assert.equal(

@@ -65,7 +65,14 @@ Security-sensitive threat models remain `draft` until explicit user confirmation
 actors, in-scope and out-of-scope attacks, mandatory defenses, and acceptance implications. Material
 changes require reconfirmation. Subagents and reviewers may propose a change, but may not silently
 freeze or change the threat model. Missing confirmation is a blocking precheck and must stop as
-`[precheck]` before mutation.
+`[precheck]` before mutation. For PR #610's C-query worker, the user has already delegated technical
+revisions of its worker, ownership, termination and threat model within the named actors, defenses,
+recipients and unchanged acceptance contract. The integrator records each concrete revision and its
+trust boundary in the existing work result before mutation; for a hard decision, obtain read-only
+Astra Max advice and decide explicitly. This is a delegated technical decision, not a claim of
+individual user approval. Deleting product authorization, sending secrets or data to unapproved
+recipients, or silently relaxing 8 ms, 2 MiB or Gold falls outside this delegation and still fails
+the precheck. This exception does not apply to other work.
 
 Long or high-risk work uses one integrator, implementer(s), and candidate-untouched independent
 acceptance reviewer(s). Keep separate implementation and acceptance reviewers; these roles do not

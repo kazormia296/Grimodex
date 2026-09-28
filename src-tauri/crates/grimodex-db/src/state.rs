@@ -27,6 +27,9 @@ pub struct WorkspaceAuthority {
     path: PathBuf,
     lease: WorkspaceLease,
     identity: u64,
+    // The one-query child slot belongs to the exact Native workspace authority.
+    // It stays closed if worker exit/pipe EOF cannot be proved.
+    c_query_child_claimed: std::sync::atomic::AtomicBool,
     nir_chronicle_index:
         crate::narrative_extraction::nir1_chronicle_index::NirChronicleIndexRuntime,
 }
@@ -45,6 +48,7 @@ impl WorkspaceAuthority {
             path,
             lease,
             identity,
+            c_query_child_claimed: std::sync::atomic::AtomicBool::new(false),
             nir_chronicle_index,
         }
     }
@@ -68,6 +72,15 @@ impl WorkspaceAuthority {
         self.identity
     }
 
+    pub(crate) fn claim_c_query_child(self: &Arc<Self>) -> Option<CQueryChildClaim> {
+        self.c_query_child_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| CQueryChildClaim {
+                authority: Arc::clone(self),
+            })
+    }
+
     pub fn nir_chronicle_index_runtime(
         &self,
     ) -> &crate::narrative_extraction::nir1_chronicle_index::NirChronicleIndexRuntime {
@@ -79,6 +92,20 @@ impl WorkspaceAuthority {
         std::fs::create_dir_all(&path).map_err(anyhow::Error::from)?;
         let lease = crate::workspace_lease::try_acquire_shared(&path)?;
         Ok(Arc::new(Self::new(db, path, lease)))
+    }
+}
+
+/// Never released by Drop: only a proved exit+EOF and a dropped result lease
+/// allow the owner to reopen this workspace's child admission. A failed
+/// cleanup leaves the authority pinned and the slot closed instead.
+pub(crate) struct CQueryChildClaim {
+    authority: Arc<WorkspaceAuthority>,
+}
+impl CQueryChildClaim {
+    pub(crate) fn release(self) {
+        self.authority
+            .c_query_child_claimed
+            .store(false, Ordering::Release);
     }
 }
 
@@ -156,6 +183,9 @@ impl WorkspaceState {
 #[derive(Clone)]
 pub struct ActiveWorkspaceSnapshot {
     pub authority: PinnedWorkspaceDb,
+    /// Exact Ready binding captured with this participant, absent only on the
+    /// frozen legacy NoWorkspace compatibility path.
+    binding: Option<crate::workspace_lifecycle::LiveBinding>,
     /// Keeps the lifecycle core aware of the pinned DB operation until this
     /// snapshot (and any intentional clone) is dropped.
     _participant: crate::workspace_lifecycle::WorkspaceParticipant,
@@ -171,6 +201,15 @@ impl ActiveWorkspaceSnapshot {
     /// workspace transition; the participant has no independent binding ID.
     pub(crate) fn participant(&self) -> &crate::workspace_lifecycle::WorkspaceParticipant {
         &self._participant
+    }
+
+    pub(crate) fn check_current_binding(&self) -> anyhow::Result<()> {
+        let binding = self
+            .binding
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("NEX_WORKSPACE_BINDING_UNAVAILABLE"))?;
+        self._participant.with_current_binding(binding, || ())?;
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
@@ -296,6 +335,7 @@ fn resolve_workspace_snapshot(
                 if let Some(ws) = inner.as_ref() {
                     return Ok(ActiveWorkspaceSnapshot {
                         authority: Arc::clone(&ws.authority),
+                        binding: None,
                         _participant: participant,
                     });
                 }
@@ -329,6 +369,7 @@ fn resolve_workspace_snapshot(
         }
         Ok(ActiveWorkspaceSnapshot {
             authority: Arc::clone(&ws.authority),
+            binding: Some(binding),
             _participant: participant,
         })
     }
@@ -713,9 +754,7 @@ mod tests {
             Ok(_) => panic!("a direct authority replacement must fail closed until activation"),
             Err(error) => error,
         };
-        assert!(error
-            .to_string()
-            .contains("NEX_WORKSPACE_BINDING_CHANGED"));
+        assert!(error.to_string().contains("NEX_WORKSPACE_BINDING_CHANGED"));
         // Pinned snapshot still holds the original shared lease.
         let exclusive = crate::workspace_lease::acquire_exclusive(
             &original_path,

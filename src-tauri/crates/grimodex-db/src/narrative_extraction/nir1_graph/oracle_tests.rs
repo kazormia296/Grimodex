@@ -18,6 +18,7 @@ use std::time::Duration;
 
 const PROJECT: &str = "default-project";
 const UNRELATED_ENTITY: &str = "oracle-unrelated";
+const TWO_HOP_ENTITY: &str = "oracle-third";
 const SEED_KEYSET_DECOYS: usize = 31;
 const UNRELATED_REVERSE_INDEX_DECOYS: usize = 513;
 const STALE_SEED_REVERSE_INDEX_DECOYS: usize = 512;
@@ -36,6 +37,7 @@ struct OracleFixture {
     target_revision: String,
     expected_bundle: EntityRelationBundle,
     generation: i64,
+    two_hop: bool,
     _directory: TestDirectory,
 }
 
@@ -66,7 +68,15 @@ impl OracleFixture {
         Self::with_denied_bridge(None)
     }
 
+    fn two_hop() -> Result<Self> {
+        Self::build(None, true)
+    }
+
     fn with_denied_bridge(bridge: Option<DeniedBridge>) -> Result<Self> {
+        Self::build(bridge, false)
+    }
+
+    fn build(bridge: Option<DeniedBridge>, two_hop: bool) -> Result<Self> {
         let directory = TestDirectory(
             std::env::temp_dir().join(format!("nir1-c-graph-oracle-{}", uuid::Uuid::new_v4())),
         );
@@ -83,14 +93,32 @@ impl OracleFixture {
                          '2026-09-12T00:00:00Z')",
                 params![UNRELATED_ENTITY, PROJECT],
             )?;
-            conn.execute(
-                "INSERT INTO codex_relations
-                    (id, project_id, from_codex_id, to_codex_id, relation_type,
-                     directionality, version, updated_at)
-                 VALUES ('nir1-edge-b', ?1, 'nir1-alice', 'nir1-bob', 'related',
-                         'directed', 1, '2026-09-12T00:00:00Z')",
-                [PROJECT],
-            )?;
+            if two_hop {
+                conn.execute(
+                    "INSERT INTO codex_entries
+                        (id, project_id, type, name, summary, updated_at)
+                     VALUES (?1, ?2, 'character', 'Third', 'Third',
+                             '2026-09-12T00:00:00Z')",
+                    params![TWO_HOP_ENTITY, PROJECT],
+                )?;
+                conn.execute(
+                    "INSERT INTO codex_relations
+                        (id, project_id, from_codex_id, to_codex_id, relation_type,
+                         directionality, version, updated_at)
+                     VALUES ('oracle-edge-bc', ?1, 'nir1-bob', ?2, 'related',
+                             'directed', 1, '2026-09-12T00:00:00Z')",
+                    params![PROJECT, TWO_HOP_ENTITY],
+                )?;
+            } else {
+                conn.execute(
+                    "INSERT INTO codex_relations
+                        (id, project_id, from_codex_id, to_codex_id, relation_type,
+                         directionality, version, updated_at)
+                     VALUES ('nir1-edge-b', ?1, 'nir1-alice', 'nir1-bob', 'related',
+                             'directed', 1, '2026-09-12T00:00:00Z')",
+                    [PROJECT],
+                )?;
+            }
             Ok(())
         })?;
         run_incremental_freshness_cycle(&db)?;
@@ -103,9 +131,30 @@ impl OracleFixture {
             entity.scope.phase = "draft".into();
         }
         let mut second_relation = target.bundle.relations[0].clone();
-        second_relation.edge_id = "nir1-edge-b".into();
+        if two_hop {
+            let mut third_entity = target.bundle.entities[1].clone();
+            third_entity.entity_id = TWO_HOP_ENTITY.into();
+            third_entity.label = "Third".into();
+            third_entity.source_token = "codex:oracle-third@2026-09-12T00:00:00Z".into();
+            third_entity.evidence[0].evidence_id = "oracle-third-evidence".into();
+            third_entity.evidence[0].source_ref = "codex:oracle-third".into();
+            third_entity.evidence[0].quote = "Third".into();
+            third_entity.evidence[0].end_utf16 = "Third".encode_utf16().count();
+            target.bundle.entities.push(third_entity);
+
+            second_relation.edge_id = "oracle-edge-bc".into();
+            second_relation.from_entity_id = "nir1-bob".into();
+            second_relation.to_entity_id = TWO_HOP_ENTITY.into();
+            second_relation.evidence_ids =
+                vec!["nir1-evidence-bob".into(), "oracle-third-evidence".into()];
+        } else {
+            second_relation.edge_id = "nir1-edge-b".into();
+        }
         second_relation.relation_type = "related".into();
-        second_relation.source_token = "v1@2026-09-12T00:00:00Z:relation:nir1-edge-b".into();
+        second_relation.source_token = format!(
+            "v1@2026-09-12T00:00:00Z:relation:{}",
+            second_relation.edge_id
+        );
         target.bundle.relations.push(second_relation);
         let expected_bundle = target.bundle.clone();
         // Storage order differs from the declared output order: sorting the
@@ -148,7 +197,7 @@ impl OracleFixture {
                     "INSERT INTO codex_relations
                         (id, project_id, from_codex_id, to_codex_id, relation_type,
                          directionality, version, updated_at)
-                     VALUES ('oracle-denied-bridge', ?1, 'nir1-alice', ?2, 'knows',
+                     VALUES ('oracle-denied-bridge', ?1, 'nir1-bob', ?2, 'knows',
                              'directed', 1, '2026-09-12T00:00:00Z')",
                     params![PROJECT, UNRELATED_ENTITY],
                 )?;
@@ -156,7 +205,7 @@ impl OracleFixture {
             })?;
             let mut denied = request(&db);
             denied.proposal_key = "nir1:oracle-denied:1".into();
-            denied.bundle.entities = vec![expected_bundle.entities[0].clone(), unrelated_entity];
+            denied.bundle.entities = vec![expected_bundle.entities[1].clone(), unrelated_entity];
             if matches!(bridge, DeniedBridge::FutureScope) {
                 denied.bundle.entities[1].scope.reading = ScopeValue::Exact {
                     value: "scene:a3-future".into(),
@@ -164,9 +213,13 @@ impl OracleFixture {
             }
             let relation = &mut denied.bundle.relations[0];
             relation.edge_id = "oracle-denied-bridge".into();
+            relation.from_entity_id = "nir1-bob".into();
             relation.to_entity_id = UNRELATED_ENTITY.into();
             relation.source_token = "v1@2026-09-12T00:00:00Z:relation:oracle-denied-bridge".into();
-            relation.evidence_ids[1] = "oracle-unrelated-evidence".into();
+            relation.evidence_ids = vec![
+                "nir1-evidence-bob".into(),
+                "oracle-unrelated-evidence".into(),
+            ];
             let created = create_nir1_entity_relation_revision(&db, denied)?;
             if matches!(bridge, DeniedBridge::FutureScope) {
                 approve_typed_revision(&db, "nir1-run", &created)?;
@@ -178,13 +231,13 @@ impl OracleFixture {
                 let count: i64 = conn.query_row(
                     "SELECT COUNT(*) FROM narrative_dependency_edges
                      WHERE project_id=?1 AND consumer_kind='proposal-revision'
-                       AND consumer_key=?2 AND source_object_identity='codex:nir1-alice'",
+                       AND consumer_key=?2 AND source_object_identity='codex:nir1-bob'",
                     params![PROJECT, revision],
                     |row| row.get(0),
                 )?;
                 ensure!(
                     count == 1,
-                    "denied bridge must be a real indexed seed candidate"
+                    "denied bridge must be a real indexed intermediate candidate"
                 );
                 Ok(())
             })?;
@@ -210,6 +263,7 @@ impl OracleFixture {
                 .to_owned(),
             expected_bundle,
             generation,
+            two_hop,
             _directory: directory,
         })
     }
@@ -260,8 +314,9 @@ impl OracleFixture {
                     PROJECT,
                     self.target_revision,
                     crate::narrative_extraction::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID,
-                    // Two Entity, two Relation and one Scope authority sources.
-                    5,
+                    // One source per Entity/Relation plus Scope authority.
+                    (self.expected_bundle.entities.len() + self.expected_bundle.relations.len() + 1)
+                        as i64,
                 ],
                 |row| row.get(0),
             )?;
@@ -277,6 +332,15 @@ impl OracleFixture {
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )?;
             let entities = &self.expected_bundle.entities;
+            let expected_hops: &[u8] = if self.two_hop { &[0, 1, 2] } else { &[0, 1] };
+            ensure!(
+                entities.len() == expected_hops.len(),
+                "oracle fixture entities do not match its declared path"
+            );
+            let entity_ids = entities
+                .iter()
+                .map(|entity| entity.entity_id.as_str())
+                .collect::<Vec<_>>();
             let authority_revision = &entities[0].scope.authority_revision;
             // This fixture has no POV, phases or foreshadows; auto falls back
             // to reading order. These expectations do not consult A3 output.
@@ -284,13 +348,13 @@ impl OracleFixture {
                 "projectId": PROJECT, "querySceneId": "nir1",
                 "phaseResolutionMode": "auto", "effectiveAxis": "reading",
                 "scopeAuthorityRevision": authority_revision, "queryViewpoint": null,
-                "phaseState": (["nir1-alice", "nir1-bob"].map(|id| json!({
+                "phaseState": entity_ids.iter().map(|id| json!({
                     "entityId": id, "baseContextMode": "mentioned", "phases": [],
                     "applicablePhaseIds": [], "effectiveContextMode": "mentioned",
-                }))),
-                "entities": (["nir1-alice", "nir1-bob"].map(|id| json!({
+                })).collect::<Vec<_>>(),
+                "entities": entity_ids.iter().map(|id| json!({
                     "entityId": id, "foreshadows": [],
-                }))),
+                })).collect::<Vec<_>>(),
             });
             let binding = json!({
                 "revisionId": self.target_revision, "decisionId": decision["id"],
@@ -304,19 +368,36 @@ impl OracleFixture {
                 "querySceneIncarnationId": incarnation,
                 "revealStateToken": canonical_json_digest(&reveal)?,
             });
+            let mut expected_edges = Vec::with_capacity(self.expected_bundle.relations.len());
+            for relation in &self.expected_bundle.relations {
+                let from = entities
+                    .iter()
+                    .find(|entity| entity.entity_id == relation.from_entity_id)
+                    .ok_or_else(|| anyhow::anyhow!("oracle edge source is absent"))?;
+                let to = entities
+                    .iter()
+                    .find(|entity| entity.entity_id == relation.to_entity_id)
+                    .ok_or_else(|| anyhow::anyhow!("oracle edge target is absent"))?;
+                expected_edges.push(json!({
+                    "relation": relation, "from": from, "to": to, "binding": binding,
+                }));
+            }
+            let expected_nodes = entities
+                .iter()
+                .zip(expected_hops)
+                .map(|(entity, hop)| {
+                    json!({
+                        "entity": entity, "hop": hop, "bindings": [binding],
+                    })
+                })
+                .collect::<Vec<_>>();
             Ok(json!({
                 "status": "available", "projectId": PROJECT, "querySceneId": "nir1",
                 "scopeRevision": authority_revision, "reason": null,
                 "graph": {
                     "seedEntityId": "nir1-alice", "generation": self.generation,
-                    "nodes": [
-                        { "entity": entities[0], "hop": 0, "bindings": [binding] },
-                        { "entity": entities[1], "hop": 1, "bindings": [binding] },
-                    ],
-                    "edges": self.expected_bundle.relations.iter().map(|relation| json!({
-                        "relation": relation, "from": entities[0], "to": entities[1],
-                        "binding": binding,
-                    })).collect::<Vec<_>>(),
+                    "nodes": expected_nodes,
+                    "edges": expected_edges,
                 },
             }))
         })
@@ -481,7 +562,42 @@ fn seed_local_query_matches_explicit_roster_with_keyset_decoys() -> Result<()> {
 }
 
 #[test]
-fn ineligible_bridges_do_not_reach_an_otherwise_qualified_entity() -> Result<()> {
+fn seed_local_two_hop_query_matches_independent_canonical_projection() -> Result<()> {
+    let fixture = OracleFixture::two_hop()?;
+    let expected = fixture.expected_response()?;
+    let mut reader = fixture.registered_reader()?;
+    let response = reader.query_with_deadline(
+        &graph_request("nir1-alice"),
+        Duration::from_secs(2),
+        100_000,
+    )?;
+    ensure!(
+        response.status == "available",
+        "two-hop oracle query unavailable: {:?}",
+        response.reason
+    );
+    let actual = serde_json::to_value(&response)?;
+    assert_eq!(actual, expected);
+    assert_eq!(
+        actual["graph"]["nodes"][2]["entity"]["entityId"],
+        TWO_HOP_ENTITY
+    );
+    assert_eq!(actual["graph"]["nodes"][2]["hop"], 2);
+    assert_eq!(
+        actual["graph"]["edges"][0]["from"]["entityId"],
+        "nir1-alice"
+    );
+    assert_eq!(actual["graph"]["edges"][0]["to"]["entityId"], "nir1-bob");
+    assert_eq!(actual["graph"]["edges"][1]["from"]["entityId"], "nir1-bob");
+    assert_eq!(
+        actual["graph"]["edges"][1]["to"]["entityId"],
+        TWO_HOP_ENTITY
+    );
+    Ok(())
+}
+
+#[test]
+fn ineligible_intermediate_bridges_do_not_reach_an_otherwise_qualified_entity() -> Result<()> {
     for bridge in [DeniedBridge::Unapproved, DeniedBridge::FutureScope] {
         let fixture = OracleFixture::with_denied_bridge(Some(bridge))?;
         // Unrelated has its own approved, disclosable Revision. Even omitting

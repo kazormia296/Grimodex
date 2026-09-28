@@ -572,6 +572,21 @@
           ]
         },
         {
+          "label": "C-query worker release and real Q2 gate",
+          "command": "bash",
+          "args": ["scripts/nir1-c-query-worker-ci.sh"],
+          "cwd": ".",
+          "id": "rust.c-query-worker",
+          "after": ["bootstrap.install"],
+          "lane": "cargo-shared",
+          "slots": 2,
+          "timeoutMs": 2700000,
+          "env": {
+            "CARGO_BUILD_JOBS": "2"
+          },
+          "obligations": []
+        },
+        {
           "label": "Shared Rust DB integration and schema-contract tests",
           "command": "cargo",
           "args": [
@@ -1091,6 +1106,7 @@
             "rust.check",
             "rust.clippy",
             "rust.tests",
+            "rust.c-query-worker",
             "rust.runtime-authority",
             "rust.license",
             "runtime.contracts"
@@ -1375,6 +1391,9 @@
       "localStage": "electron-native"
     },
     "rust": {
+      "localStage": "rust"
+    },
+    "nir1-c-query-worker": {
       "localStage": "rust"
     },
     "migration-recovery-gate": {

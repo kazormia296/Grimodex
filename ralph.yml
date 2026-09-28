@@ -1,0 +1,107 @@
+# Run only on a dedicated work branch/worktree with a one-outcome TASK.md.
+# One job: 20 iterations / 2 hours. For an overnight run, the parent records
+# one absolute deadline outside this reusable config and checks it before each
+# handoff. Ralph checks max_runtime between iterations; launch each job in a
+# cgroup bounded by the remaining total budget (max 3h) so Pi/Cargo also stop.
+# Ralph 2.10.1 maps Pi's CLI inactivity timeout to adapters.claude.timeout.
+# Inspect each result before a new task. Never reset that run's total deadline.
+# Ralph 2.10.1 auto-commits a dirty worktree on LOOP_COMPLETE even with
+# --no-auto-merge. Milestones end with review.passed + loop.cancel (no landing);
+# a blocker ends with loop.cancel alone. Inspect events and result, not exit 0.
+# Final candidate review is separate: Pi openai-codex/gpt-6-astra --thinking high.
+event_loop:
+  starting_event: build.start
+  completion_promise: LOOP_COMPLETE
+  cancellation_promise: loop.cancel
+  required_events: [review.passed]
+  enforce_hat_scope: true
+  max_iterations: 20
+  max_runtime_seconds: 7200
+  max_consecutive_failures: 3
+  prompt_file: TASK.md
+
+cli:
+  backend: pi
+
+adapters:
+  claude:
+    timeout: 10800 # Pi fallback: inactivity only; the cgroup has a separate wall deadline
+
+features:
+  parallel: false
+  auto_merge: false
+
+memories:
+  enabled: false
+
+tasks:
+  enabled: false
+
+hats:
+  builder:
+    name: Builder
+    description: Implements one bounded outcome and records results.
+    triggers: [build.start, review.rejected, decision.resolved]
+    publishes: [build.ready, decision.needed, loop.cancel]
+    backend:
+      type: pi
+      args: [--provider, openai-codex, --model, gpt-6-luna, --thinking, max, --no-extensions, --extension, ./scripts/ralph-luna-fast.ts]
+    instructions: |
+      Follow AGENTS.md and the task's observable outcome. Make necessary changes on the
+      work branch; commit, push, CI, and merge only in the separately authorized TASK
+      and only after its gates. Never start a goal or delegate to another agent.
+      Make reversible technical decisions within the current TASK's approved scope
+      and log material ones briefly in .ralph/agent/result.md. A task-specific prior
+      delegation is not individual user approval; do not invent an authorization.
+      If a concrete design or threat-boundary choice is genuinely hard,
+      emit <event topic="decision.needed">the precise question, options, constraints and
+      relevant file paths</event>, then end this hat turn. On decision.resolved, apply
+      the advised direction only if it preserves required authorization/acceptance.
+      A test failure or fixable review finding is not loop.cancel: change the hypothesis,
+      repair, run a focused check, and keep failed evidence. Never rerun unchanged code
+      to select the fastest 8 ms sample or loosen the numeric/Gold contract.
+      Record outcome, exact commands/results, changed paths and remaining risk in
+      .ralph/agent/result.md. Emit <event topic="build.ready">.ralph/agent/result.md</event>
+      only when this TASK's condition is actually met. If no safe in-scope work remains
+      within its budget, record the reason and emit <event topic="loop.cancel">HOLD:
+      specific unresolved prerequisite</event>. Never claim product completion for a
+      diagnostic, and do not emit build.ready and loop.cancel together.
+  advisor:
+    name: Astra Advisor
+    description: Read-only advisor for a concrete hard task-bound technical decision.
+    triggers: [decision.needed]
+    publishes: [decision.resolved]
+    backend:
+      type: pi
+      args: [--provider, openai-codex, --model, gpt-6-astra, --thinking, max, --no-extensions, --tools, read]
+    instructions: |
+      You are read-only: use only read, never edit or run a command. Answer only the
+      decision. Check the cited code and accepted contract; give a recommended
+      reversible option, evidence, and a stop condition. This is advice, not user
+      approval or a change to 8 ms, 2 MiB, Source/Revision, Gold, or product auth.
+      Ralph parses literal <event topic="decision.resolved">recommendation, rationale,
+      conditions and paths</event> in your final answer; do not call `ralph emit`.
+      The Builder decides, records, and resumes.
+  reviewer:
+    name: Reviewer
+    description: Independently checks the bounded outcome and changed paths.
+    triggers: [build.ready]
+    publishes: [review.passed, review.rejected, loop.cancel]
+    backend:
+      type: pi
+      args: [--provider, openai-codex, --model, gpt-6-sol, --thinking, max, --no-extensions, --tools, read]
+    instructions: |
+      Review the submitted result, changed paths and directly relevant callers.
+      Your only tool is read; do not modify files. Ralph parses literal <event>
+      tags in your final answer even without a shell: never try to call `ralph emit`.
+      Check the task's acceptance condition, concrete bugs/regressions,
+      authorization/data loss, and mechanisms
+      not needed for this outcome. Do not require future guarantees. Emit
+      <event topic="review.rejected">concrete in-scope findings</event> only for
+      actionable defects. If the same significant defect remains after one fix pass,
+      emit <event topic="review.rejected">specific unresolved finding and evidence;
+      Builder should decide or use decision.needed</event>. If satisfied,
+      emit <event topic="review.passed">checked outcome</event> followed by
+      <event topic="loop.cancel">reviewed milestone; parent handoff without landing
+      or auto-commit</event>. Do not declare an unresolved blocker or an
+      experiment a completed product. Never emit LOOP_COMPLETE in a dirty worktree.

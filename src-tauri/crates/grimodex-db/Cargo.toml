@@ -22,6 +22,7 @@ uuid = { version = "1", features = ["v4"] }
 unicode-normalization = "0.1"
 grimodex-core = { path = "../grimodex-core" }
 libc = "0.2"
+talc = "=5.1.1"
 
 [features]
 default = []
@@ -72,6 +73,10 @@ required-features = ["nir1-material-diagnostics"]
 name = "nir1-c-query-memory"
 path = "src/bin/nir1-c-query-memory.rs"
 required-features = ["nir1-material-diagnostics"]
+
+[[bin]]
+name = "nir1-c-query-worker"
+path = "src/bin/nir1-c-query-worker.rs"
 
 [[bin]]
 name = "nir1-c-query-linux-probe"

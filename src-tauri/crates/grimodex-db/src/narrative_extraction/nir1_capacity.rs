@@ -40,6 +40,10 @@ impl CapacityBudget {
         })
     }
 
+    pub(crate) fn sql_steps_used(&self) -> u64 {
+        self.steps.load(Ordering::Relaxed)
+    }
+
     fn check(&self, grant: Option<&Arc<AtomicBool>>) -> anyhow::Result<()> {
         if self.steps.load(Ordering::Relaxed) > self.step_limit {
             return Err(validation_terminated(
@@ -227,7 +231,8 @@ fn install(conn: &Connection, state: SharedProgress) -> rusqlite::Result<()> {
         interval,
         Some(move || {
             let _keep_registered_state_alive = &state;
-            let reserved_commit_tail = reserved_commit_tail.swap(false, Ordering::Relaxed);
+            let reserved_commit_tail = reserved_commit_tail.load(Ordering::Relaxed)
+                && reserved_commit_tail.swap(false, Ordering::Relaxed);
             let mut stop = false;
             for active in &budgets {
                 stop |= active
@@ -749,9 +754,9 @@ mod tests {
         set_progress_owner(&conn, 0, None::<fn() -> bool>).unwrap();
     }
 
-    const INSERT: &str = "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<200) INSERT INTO bounded SELECT n FROM x";
+    const INSERT: &str = "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<?1) INSERT INTO bounded SELECT n FROM x";
 
-    fn run_sql(limit: u64) -> (u64, bool) {
+    fn run_sql(limit: u64, rows: usize) -> (u64, bool) {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE bounded(n INTEGER)")
             .unwrap();
@@ -766,16 +771,21 @@ mod tests {
             }),
         )
         .unwrap();
-        let budget = CapacityBudget::new(limit, Instant::now() + Duration::from_secs(30));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let budget = CapacityBudget::new(limit, deadline);
         let tx = conn.unchecked_transaction().unwrap();
         let result = with_capacity_scope(
             &tx,
             Some(Arc::clone(&budget)),
             &mut ForegroundValidationControl,
             |_, _| {
-                tx.execute(INSERT, [])?;
+                tx.execute(INSERT, [rows as i64])?;
                 Ok(())
             },
+        );
+        assert!(
+            Instant::now() < deadline,
+            "SQL probe must not hit its deadline"
         );
         let succeeded = result.is_ok();
         if let Err(error) = result {
@@ -786,7 +796,9 @@ mod tests {
             assert!(
                 !super::super::maintenance_runtime::classify_failure(&error.to_string()).retryable
             );
-            tx.rollback().unwrap();
+            if !tx.is_autocommit() {
+                tx.rollback().unwrap();
+            }
         } else {
             tx.commit().unwrap();
         }
@@ -794,7 +806,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT count(*) FROM bounded", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, if succeeded { 200 } else { 0 });
+        assert_eq!(count, if succeeded { rows as i64 } else { 0 });
         let used = budget.steps.load(Ordering::Relaxed);
         let before = owner_calls.load(Ordering::Relaxed);
         conn.query_row("WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<20) SELECT sum(n) FROM x", [], |row| row.get::<_, i64>(0)).unwrap();
@@ -813,10 +825,26 @@ mod tests {
 
     #[test]
     fn sql_n_succeeds_n_plus_one_refuses_and_preserves_outer_owner() {
-        let (n, succeeded) = run_sql(u64::MAX);
+        let (n, succeeded) = run_sql(u64::MAX, 200);
         assert!(succeeded && n > 1);
-        assert_eq!(run_sql(n), (n, true));
-        assert_eq!(run_sql(n - 1), (n, false));
+        assert_eq!(run_sql(n, 200), (n, true));
+        assert_eq!(run_sql(n - 1, 200), (n, false));
+    }
+
+    #[test]
+    fn fixed_graph_sql_budget_admits_100000_steps_and_refuses_100001() {
+        let limit = super::super::nir1_graph::QUERY_SQL_STEPS;
+        assert_eq!(limit, 100_000);
+        let (used, succeeded) = run_sql(limit, 50_000);
+        assert!(
+            !succeeded,
+            "the recursive statement must exceed the fixed budget"
+        );
+        assert_eq!(
+            used,
+            limit + 1,
+            "only the 100,001st progress callback refuses"
+        );
     }
 
     fn finalize_run_at_limit(
