@@ -11,14 +11,6 @@ use std::{
 
 use anyhow::{anyhow, ensure, Result};
 
-#[cfg(windows)]
-use std::os::windows::io::AsRawHandle;
-#[cfg(windows)]
-use windows_sys::Win32::{
-    Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
-    System::Threading::WaitForSingleObject,
-};
-
 use crate::{
     state::{ActiveWorkspaceSnapshot, CQueryChildClaim},
     WorkspaceAuthority,
@@ -775,62 +767,6 @@ impl CQueryWorkerOwner {
                 .as_ref()
                 .is_some_and(|session| session.exit.is_some());
             let remaining = QUERY_DEADLINE.saturating_sub(admitted_at.elapsed());
-            #[cfg(windows)]
-            if self.region.result_len > 0
-                && self
-                    .session
-                    .as_ref()
-                    .is_some_and(|session| session.eof && session.exit.is_none())
-            {
-                if let Some(timeout_ms) = process_wait_timeout_ms(remaining) {
-                    let process_handle = self
-                        .session
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_SESSION"))?
-                        .child
-                        .as_raw_handle();
-                    // SAFETY: this borrows the live Child handle; the owner retains and
-                    // closes it, and the wait is bounded to at most one millisecond.
-                    let wait_result = unsafe { WaitForSingleObject(process_handle, timeout_ms) };
-                    let outcome = process_wait_outcome(
-                        wait_result,
-                        WAIT_OBJECT_0,
-                        WAIT_TIMEOUT,
-                        WAIT_FAILED,
-                        || {
-                            self.poll_exit()?;
-                            let exit_observed = self
-                                .session
-                                .as_ref()
-                                .is_some_and(|session| session.exit.is_some());
-                            #[cfg(test)]
-                            {
-                                let observed_at = admitted_at.elapsed();
-                                if exit_observed {
-                                    self.query_phase_diagnostics
-                                        .first_try_wait_success_at
-                                        .get_or_insert(observed_at);
-                                    self.query_phase_diagnostics
-                                        .first_post_frame_try_wait_success_at
-                                        .get_or_insert(observed_at);
-                                } else {
-                                    self.query_phase_diagnostics
-                                        .first_post_frame_try_wait_none_at
-                                        .get_or_insert(observed_at);
-                                    self.query_phase_diagnostics.post_frame_try_wait_none_count =
-                                        self.query_phase_diagnostics
-                                            .post_frame_try_wait_none_count
-                                            .saturating_add(1);
-                                }
-                            }
-                            Ok(exit_observed)
-                        },
-                    )?;
-                    match outcome {
-                        ProcessWaitOutcome::TimedOut | ProcessWaitOutcome::ExitObserved => continue,
-                    }
-                }
-            }
             let Some(timeout) =
                 query_poll_timeout(self.region.result_len > 0, exit_observed, remaining)
             else {
@@ -1090,43 +1026,6 @@ impl Drop for CQueryWorkerOwner {
     }
 }
 
-#[cfg(any(windows, test))]
-fn process_wait_timeout_ms(remaining: Duration) -> Option<u32> {
-    let timeout_ms = remaining.as_millis().min(1) as u32;
-    (timeout_ms > 0).then_some(timeout_ms)
-}
-
-#[cfg(any(windows, test))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ProcessWaitOutcome {
-    TimedOut,
-    ExitObserved,
-}
-
-#[cfg(any(windows, test))]
-fn process_wait_outcome(
-    wait_result: u32,
-    wait_object_0: u32,
-    wait_timeout: u32,
-    wait_failed: u32,
-    poll_exit: impl FnOnce() -> Result<bool>,
-) -> Result<ProcessWaitOutcome> {
-    if wait_result == wait_timeout {
-        return Ok(ProcessWaitOutcome::TimedOut);
-    }
-    if wait_result == wait_object_0 {
-        return if poll_exit().map_err(|_| anyhow!("NIR1_GRAPH_WORKER_PROCESS_WAIT"))? {
-            Ok(ProcessWaitOutcome::ExitObserved)
-        } else {
-            anyhow::bail!("NIR1_GRAPH_WORKER_WAIT_INCONSISTENT")
-        };
-    }
-    if wait_result == wait_failed {
-        anyhow::bail!("NIR1_GRAPH_WORKER_PROCESS_WAIT");
-    }
-    anyhow::bail!("NIR1_GRAPH_WORKER_PROCESS_WAIT")
-}
-
 fn query_poll_timeout(
     frame_validated: bool,
     child_exit_observed: bool,
@@ -1302,99 +1201,6 @@ mod tests {
             Some(Duration::from_micros(25))
         );
         assert_eq!(query_poll_timeout(true, false, Duration::ZERO), None);
-    }
-
-    #[test]
-    fn process_wait_timeout_floors_and_caps_at_one_millisecond() {
-        assert_eq!(process_wait_timeout_ms(Duration::from_millis(9)), Some(1));
-        assert_eq!(
-            process_wait_timeout_ms(Duration::from_micros(1_999)),
-            Some(1)
-        );
-        assert_eq!(process_wait_timeout_ms(Duration::from_micros(999)), None);
-        assert_eq!(process_wait_timeout_ms(Duration::ZERO), None);
-    }
-
-    #[test]
-    fn process_wait_outcomes_fail_closed_without_retry_or_early_success() -> Result<()> {
-        use std::cell::Cell;
-
-        const WAIT_OBJECT: u32 = 0;
-        const WAIT_TIMEOUT_VALUE: u32 = 258;
-        const WAIT_FAILED_VALUE: u32 = u32::MAX;
-
-        let polls = Cell::new(0);
-        assert_eq!(
-            process_wait_outcome(
-                WAIT_TIMEOUT_VALUE,
-                WAIT_OBJECT,
-                WAIT_TIMEOUT_VALUE,
-                WAIT_FAILED_VALUE,
-                || {
-                    polls.set(polls.get() + 1);
-                    Ok(true)
-                },
-            )?,
-            ProcessWaitOutcome::TimedOut
-        );
-        assert_eq!(polls.get(), 0);
-
-        let polls = Cell::new(0);
-        assert_eq!(
-            process_wait_outcome(
-                WAIT_OBJECT,
-                WAIT_OBJECT,
-                WAIT_TIMEOUT_VALUE,
-                WAIT_FAILED_VALUE,
-                || {
-                    polls.set(polls.get() + 1);
-                    Ok(true)
-                },
-            )?,
-            ProcessWaitOutcome::ExitObserved
-        );
-        assert_eq!(polls.get(), 1);
-
-        let polls = Cell::new(0);
-        let inconsistent = process_wait_outcome(
-            WAIT_OBJECT,
-            WAIT_OBJECT,
-            WAIT_TIMEOUT_VALUE,
-            WAIT_FAILED_VALUE,
-            || {
-                polls.set(polls.get() + 1);
-                Ok(false)
-            },
-        )
-        .expect_err("signaled handle without try_wait status must fail closed");
-        assert_eq!(
-            inconsistent.to_string(),
-            "NIR1_GRAPH_WORKER_WAIT_INCONSISTENT"
-        );
-        assert_eq!(polls.get(), 1);
-
-        let try_wait_error = process_wait_outcome(
-            WAIT_OBJECT,
-            WAIT_OBJECT,
-            WAIT_TIMEOUT_VALUE,
-            WAIT_FAILED_VALUE,
-            || Err(anyhow!("raw OS error")),
-        )
-        .expect_err("try_wait errors map to the fixed process-wait reason");
-        assert_eq!(try_wait_error.to_string(), "NIR1_GRAPH_WORKER_PROCESS_WAIT");
-
-        for result in [WAIT_FAILED_VALUE, WAIT_TIMEOUT_VALUE + 1] {
-            let error = process_wait_outcome(
-                result,
-                WAIT_OBJECT,
-                WAIT_TIMEOUT_VALUE,
-                WAIT_FAILED_VALUE,
-                || Ok(true),
-            )
-            .expect_err("failed and unknown wait results must fail closed");
-            assert_eq!(error.to_string(), "NIR1_GRAPH_WORKER_PROCESS_WAIT");
-        }
-        Ok(())
     }
 
     #[test]
