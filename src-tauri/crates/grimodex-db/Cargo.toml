@@ -35,6 +35,8 @@ nir1-material-diagnostics = ["rusqlite/trace"]
 # CI-only failpoints for migration supervisor crash injection. Must never be
 # enabled in production / release Electron builds.
 test-failpoints = []
+# Cross-crate Native tests can hold the DB path claim through fixture cleanup.
+workspace-maintenance-test-support = []
 
 [[bin]]
 name = "migration-crash-harness"

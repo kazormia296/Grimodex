@@ -10219,10 +10219,16 @@ impl Database {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
+    use crate::narrative_extraction::change_feed::{
+        append_narrative_change_transaction_in_tx, AppendNarrativeChangeTransactionInput,
+        NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
+    };
     use rusqlite::{
         hooks::{AuthAction, AuthContext, Authorization},
         params, Connection,
     };
+    use serde_json::json;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -10296,6 +10302,182 @@ mod tests {
             .query_map([table], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(objects)
+    }
+
+    fn append_migration_change_event(
+        db: &Database,
+        project_id: &str,
+        event_uid: &str,
+        object_key: serde_json::Value,
+        structural_event: Option<&str>,
+    ) -> anyhow::Result<String> {
+        db.with_conn(|conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            append_change_events_in_tx(
+                conn,
+                project_id,
+                "migration-test-session",
+                &[AppendChangeEvent {
+                    event_uid: event_uid.to_string(),
+                    scene_id: None,
+                    domain: "narrative.commit".to_string(),
+                    op_type: "narrative.commit.apply".to_string(),
+                    entity_type: None,
+                    entity_id: None,
+                    payload: "{}".to_string(),
+                    timestamp: 1_790_000_000_000,
+                }],
+            )?;
+            let input = AppendNarrativeChangeTransactionInput {
+                project_id: project_id.to_string(),
+                request_id: format!("migration-{event_uid}"),
+                source_domain: "narrative.commit.apply".to_string(),
+                source_change_event_uid: event_uid.to_string(),
+                cause_kind: NarrativeChangeCauseKind::Forward,
+                origin: match structural_event {
+                    Some("project-restored") => NarrativeChangeOrigin::Restore,
+                    Some("semantic-epoch-reset") => NarrativeChangeOrigin::Migration,
+                    _ => NarrativeChangeOrigin::Human,
+                },
+                original_transaction_id: None,
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: None,
+                application_ids: Vec::new(),
+                occurred_at: "2026-09-29T00:00:00.000Z".to_string(),
+                events: vec![NarrativeChangeEventInput {
+                    object_key,
+                    change_kind: if structural_event.is_some() {
+                        "schema"
+                    } else {
+                        "metadata"
+                    }
+                    .to_string(),
+                    mutation_kind: "update".to_string(),
+                    before_version: None,
+                    before_digest: Some("sha256:before".to_string()),
+                    after_version: None,
+                    after_digest: Some("sha256:after".to_string()),
+                    changed_paths: vec!["/".to_string()],
+                    text_impact: None,
+                    structural_impact: structural_event
+                        .map(|event| json!({ "event": event, "requiresFullRebuild": true })),
+                }],
+            };
+            let result = append_narrative_change_transaction_in_tx(conn, &input)?;
+            let event_id =
+                result.event_ids.into_iter().next().ok_or_else(|| {
+                    anyhow::anyhow!("migration fixture did not append a feed event")
+                })?;
+            conn.execute_batch("COMMIT")?;
+            Ok(event_id)
+        })
+    }
+
+    #[test]
+    fn schema_41_removes_epoch_marker_heads_and_preserves_live_heads() -> anyhow::Result<()> {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('migration-marker-project', 'Marker')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('migration-live-project', 'Live')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name)
+                 VALUES ('migration-live-entry', 'default-project', 'character', 'Live')",
+                [],
+            )?;
+            Ok(())
+        })?;
+
+        let restored_marker = append_migration_change_event(
+            &db,
+            "default-project",
+            "migration-project-restored",
+            json!({ "kind": "project", "projectId": "default-project" }),
+            Some("project-restored"),
+        )?;
+        let epoch_marker = append_migration_change_event(
+            &db,
+            "migration-marker-project",
+            "migration-semantic-epoch-reset",
+            json!({ "kind": "project", "projectId": "migration-marker-project" }),
+            Some("semantic-epoch-reset"),
+        )?;
+        let live_project = append_migration_change_event(
+            &db,
+            "migration-live-project",
+            "migration-live-project-change",
+            json!({ "kind": "project", "projectId": "migration-live-project" }),
+            None,
+        )?;
+        let live_object = append_migration_change_event(
+            &db,
+            "default-project",
+            "migration-live-object-change",
+            json!({ "kind": "codex-entry", "entryId": "migration-live-entry" }),
+            None,
+        )?;
+
+        db.with_conn(|conn| {
+            // Pre-v41 writers materialized reset markers as heads; the current writer skips them.
+            for event_id in [&restored_marker, &epoch_marker] {
+                let (identity, sequence, ordinal): (String, i64, i64) = conn.query_row(
+                    "SELECT object_key_json, canonical_sequence, event_ordinal
+                       FROM narrative_change_events WHERE id = ?1",
+                    [event_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_change_object_heads (
+                        project_id, object_identity, after_version, after_digest, event_id,
+                        canonical_sequence, event_ordinal, updated_at
+                     ) VALUES (
+                        (SELECT project_id FROM narrative_change_events WHERE id = ?1),
+                        ?2, NULL, 'sha256:synthetic', ?1, ?3, ?4, '2026-09-29T00:00:00.000Z'
+                     )",
+                    rusqlite::params![event_id, identity, sequence, ordinal],
+                )?;
+            }
+            let before: i64 = conn.query_row(
+                "SELECT count(*) FROM narrative_change_object_heads",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(before, 4);
+            conn.pragma_update(None, "user_version", 40)?;
+            Ok(())
+        })?;
+
+        db.migrate_for_restore_preflight()
+            .expect("run the full migration path from the v40 checkpoint");
+        db.with_conn(|conn| {
+            for removed in [&restored_marker, &epoch_marker] {
+                let count: i64 = conn.query_row(
+                    "SELECT count(*) FROM narrative_change_object_heads WHERE event_id = ?1",
+                    [removed],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0, "stale epoch-marker head must be removed");
+            }
+            for preserved in [&live_project, &live_object] {
+                let count: i64 = conn.query_row(
+                    "SELECT count(*) FROM narrative_change_object_heads WHERE event_id = ?1",
+                    [preserved],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1, "live object head must be preserved");
+            }
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, 41);
+            Ok(())
+        })?;
+        Ok(())
     }
 
     #[test]

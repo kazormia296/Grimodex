@@ -318,6 +318,14 @@ fn claim_workspace_maintenance_exclusive_with_timeout(
     path: &Path,
     timeout: Duration,
 ) -> Result<WorkspaceMaintenanceClaim, AppError> {
+    claim_workspace_maintenance_exclusive_with_timeout_and_blocked_hook(path, timeout, || {})
+}
+
+fn claim_workspace_maintenance_exclusive_with_timeout_and_blocked_hook(
+    path: &Path,
+    timeout: Duration,
+    on_blocked: impl FnOnce(),
+) -> Result<WorkspaceMaintenanceClaim, AppError> {
     let key = workspace_maintenance_key(path);
     let (lock, idle) = workspace_maintenance_registry();
     let mut registry = match lock.lock() {
@@ -327,7 +335,11 @@ fn claim_workspace_maintenance_exclusive_with_timeout(
     *registry.exclusive_waiters.entry(key.clone()).or_default() += 1;
 
     let started = Instant::now();
+    let mut on_blocked = Some(on_blocked);
     while registry.active.contains(&key) {
+        if let Some(on_blocked) = on_blocked.take() {
+            on_blocked();
+        }
         let remaining = timeout.saturating_sub(started.elapsed());
         if remaining.is_zero() {
             remove_workspace_maintenance_waiter(&mut registry, &key);
@@ -353,6 +365,38 @@ fn claim_workspace_maintenance_exclusive_with_timeout(
     remove_workspace_maintenance_waiter(&mut registry, &key);
     registry.active.insert(key.clone());
     Ok(WorkspaceMaintenanceClaim(key))
+}
+
+/// Exclusive DB-path drain for cross-crate fixture teardown tests.
+///
+/// This waits for the detached worker to release its claim and prevents another
+/// same-process worker from starting until this guard drops. It is not a thread
+/// Join receipt; keep it alive through filesystem cleanup so no DB worker can
+/// recreate files under the removed fixture path.
+#[cfg(feature = "workspace-maintenance-test-support")]
+#[doc(hidden)]
+#[must_use = "hold the DB maintenance drain until fixture cleanup is complete"]
+pub struct WorkspaceMaintenanceTestDrain {
+    _claim: WorkspaceMaintenanceClaim,
+}
+
+/// Wait for workspace DB maintenance before deleting a test fixture.
+/// The existing exclusive claim bounds the wait to 30 seconds. `on_blocked`
+/// runs once if an active worker owns the path; it runs under the registry lock
+/// and must not re-enter workspace maintenance.
+#[cfg(feature = "workspace-maintenance-test-support")]
+#[doc(hidden)]
+pub fn drain_workspace_maintenance_for_test(
+    path: &Path,
+    on_blocked: impl FnOnce(),
+) -> Result<WorkspaceMaintenanceTestDrain, AppError> {
+    Ok(WorkspaceMaintenanceTestDrain {
+        _claim: claim_workspace_maintenance_exclusive_with_timeout_and_blocked_hook(
+            path,
+            Duration::from_secs(30),
+            on_blocked,
+        )?,
+    })
 }
 
 fn remove_workspace_maintenance_waiter(registry: &mut WorkspaceMaintenanceRegistry, key: &Path) {
@@ -1452,6 +1496,105 @@ mod tests {
             try_claim_workspace_maintenance(&dir).expect("claim after active release");
         drop(retry_claim);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(feature = "workspace-maintenance-test-support")]
+    #[test]
+    fn test_drain_waits_for_worker_and_holds_path_through_fixture_cleanup() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-maintenance-test-drain-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let ws_dir = dir.join("workspace");
+        let db_path = ws_dir.join("grimodex.db");
+        let gs_file = dir.join("global-settings.json");
+        std::fs::create_dir_all(&ws_dir).expect("create maintenance drain fixture");
+        std::fs::write(
+            &gs_file,
+            r#"{"user_preferences":{"data.autoBackup":"false"}}"#,
+        )
+        .expect("disable fixture auto-backup");
+        let db = Database::new(&db_path).expect("open maintenance drain database");
+        db.migrate().expect("migrate maintenance drain database");
+        drop(db);
+
+        let (worker_started_tx, worker_started_rx) = std::sync::mpsc::channel();
+        let (release_worker_tx, release_worker_rx) = std::sync::mpsc::channel();
+        let worker = spawn_workspace_maintenance_worker(&ws_dir, &gs_file, move || {
+            let _ = worker_started_tx.send(());
+            let _ = release_worker_rx.recv_timeout(Duration::from_secs(30));
+        })
+        .expect("spawn gated maintenance worker")
+        .expect("worker must reserve the maintenance path");
+        if worker_started_rx
+            .recv_timeout(Duration::from_secs(10))
+            .is_err()
+        {
+            let _ = release_worker_tx.send(());
+            let _ = worker.join();
+            std::fs::remove_dir_all(&dir).expect("cleanup after worker-start timeout");
+            panic!("maintenance worker did not reach its on_started gate");
+        }
+
+        let (blocked_tx, blocked_rx) = std::sync::mpsc::channel();
+        let (drain_tx, drain_rx) = std::sync::mpsc::channel();
+        let drain_path = ws_dir.clone();
+        let drainer = std::thread::spawn(move || {
+            let result = drain_workspace_maintenance_for_test(&drain_path, || {
+                let _ = blocked_tx.send(());
+            })
+            .map_err(|error| error.to_string());
+            let _ = drain_tx.send(result);
+        });
+
+        let observed_block = blocked_rx.recv_timeout(Duration::from_secs(10)).is_ok();
+        let early_result = drain_rx.recv_timeout(Duration::from_millis(200));
+        let returned_while_worker_was_gated = matches!(&early_result, Ok(_));
+        let _ = release_worker_tx.send(());
+        let drain_result = match early_result {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                drain_rx.recv_timeout(Duration::from_secs(35)).ok()
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+        };
+        let worker_joined = worker.join().is_ok();
+        let drainer_joined = drainer.join().is_ok();
+        let drain_guard = drain_result.and_then(Result::ok);
+        let acquired_drain = drain_guard.is_some();
+
+        let new_start_blocked = if drain_guard.is_some() {
+            match spawn_workspace_maintenance_worker(&ws_dir, &gs_file, || {}) {
+                Ok(Some(worker)) => {
+                    let _ = worker.join();
+                    false
+                }
+                Ok(None) => true,
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+        std::fs::remove_dir_all(&dir).expect("fixture cleanup while DB drain is held");
+        let fixture_removed = !dir.exists();
+        drop(drain_guard);
+
+        assert!(observed_block, "drain must observe the active worker claim");
+        assert!(
+            !returned_while_worker_was_gated,
+            "drain must not return while the worker owns the DB claim"
+        );
+        assert!(worker_joined, "maintenance worker must terminate");
+        assert!(drainer_joined, "drain helper thread must terminate");
+        assert!(
+            acquired_drain,
+            "drain must acquire the path after worker release"
+        );
+        assert!(new_start_blocked, "drain must block a new same-path worker");
+        assert!(
+            fixture_removed,
+            "fixture must be removed while drain is held"
+        );
     }
 
     #[test]

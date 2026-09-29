@@ -17165,12 +17165,18 @@ mod narrative_maintenance_admission_unwind_tests {
             0
         );
         assert!(backend.state.ws.open_lock.try_lock().is_ok());
-        eprintln!(
-            "BC-2 {operation} stop-to-cleanup-and-Join: {:.3} ms",
-            requested_at.elapsed().as_secs_f64() * 1000.0
-        );
+        // Native Closed joins its own workers, not the detached DB maintenance
+        // worker; retain the DB path drain until the fixture is removed.
+        let maintenance_drain =
+            grimodex_db::open::drain_workspace_maintenance_for_test(&root.join("workspace"), || {})
+                .expect("bounded DB workspace-maintenance drain");
         drop(backend);
         std::fs::remove_dir_all(root).expect("fixture cleanup");
+        drop(maintenance_drain);
+        eprintln!(
+            "BC-2 {operation} Native stop-to-Join + DB path drain: {:.3} ms",
+            requested_at.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

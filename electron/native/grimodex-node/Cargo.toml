@@ -75,6 +75,7 @@ napi-build = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+grimodex-db = { path = "../../../src-tauri/crates/grimodex-db", features = ["workspace-maintenance-test-support"] }
 
 [profile.release]
 strip = "symbols"
