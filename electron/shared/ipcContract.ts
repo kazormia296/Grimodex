@@ -424,6 +424,56 @@ export interface ExtractCodexEntitySeedsRequestV1 {
   readonly sources: readonly EntitySeedCanonicalSourceV1[];
 }
 
+export interface RetireCurrentChatInputRequest {
+  readonly chatSessionId: string;
+}
+
+export interface RetireCurrentChatInputReceipt {
+  readonly status: "retired" | "not-current";
+  readonly chatSessionId: string;
+}
+
+export interface LegacyOnlyChatInputResult {
+  readonly status: "legacy-only";
+}
+
+type RetireCurrentChatInputResult =
+  | RetireCurrentChatInputReceipt
+  | LegacyOnlyChatInputResult;
+type CaptureCurrentChatInputResult =
+  | CaptureCurrentChatInputReceipt
+  | LegacyOnlyChatInputResult;
+
+export interface CaptureCurrentChatInputSubmission {
+  readonly submissionId: string;
+  readonly messageId: string;
+  readonly chatSessionId: string;
+  readonly sceneId: string;
+  readonly content: string;
+  readonly createdAt: string;
+}
+
+export interface CaptureCurrentChatInputReceipt {
+  readonly status: "accepted";
+  readonly projectId: string;
+  readonly chatSessionId: string;
+  readonly sceneId: string;
+  readonly messageId: string;
+}
+
+export interface CancelCurrentChatInputSubmission {
+  readonly submissionId: string;
+  readonly messageId: string;
+  readonly chatSessionId: string;
+  readonly sceneId: string;
+}
+
+export interface CancelCurrentChatInputReceipt {
+  readonly status: "cancelled" | "not-current" | "not-found";
+  readonly submissionId: string;
+  readonly messageId: string;
+}
+
 export interface NapiBackendLike {
   /** Main-only D2a startup barrier; never registered in renderer IPC. */
   initializeProfileEgress?(): Promise<string>;
@@ -443,6 +493,18 @@ export interface NapiBackendLike {
     callerIdentity?: string,
   ): Promise<string>;
   dbExecuteBatch(statements: unknown, callerIdentity?: string): Promise<string>;
+  captureCurrentChatInput?(
+    submission: CaptureCurrentChatInputSubmission,
+    callerIdentity: string,
+  ): Promise<string>;
+  cancelCurrentChatInput?(
+    submission: CancelCurrentChatInputSubmission,
+    callerIdentity: string,
+  ): Promise<string>;
+  retireCurrentChatInput?(
+    request: RetireCurrentChatInputRequest,
+    callerIdentity: string,
+  ): Promise<string>;
   narrativeRuntimePolicyGet?(): Promise<string>;
   narrativeRuntimePolicySet?(payload: unknown): Promise<string>;
   editorStickyList?(projectId: string, documentKey: string): Promise<string>;
@@ -6828,6 +6890,189 @@ function callerIdentityWire(args: CommandArgs): string | undefined {
   }
 }
 
+function requireExactKeys(
+  args: CommandArgs,
+  allowedKeys: readonly string[],
+  command: string,
+): void {
+  const allowed = new Set(allowedKeys);
+  for (const key of Object.keys(args)) {
+    if (!allowed.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+}
+
+function requireRetireCurrentChatInputRequest(
+  args: CommandArgs,
+): RetireCurrentChatInputRequest {
+  const command = "retire_current_chat_input";
+  const chatSessionId = requireNonEmptyString(args, "chatSessionId", command);
+  if (chatSessionId.trim() !== chatSessionId || chatSessionId.length > 256) {
+    throw new Error(
+      `invalid args \`chatSessionId\` for command \`${command}\`: expected a trimmed value of at most 256 characters`,
+    );
+  }
+  return { chatSessionId };
+}
+
+function parseRetireCurrentChatInputReceipt(
+  value: unknown,
+  request: RetireCurrentChatInputRequest,
+): RetireCurrentChatInputResult {
+  const command = "retire_current_chat_input";
+  const result = requireRecord({ value }, "value", command);
+  if (result.status === "unrestricted") {
+    requireExactKeys(result, ["status"], command);
+    return { status: "legacy-only" };
+  }
+  requireExactKeys(result, ["status", "chatSessionId"], command);
+  if (result.status !== "retired" && result.status !== "not-current") {
+    throw new Error(`invalid result for command \`${command}\`: status`);
+  }
+  const receipt = {
+    status: result.status,
+    chatSessionId: requireNonEmptyString(result, "chatSessionId", command),
+  } as const;
+  if (receipt.chatSessionId !== request.chatSessionId) {
+    throw new Error(`IPC_CHAT_CAPTURE_RETIRE_RESULT_BINDING_MISMATCH`);
+  }
+  return receipt;
+}
+
+function requireCaptureCurrentChatInputSubmission(
+  args: CommandArgs,
+): CaptureCurrentChatInputSubmission {
+  const command = "capture_current_chat_input";
+  const submission = requireRecord(args, "submission", command);
+  const keys = [
+    "submissionId",
+    "messageId",
+    "chatSessionId",
+    "sceneId",
+    "content",
+    "createdAt",
+  ] as const;
+  requireExactKeys(submission, keys, command);
+  const boundedIdentity = (key: (typeof keys)[number]): string => {
+    const value = requireNonEmptyString(submission, key, command);
+    if (value.trim() !== value || value.length > 256) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a trimmed value of at most 256 characters`,
+      );
+    }
+    return value;
+  };
+  const content = requireNonEmptyString(submission, "content", command);
+  if (!content.trim() || content.length > 2 * 1024 * 1024) {
+    throw new Error(
+      `invalid args \`content\` for command \`${command}\`: expected non-empty bounded text`,
+    );
+  }
+  return {
+    submissionId: boundedIdentity("submissionId"),
+    messageId: boundedIdentity("messageId"),
+    chatSessionId: boundedIdentity("chatSessionId"),
+    sceneId: boundedIdentity("sceneId"),
+    content,
+    createdAt: boundedIdentity("createdAt"),
+  };
+}
+
+function requireCancelCurrentChatInputSubmission(
+  args: CommandArgs,
+): CancelCurrentChatInputSubmission {
+  const command = "cancel_current_chat_input";
+  const submission = requireRecord(args, "submission", command);
+  const keys = [
+    "submissionId",
+    "messageId",
+    "chatSessionId",
+    "sceneId",
+  ] as const;
+  requireExactKeys(submission, keys, command);
+  const boundedIdentity = (key: (typeof keys)[number]): string => {
+    const value = requireNonEmptyString(submission, key, command);
+    if (value.trim() !== value || value.length > 256) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a trimmed value of at most 256 characters`,
+      );
+    }
+    return value;
+  };
+  return {
+    submissionId: boundedIdentity("submissionId"),
+    messageId: boundedIdentity("messageId"),
+    chatSessionId: boundedIdentity("chatSessionId"),
+    sceneId: boundedIdentity("sceneId"),
+  };
+}
+
+function parseCaptureCurrentChatInputReceipt(
+  value: unknown,
+  submission: CaptureCurrentChatInputSubmission,
+): CaptureCurrentChatInputResult {
+  const command = "capture_current_chat_input";
+  const result = requireRecord({ value }, "value", command);
+  if (result.status === "unrestricted") {
+    requireExactKeys(result, ["status"], command);
+    return { status: "legacy-only" };
+  }
+  requireExactKeys(
+    result,
+    ["status", "projectId", "chatSessionId", "sceneId", "messageId"],
+    command,
+  );
+  if (result.status !== "accepted") {
+    throw new Error(`invalid result for command \`${command}\`: status`);
+  }
+  const receipt = {
+    status: "accepted" as const,
+    projectId: requireNonEmptyString(result, "projectId", command),
+    chatSessionId: requireNonEmptyString(result, "chatSessionId", command),
+    sceneId: requireNonEmptyString(result, "sceneId", command),
+    messageId: requireNonEmptyString(result, "messageId", command),
+  };
+  if (
+    receipt.chatSessionId !== submission.chatSessionId ||
+    receipt.sceneId !== submission.sceneId ||
+    receipt.messageId !== submission.messageId
+  ) {
+    throw new Error(`IPC_CAPTURE_RESULT_BINDING_MISMATCH: ${command}`);
+  }
+  return receipt;
+}
+
+function parseCancelCurrentChatInputReceipt(
+  value: unknown,
+  submission: CancelCurrentChatInputSubmission,
+): CancelCurrentChatInputReceipt {
+  const command = "cancel_current_chat_input";
+  const result = requireRecord({ value }, "value", command);
+  requireExactKeys(result, ["status", "submissionId", "messageId"], command);
+  if (
+    result.status !== "cancelled" &&
+    result.status !== "not-current" &&
+    result.status !== "not-found"
+  ) {
+    throw new Error(`invalid result for command \`${command}\`: status`);
+  }
+  const receipt = {
+    status: result.status,
+    submissionId: requireNonEmptyString(result, "submissionId", command),
+    messageId: requireNonEmptyString(result, "messageId", command),
+  } as const;
+  if (
+    receipt.submissionId !== submission.submissionId ||
+    receipt.messageId !== submission.messageId
+  ) {
+    throw new Error(`IPC_CAPTURE_CANCEL_RESULT_BINDING_MISMATCH: ${command}`);
+  }
+  return receipt;
+}
+
 /** napi 実装済みコマンドの明示写像（Phase 3 の各バッチで追加）。 */
 export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   db_execute: {
@@ -9557,6 +9802,61 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         "abortPostEffectRun",
       )(runId, projectId);
       return null;
+    },
+  },
+  retire_current_chat_input: {
+    run: async (b, a) => {
+      requireExactKeys(a, ["chatSessionId"], "retire_current_chat_input");
+      const request = requireRetireCurrentChatInputRequest(a);
+      const callerIdentity = callerIdentityWire(a);
+      if (!callerIdentity) {
+        throw new Error(
+          "IPC_CAPTURE_CALLER_IDENTITY_REQUIRED: main-issued caller identity is missing",
+        );
+      }
+      const raw = await requireNapiMethod(
+        b,
+        b.retireCurrentChatInput,
+        "retireCurrentChatInput",
+      )(request, callerIdentity);
+      return parseRetireCurrentChatInputReceipt(parseWire(raw), request);
+    },
+  },
+  capture_current_chat_input: {
+    run: async (b, a) => {
+      const allowedKeys = ["submission"];
+      requireExactKeys(a, allowedKeys, "capture_current_chat_input");
+      const submission = requireCaptureCurrentChatInputSubmission(a);
+      const callerIdentity = callerIdentityWire(a);
+      if (!callerIdentity) {
+        throw new Error(
+          "IPC_CAPTURE_CALLER_IDENTITY_REQUIRED: main-issued caller identity is missing",
+        );
+      }
+      const raw = await requireNapiMethod(
+        b,
+        b.captureCurrentChatInput,
+        "captureCurrentChatInput",
+      )(submission, callerIdentity);
+      return parseCaptureCurrentChatInputReceipt(parseWire(raw), submission);
+    },
+  },
+  cancel_current_chat_input: {
+    run: async (b, a) => {
+      requireExactKeys(a, ["submission"], "cancel_current_chat_input");
+      const submission = requireCancelCurrentChatInputSubmission(a);
+      const callerIdentity = callerIdentityWire(a);
+      if (!callerIdentity) {
+        throw new Error(
+          "IPC_CAPTURE_CALLER_IDENTITY_REQUIRED: main-issued caller identity is missing",
+        );
+      }
+      const raw = await requireNapiMethod(
+        b,
+        b.cancelCurrentChatInput,
+        "cancelCurrentChatInput",
+      )(submission, callerIdentity);
+      return parseCancelCurrentChatInputReceipt(parseWire(raw), submission);
     },
   },
   // AI チャット（Phase 3 バッチ3a）。send 系は napi に api キーを持たせない設計:

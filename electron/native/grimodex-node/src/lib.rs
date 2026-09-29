@@ -21,6 +21,7 @@ mod narrative_maintenance;
 mod nir1_generation;
 #[cfg(test)]
 mod nir1_graph_activation_tests;
+mod nir1_prepared_request;
 mod post_effect_runtime;
 mod profile_egress;
 mod related_scenes;
@@ -14317,6 +14318,84 @@ impl Backend {
     // safeStorage で解決した平文キーを `api_key` 引数で受ける。パラメータ準備
     // (apply_provider_override / build_chat_params 等) は Tauri と同一の pure helper。
 
+    /// Local-only fresh Human capture. The caller identity is injected by
+    /// Electron main; no renderer-provided caller, old version, route, or
+    /// prepared payload is accepted or returned.
+    #[napi]
+    pub async fn capture_current_chat_input(
+        &self,
+        submission: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let submission: nir1_prepared_request::CaptureCurrentChatInputRequest =
+            from_wire("submission", submission).map_err(app_err_to_napi)?;
+        let caller: profile_egress::CallerIdentity = serde_json::from_str(&caller_identity)
+            .map_err(|error| {
+                Error::from_reason(format!("invalid main caller identity: {error}"))
+            })?;
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            if !state.profile_egress.status().restricted {
+                return Ok(serde_json::json!({ "status": "unrestricted" }).to_string());
+            }
+            let receipt =
+                nir1_prepared_request::capture_current_chat_input(state, caller, submission)
+                    .map_err(AppError::Anyhow)?;
+            Ok(serde_json::to_string(&receipt).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Revoke current preparation authority for one persisted session only.
+    /// This cannot capture a Human row, return a version, or dispatch a provider.
+    #[napi]
+    pub async fn retire_current_chat_input(
+        &self,
+        request: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let request: nir1_prepared_request::RetireCurrentChatInputRequest =
+            from_wire("request", request).map_err(app_err_to_napi)?;
+        let caller: profile_egress::CallerIdentity = serde_json::from_str(&caller_identity)
+            .map_err(|error| {
+                Error::from_reason(format!("invalid main caller identity: {error}"))
+            })?;
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            if !state.profile_egress.status().restricted {
+                return Ok(serde_json::json!({ "status": "unrestricted" }).to_string());
+            }
+            let receipt = nir1_prepared_request::retire_current_chat_input(state, caller, request)
+                .map_err(AppError::Anyhow)?;
+            Ok(serde_json::to_string(&receipt).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Cancellation-only owner-bound terminalization for an exact submission.
+    /// It cannot create or return a capture capability.
+    #[napi]
+    pub async fn cancel_current_chat_input(
+        &self,
+        submission: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let submission: nir1_prepared_request::CancelCurrentChatInputRequest =
+            from_wire("submission", submission).map_err(app_err_to_napi)?;
+        let caller: profile_egress::CallerIdentity = serde_json::from_str(&caller_identity)
+            .map_err(|error| {
+                Error::from_reason(format!("invalid main caller identity: {error}"))
+            })?;
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let receipt =
+                nir1_prepared_request::cancel_current_chat_input(state, caller, submission)
+                    .map_err(AppError::Anyhow)?;
+            Ok(serde_json::to_string(&receipt).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     /// AI 設定を読む (Tauri の get_ai_settings と同一 — ai-settings.json、キー非含有)。
     /// 返り値: `AiSettings` の JSON 文字列 (camelCase)。
     #[napi]
@@ -17086,12 +17165,18 @@ mod narrative_maintenance_admission_unwind_tests {
             0
         );
         assert!(backend.state.ws.open_lock.try_lock().is_ok());
-        eprintln!(
-            "BC-2 {operation} stop-to-cleanup-and-Join: {:.3} ms",
-            requested_at.elapsed().as_secs_f64() * 1000.0
-        );
+        // Native Closed joins its own workers, not the detached DB maintenance
+        // worker; retain the DB path drain until the fixture is removed.
+        let maintenance_drain =
+            grimodex_db::open::drain_workspace_maintenance_for_test(&root.join("workspace"), || {})
+                .expect("bounded DB workspace-maintenance drain");
         drop(backend);
         std::fs::remove_dir_all(root).expect("fixture cleanup");
+        drop(maintenance_drain);
+        eprintln!(
+            "BC-2 {operation} Native stop-to-Join + DB path drain: {:.3} ms",
+            requested_at.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

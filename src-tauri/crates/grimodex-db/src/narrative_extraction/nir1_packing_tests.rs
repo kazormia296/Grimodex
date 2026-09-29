@@ -5,10 +5,13 @@ use crate::narrative_extraction::nir1_entity_relation::tests::{
     approve_typed_revision, create_typed_run, prepare_a3_scope_fixture, request_for_run,
     seed_run_and_catalog,
 };
+#[cfg(feature = "native-current-human-capture")]
 use crate::narrative_extraction::{
     read_retrieval_scene_source, RetrievalSceneSourceBinding, RetrievalSceneSourceRead,
 };
 use crate::test_support::current_schema_memory;
+#[cfg(feature = "native-current-human-capture")]
+use anyhow::Context;
 use rusqlite::params;
 
 const RAW_SOURCE_PROJECT: &str = "default-project";
@@ -19,6 +22,14 @@ fn fixture(db: &Database) -> Result<Vec<String>> {
 }
 
 fn fixture_with_query_source(db: &Database, source_storage: Option<&str>) -> Result<Vec<String>> {
+    fixture_with_query_source_and_decision_note(db, source_storage, None)
+}
+
+fn fixture_with_query_source_and_decision_note(
+    db: &Database,
+    source_storage: Option<&str>,
+    decision_note: Option<&str>,
+) -> Result<Vec<String>> {
     seed_run_and_catalog(db)?;
     prepare_a3_scope_fixture(db)?;
     if let Some(storage) = source_storage {
@@ -42,7 +53,28 @@ fn fixture_with_query_source(db: &Database, source_storage: Option<&str>) -> Res
             db,
             request_for_run(db, &run_id, &format!("pooled-proposal-{index}")),
         )?;
-        approve_typed_revision(db, &run_id, &created)?;
+        if index == 0 && decision_note.is_some() {
+            crate::narrative_extraction::narrative_extraction_append_human_decision(
+                db,
+                crate::narrative_extraction::AppendDecisionPayload {
+                    run_id,
+                    project_id: RAW_SOURCE_PROJECT.into(),
+                    proposal_id: created["proposalId"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("fixture proposal ID missing"))?
+                        .to_owned(),
+                    revision_id: created["revisionId"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("fixture revision ID missing"))?
+                        .to_owned(),
+                    decision: "approved".into(),
+                    decision_json: Some(json!({"reviewerNote": decision_note})),
+                    created_by: Some("renderer-reviewer".into()),
+                },
+            )?;
+        } else {
+            approve_typed_revision(db, &run_id, &created)?;
+        }
         revisions.push(
             created["revisionId"]
                 .as_str()
@@ -61,6 +93,7 @@ fn raw() -> Vec<NativeNir1RawContextItem> {
     }]
 }
 
+#[cfg(feature = "native-current-human-capture")]
 fn seed_source(db: &Database, storage: &str) -> Result<()> {
     fixture(db)?;
     db.with_conn(|conn| {
@@ -75,6 +108,7 @@ fn seed_source(db: &Database, storage: &str) -> Result<()> {
     })
 }
 
+#[cfg(feature = "native-current-human-capture")]
 fn source_binding(db: &Database) -> Result<RetrievalSceneSourceBinding> {
     db.with_read_transaction(|conn| {
         let source = match read_retrieval_scene_source(conn, RAW_SOURCE_PROJECT, RAW_SOURCE_SCENE)?
@@ -88,6 +122,7 @@ fn source_binding(db: &Database) -> Result<RetrievalSceneSourceBinding> {
     })
 }
 
+#[cfg(feature = "native-current-human-capture")]
 #[test]
 fn source_raw_adapter_reads_exact_source_body_and_derives_tokens() -> Result<()> {
     let db = current_schema_memory()?;
@@ -122,6 +157,7 @@ fn source_raw_adapter_reads_exact_source_body_and_derives_tokens() -> Result<()>
     Ok(())
 }
 
+#[cfg(feature = "native-current-human-capture")]
 #[test]
 fn source_raw_adapter_rejects_a_stale_source_binding() -> Result<()> {
     let db = current_schema_memory()?;
@@ -167,6 +203,7 @@ fn source_raw_adapter_rejects_a_stale_source_binding() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "native-current-human-capture")]
 #[test]
 fn source_raw_adapter_rejects_archived_source_with_unchanged_binding() -> Result<()> {
     let db = current_schema_memory()?;
@@ -222,6 +259,7 @@ fn source_raw_adapter_rejects_archived_source_with_unchanged_binding() -> Result
     Ok(())
 }
 
+#[cfg(feature = "native-current-human-capture")]
 #[test]
 fn source_raw_adapter_rejects_oversized_storage_before_source_materialization() -> Result<()> {
     let db = current_schema_memory()?;
@@ -283,6 +321,7 @@ fn source_raw_adapter_rejects_oversized_storage_before_source_materialization() 
     Ok(())
 }
 
+#[cfg(feature = "native-current-human-capture")]
 #[test]
 fn source_raw_adapter_rejects_invalid_json_without_legacy_raw_fallback() -> Result<()> {
     let db = current_schema_memory()?;
@@ -342,6 +381,7 @@ fn request<'a>(
     }
 }
 
+#[cfg(feature = "native-current-human-capture")]
 fn source_request<'a>(
     revision_ids: &'a [String],
     budget_tokens: usize,
@@ -355,6 +395,7 @@ fn source_request<'a>(
     }
 }
 
+#[cfg(feature = "native-current-human-capture")]
 #[test]
 fn source_pooled_helper_uses_one_wal_snapshot_and_charges_raw_once() -> Result<()> {
     let path = std::env::temp_dir().join(format!(
@@ -380,6 +421,11 @@ fn source_pooled_helper_uses_one_wal_snapshot_and_charges_raw_once() -> Result<(
     })
     .to_string();
     let revisions = fixture_with_query_source(&db, Some(&initial_storage))?;
+    let repeated_revision_ids = vec![
+        revisions[0].clone(),
+        revisions[1].clone(),
+        revisions[0].clone(),
+    ];
     let binding = source_binding(&db)?;
     let source_ref = NativeNir1RawSourceRef {
         project_id: RAW_SOURCE_PROJECT,
@@ -405,7 +451,11 @@ fn source_pooled_helper_uses_one_wal_snapshot_and_charges_raw_once() -> Result<(
         let mut budget = NativePackingInputBudget::default();
         let packed = read_and_pack_native_a2_context_in_tx(
             conn,
-            request(&revisions, std::slice::from_ref(&source_raw), 100_000),
+            request(
+                &repeated_revision_ids,
+                std::slice::from_ref(&source_raw),
+                100_000,
+            ),
             &mut budget,
             &mut |_| Ok(()),
             &mut || Ok(()),
@@ -419,66 +469,47 @@ fn source_pooled_helper_uses_one_wal_snapshot_and_charges_raw_once() -> Result<(
         "content": [{"type": "paragraph", "content": [{"type": "text", "text": "snapshot source after write"}]}]
     })
     .to_string();
+    let mut retained_bindings = 0;
+    let mut source_updated_between_revisions = false;
     let (pooled, pooled_bytes) = db.with_read_transaction(|conn| {
-        let source = match read_retrieval_scene_source_bounded(
-            conn,
-            RAW_SOURCE_PROJECT,
-            RAW_SOURCE_SCENE,
-            MAX_PACKING_INPUT_BYTES,
-            MAX_PACKING_INPUT_BYTES,
-            &mut || Ok(()),
-            &mut |_| Ok(()),
-        )? {
-            RetrievalSceneSourceRead::Available(source) => source,
-            RetrievalSceneSourceRead::Unavailable { .. } => {
-                anyhow::bail!("query Source unavailable before snapshot pin")
-            }
-        };
-        ensure!(
-            source.canonical_source_text == source_body,
-            "canonical query Source body was truncated or changed"
-        );
-        ensure!(
-            source.canonical_source_text.encode_utf16().count() > 500,
-            "canonical query Source body must exceed 500 UTF-16 units"
-        );
-        ensure!(
-            source.query_source == binding,
-            "snapshot pin changed Source binding"
-        );
-
-        // Pin the caller-owned transaction with the exact query Source reader,
-        // then commit both Source and A2-input changes from a distinct WAL
-        // connection before composing the pooled read on this same transaction.
-        writer.with_conn(|writer| {
-            writer.execute(
-                "UPDATE tree_nodes
-                    SET content=?1, version=version+1,
-                        updated_at='2026-09-23T12:11:00.000Z'
-                  WHERE project_id=?2 AND id=?3 AND node_type='scene'",
-                params![changed_storage, RAW_SOURCE_PROJECT, RAW_SOURCE_SCENE],
-            )?;
-            writer.execute(
-                "UPDATE codex_entries SET summary='Changed Source',
-                     updated_at='2026-09-23T12:11:00Z'
-                  WHERE id='nir1-alice'",
-                [],
-            )?;
-            Ok(())
-        })?;
-
         let mut budget = NativePackingInputBudget::default();
         let pooled = read_and_pack_native_a2_context_with_source_raw_in_tx(
             conn,
-            source_request(&revisions, 100_000),
+            source_request(&repeated_revision_ids, 100_000),
             source_ref,
             &mut budget,
-            &mut |_| Ok(()),
+            &mut |bytes| {
+                retained_bindings += 1;
+                if retained_bindings == 1 {
+                    writer.with_conn(|writer| {
+                        writer.execute(
+                            "UPDATE tree_nodes
+                                SET content=?1, version=version+1,
+                                    updated_at='2026-09-23T12:11:00.000Z'
+                              WHERE project_id=?2 AND id=?3 AND node_type='scene'",
+                            params![changed_storage, RAW_SOURCE_PROJECT, RAW_SOURCE_SCENE],
+                        )?;
+                        writer.execute(
+                            "UPDATE codex_entries SET summary='Changed Source',
+                                 updated_at='2026-09-23T12:11:00Z'
+                              WHERE id='nir1-alice'",
+                            [],
+                        )?;
+                        Ok(())
+                    })?;
+                    source_updated_between_revisions = true;
+                }
+                ensure!(bytes > 0, "authority reservation should be nonempty");
+                Ok(())
+            },
             &mut || Ok(()),
         )?;
         Ok((pooled, budget.used_bytes))
     })?;
-
+    ensure!(
+        source_updated_between_revisions && retained_bindings == revisions.len(),
+        "WAL Source update did not occur between Revision reads"
+    );
     assert_eq!(
         pooled_bytes, control_bytes,
         "Source Raw must be charged exactly once"
@@ -507,7 +538,7 @@ fn source_pooled_helper_uses_one_wal_snapshot_and_charges_raw_once() -> Result<(
         let mut budget = NativePackingInputBudget::default();
         let error = read_and_pack_native_a2_context_with_source_raw_in_tx(
             conn,
-            source_request(&revisions, 100_000),
+            source_request(&repeated_revision_ids, 100_000),
             source_ref,
             &mut budget,
             &mut |_| Ok(()),
@@ -525,6 +556,7 @@ fn source_pooled_helper_uses_one_wal_snapshot_and_charges_raw_once() -> Result<(
     Ok(())
 }
 
+#[cfg(feature = "native-current-human-capture")]
 #[test]
 fn source_pooled_helper_rejects_archived_source_with_unchanged_binding() -> Result<()> {
     let db = current_schema_memory()?;
@@ -990,4 +1022,350 @@ fn pooled_unqualified_revision_input_is_bounded_before_read_control() -> Result<
         }
         Ok(())
     })
+}
+
+#[cfg(feature = "native-current-human-capture")]
+struct PreparedWorkspace {
+    state: crate::state::WorkspaceState,
+    path: std::path::PathBuf,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl PreparedWorkspace {
+    fn new(db: Database) -> Result<Self> {
+        use crate::state::{ActiveWorkspace, WorkspaceAuthority};
+        use crate::workspace_lifecycle::LiveBinding;
+        use std::sync::Mutex;
+
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-nir1-prepared-db-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let authority = WorkspaceAuthority::from_database_for_test(db, path.clone())?;
+        let identity = authority.identity();
+        let state = crate::state::WorkspaceState {
+            inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
+            open_lock: Mutex::new(()),
+        };
+        state.lifecycle_core().set_ready(LiveBinding::new(
+            path.to_string_lossy(),
+            format!("prepared-test:{identity}"),
+            identity,
+            0,
+        ))?;
+        Ok(Self { state, path })
+    }
+
+    fn snapshot(&self) -> Result<crate::state::ActiveWorkspaceSnapshot> {
+        Ok(crate::state::active_workspace_snapshot(&self.state)?)
+    }
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl Drop for PreparedWorkspace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn prepared_sql_budget() -> crate::ParticipantSqlOperationBudget {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    crate::ParticipantSqlOperationBudget::new(
+        Arc::new(AtomicBool::new(false)),
+        Instant::now() + Duration::from_secs(20),
+        Duration::from_millis(100),
+    )
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn add_prepared_human_message(
+    workspace: &crate::state::ActiveWorkspaceSnapshot,
+    user_message: &str,
+) -> Result<crate::nir1_generation::AcceptedChatInputCapture> {
+    use crate::nir1_generation::{
+        accept_current_human_chat_input, ChatInputCaptureOwner, NewChatInputSubmission,
+    };
+
+    const SESSION: &str = "nir1-prepared-db-session";
+    const MESSAGE: &str = "nir1-prepared-db-human";
+    workspace.db().db().with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO chat_sessions(id,project_id,node_id)
+             VALUES (?1,'default-project',?2)",
+            params![SESSION, RAW_SOURCE_SCENE],
+        )?;
+        Ok(())
+    })?;
+    let locator = workspace.path().to_string_lossy().into_owned();
+    let authority = workspace.db().identity();
+    let owner = ChatInputCaptureOwner::new(
+        "nir1-prepared-db-profile".into(),
+        "nir1-prepared-db-caller".into(),
+        1,
+        1,
+        locator.clone(),
+        "nir1-db-caller-session".into(),
+        format!("prepared-test:{authority}"),
+        locator,
+        authority,
+        0,
+        0,
+    )?;
+    let submission = NewChatInputSubmission::new(
+        "nir1-prepared-db-submission".into(),
+        MESSAGE.into(),
+        SESSION.into(),
+        RAW_SOURCE_SCENE.into(),
+        user_message.into(),
+        "2026-09-26T10:00:00.000Z".into(),
+    )?;
+    Ok(accept_current_human_chat_input(
+        workspace,
+        &owner,
+        &submission,
+        prepared_sql_budget(),
+    )?)
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn prepared_projection_uses_captured_human_current_raw_and_typed_approved_revisions() -> Result<()>
+{
+    use crate::narrative_extraction::{
+        read_and_pack_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs,
+    };
+    use crate::nir1_generation::{InputRole, InputTarget, QualificationKind};
+
+    const CANARY: &str = "PREPARED_DB_PRIVATE_DECISION_CANARY";
+    let db = current_schema_memory()?;
+    let source_body = "Current Source body — keep it intact.";
+    let storage = json!({
+        "type": "doc",
+        "content": [{"type":"paragraph","content":[{"type":"text","text":source_body}]}]
+    })
+    .to_string();
+    let revisions = fixture_with_query_source_and_decision_note(&db, Some(&storage), Some(CANARY))?;
+    let workspace = PreparedWorkspace::new(db)?;
+    let snapshot = workspace.snapshot()?;
+    let message_version_id =
+        add_prepared_human_message(&snapshot, "Captured human request for the current scene.")?;
+    let projection = read_and_pack_native_nir1_prepared_inputs(
+        &snapshot,
+        "nir1-prepared-db-session",
+        &message_version_id,
+        RAW_SOURCE_SCENE,
+        &revisions,
+        prepared_sql_budget(),
+        |_| Ok(100_000),
+    )?;
+
+    assert_eq!(projection.query_scene_id(), RAW_SOURCE_SCENE);
+    assert_eq!(
+        projection.user_message(),
+        "Captured human request for the current scene."
+    );
+    let references = projection.input_references();
+    assert_eq!(references[0].role, InputRole::User);
+    assert!(matches!(
+        &references[0].target,
+        InputTarget::Message { version_id, parent_attempt_id: None }
+            if version_id.as_str() == message_version_id.message_version_id()
+    ));
+    let raw_reference_ordinal = references
+        .iter()
+        .position(|reference| matches!(&reference.target, InputTarget::RawSource { .. }))
+        .context("current Source input reference missing")?;
+    assert!(projection.context_items().iter().any(|item| {
+        item.input_ordinal() == raw_reference_ordinal && item.text() == source_body
+    }));
+    for item in projection.context_items() {
+        let reference = references
+            .get(item.input_ordinal())
+            .context("context input ordinal is out of range")?;
+        assert!(matches!(
+            &reference.target,
+            InputTarget::RawSource { .. } | InputTarget::AcceptedRevision { .. }
+        ));
+    }
+    assert!(references.iter().any(|reference| match &reference.target {
+        InputTarget::AcceptedRevision { revision_id, .. } => revisions.contains(revision_id),
+        _ => false,
+    }));
+    for kind in [
+        QualificationKind::Source,
+        QualificationKind::Revision,
+        QualificationKind::Decision,
+        QualificationKind::Freshness,
+        QualificationKind::Scope,
+    ] {
+        assert!(projection
+            .qualifications()
+            .iter()
+            .any(|item| item.kind == kind));
+    }
+    assert!(projection
+        .context_items()
+        .iter()
+        .all(|item| !item.text().contains(CANARY)));
+    revalidate_native_nir1_prepared_inputs(
+        &snapshot,
+        "nir1-prepared-db-session",
+        &projection,
+        prepared_sql_budget(),
+    )?;
+
+    snapshot.db().db().with_conn(|conn| {
+        conn.execute(
+            "UPDATE tree_nodes SET content=?1, version=version+1,
+                    updated_at='2026-09-24T12:00:00.000Z'
+              WHERE project_id=?2 AND id=?3 AND node_type='scene'",
+            params![
+                json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Changed Source body."}]}]}).to_string(),
+                RAW_SOURCE_PROJECT,
+                RAW_SOURCE_SCENE
+            ],
+        )?;
+        Ok(())
+    })?;
+    let stale = revalidate_native_nir1_prepared_inputs(
+        &snapshot,
+        "nir1-prepared-db-session",
+        &projection,
+        prepared_sql_budget(),
+    )
+    .err()
+    .context("fresh transaction accepted stale Source")?;
+    assert_eq!(stale.to_string(), "NIR1_NATIVE_RAW_SOURCE_STALE");
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn prepared_projection_revalidates_large_captured_human_after_single_charge() -> Result<()> {
+    use crate::narrative_extraction::{
+        read_and_pack_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs,
+    };
+    use crate::nir1_generation::{InputTarget, QualificationKind};
+
+    const HUMAN_BODY_BYTES: usize = 1_100_000;
+    let db = current_schema_memory()?;
+    let storage = json!({
+        "type": "doc",
+        "content": [{"type":"paragraph","content":[{"type":"text","text":"Small current Source."}]}]
+    })
+    .to_string();
+    let revisions = fixture_with_query_source(&db, Some(&storage))?;
+    let workspace = PreparedWorkspace::new(db)?;
+    let snapshot = workspace.snapshot()?;
+    let human_message = "x".repeat(HUMAN_BODY_BYTES);
+    assert!(human_message.len() > estimate_nir1_context_tokens(&human_message));
+    let capture = add_prepared_human_message(&snapshot, &human_message)?;
+    let projection = read_and_pack_native_nir1_prepared_inputs(
+        &snapshot,
+        "nir1-prepared-db-session",
+        &capture,
+        RAW_SOURCE_SCENE,
+        &revisions[..1],
+        prepared_sql_budget(),
+        |_| Ok(100_000),
+    )?;
+
+    assert_eq!(projection.user_message().len(), HUMAN_BODY_BYTES);
+    assert!(projection.context_items().iter().any(|item| {
+        item.text() == "Small current Source."
+            && matches!(
+                &projection.input_references()[item.input_ordinal()].target,
+                InputTarget::RawSource { .. }
+            )
+    }));
+    assert!(projection
+        .input_references()
+        .iter()
+        .any(|reference| matches!(&reference.target, InputTarget::AcceptedRevision { .. })));
+    assert!(projection
+        .qualifications()
+        .iter()
+        .any(|item| item.kind == QualificationKind::Source));
+    assert!(projection
+        .qualifications()
+        .iter()
+        .any(|item| item.kind == QualificationKind::Revision));
+
+    revalidate_native_nir1_prepared_inputs(
+        &snapshot,
+        "nir1-prepared-db-session",
+        &projection,
+        prepared_sql_budget(),
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn prepared_projection_rejects_human_over_one_copy_input_byte_limit() -> Result<()> {
+    use crate::narrative_extraction::read_and_pack_native_nir1_prepared_inputs;
+
+    let db = current_schema_memory()?;
+    let storage = json!({
+        "type": "doc",
+        "content": [{"type":"paragraph","content":[{"type":"text","text":"Small current Source."}]}]
+    })
+    .to_string();
+    let revisions = fixture_with_query_source(&db, Some(&storage))?;
+    let workspace = PreparedWorkspace::new(db)?;
+    let snapshot = workspace.snapshot()?;
+    let capture = add_prepared_human_message(&snapshot, &"x".repeat(MAX_PACKING_INPUT_BYTES))?;
+    let error = read_and_pack_native_nir1_prepared_inputs(
+        &snapshot,
+        "nir1-prepared-db-session",
+        &capture,
+        RAW_SOURCE_SCENE,
+        &revisions[..1],
+        prepared_sql_budget(),
+        |_| Ok(100_000),
+    )
+    .err()
+    .ok_or_else(|| anyhow::anyhow!("one-copy MAX_PACKING_INPUT_BYTES limit was relaxed"))?;
+    assert!(error.to_string().contains("MAX_PACKING_INPUT_BYTES"));
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn prepared_projection_rejects_empty_context_budget_before_selecting_material() -> Result<()> {
+    use crate::narrative_extraction::read_and_pack_native_nir1_prepared_inputs;
+
+    let db = current_schema_memory()?;
+    let storage = json!({
+        "type": "doc",
+        "content": [{"type":"paragraph","content":[{"type":"text","text":"Budget fixture source."}]}]
+    })
+    .to_string();
+    let revisions = fixture_with_query_source(&db, Some(&storage))?;
+    let workspace = PreparedWorkspace::new(db)?;
+    let snapshot = workspace.snapshot()?;
+    let message_version_id =
+        add_prepared_human_message(&snapshot, "Captured human request for the current scene.")?;
+    let error = read_and_pack_native_nir1_prepared_inputs(
+        &snapshot,
+        "nir1-prepared-db-session",
+        &message_version_id,
+        RAW_SOURCE_SCENE,
+        &revisions,
+        prepared_sql_budget(),
+        |_| Ok(0),
+    )
+    .err()
+    .context("zero context budget unexpectedly selected inputs")?;
+    assert_eq!(
+        error.to_string(),
+        "NIR1_NATIVE_PREPARED_CONTEXT_BUDGET_EMPTY"
+    );
+    Ok(())
 }

@@ -307,7 +307,13 @@ impl ParticipantSqlOperationBudget {
         }
     }
 
-    fn check(&self, participant: &WorkspaceParticipant) -> Result<()> {
+    /// Check this owner against the participant pinned in the supplied
+    /// workspace snapshot, including between SQL phases.
+    pub fn check_workspace(&self, workspace: &crate::state::ActiveWorkspaceSnapshot) -> Result<()> {
+        self.check(workspace.participant())
+    }
+
+    pub(crate) fn check(&self, participant: &WorkspaceParticipant) -> Result<()> {
         check_participant_sql_control(participant, &self.stop, Some(self.deadline))
     }
 }
@@ -1462,7 +1468,10 @@ impl Database {
         Ok(())
     }
 
-    pub(crate) fn foreground_connection_waiter_count(&self) -> usize {
+    /// Number of bounded foreground operations currently queued for this
+    /// connection; exposed only for cross-crate deterministic contention tests.
+    #[doc(hidden)]
+    pub fn foreground_connection_waiter_count(&self) -> usize {
         self.foreground_connection_waiters.load(Ordering::SeqCst)
     }
 

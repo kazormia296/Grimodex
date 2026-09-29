@@ -28,6 +28,20 @@
     "enforcement": "active"
   },
   {
+    "aggregate": "nir1-generation",
+    "table": "nir1_chat_input_captures",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_chat_input_submission_keys",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "foreshadow",
     "table": "foreshadows",
     "protection": "table",

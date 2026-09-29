@@ -119,8 +119,12 @@ import type { ChatUserQuestionRuntime } from "./chatUserQuestionRuntime";
 import { advanceActiveLifecycleTransition } from "@/application/lifecycle/lifecycleTrace";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { reserveChatMessageAdds } from "@/features/timelapse/captureChat";
-import { tryAcquireChatTurnAdmissionLease } from "@/lib/chatNavigationGuard";
 import { cliApi, codexAppApi } from "@/features/chat/lazyRuntimeApi";
+import {
+  createChatTurnLifecycle,
+  withChatTurnAdmission,
+} from "./chatTurnLifecycle";
+import type { CaptureCurrentChatInputSubmission } from "@/lib/tauri";
 
 interface ChatTurnStoreActionCompositionPorts extends ChatStoreActionPorts {
   prepareChatTurn: (input: ChatTurnPreflightInput) => ChatTurnPreflightDecision;
@@ -197,6 +201,16 @@ function createChatTurnStoreActions(
     toast,
     i18next,
   } = ports;
+  const turnLifecycle = createChatTurnLifecycle({
+    set,
+    get,
+    turnRuntime,
+    isCapturedWorkspaceCurrent,
+    getCurrentProjectId,
+    codexAppApi,
+    debugLog,
+    errorDetail,
+  });
 
   return {
     sendMessage: async (
@@ -216,7 +230,16 @@ function createChatTurnStoreActions(
       },
     ) => {
       if (!content.trim()) return;
+      const sendStopGeneration = turnLifecycle.stopGenerationVersion();
       const turnCoordinator = turnRuntime.coordinator;
+      const pendingCaptureWork = turnLifecycle.beforeSend(sendStopGeneration);
+      if (
+        pendingCaptureWork instanceof Promise
+          ? !(await pendingCaptureWork)
+          : !pendingCaptureWork
+      ) {
+        return;
+      }
       const preflightDecision = prepareChatTurn({
         content,
         commandInstruction,
@@ -226,7 +249,11 @@ function createChatTurnStoreActions(
         preflightDecision instanceof Promise
           ? await preflightDecision
           : preflightDecision;
-      if (!preflight) return;
+      if (
+        !turnLifecycle.isStopGenerationCurrent(sendStopGeneration) ||
+        !preflight
+      )
+        return;
       const {
         turnWorkspaceIdentity,
         activeSceneId,
@@ -259,35 +286,8 @@ function createChatTurnStoreActions(
         chatModelEarly,
         xprov,
       } = preflight;
-      const finalizeStreamingDraft = (metadata?: string): void => {
-        set((state) => {
-          const draft =
-            state.streamingDraft?.messageId === assistantMsg.id
-              ? state.streamingDraft
-              : null;
-          let changed = draft !== null;
-          const messages = state.messages.map((message) => {
-            if (message.id !== assistantMsg.id) return message;
-            const content = draft?.content ?? message.content;
-            if (
-              content === message.content &&
-              (metadata === undefined || metadata === message.metadata)
-            ) {
-              return message;
-            }
-            changed = true;
-            return {
-              ...message,
-              content,
-              ...(metadata !== undefined ? { metadata } : {}),
-            };
-          });
-          return {
-            messages: changed ? messages : state.messages,
-            streamingDraft: null,
-          };
-        });
-      };
+      const finalizeStreamingDraft =
+        turnLifecycle.createStreamingDraftFinalizer(assistantMsg.id);
       const turnRequest = createTurnRequest({
         requestId: crypto.randomUUID(),
         workspace: turnWorkspaceIdentity,
@@ -383,20 +383,7 @@ function createChatTurnStoreActions(
       // session it creates below. Any other session transition invalidates it.
       let turnSessionId = activeSessionId;
       let transportStarted = false;
-      let acceptedNotified = false;
-      const notifyAccepted = (): void => {
-        if (acceptedNotified) return;
-        acceptedNotified = true;
-        try {
-          options?._onAccepted?.();
-        } catch (error) {
-          debugLog.warn(
-            "ChatStore",
-            "send acceptance callback",
-            errorDetail(error),
-          );
-        }
-      };
+      const captureTurn = turnLifecycle.createTurn(sendControl, turnRoute);
       turnRuntime.setStoppedStreamFinalizer(null);
       const isCurrentTurn = (): boolean =>
         turnCoordinator.isCurrent(sendControl);
@@ -499,23 +486,45 @@ function createChatTurnStoreActions(
         }
       };
       const removeOwnedTurnMessages = (): void => {
-        set((state) => ({
-          messages: state.messages.filter(
+        const currentState = get();
+        const keepCapturedHuman =
+          captureTurn.committed &&
+          capturedWorkspaceIsCurrent() &&
+          capturedProjectIsCurrent() &&
+          currentState.activeSessionId ===
+            captureTurn.submission?.chatSessionId &&
+          currentState.chatScope === chatScope &&
+          currentState.scopeAnchorId === scopeAnchorId &&
+          currentState.activeSceneId === activeSceneId;
+        set((state) => {
+          const messages = state.messages.filter(
             (message) =>
-              message.id !== userMsg.id && message.id !== assistantMsg.id,
-          ),
-          streamingDraft:
-            state.streamingDraft?.messageId === assistantMsg.id
-              ? null
-              : state.streamingDraft,
-        }));
+              message.id !== assistantMsg.id &&
+              (keepCapturedHuman || message.id !== userMsg.id),
+          );
+          if (
+            keepCapturedHuman &&
+            !messages.some((message) => message.id === userMsg.id)
+          ) {
+            messages.push(userMsg);
+          }
+          return {
+            messages,
+            streamingDraft:
+              state.streamingDraft?.messageId === assistantMsg.id
+                ? null
+                : state.streamingDraft,
+          };
+        });
       };
       const cancelBeforeTransport = (): boolean => {
         if (!shouldAbortTurn()) return false;
         const ownedInvalidTurn = isCurrentTurn();
         if (ownedInvalidTurn) {
           turnCoordinator.abort(sendControl);
-          turnCoordinator.release(sendControl);
+          if (!sendControl.preTransportAdmissionPending) {
+            turnCoordinator.release(sendControl);
+          }
         }
         removeOwnedTurnMessages();
         if (ownedInvalidTurn) set({ isStreaming: false });
@@ -536,6 +545,8 @@ function createChatTurnStoreActions(
         turnRuntime.clearActiveRouteIf(turnRoute);
         turnCoordinator.release(sendControl, "failed");
       };
+      const preserveFailedCaptureCancellation = (error: unknown): void =>
+        captureTurn.preserveFailedCancellation(error, removeOwnedTurnMessages);
       const prevMessages = initialMessages;
       const visiblePrevMessages = capturedMessages;
       // Guard concurrent sends before tokenizer initialization yields control.
@@ -567,8 +578,46 @@ function createChatTurnStoreActions(
       if (cancelBeforeTransport()) return;
       turnRuntime.setActiveRoute(turnRoute);
 
-      // Session-scoped pins and summaries are keyed only by session id. Validate
-      // ownership against persisted state before any such source is read.
+      // Capture an owned scene Human before any protected-session read.
+      const captureRouteEligible = turnLifecycle.captureRouteIsEligible({
+        turnRoute,
+        aiSettingsEarly,
+        chatScope,
+        effectiveSceneId,
+        activeSceneId,
+        scopeAnchorId,
+        threadFocusOverride,
+        useAgentPath,
+        capturedRagEnabled,
+        ragActive,
+        publicWebSearchPath,
+        commandInstruction,
+        options,
+      });
+      const captureEligible = captureRouteEligible && Boolean(activeSessionId);
+      if (captureEligible) {
+        const submission: CaptureCurrentChatInputSubmission = {
+          submissionId: sendTurnId,
+          messageId: userMsg.id,
+          chatSessionId: activeSessionId!,
+          sceneId: effectiveSceneId!,
+          content: userMsg.content,
+          createdAt: userMsg.createdAt,
+        };
+        const mayContinue = await captureTurn.capture(
+          submission,
+          turnProjectId,
+          {
+            cancelBeforeTransport,
+            failBeforeTransport,
+            preserveFailedCaptureCancellation,
+            onAccepted: options?._onAccepted,
+          },
+        );
+        if (!mayContinue) return;
+      }
+
+      // Validate persisted ownership before reading session-scoped pins or summaries.
       if (turnSessionId) {
         try {
           const persistedSession = await chatApi.getSessionForProject(
@@ -622,7 +671,6 @@ function createChatTurnStoreActions(
         }
       }
       if (cancelBeforeTransport()) return;
-
       // -----------------------------------------------------------------------
       // Agent mode path — tool-use loop
       //
@@ -1243,6 +1291,10 @@ function createChatTurnStoreActions(
               userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
               sendToLLM: async (msgs, tools) => {
                 assertTurnAuthority();
+                await captureTurn.retirePriorCapture(sessionIdForPersist);
+                if (cancelBeforeTransport()) {
+                  throw new Error("CHAT_TURN_CANCELLED_BEFORE_TRANSPORT");
+                }
                 const finalized = turnRoute
                   ? finalizeChatTurnPayload({
                       route: turnRoute,
@@ -1273,7 +1325,8 @@ function createChatTurnStoreActions(
                       : {}),
                   });
                 }
-                notifyAccepted();
+                captureTurn.notifyAccepted(options?._onAccepted);
+                assertTurnAuthority();
                 turnCoordinator.transition(sendControl, "agent-running");
                 transportStarted = true;
                 sendControl.transportStarted = true;
@@ -1918,6 +1971,14 @@ function createChatTurnStoreActions(
         const codexItems = new Map<string, CodexAppItem>();
         const codexWarnings: string[] = [];
 
+        // Revoke prior same-session authority only after the route and turn
+        // have otherwise reached the existing pre-transport admission point.
+        if (!captureRouteEligible) {
+          await captureTurn.retirePriorCapture(sessionIdForPersist);
+          if (cancelBeforeTransport()) return;
+          assertTurnAuthority();
+        }
+
         // Start streaming — returns a Promise<cleanup_fn>
         await new Promise<void>((resolve, reject) => {
           // delta coalesce: provider が 1:1 で emit する SSE delta(秒間 20〜40)を
@@ -2327,6 +2388,22 @@ function createChatTurnStoreActions(
                   ? { assistantMessage: recoverableAssistant }
                   : {}),
               })
+                .then(
+                  async () => {
+                    if (info.stopReason === "stopped" || sendControl.aborted) {
+                      await captureTurn.cancel();
+                    } else {
+                      captureTurn.keepCurrent();
+                      sendControl.preTransportAdmissionPending = false;
+                      captureTurn.clearCancellationRetry();
+                    }
+                  },
+                  (error: unknown) => {
+                    throw error instanceof ChatTurnPersistenceError
+                      ? error
+                      : new ChatTurnPersistenceError(error);
+                  },
+                )
                 .finally(() => {
                   turnStreamCleanup?.();
                   if (turnStreamCleanup) {
@@ -2334,7 +2411,12 @@ function createChatTurnStoreActions(
                   }
                   if (isCurrentTurn()) set({ isStreaming: false });
                 })
-                .then(resolve, (error: unknown) => {
+                .then(resolve, async (error: unknown) => {
+                  try {
+                    await captureTurn.cancel();
+                  } catch (cleanupError) {
+                    error = cleanupError;
+                  }
                   debugLog.error(
                     "ChatStore",
                     "persist after stream",
@@ -2413,7 +2495,8 @@ function createChatTurnStoreActions(
           turnRuntime.setStoppedStreamFinalizer(finalizeStoppedStream);
 
           assertTurnAuthority();
-          notifyAccepted();
+          captureTurn.notifyAccepted(options?._onAccepted);
+          assertTurnAuthority();
           turnCoordinator.transition(sendControl, "streaming");
           transportStarted = true;
           sendControl.transportStarted = true;
@@ -2514,7 +2597,20 @@ function createChatTurnStoreActions(
               else resolve();
             });
         });
-      } catch (e) {
+      } catch (caught) {
+        let e = caught;
+        let captureCleanupFailed = false;
+        try {
+          await captureTurn.cancel();
+        } catch (cleanupError) {
+          captureCleanupFailed = true;
+          debugLog.error(
+            "ChatStore",
+            "cancel current chat capture",
+            errorDetail(cleanupError),
+          );
+          if (!(e instanceof ChatTurnPersistenceError)) e = cleanupError;
+        }
         if (
           e instanceof ChatTurnPersistenceError &&
           !canScheduleQuiescenceMutation()
@@ -2523,7 +2619,11 @@ function createChatTurnStoreActions(
           // completed turn could not become durable in that old scope.
           throw e;
         }
-        if (shouldAbortTurn() && !(e instanceof ChatTurnPersistenceError)) {
+        if (
+          shouldAbortTurn() &&
+          !(e instanceof ChatTurnPersistenceError) &&
+          !captureCleanupFailed
+        ) {
           cancelBeforeTransport();
           return;
         }
@@ -2565,7 +2665,7 @@ function createChatTurnStoreActions(
           // 2 通/回で無限増殖）を防ぐため上限を設ける。新規送信は
           // _rateLimitRetry=undefined から始まるのでカウンタは自然にリセットされる。
           const attempt = (options?._rateLimitRetry ?? 0) + 1;
-          if (attempt > MAX_RATE_LIMIT_RETRIES) {
+          if (attempt > MAX_RATE_LIMIT_RETRIES || captureCleanupFailed) {
             set({ error: msg });
             return;
           }
@@ -2602,96 +2702,24 @@ function createChatTurnStoreActions(
             : {}),
         });
       } finally {
+        const unresolvedCurrentCapture = captureTurn.resolveFinally(
+          capturedWorkspaceIsCurrent(),
+        );
         if (isCurrentTurn()) {
-          // isStreaming is set to false inside onDone/onError callbacks
-          // but guard here in case of early exit.
-          if (get().isStreaming) set({ isStreaming: false });
-          turnRuntime.clearActiveRouteIf(turnRoute);
-          turnCoordinator.release(sendControl);
-        } else {
+          if (!captureTurn.isCaptureOnly()) {
+            // isStreaming is set to false inside onDone/onError callbacks
+            // but guard here in case of early exit.
+            if (get().isStreaming) set({ isStreaming: false });
+            turnRuntime.clearActiveRouteIf(turnRoute);
+          }
+          if (!unresolvedCurrentCapture) turnCoordinator.release(sendControl);
+        } else if (!unresolvedCurrentCapture) {
           turnCoordinator.release(sendControl);
         }
       }
     },
 
-    stopGeneration: () => {
-      // A send may still be waiting for Ollama metadata before placeholders are
-      // published. Invalidate that claim so Stop (or a new authority) can recover
-      // without waiting for the endpoint timeout.
-      turnRuntime.clearSendPreflight();
-      // agent ループの中断を要求してから、回答待ちの ask_user を sentinel 解決する。
-      // フラグを先に立てるので、resolve で再開したループは shouldAbort を見て
-      // tool_result を送らずに即 return する（stop が agent path を止められない
-      // 問題への対処）。フラグ→resolve の順序が肝。
-      const turnCoordinator = turnRuntime.coordinator;
-      const stoppedControl = turnCoordinator.current();
-      const stoppedTurnId = stoppedControl?.id ?? null;
-      const stoppedSessionId =
-        stoppedControl?.sessionId ?? get().activeSessionId;
-      const stoppedProjectId =
-        stoppedControl?.request.projectId ??
-        get().activeProjectId ??
-        getCurrentProjectId();
-      if (stoppedControl) {
-        turnCoordinator.abort(stoppedControl);
-        if (!stoppedControl.transportStarted) {
-          set((state) => ({
-            messages: state.messages.filter(
-              (message) =>
-                message.id !== stoppedControl.userMessageId &&
-                message.id !== stoppedControl.assistantMessageId,
-            ),
-            streamingDraft:
-              state.streamingDraft?.messageId ===
-              stoppedControl.assistantMessageId
-                ? null
-                : state.streamingDraft,
-          }));
-        }
-      }
-      // Flush while this turn still owns the identity; flushDelta deliberately
-      // rejects stale owners, so clearing the id first would drop the final frame.
-      turnRuntime.flushPendingDelta();
-      const agentTransportWillFinalize = Boolean(
-        stoppedControl?.transportStarted && stoppedControl.surface === "agent",
-      );
-      if (
-        stoppedControl?.transportStarted &&
-        stoppedControl.surface === "chat"
-      ) {
-        turnRuntime.finalizeStoppedStream();
-      }
-      if (!agentTransportWillFinalize && stoppedControl) {
-        turnCoordinator.release(stoppedControl);
-      }
-      // Stop は送信開始時に凍結した transport を使う。Codex App Server は
-      // subprocess 全体を終了せず、対象 Thread/Turn だけを interrupt する。
-      const stoppedTransport =
-        stoppedControl?.transport ??
-        turnRuntime.activeRoute()?.transport ??
-        "http";
-      if (
-        stoppedTransport === "codex-app-server" &&
-        stoppedTurnId &&
-        stoppedSessionId
-      ) {
-        void codexAppApi
-          .abortCodexAppTurn({
-            projectId: stoppedProjectId,
-            sessionId: stoppedSessionId,
-            grimodexTurnId: stoppedTurnId,
-          })
-          .catch(() => {});
-      }
-      if (!agentTransportWillFinalize) {
-        turnRuntime.runStreamCleanup();
-      }
-      get()._cancelPendingUserQuestion();
-      set({
-        isStreaming: agentTransportWillFinalize,
-        agentProgress: null,
-      });
-    },
+    stopGeneration: turnLifecycle.stopGeneration,
   };
 }
 
@@ -2731,41 +2759,6 @@ export function createConfiguredChatTurnStoreActions(
   });
   return {
     ...actions,
-    async sendMessage(content, commandInstruction, options) {
-      const navigationAdmission = tryAcquireChatTurnAdmissionLease();
-      if (!navigationAdmission) return;
-      let admissionReleased = false;
-      const releaseNavigationAdmission = (): void => {
-        if (admissionReleased) return;
-        admissionReleased = true;
-        navigationAdmission.release();
-      };
-      try {
-        if (!canScheduleQuiescenceMutation()) return;
-        // A completed turn owns the next persistence position until its retry
-        // succeeds. Keep this gate outside trackTurn: a failed admission retry
-        // must remain sticky in the registry, not become a second settled turn
-        // failure.
-        if (ports.turnRuntime.hasPendingCompletedTurnPersistence()) {
-          await ports.turnRuntime.retryPendingCompletedTurns();
-        }
-        if (!canScheduleQuiescenceMutation()) return;
-        const admittedOptions = {
-          ...options,
-          _onAccepted: () => {
-            // `notifyAccepted` runs after turn placeholders/finalizers exist
-            // and immediately before transport starts. From this point a Scene
-            // transition can stop the turn and persist to captured authority.
-            releaseNavigationAdmission();
-            options?._onAccepted?.();
-          },
-        };
-        return await ports.turnRuntime.trackTurn(
-          actions.sendMessage(content, commandInstruction, admittedOptions),
-        );
-      } finally {
-        releaseNavigationAdmission();
-      }
-    },
+    sendMessage: withChatTurnAdmission(actions.sendMessage, ports.turnRuntime),
   };
 }

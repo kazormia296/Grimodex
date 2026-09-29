@@ -217,7 +217,7 @@ export const codexEntries = sqliteTable(
     childrenBudget: text("children_budget").notNull().default("compact"), // 'none' | 'compact' | 'standard' | 'generous'
     sourceChatMessageId: text("source_chat_message_id").references(
       () => chatMessages.id,
-      { onDelete: "set null" },
+      { onDelete: "restrict" },
     ),
     notes: text("notes"), // Private notes (ProseMirror JSON) – never injected into AI context
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
@@ -436,7 +436,7 @@ export const snippets = sqliteTable(
     }),
     sourceChatMessageId: text("source_chat_message_id").references(
       () => chatMessages.id,
-      { onDelete: "set null" },
+      { onDelete: "restrict" },
     ),
     usageCount: integer("usage_count").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),

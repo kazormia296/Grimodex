@@ -237,6 +237,8 @@ Required confirmation evidence is the exact statement: `I confirm draftRef nir1-
 | B | #596 Graph foundation、`graph-limited-binding` | b-close-complete | proposal/5のexact confirmationに加え、数値容量契約を明示確認し必須focused証跡とN/N+1を完了。[B-close completion evidence](nir1-b-close-completion-2026-09-22.md)。Graph query／product activationとFull／merge readinessは未完了 |
 | D1 | #599 typed Packing review remediation | completed-foundation | review remediationはmasterへmerged。typed Packing foundationはcompleted-foundationだが、Packing product dispatch／D1 activationは未完了 |
 
+2026-09-28 D-final候補の現状: DF-02〜DF-08の限定的な内部request候補はSol Maxによる範囲限定レビューを受け、記録済みのNative 24/24とproduction `cargo check` はその範囲の技術証跡に限る。DF-01／DF-04の過去版として有効なhuman messageを現在turnの入力と認定する課題は、信頼できるcurrent-turn capture ownerが未確認のためP2 HOLDであり、`bind_human_message`が旧versionを再bindできる以上、timestamp／rowidでは証明できない。したがってD-final（内部候補を含む）もD-transportも完了扱いにしない。D1 activation、Graph／history integration、attempt barrier、dispatch、製品entry／send／publicationは未完了のままである。
+
 ### R0 lane開始判定と評価manifest (historical)
 
 | lane | R0が固定する依存 | startStatus | 機能評価 |

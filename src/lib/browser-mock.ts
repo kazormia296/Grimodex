@@ -156,6 +156,8 @@ const RUST_ONLY_BROWSER_TABLES = new Set([
   "tree_nodes_fts_en",
   "post_effect_annotations_fts",
   "post_effect_annotations_fts_en",
+  "nir1_chat_input_captures",
+  "nir1_chat_input_submission_keys",
 ]);
 
 function executableCreateSql(createSql: string, columnNames: string[]): string {

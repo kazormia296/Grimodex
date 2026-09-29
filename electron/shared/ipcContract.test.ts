@@ -5708,6 +5708,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "ai_tree_plan_apply",
       "ai_tree_plan_undo",
       "authorship_replace_lane",
+      "cancel_current_chat_input",
+      "capture_current_chat_input",
       "chat_index_message",
       "chat_index_status",
       "chat_message_search",
@@ -5875,6 +5877,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "reply_to_annotation",
       "restore_backup",
       "restore_recovery_candidate",
+      "retire_current_chat_input",
       "retry_narrative_legacy_backfill",
       "revalidate_license",
       "revision_scene_restore",
@@ -9392,6 +9395,357 @@ const nativeAiAuditContext = {
   parentExecutionId: null,
   pathId: "chat",
 };
+
+describe("capture_current_chat_input", () => {
+  const submission = {
+    submissionId: "capture-submit-1",
+    messageId: "capture-message-1",
+    chatSessionId: "chat-session-1",
+    sceneId: "scene-1",
+    content: "untrusted renderer text",
+    createdAt: "2026-09-28T10:00:00.000Z",
+  };
+  const callerIdentity = {
+    profileId: "profile-1",
+    callerId: "main-caller-1",
+    callerEpoch: 2,
+    senderId: 42,
+    workspaceId: "/workspace-1",
+    sessionId: "main-session-1",
+  };
+  const receipt = {
+    status: "accepted",
+    projectId: "project-1",
+    chatSessionId: submission.chatSessionId,
+    sceneId: submission.sceneId,
+    messageId: submission.messageId,
+  };
+  const bindMainCaller = (value: typeof submission) => {
+    const args: Record<string, unknown> = { submission: value };
+    Object.defineProperty(args, "callerIdentity", { value: callerIdentity });
+    return args;
+  };
+
+  it("passes only strict submission fields and projects a minimal receipt", async () => {
+    const captureCurrentChatInput = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(receipt));
+    const { backend } = fakeBackend({
+      captureCurrentChatInput: captureCurrentChatInput as never,
+    });
+    const env = await dispatchInvoke(
+      "capture_current_chat_input",
+      bindMainCaller(submission),
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({ ok: true, value: receipt });
+    expect(captureCurrentChatInput).toHaveBeenCalledWith(
+      submission,
+      JSON.stringify(callerIdentity),
+    );
+  });
+
+  it("maps only Native's unrestricted disposition to a legacy-only result", async () => {
+    const captureCurrentChatInput = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify({ status: "unrestricted" }));
+    const { backend } = fakeBackend({
+      captureCurrentChatInput: captureCurrentChatInput as never,
+    });
+    const env = await dispatchInvoke(
+      "capture_current_chat_input",
+      bindMainCaller(submission),
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: { status: "legacy-only" },
+    });
+    const malformed = await dispatchInvoke(
+      "capture_current_chat_input",
+      bindMainCaller(submission),
+      {
+        backend: {
+          ...backend,
+          captureCurrentChatInput: vi
+            .fn()
+            .mockResolvedValue(
+              JSON.stringify({ status: "unrestricted", projectId: "forged" }),
+            ),
+        },
+        shell: noShell,
+      },
+    );
+    expect(malformed.ok).toBe(false);
+  });
+
+  it.each([
+    [
+      "top-level version claim",
+      { ...submission, messageVersionId: "old" },
+      false,
+    ],
+    ["empty input", { ...submission, content: "  " }, false],
+    ["unknown command argument", submission, true],
+  ])("rejects %s before Native", async (label, invalidSubmission, topLevel) => {
+    const captureCurrentChatInput = vi.fn();
+    const { backend } = fakeBackend({
+      captureCurrentChatInput: captureCurrentChatInput as never,
+    });
+    const args = bindMainCaller(invalidSubmission as typeof submission);
+    if (topLevel) args.claimedCaller = callerIdentity;
+
+    const env = await dispatchInvoke("capture_current_chat_input", args, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(env.ok, label).toBe(false);
+    expect(captureCurrentChatInput).not.toHaveBeenCalled();
+  });
+
+  it("rejects a renderer caller claim unless main replaced it with a hidden identity", async () => {
+    const captureCurrentChatInput = vi.fn();
+    const { backend } = fakeBackend({
+      captureCurrentChatInput: captureCurrentChatInput as never,
+    });
+    const env = await dispatchInvoke(
+      "capture_current_chat_input",
+      { submission, callerIdentity },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("unknown field"),
+    });
+    expect(captureCurrentChatInput).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when Native returns payload-bearing or mismatched receipt data", async () => {
+    for (const nativeResult of [
+      { ...receipt, canonicalPayload: "PRIVATE_PAYLOAD" },
+      { ...receipt, chatSessionId: "other-session" },
+    ]) {
+      const captureCurrentChatInput = vi
+        .fn()
+        .mockResolvedValue(JSON.stringify(nativeResult));
+      const { backend } = fakeBackend({
+        captureCurrentChatInput: captureCurrentChatInput as never,
+      });
+      const env = await dispatchInvoke(
+        "capture_current_chat_input",
+        bindMainCaller(submission),
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(JSON.stringify(env)).not.toContain("PRIVATE_PAYLOAD");
+    }
+  });
+
+  it("reports backend unavailable without attempting a capture", async () => {
+    const env = await dispatchInvoke(
+      "capture_current_chat_input",
+      bindMainCaller(submission),
+      { backend: null, shell: noShell },
+    );
+    expect(env).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} capture_current_chat_input`,
+    });
+  });
+});
+
+describe("cancel_current_chat_input", () => {
+  const submission = {
+    submissionId: "capture-submit-1",
+    messageId: "capture-message-1",
+    chatSessionId: "chat-session-1",
+    sceneId: "scene-1",
+  };
+  const callerIdentity = {
+    profileId: "profile-1",
+    callerId: "main-caller-1",
+    callerEpoch: 2,
+    senderId: 42,
+    workspaceId: "/workspace-1",
+    sessionId: "main-session-1",
+  };
+
+  it("passes only the exact submission binding and accepts a terminal receipt", async () => {
+    const cancelCurrentChatInput = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        status: "cancelled",
+        submissionId: submission.submissionId,
+        messageId: submission.messageId,
+      }),
+    );
+    const { backend } = fakeBackend({
+      cancelCurrentChatInput: cancelCurrentChatInput as never,
+    });
+    const args: Record<string, unknown> = { submission };
+    Object.defineProperty(args, "callerIdentity", { value: callerIdentity });
+
+    const env = await dispatchInvoke("cancel_current_chat_input", args, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        status: "cancelled",
+        submissionId: submission.submissionId,
+        messageId: submission.messageId,
+      },
+    });
+    expect(cancelCurrentChatInput).toHaveBeenCalledWith(
+      submission,
+      JSON.stringify(callerIdentity),
+    );
+  });
+
+  it("rejects extra submission fields and mismatched terminal receipts", async () => {
+    const cancelCurrentChatInput = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        status: "cancelled",
+        submissionId: "other-submission",
+        messageId: submission.messageId,
+      }),
+    );
+    const { backend } = fakeBackend({
+      cancelCurrentChatInput: cancelCurrentChatInput as never,
+    });
+    const args: Record<string, unknown> = {
+      submission: { ...submission, content: "do not replay" },
+    };
+    Object.defineProperty(args, "callerIdentity", { value: callerIdentity });
+
+    const invalidArgs = await dispatchInvoke(
+      "cancel_current_chat_input",
+      args,
+      {
+        backend,
+        shell: noShell,
+      },
+    );
+    expect(invalidArgs.ok).toBe(false);
+    expect(cancelCurrentChatInput).not.toHaveBeenCalled();
+
+    const validArgs: Record<string, unknown> = { submission };
+    Object.defineProperty(validArgs, "callerIdentity", {
+      value: callerIdentity,
+    });
+    const mismatch = await dispatchInvoke(
+      "cancel_current_chat_input",
+      validArgs,
+      { backend, shell: noShell },
+    );
+    expect(mismatch).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(
+        "IPC_CAPTURE_CANCEL_RESULT_BINDING_MISMATCH",
+      ),
+    });
+  });
+});
+
+describe("retire_current_chat_input", () => {
+  const callerIdentity = {
+    profileId: "profile-1",
+    callerId: "main-caller-1",
+    callerEpoch: 2,
+    senderId: 42,
+    workspaceId: "/workspace-1",
+    sessionId: "main-session-1",
+  };
+  const request = { chatSessionId: "chat-session-1" };
+  const bindMainCaller = () => {
+    const args: Record<string, unknown> = { ...request };
+    Object.defineProperty(args, "callerIdentity", { value: callerIdentity });
+    return args;
+  };
+
+  it("passes a strict session-only request and projects a minimal receipt", async () => {
+    const retireCurrentChatInput = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        status: "retired",
+        chatSessionId: request.chatSessionId,
+      }),
+    );
+    const { backend } = fakeBackend({
+      retireCurrentChatInput: retireCurrentChatInput as never,
+    });
+    const env = await dispatchInvoke(
+      "retire_current_chat_input",
+      bindMainCaller(),
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: { status: "retired", chatSessionId: request.chatSessionId },
+    });
+    expect(retireCurrentChatInput).toHaveBeenCalledWith(
+      request,
+      JSON.stringify(callerIdentity),
+    );
+  });
+
+  it("maps Native's unrestricted disposition to legacy-only, never a retirement receipt", async () => {
+    const retireCurrentChatInput = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify({ status: "unrestricted" }));
+    const { backend } = fakeBackend({
+      retireCurrentChatInput: retireCurrentChatInput as never,
+    });
+    const env = await dispatchInvoke(
+      "retire_current_chat_input",
+      bindMainCaller(),
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: { status: "legacy-only" },
+    });
+  });
+
+  it("rejects claimed capture authority, invalid sessions, and mismatched receipts", async () => {
+    const retireCurrentChatInput = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        status: "retired",
+        chatSessionId: "other-session",
+      }),
+    );
+    const { backend } = fakeBackend({
+      retireCurrentChatInput: retireCurrentChatInput as never,
+    });
+    const claimed = bindMainCaller();
+    claimed.captureId = "renderer-claim";
+    const invalid = await dispatchInvoke("retire_current_chat_input", claimed, {
+      backend,
+      shell: noShell,
+    });
+    expect(invalid.ok).toBe(false);
+    expect(retireCurrentChatInput).not.toHaveBeenCalled();
+
+    const mismatch = await dispatchInvoke(
+      "retire_current_chat_input",
+      bindMainCaller(),
+      { backend, shell: noShell },
+    );
+    expect(mismatch).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(
+        "IPC_CHAT_CAPTURE_RETIRE_RESULT_BINDING_MISMATCH",
+      ),
+    });
+  });
+});
 
 describe("AI チャットコマンド", () => {
   const fakeSecrets = (key = "sk-resolved") => ({

@@ -3378,6 +3378,625 @@ describe("NIR-1 router sender binding", () => {
     cliManager.disposeAll();
   });
 
+  it("uses the Native-backed D2a gate for protected SQL and typed capture outcomes", async () => {
+    const status = {
+      profileId: "profile-capture-test",
+      callerEpoch: 7,
+      restricted: true,
+      handlesInvalidated: true,
+      inFlightStopped: true,
+      sqlPolicy: {
+        version: 1,
+        protectedTables: ["chat_sessions", "chat_messages"],
+        protectedColumns: [],
+      },
+    };
+    const responses: string[] = [];
+    const captureCurrentChatInput = vi.fn(async () => responses.shift()!);
+    const cancelCurrentChatInput = vi.fn(async (request) =>
+      JSON.stringify({
+        status: "cancelled",
+        submissionId: request.submissionId,
+        messageId: request.messageId,
+      }),
+    );
+    const dbExecute = vi.fn(async () => JSON.stringify({ rows: [] }));
+    const sendChatMessageStream = vi.fn();
+    const backend = {
+      initializeProfileEgress: vi.fn(async () => JSON.stringify(status)),
+      registerProfileEgressCaller: vi.fn(),
+      invalidateProfileEgressCallers: vi.fn(),
+      captureCurrentChatInput,
+      cancelCurrentChatInput,
+      dbExecute,
+      sendChatMessageStream,
+    };
+    const profileEgress = await createProfileEgressGate(
+      backend as unknown as NapiBackendLike,
+    );
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+    const event = { sender: { id: 42, isDestroyed: () => false } };
+    const submission = (submissionId: string) => ({
+      submissionId,
+      messageId: `message-${submissionId}`,
+      chatSessionId: "session-1",
+      sceneId: "scene-1",
+      content: "local Human input",
+      createdAt: "2026-09-29T10:00:00.000Z",
+    });
+    const acceptedSubmission = submission("accepted-1");
+    responses.push(
+      JSON.stringify({
+        status: "accepted",
+        projectId: "project-1",
+        chatSessionId: acceptedSubmission.chatSessionId,
+        sceneId: acceptedSubmission.sceneId,
+        messageId: acceptedSubmission.messageId,
+      }),
+    );
+    const accepted = await invokeHandler()(
+      event,
+      "capture_current_chat_input",
+      { submission: acceptedSubmission },
+    );
+
+    const mismatchedSubmission = submission("mismatch-1");
+    responses.push(
+      JSON.stringify({
+        status: "accepted",
+        projectId: "project-1",
+        chatSessionId: "wrong-session",
+        sceneId: mismatchedSubmission.sceneId,
+        messageId: mismatchedSubmission.messageId,
+      }),
+    );
+    const mismatch = await invokeHandler()(
+      event,
+      "capture_current_chat_input",
+      { submission: mismatchedSubmission },
+    );
+
+    const legacySubmission = submission("legacy-1");
+    responses.push(JSON.stringify({ status: "unrestricted" }));
+    const legacy = await invokeHandler()(
+      event,
+      "capture_current_chat_input",
+      { submission: legacySubmission },
+    );
+    const protectedRead = await invokeHandler()(
+      event,
+      "db_execute",
+      {
+        sql: "SELECT id FROM chat_sessions WHERE id = ?",
+        params: ["session-1"],
+        method: "get",
+      },
+    );
+    const legacyStream = await invokeHandler()(
+      event,
+      "send_chat_message_stream",
+      {},
+    );
+
+    expect(profileEgress.restricted).toBe(true);
+    expect(accepted).toEqual({
+      ok: true,
+      value: {
+        status: "accepted",
+        projectId: "project-1",
+        chatSessionId: acceptedSubmission.chatSessionId,
+        sceneId: acceptedSubmission.sceneId,
+        messageId: acceptedSubmission.messageId,
+      },
+    });
+    expect(mismatch).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("IPC_CAPTURE_RESULT_BINDING_MISMATCH"),
+    });
+    expect(cancelCurrentChatInput).toHaveBeenCalledWith(
+      {
+        submissionId: mismatchedSubmission.submissionId,
+        messageId: mismatchedSubmission.messageId,
+        chatSessionId: mismatchedSubmission.chatSessionId,
+        sceneId: mismatchedSubmission.sceneId,
+      },
+      expect.any(String),
+    );
+    expect(legacy).toEqual({ ok: true, value: { status: "legacy-only" } });
+    expect(protectedRead).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(
+        new RegExp(`^${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
+      ),
+    });
+    expect(legacyStream).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(
+        new RegExp(`^${D2A_EGRESS_DENIED_MARKER} old-external-ai`),
+      ),
+    });
+    expect(captureCurrentChatInput).toHaveBeenCalledTimes(3);
+    expect(dbExecute).not.toHaveBeenCalled();
+    expect(sendChatMessageStream).not.toHaveBeenCalled();
+  });
+
+  it("binds capture to the actual event sender and strips renderer caller claims", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: "/workspace-1",
+      sessionId: "main-session-1",
+    };
+    const submission = {
+      submissionId: "submission-1",
+      messageId: "message-1",
+      chatSessionId: "chat-session-1",
+      sceneId: "scene-1",
+      content: "local text",
+      createdAt: "2026-09-28T10:00:00.000Z",
+    };
+    const captureCurrentChatInput = vi.fn(async () =>
+      JSON.stringify({
+        status: "accepted",
+        projectId: "project-1",
+        chatSessionId: submission.chatSessionId,
+        sceneId: submission.sceneId,
+        messageId: submission.messageId,
+      }),
+    );
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication: vi.fn(),
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    registerIpcRouter(
+      { captureCurrentChatInput } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42, isDestroyed: () => false } },
+      "capture_current_chat_input",
+      { submission, callerIdentity: { ...identity, senderId: 999 } },
+    );
+
+    expect(envelope.ok).toBe(true);
+    expect(profileEgress.issueCallerIdentity).toHaveBeenCalledWith(42);
+    expect(profileEgress.assertInvoke).toHaveBeenCalledWith(
+      "capture_current_chat_input",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(captureCurrentChatInput).toHaveBeenCalledWith(
+      submission,
+      JSON.stringify(identity),
+    );
+  });
+
+  it("binds retirement to the actual main caller and forwards only the session selector", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: "/workspace-1",
+      sessionId: "main-session-1",
+    };
+    const retireCurrentChatInput = vi.fn(async () =>
+      JSON.stringify({ status: "retired", chatSessionId: "chat-session-1" }),
+    );
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication: vi.fn(),
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    registerIpcRouter(
+      { retireCurrentChatInput } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42, isDestroyed: () => false } },
+      "retire_current_chat_input",
+      { chatSessionId: "chat-session-1", callerIdentity: { senderId: 999 } },
+    );
+
+    expect(envelope.ok).toBe(true);
+    expect(profileEgress.issueCallerIdentity).toHaveBeenCalledWith(42);
+    expect(profileEgress.assertInvoke).toHaveBeenCalledWith(
+      "retire_current_chat_input",
+      expect.objectContaining({ callerIdentity: identity }),
+    );
+    expect(retireCurrentChatInput).toHaveBeenCalledWith(
+      { chatSessionId: "chat-session-1" },
+      JSON.stringify(identity),
+    );
+  });
+
+  it("forwards only Native-confirmed unrestricted results and ignores renderer mode claims", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "main-session-1",
+    };
+    const captureCurrentChatInput = vi.fn(async () =>
+      JSON.stringify({ status: "unrestricted" }),
+    );
+    const retireCurrentChatInput = vi.fn(async () =>
+      JSON.stringify({ status: "unrestricted" }),
+    );
+    const profileEgress = {
+      restricted: false,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn(),
+      assertPlaintextPublication: vi.fn(),
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    registerIpcRouter(
+      {
+        captureCurrentChatInput,
+        retireCurrentChatInput,
+      } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+    const sender = { sender: { id: 42, isDestroyed: () => false } };
+    const submission = {
+      submissionId: "submission-1",
+      messageId: "message-1",
+      chatSessionId: "chat-session-1",
+      sceneId: "scene-1",
+      content: "local text",
+      createdAt: "2026-09-28T10:00:00.000Z",
+    };
+
+    const capture = await invokeHandler()(
+      sender,
+      "capture_current_chat_input",
+      { submission },
+    );
+    const retirement = await invokeHandler()(
+      sender,
+      "retire_current_chat_input",
+      { chatSessionId: submission.chatSessionId },
+    );
+    const forged = await invokeHandler()(sender, "capture_current_chat_input", {
+      submission,
+      unrestricted: true,
+    });
+
+    expect(capture).toEqual({ ok: true, value: { status: "legacy-only" } });
+    expect(retirement).toEqual({ ok: true, value: { status: "legacy-only" } });
+    expect(forged.ok).toBe(false);
+    expect(captureCurrentChatInput).toHaveBeenCalledOnce();
+    expect(retireCurrentChatInput).toHaveBeenCalledOnce();
+    expect(captureCurrentChatInput).toHaveBeenCalledWith(
+      submission,
+      JSON.stringify(identity),
+    );
+    expect(profileEgress.issueCallerIdentity).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not terminalize a legacy-only result after sender loss", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "main-session-1",
+    };
+    let destroyed = false;
+    const captureCurrentChatInput = vi.fn(async () => {
+      destroyed = true;
+      return JSON.stringify({ status: "unrestricted" });
+    });
+    const cancelCurrentChatInput = vi.fn();
+    registerIpcRouter(
+      {
+        captureCurrentChatInput,
+        cancelCurrentChatInput,
+      } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      {
+        restricted: false,
+        unavailable: false,
+        issueCallerIdentity: vi.fn(() => identity),
+        assertInvoke: vi.fn(),
+        assertPlaintextPublication: vi.fn(),
+        allowsBackendEvent: vi.fn(() => true),
+        assertExternalUrl: vi.fn(),
+        registerMainEgressParticipant: vi.fn(),
+      },
+    );
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 42, isDestroyed: () => destroyed } },
+      "capture_current_chat_input",
+      {
+        submission: {
+          submissionId: "submission-1",
+          messageId: "message-1",
+          chatSessionId: "chat-session-1",
+          sceneId: "scene-1",
+          content: "local text",
+          createdAt: "2026-09-28T10:00:00.000Z",
+        },
+      },
+    );
+
+    expect(envelope).toEqual({ ok: true, value: { status: "legacy-only" } });
+    expect(cancelCurrentChatInput).not.toHaveBeenCalled();
+  });
+
+  it("keeps the actual send gate closed if restriction activates after an unrestricted Native result", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "main-session-1",
+    };
+    let restricted = false;
+    const sendChatMessage = vi.fn();
+    const captureCurrentChatInput = vi.fn(async () => {
+      restricted = true;
+      return JSON.stringify({ status: "unrestricted" });
+    });
+    const profileEgress = {
+      get restricted() {
+        return restricted;
+      },
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi.fn((command: string) => {
+        if (restricted && command === "send_chat_message") {
+          throw new Error("D2A_EGRESS_DENIED: old-external-ai");
+        }
+      }),
+      assertPlaintextPublication: vi.fn(),
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    registerIpcRouter(
+      {
+        captureCurrentChatInput,
+        sendChatMessage,
+      } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+    const event = { sender: { id: 42, isDestroyed: () => false } };
+    const capture = await invokeHandler()(event, "capture_current_chat_input", {
+      submission: {
+        submissionId: "submission-1",
+        messageId: "message-1",
+        chatSessionId: "chat-session-1",
+        sceneId: "scene-1",
+        content: "local text",
+        createdAt: "2026-09-28T10:00:00.000Z",
+      },
+    });
+    const send = await invokeHandler()(event, "send_chat_message", {});
+
+    expect(capture).toEqual({ ok: true, value: { status: "legacy-only" } });
+    expect(send).toMatchObject({
+      ok: false,
+      error: "D2A_EGRESS_DENIED: old-external-ai",
+    });
+    expect(sendChatMessage).not.toHaveBeenCalled();
+    expect(profileEgress.assertInvoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a destroyed sender before Native starts", async () => {
+    const captureCurrentChatInput = vi.fn();
+    registerIpcRouter({
+      captureCurrentChatInput,
+    } as unknown as NapiBackendLike);
+    const envelope = await invokeHandler()(
+      { sender: { id: 42, isDestroyed: () => true } },
+      "capture_current_chat_input",
+      { submission: {} },
+    );
+
+    expect(envelope).toEqual({
+      ok: false,
+      error: "IPC_CAPTURE_SENDER_DESTROYED: no capture was started",
+    });
+    expect(captureCurrentChatInput).not.toHaveBeenCalled();
+  });
+
+  it("does not acknowledge sender loss, workspace revocation, or Native timeout", async () => {
+    const identity = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: "/workspace-1",
+      sessionId: "main-session-1",
+    };
+    const submission = {
+      submissionId: "submission-1",
+      messageId: "message-1",
+      chatSessionId: "chat-session-1",
+      sceneId: "scene-1",
+      content: "local text",
+      createdAt: "2026-09-28T10:00:00.000Z",
+    };
+    let destroyed = false;
+    const captureCurrentChatInput = vi.fn(async () => {
+      destroyed = true;
+      return JSON.stringify({
+        status: "accepted",
+        projectId: "project-1",
+        chatSessionId: submission.chatSessionId,
+        sceneId: submission.sceneId,
+        messageId: submission.messageId,
+      });
+    });
+    const cancelCurrentChatInput = vi.fn(async (request) =>
+      JSON.stringify({
+        status: "cancelled",
+        submissionId: request.submissionId,
+        messageId: request.messageId,
+      }),
+    );
+    const profileEgress = {
+      restricted: true,
+      unavailable: false,
+      issueCallerIdentity: vi.fn(() => identity),
+      assertInvoke: vi
+        .fn()
+        .mockImplementationOnce(() => undefined)
+        .mockImplementationOnce(() => {
+          throw new Error("caller workspace changed");
+        }),
+      assertPlaintextPublication: vi.fn(),
+      allowsBackendEvent: vi.fn(() => true),
+      assertExternalUrl: vi.fn(),
+      registerMainEgressParticipant: vi.fn(),
+    };
+    registerIpcRouter(
+      {
+        captureCurrentChatInput,
+        cancelCurrentChatInput,
+      } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+    const sender = { id: 42, isDestroyed: () => destroyed };
+    const revoked = await invokeHandler()(
+      { sender },
+      "capture_current_chat_input",
+      { submission },
+    );
+    expect(revoked).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("IPC_CAPTURE_OUTCOME_UNKNOWN"),
+    });
+    expect(cancelCurrentChatInput).toHaveBeenCalledWith(
+      {
+        submissionId: submission.submissionId,
+        messageId: submission.messageId,
+        chatSessionId: submission.chatSessionId,
+        sceneId: submission.sceneId,
+      },
+      JSON.stringify(identity),
+    );
+
+    let authorizationChecks = 0;
+    const workspaceCapture = vi.fn(async () =>
+      JSON.stringify({
+        status: "accepted",
+        projectId: "project-1",
+        chatSessionId: submission.chatSessionId,
+        sceneId: submission.sceneId,
+        messageId: submission.messageId,
+      }),
+    );
+    registerIpcRouter(
+      {
+        captureCurrentChatInput: workspaceCapture,
+        cancelCurrentChatInput,
+      } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      {
+        ...profileEgress,
+        issueCallerIdentity: vi.fn(() => identity),
+        assertInvoke: vi.fn(() => {
+          authorizationChecks += 1;
+          if (authorizationChecks === 2) throw new Error("workspace changed");
+        }),
+      },
+    );
+    const workspaceSwitch = await invokeHandler()(
+      { sender: { id: 42, isDestroyed: () => false } },
+      "capture_current_chat_input",
+      { submission },
+    );
+    expect(workspaceSwitch).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("IPC_CAPTURE_OUTCOME_UNKNOWN"),
+    });
+    expect(workspaceCapture).toHaveBeenCalledOnce();
+    expect(cancelCurrentChatInput).toHaveBeenCalledTimes(2);
+
+    const timedOut = vi.fn(async () => {
+      throw new Error("NIR1_CAPTURE_TRANSACTION_TIMEOUT");
+    });
+    registerIpcRouter(
+      { captureCurrentChatInput: timedOut } as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      {
+        ...profileEgress,
+        issueCallerIdentity: vi.fn(() => identity),
+        assertInvoke: vi.fn(),
+      },
+    );
+    const timeoutResult = await invokeHandler()(
+      { sender: { id: 42, isDestroyed: () => false } },
+      "capture_current_chat_input",
+      { submission },
+    );
+    expect(timeoutResult).toMatchObject({
+      ok: false,
+      error: "NIR1_CAPTURE_TRANSACTION_TIMEOUT",
+    });
+    expect(timedOut).toHaveBeenCalledOnce();
+  });
+
   it("passes a main owner to Native and prevents a second WebContents from copying it", async () => {
     const calls: Array<Record<string, unknown>> = [];
     const relatedScenesBegin = vi.fn(

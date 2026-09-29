@@ -79,6 +79,13 @@ struct State {
 pub struct ProfileEgressState {
     path: PathBuf,
     state: Mutex<State>,
+    /// Serializes route-setting writes with the short-lived current-capture
+    /// commit boundary; capture admission is non-queuing.
+    route_commit_gate: Mutex<()>,
+    #[cfg(test)]
+    capture_test_events: Mutex<Option<std::sync::mpsc::Sender<CaptureTestEvent>>>,
+    #[cfg(test)]
+    capture_test_continue: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     active_dispatches: Arc<AtomicUsize>,
     dispatch_quiesced: Arc<Notify>,
     admissions_open: Arc<AtomicBool>,
@@ -91,6 +98,16 @@ pub struct ProfileEgressState {
 /// A Native dispatch lease. The startup transition closes new leases and
 /// invalidates process-local registrations, then waits for every lease to
 /// drop before it publishes the final `inFlightStopped` state.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CaptureTestEvent {
+    RouteValidated,
+    WriterStarting,
+    CaptureCommitted,
+    RouteUpdateWaiting,
+    RouteUpdateAcquired,
+}
+
 #[derive(Clone, Debug)]
 pub struct ProfileDispatchPermit {
     lease: Arc<DispatchLease>,
@@ -161,6 +178,11 @@ impl ProfileEgressState {
         Ok(Self {
             path,
             state: Mutex::new(state),
+            route_commit_gate: Mutex::new(()),
+            #[cfg(test)]
+            capture_test_events: Mutex::new(None),
+            #[cfg(test)]
+            capture_test_continue: Mutex::new(None),
             active_dispatches: Arc::new(AtomicUsize::new(0)),
             dispatch_quiesced: Arc::new(Notify::new()),
             admissions_open: Arc::new(AtomicBool::new(admissions_open)),
@@ -414,13 +436,149 @@ impl ProfileEgressState {
         operation()
     }
 
-    /// The Native settings writer and final route check share the profile
-    /// lock. Revoke before writing, including failed/partial file writes.
-    /// The closure performs filesystem work only and never enters DB/core.
+    /// Check current Native caller/profile authority without granting a
+    /// dispatch lease. Preparation may read profile-owned route state here,
+    /// but must release this lock before SQLite or payload rendering.
+    pub(crate) fn with_authorized_preparation<T>(
+        &self,
+        identity: &CallerIdentity,
+        pinned_workspace_id: &str,
+        operation: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let state = self.lock();
+        anyhow::ensure!(
+            state.restricted && state.in_flight_stopped,
+            "{D2A_EGRESS_DENIED_MARKER} profile preparation is not admitted"
+        );
+        authorize_locked(&state, Some(identity))?;
+        anyhow::ensure!(
+            identity.workspace_id.as_deref() == Some(pinned_workspace_id)
+                && state.workspace_id.as_deref() == Some(pinned_workspace_id),
+            "{D2A_EGRESS_DENIED_MARKER} preparation workspace does not match the active caller"
+        );
+        anyhow::ensure!(
+            state
+                .registered_callers
+                .get(&identity.sender_id)
+                .is_some_and(|registered| registered == identity),
+            "{D2A_EGRESS_DENIED_MARKER} preparation caller is not registered in this process"
+        );
+        operation()
+    }
+
+    /// Admit one current capture without queueing behind another capture or
+    /// settings write. Its closure may use SQLite but must not retain `state`.
+    pub(crate) fn with_route_capture_commit<T>(
+        &self,
+        operation: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let _route = match self.route_commit_gate.try_lock() {
+            Ok(route) => route,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                anyhow::bail!("NIR1_CHAT_CAPTURE_ROUTE_BUSY")
+            }
+        };
+        operation()
+    }
+
+    pub(crate) fn revocation_generation(&self) -> u64 {
+        self.revocation_generation.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_capture_test_hooks(
+        &self,
+        events: std::sync::mpsc::Sender<CaptureTestEvent>,
+        continuation: std::sync::mpsc::Receiver<()>,
+    ) {
+        *self
+            .capture_test_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(events);
+        *self
+            .capture_test_continue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(continuation);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn capture_route_validated_for_test(&self) -> anyhow::Result<()> {
+        if let Some(sender) = self
+            .capture_test_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            let _ = sender.send(CaptureTestEvent::RouteValidated);
+        }
+        if let Some(receiver) = self
+            .capture_test_continue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            receiver
+                .recv()
+                .map_err(|_| anyhow!("capture test continuation closed"))?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn capture_writer_starting_for_test(&self) {
+        if let Some(sender) = self
+            .capture_test_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            let _ = sender.send(CaptureTestEvent::WriterStarting);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn capture_committed_for_test(&self) {
+        self.send_capture_test_event(CaptureTestEvent::CaptureCommitted);
+    }
+
+    #[cfg(test)]
+    fn route_update_waiting_for_test(&self) {
+        self.send_capture_test_event(CaptureTestEvent::RouteUpdateWaiting);
+    }
+
+    #[cfg(test)]
+    fn route_update_acquired_for_test(&self) {
+        self.send_capture_test_event(CaptureTestEvent::RouteUpdateAcquired);
+    }
+
+    #[cfg(test)]
+    fn send_capture_test_event(&self, event: CaptureTestEvent) {
+        if let Some(sender) = self
+            .capture_test_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            let _ = sender.send(event);
+        }
+    }
+
+    /// Route-setting writes serialize behind a currently admitted capture.
+    /// Revoke before writing, including failed/partial file writes. The
+    /// closure performs filesystem work only and never enters DB/core.
     pub fn with_route_update<T>(
         &self,
         update: impl FnOnce() -> anyhow::Result<T>,
     ) -> anyhow::Result<T> {
+        #[cfg(test)]
+        self.route_update_waiting_for_test();
+        let _route = self
+            .route_commit_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        #[cfg(test)]
+        self.route_update_acquired_for_test();
         let _state = self.lock();
         self.revoke_permits();
         update()

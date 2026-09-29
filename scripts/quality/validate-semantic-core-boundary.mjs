@@ -45,7 +45,9 @@ const REPO_ROOT = path.resolve(
 // determine Freshness/Decision/Scope nor publish a new search generation.
 // Generic writes are blocked by the protected-writer registry and the Native
 // writer has a separate operation policy. The concern matrix is unchanged.
-export const EXPECTED_SCHEMA_VERSION = 37;
+// SCHEMA_VERSION 41 moves capture/provenance cleanup behind canonical Native
+// parent-delete triggers and RESTRICT references; semantic authority is unchanged.
+export const EXPECTED_SCHEMA_VERSION = 41;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

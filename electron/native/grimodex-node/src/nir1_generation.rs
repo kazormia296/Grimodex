@@ -693,7 +693,7 @@ pub(crate) fn start_generation_recovery_after_ready(
     true
 }
 
-fn final_payload_digest(payload: &Value) -> Result<String> {
+pub(crate) fn final_payload_digest(payload: &Value) -> Result<String> {
     Ok(canonical_json_digest(&json!({
         "domain": "nir1-generation-payload@1",
         "payload": payload,
@@ -710,7 +710,7 @@ fn canonical_final_payload(payload: &Value) -> Result<(String, String)> {
     Ok((canonical, digest))
 }
 
-fn final_input_digest(
+pub(crate) fn final_input_digest(
     inputs: &[InputReference],
     qualifications: &[QualificationReference],
 ) -> Result<String> {
