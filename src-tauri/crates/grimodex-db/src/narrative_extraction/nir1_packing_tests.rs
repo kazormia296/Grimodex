@@ -1086,6 +1086,7 @@ fn prepared_sql_budget() -> crate::ParticipantSqlOperationBudget {
 #[cfg(feature = "native-current-human-capture")]
 fn add_prepared_human_message(
     workspace: &crate::state::ActiveWorkspaceSnapshot,
+    user_message: &str,
 ) -> Result<crate::nir1_generation::AcceptedChatInputCapture> {
     use crate::nir1_generation::{
         accept_current_human_chat_input, ChatInputCaptureOwner, NewChatInputSubmission,
@@ -1121,7 +1122,7 @@ fn add_prepared_human_message(
         MESSAGE.into(),
         SESSION.into(),
         RAW_SOURCE_SCENE.into(),
-        "Captured human request for the current scene.".into(),
+        user_message.into(),
         "2026-09-26T10:00:00.000Z".into(),
     )?;
     Ok(accept_current_human_chat_input(
@@ -1152,7 +1153,8 @@ fn prepared_projection_uses_captured_human_current_raw_and_typed_approved_revisi
     let revisions = fixture_with_query_source_and_decision_note(&db, Some(&storage), Some(CANARY))?;
     let workspace = PreparedWorkspace::new(db)?;
     let snapshot = workspace.snapshot()?;
-    let message_version_id = add_prepared_human_message(&snapshot)?;
+    let message_version_id =
+        add_prepared_human_message(&snapshot, "Captured human request for the current scene.")?;
     let projection = read_and_pack_native_nir1_prepared_inputs(
         &snapshot,
         "nir1-prepared-db-session",
@@ -1245,6 +1247,97 @@ fn prepared_projection_uses_captured_human_current_raw_and_typed_approved_revisi
 
 #[cfg(feature = "native-current-human-capture")]
 #[test]
+fn prepared_projection_revalidates_large_captured_human_after_single_charge() -> Result<()> {
+    use crate::narrative_extraction::{
+        read_and_pack_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs,
+    };
+    use crate::nir1_generation::{InputTarget, QualificationKind};
+
+    const HUMAN_BODY_BYTES: usize = 1_100_000;
+    let db = current_schema_memory()?;
+    let storage = json!({
+        "type": "doc",
+        "content": [{"type":"paragraph","content":[{"type":"text","text":"Small current Source."}]}]
+    })
+    .to_string();
+    let revisions = fixture_with_query_source(&db, Some(&storage))?;
+    let workspace = PreparedWorkspace::new(db)?;
+    let snapshot = workspace.snapshot()?;
+    let human_message = "x".repeat(HUMAN_BODY_BYTES);
+    assert!(human_message.len() > estimate_nir1_context_tokens(&human_message));
+    let capture = add_prepared_human_message(&snapshot, &human_message)?;
+    let projection = read_and_pack_native_nir1_prepared_inputs(
+        &snapshot,
+        "nir1-prepared-db-session",
+        &capture,
+        RAW_SOURCE_SCENE,
+        &revisions[..1],
+        prepared_sql_budget(),
+        |_| Ok(100_000),
+    )?;
+
+    assert_eq!(projection.user_message().len(), HUMAN_BODY_BYTES);
+    assert!(projection.context_items().iter().any(|item| {
+        item.text() == "Small current Source."
+            && matches!(
+                &projection.input_references()[item.input_ordinal()].target,
+                InputTarget::RawSource { .. }
+            )
+    }));
+    assert!(projection
+        .input_references()
+        .iter()
+        .any(|reference| matches!(&reference.target, InputTarget::AcceptedRevision { .. })));
+    assert!(projection
+        .qualifications()
+        .iter()
+        .any(|item| item.kind == QualificationKind::Source));
+    assert!(projection
+        .qualifications()
+        .iter()
+        .any(|item| item.kind == QualificationKind::Revision));
+
+    revalidate_native_nir1_prepared_inputs(
+        &snapshot,
+        "nir1-prepared-db-session",
+        &projection,
+        prepared_sql_budget(),
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn prepared_projection_rejects_human_over_one_copy_input_byte_limit() -> Result<()> {
+    use crate::narrative_extraction::read_and_pack_native_nir1_prepared_inputs;
+
+    let db = current_schema_memory()?;
+    let storage = json!({
+        "type": "doc",
+        "content": [{"type":"paragraph","content":[{"type":"text","text":"Small current Source."}]}]
+    })
+    .to_string();
+    let revisions = fixture_with_query_source(&db, Some(&storage))?;
+    let workspace = PreparedWorkspace::new(db)?;
+    let snapshot = workspace.snapshot()?;
+    let capture = add_prepared_human_message(&snapshot, &"x".repeat(MAX_PACKING_INPUT_BYTES))?;
+    let error = read_and_pack_native_nir1_prepared_inputs(
+        &snapshot,
+        "nir1-prepared-db-session",
+        &capture,
+        RAW_SOURCE_SCENE,
+        &revisions[..1],
+        prepared_sql_budget(),
+        |_| Ok(100_000),
+    )
+    .err()
+    .ok_or_else(|| anyhow::anyhow!("one-copy MAX_PACKING_INPUT_BYTES limit was relaxed"))?;
+    assert!(error.to_string().contains("MAX_PACKING_INPUT_BYTES"));
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
 fn prepared_projection_rejects_empty_context_budget_before_selecting_material() -> Result<()> {
     use crate::narrative_extraction::read_and_pack_native_nir1_prepared_inputs;
 
@@ -1257,7 +1350,8 @@ fn prepared_projection_rejects_empty_context_budget_before_selecting_material() 
     let revisions = fixture_with_query_source(&db, Some(&storage))?;
     let workspace = PreparedWorkspace::new(db)?;
     let snapshot = workspace.snapshot()?;
-    let message_version_id = add_prepared_human_message(&snapshot)?;
+    let message_version_id =
+        add_prepared_human_message(&snapshot, "Captured human request for the current scene.")?;
     let error = read_and_pack_native_nir1_prepared_inputs(
         &snapshot,
         "nir1-prepared-db-session",

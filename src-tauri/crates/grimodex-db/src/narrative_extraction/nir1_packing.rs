@@ -1141,11 +1141,6 @@ pub fn revalidate_native_nir1_prepared_inputs(
         "NIR1_NATIVE_PREPARED_SESSION_MISMATCH"
     );
     let mut input_budget = NativePackingInputBudget::default();
-    input_budget.reserve_lengths(
-        expected.user_message_version.id.len(),
-        expected.user_message.len(),
-        0,
-    )?;
     let checkpoint_budget = sql_budget.clone();
     workspace.db().with_participant_read_transaction_bounded(
         workspace.participant(),
