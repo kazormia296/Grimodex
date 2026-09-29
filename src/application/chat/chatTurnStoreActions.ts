@@ -102,14 +102,6 @@ import {
 import { getTreeProjectId } from "@/features/tree/treeProjection";
 import type { ChatMessage } from "@/features/chat/chatTypes";
 import type { StreamCallbacks } from "@/features/chat/chatApi";
-import { resolveActiveOpenaiCompatibleEndpoint } from "@/features/chat/types";
-import {
-  cancelCurrentChatInput,
-  captureCurrentChatInput,
-  retireCurrentChatInput,
-  isElectron,
-  type CaptureCurrentChatInputSubmission,
-} from "@/lib/tauri";
 import type {
   CodexAppItem,
   CodexAppStreamCallbacks,
@@ -127,32 +119,17 @@ import type { ChatUserQuestionRuntime } from "./chatUserQuestionRuntime";
 import { advanceActiveLifecycleTransition } from "@/application/lifecycle/lifecycleTrace";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { reserveChatMessageAdds } from "@/features/timelapse/captureChat";
-import { tryAcquireChatTurnAdmissionLease } from "@/lib/chatNavigationGuard";
 import { cliApi, codexAppApi } from "@/features/chat/lazyRuntimeApi";
+import {
+  createChatTurnLifecycle,
+  withChatTurnAdmission,
+} from "./chatTurnLifecycle";
+import type { CaptureCurrentChatInputSubmission } from "@/lib/tauri";
 
 interface ChatTurnStoreActionCompositionPorts extends ChatStoreActionPorts {
   prepareChatTurn: (input: ChatTurnPreflightInput) => ChatTurnPreflightDecision;
   turnRuntime: ChatTurnRuntime;
   userQuestionRuntime: ChatUserQuestionRuntime;
-}
-
-function isCaptureLoopbackEndpoint(baseUrl: string): boolean {
-  const match =
-    /^http:\/\/(localhost|127(?:\.\d{1,3}){3}|\[::1\]):([1-9]\d*)\/v1\/?$/i.exec(
-      baseUrl,
-    );
-  if (!match) return false;
-  const port = Number(match[2]);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
-  const host = match[1]!.toLowerCase();
-  if (host.startsWith("127.")) {
-    const octets = host.split(".");
-    return octets.slice(1).every((part) => {
-      const octet = Number(part);
-      return octet >= 0 && octet <= 255 && String(octet) === part;
-    });
-  }
-  return true;
 }
 
 interface ChatTurnStoreActionDependencies {
@@ -224,21 +201,16 @@ function createChatTurnStoreActions(
     toast,
     i18next,
   } = ports;
-  const pendingCaptureCancellationRetries = new WeakMap<
-    ReturnType<typeof createTurnControl>,
-    () => Promise<void>
-  >();
-  const pendingCaptureCancellationRetriesReady = new WeakSet<
-    ReturnType<typeof createTurnControl>
-  >();
-  const pendingCaptureOnlyControls = new WeakSet<
-    ReturnType<typeof createTurnControl>
-  >();
-  const pendingCaptureCancellationActions = new WeakMap<
-    ReturnType<typeof createTurnControl>,
-    () => Promise<void>
-  >();
-  let stopGenerationVersion = 0;
+  const turnLifecycle = createChatTurnLifecycle({
+    set,
+    get,
+    turnRuntime,
+    isCapturedWorkspaceCurrent,
+    getCurrentProjectId,
+    codexAppApi,
+    debugLog,
+    errorDetail,
+  });
 
   return {
     sendMessage: async (
@@ -258,82 +230,15 @@ function createChatTurnStoreActions(
       },
     ) => {
       if (!content.trim()) return;
-      const sendStopGeneration = stopGenerationVersion;
+      const sendStopGeneration = turnLifecycle.stopGenerationVersion();
       const turnCoordinator = turnRuntime.coordinator;
-      const pendingControl = turnCoordinator.current();
-      if (pendingControl?.preTransportAdmissionPending) {
-        if (!isCapturedWorkspaceCurrent(pendingControl.request.workspace)) {
-          if (pendingCaptureOnlyControls.has(pendingControl)) {
-            turnCoordinator.abort(pendingControl);
-            set((state) => ({
-              messages: state.messages.filter(
-                (message) =>
-                  message.id !== pendingControl.userMessageId &&
-                  message.id !== pendingControl.assistantMessageId,
-              ),
-              streamingDraft:
-                state.streamingDraft?.messageId ===
-                pendingControl.assistantMessageId
-                  ? null
-                  : state.streamingDraft,
-              isStreaming: false,
-            }));
-            turnRuntime.clearActiveRouteIf(turnRuntime.activeRoute());
-          }
-          pendingCaptureOnlyControls.delete(pendingControl);
-          pendingCaptureCancellationActions.delete(pendingControl);
-          pendingCaptureCancellationRetries.delete(pendingControl);
-          pendingCaptureCancellationRetriesReady.delete(pendingControl);
-          turnCoordinator.release(pendingControl, "failed");
-        } else {
-          const captureOnly = pendingCaptureOnlyControls.has(pendingControl);
-          const retryCancellation =
-            pendingCaptureCancellationRetries.get(pendingControl);
-          const cancelCapture =
-            retryCancellation ??
-            (captureOnly
-              ? pendingCaptureCancellationActions.get(pendingControl)
-              : undefined);
-          if (
-            !cancelCapture ||
-            (!captureOnly &&
-              !pendingCaptureCancellationRetriesReady.has(pendingControl))
-          ) {
-            return;
-          }
-          if (captureOnly) {
-            turnCoordinator.abort(pendingControl);
-            set((state) => ({
-              messages: state.messages.filter(
-                (message) => message.id !== pendingControl.assistantMessageId,
-              ),
-              streamingDraft:
-                state.streamingDraft?.messageId ===
-                pendingControl.assistantMessageId
-                  ? null
-                  : state.streamingDraft,
-              isStreaming: false,
-            }));
-          }
-          try {
-            await cancelCapture();
-          } catch (error) {
-            if (pendingCaptureCancellationRetries.has(pendingControl)) {
-              pendingCaptureCancellationRetriesReady.add(pendingControl);
-            }
-            debugLog.warn(
-              "ChatStore",
-              "retry current chat capture cancellation",
-              errorDetail(error),
-            );
-            return;
-          }
-          if (sendStopGeneration !== stopGenerationVersion) return;
-          if (pendingControl.preTransportAdmissionPending) return;
-          pendingCaptureOnlyControls.delete(pendingControl);
-          pendingCaptureCancellationActions.delete(pendingControl);
-          turnCoordinator.release(pendingControl, "failed");
-        }
+      const pendingCaptureWork = turnLifecycle.beforeSend(sendStopGeneration);
+      if (
+        pendingCaptureWork instanceof Promise
+          ? !(await pendingCaptureWork)
+          : !pendingCaptureWork
+      ) {
+        return;
       }
       const preflightDecision = prepareChatTurn({
         content,
@@ -344,7 +249,11 @@ function createChatTurnStoreActions(
         preflightDecision instanceof Promise
           ? await preflightDecision
           : preflightDecision;
-      if (sendStopGeneration !== stopGenerationVersion || !preflight) return;
+      if (
+        !turnLifecycle.isStopGenerationCurrent(sendStopGeneration) ||
+        !preflight
+      )
+        return;
       const {
         turnWorkspaceIdentity,
         activeSceneId,
@@ -377,35 +286,8 @@ function createChatTurnStoreActions(
         chatModelEarly,
         xprov,
       } = preflight;
-      const finalizeStreamingDraft = (metadata?: string): void => {
-        set((state) => {
-          const draft =
-            state.streamingDraft?.messageId === assistantMsg.id
-              ? state.streamingDraft
-              : null;
-          let changed = draft !== null;
-          const messages = state.messages.map((message) => {
-            if (message.id !== assistantMsg.id) return message;
-            const content = draft?.content ?? message.content;
-            if (
-              content === message.content &&
-              (metadata === undefined || metadata === message.metadata)
-            ) {
-              return message;
-            }
-            changed = true;
-            return {
-              ...message,
-              content,
-              ...(metadata !== undefined ? { metadata } : {}),
-            };
-          });
-          return {
-            messages: changed ? messages : state.messages,
-            streamingDraft: null,
-          };
-        });
-      };
+      const finalizeStreamingDraft =
+        turnLifecycle.createStreamingDraftFinalizer(assistantMsg.id);
       const turnRequest = createTurnRequest({
         requestId: crypto.randomUUID(),
         workspace: turnWorkspaceIdentity,
@@ -501,77 +383,7 @@ function createChatTurnStoreActions(
       // session it creates below. Any other session transition invalidates it.
       let turnSessionId = activeSessionId;
       let transportStarted = false;
-      let acceptedNotified = false;
-      let captureAttempted = false;
-      let captureRetirementAttempted = false;
-      let captureCommitted = false;
-      let keepCurrentCapture = false;
-      let captureSubmission: CaptureCurrentChatInputSubmission | null = null;
-      let captureCancellation: Promise<void> | null = null;
-      const cancelCurrentCapture = (): Promise<void> => {
-        if (captureCancellation) return captureCancellation;
-        if (
-          !captureAttempted ||
-          !captureSubmission ||
-          (keepCurrentCapture && !sendControl.aborted)
-        ) {
-          return Promise.resolve();
-        }
-        const submission = captureSubmission;
-        const currentCancellation = (async () => {
-          try {
-            const receipt = await cancelCurrentChatInput({
-              submissionId: submission.submissionId,
-              messageId: submission.messageId,
-              chatSessionId: submission.chatSessionId,
-              sceneId: submission.sceneId,
-            });
-            if (
-              receipt.status !== "cancelled" &&
-              receipt.status !== "not-current" &&
-              receipt.status !== "not-found"
-            ) {
-              throw new Error("IPC_CAPTURE_CANCEL_TERMINAL_RECEIPT_INVALID");
-            }
-            captureAttempted = false;
-            sendControl.preTransportAdmissionPending = false;
-            if (pendingCaptureOnlyControls.has(sendControl)) {
-              turnRuntime.clearActiveRouteIf(turnRoute);
-              pendingCaptureOnlyControls.delete(sendControl);
-              pendingCaptureCancellationActions.delete(sendControl);
-            }
-            pendingCaptureCancellationRetries.delete(sendControl);
-            pendingCaptureCancellationRetriesReady.delete(sendControl);
-          } catch (error) {
-            if (!captureAttempted || captureSubmission !== submission) return;
-            pendingCaptureCancellationRetries.set(
-              sendControl,
-              cancelCurrentCapture,
-            );
-            throw error;
-          }
-        })();
-        const trackedCancellation = currentCancellation.finally(() => {
-          if (captureCancellation === trackedCancellation) {
-            captureCancellation = null;
-          }
-        });
-        captureCancellation = trackedCancellation;
-        return trackedCancellation;
-      };
-      const notifyAccepted = (): void => {
-        if (acceptedNotified) return;
-        acceptedNotified = true;
-        try {
-          options?._onAccepted?.();
-        } catch (error) {
-          debugLog.warn(
-            "ChatStore",
-            "send acceptance callback",
-            errorDetail(error),
-          );
-        }
-      };
+      const captureTurn = turnLifecycle.createTurn(sendControl, turnRoute);
       turnRuntime.setStoppedStreamFinalizer(null);
       const isCurrentTurn = (): boolean =>
         turnCoordinator.isCurrent(sendControl);
@@ -676,10 +488,11 @@ function createChatTurnStoreActions(
       const removeOwnedTurnMessages = (): void => {
         const currentState = get();
         const keepCapturedHuman =
-          captureCommitted &&
+          captureTurn.committed &&
           capturedWorkspaceIsCurrent() &&
           capturedProjectIsCurrent() &&
-          currentState.activeSessionId === captureSubmission?.chatSessionId &&
+          currentState.activeSessionId ===
+            captureTurn.submission?.chatSessionId &&
           currentState.chatScope === chatScope &&
           currentState.scopeAnchorId === scopeAnchorId &&
           currentState.activeSceneId === activeSceneId;
@@ -732,20 +545,8 @@ function createChatTurnStoreActions(
         turnRuntime.clearActiveRouteIf(turnRoute);
         turnCoordinator.release(sendControl, "failed");
       };
-      const preserveFailedCaptureCancellation = (error: unknown): void => {
-        if (isCurrentTurn()) {
-          turnCoordinator.abort(sendControl);
-          removeOwnedTurnMessages();
-          set({
-            isStreaming: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          turnRuntime.clearActiveRouteIf(turnRoute);
-        }
-        if (pendingCaptureCancellationRetries.has(sendControl)) {
-          pendingCaptureCancellationRetriesReady.add(sendControl);
-        }
-      };
+      const preserveFailedCaptureCancellation = (error: unknown): void =>
+        captureTurn.preserveFailedCancellation(error, removeOwnedTurnMessages);
       const prevMessages = initialMessages;
       const visiblePrevMessages = capturedMessages;
       // Guard concurrent sends before tokenizer initialization yields control.
@@ -777,53 +578,22 @@ function createChatTurnStoreActions(
       if (cancelBeforeTransport()) return;
       turnRuntime.setActiveRoute(turnRoute);
 
-      // Capture only an already-owned scene session before generic Drizzle reads.
-      // In restricted mode Native is the session/project/scene authority; the
-      // renderer must not query the protected chat_sessions table first.
-      const captureEndpoint =
-        turnRoute && aiSettingsEarly
-          ? resolveActiveOpenaiCompatibleEndpoint(
-              aiSettingsEarly,
-              turnRoute.resolvedEndpointId,
-            )
-          : undefined;
-      const captureRouteEligible = Boolean(
-        isElectron() &&
-        turnRoute &&
-        turnRoute.surface === "chat" &&
-        turnRoute.source === "active" &&
-        turnRoute.provider === "openai-compatible" &&
-        turnRoute.providerOverride === null &&
-        turnRoute.transport === "http" &&
-        turnRoute.endpointId === null &&
-        // The shared route resolver labels OpenAI-compatible's no-variant
-        // default as "legacy"; reject explicit variants and Responses routes.
-        (turnRoute.apiVariant === null || turnRoute.apiVariant === "legacy") &&
-        turnRoute.toolProtocol === "native" &&
-        turnRoute.model === aiSettingsEarly?.model &&
-        aiSettingsEarly?.provider === "openai-compatible" &&
-        aiSettingsEarly.model.trim().length > 0 &&
-        aiSettingsEarly.modelApiVariant == null &&
-        captureEndpoint !== undefined &&
-        captureEndpoint.apiVariant == null &&
-        captureEndpoint.id === turnRoute.resolvedEndpointId &&
-        captureEndpoint.baseUrl === captureEndpoint.baseUrl.trim() &&
-        isCaptureLoopbackEndpoint(captureEndpoint.baseUrl) &&
-        chatScope === "scene" &&
-        effectiveSceneId !== null &&
-        effectiveSceneId === activeSceneId &&
-        scopeAnchorId === null &&
-        threadFocusOverride === null &&
-        !useAgentPath &&
-        !capturedRagEnabled &&
-        !ragActive &&
-        !publicWebSearchPath &&
-        commandInstruction === undefined &&
-        options?.overrideAgentMode === undefined &&
-        !options?._replaceAssistantMessageId &&
-        !options?.mentionedSceneIds?.length &&
-        !options?.mentionedCodexIds?.length,
-      );
+      // Capture an owned scene Human before any protected-session read.
+      const captureRouteEligible = turnLifecycle.captureRouteIsEligible({
+        turnRoute,
+        aiSettingsEarly,
+        chatScope,
+        effectiveSceneId,
+        activeSceneId,
+        scopeAnchorId,
+        threadFocusOverride,
+        useAgentPath,
+        capturedRagEnabled,
+        ragActive,
+        publicWebSearchPath,
+        commandInstruction,
+        options,
+      });
       const captureEligible = captureRouteEligible && Boolean(activeSessionId);
       if (captureEligible) {
         const submission: CaptureCurrentChatInputSubmission = {
@@ -834,76 +604,20 @@ function createChatTurnStoreActions(
           content: userMsg.content,
           createdAt: userMsg.createdAt,
         };
-        captureSubmission = submission;
-        captureAttempted = true;
-        sendControl.preTransportAdmissionPending = true;
-        let receipt: Awaited<ReturnType<typeof captureCurrentChatInput>>;
-        try {
-          receipt = await captureCurrentChatInput(submission);
-          if (
-            receipt.status === "accepted" &&
-            (receipt.projectId !== turnProjectId ||
-              receipt.chatSessionId !== submission.chatSessionId ||
-              receipt.sceneId !== submission.sceneId ||
-              receipt.messageId !== submission.messageId)
-          ) {
-            throw new Error("IPC_CAPTURE_RESULT_BINDING_MISMATCH");
-          }
-          captureCommitted = receipt.status === "accepted";
-        } catch (error) {
-          try {
-            await cancelCurrentCapture();
-          } catch (cleanupError) {
-            debugLog.error(
-              "ChatStore",
-              "cancel failed chat capture",
-              errorDetail(cleanupError),
-            );
-            preserveFailedCaptureCancellation(cleanupError);
-            return;
-          }
-          failBeforeTransport(error);
-          return;
-        }
-        if (receipt.status === "legacy-only") {
-          captureAttempted = false;
-          captureSubmission = null;
-          sendControl.preTransportAdmissionPending = false;
-          pendingCaptureCancellationRetries.delete(sendControl);
-          pendingCaptureCancellationRetriesReady.delete(sendControl);
-        } else {
-          if (cancelBeforeTransport()) {
-            try {
-              await cancelCurrentCapture();
-            } catch (cleanupError) {
-              preserveFailedCaptureCancellation(cleanupError);
-              return;
-            }
-            turnCoordinator.release(sendControl);
-            return;
-          }
-          pendingCaptureOnlyControls.add(sendControl);
-          pendingCaptureCancellationActions.set(
-            sendControl,
-            cancelCurrentCapture,
-          );
-          notifyAccepted();
-          return;
-        }
-        if (cancelBeforeTransport()) {
-          try {
-            await cancelCurrentCapture();
-          } catch (cleanupError) {
-            preserveFailedCaptureCancellation(cleanupError);
-            return;
-          }
-          turnCoordinator.release(sendControl);
-          return;
-        }
+        const mayContinue = await captureTurn.capture(
+          submission,
+          turnProjectId,
+          {
+            cancelBeforeTransport,
+            failBeforeTransport,
+            preserveFailedCaptureCancellation,
+            onAccepted: options?._onAccepted,
+          },
+        );
+        if (!mayContinue) return;
       }
 
-      // Session-scoped pins and summaries are keyed only by session id. Validate
-      // ownership against persisted state before any such source is read.
+      // Validate persisted ownership before reading session-scoped pins or summaries.
       if (turnSessionId) {
         try {
           const persistedSession = await chatApi.getSessionForProject(
@@ -957,30 +671,6 @@ function createChatTurnStoreActions(
         }
       }
       if (cancelBeforeTransport()) return;
-      const retirePriorCaptureForIneligibleSend = async (): Promise<void> => {
-        if (
-          !isElectron() ||
-          !sessionIdForPersist ||
-          captureRetirementAttempted
-        ) {
-          return;
-        }
-        captureRetirementAttempted = true;
-        sendControl.preTransportAdmissionPending = true;
-        try {
-          const receipt = await retireCurrentChatInput(sessionIdForPersist);
-          if (
-            receipt.status !== "legacy-only" &&
-            receipt.chatSessionId !== sessionIdForPersist
-          ) {
-            throw new Error("IPC_CHAT_CAPTURE_RETIRE_RESULT_BINDING_MISMATCH");
-          }
-        } finally {
-          sendControl.preTransportAdmissionPending = false;
-          if (sendControl.aborted) turnCoordinator.release(sendControl);
-        }
-      };
-
       // -----------------------------------------------------------------------
       // Agent mode path — tool-use loop
       //
@@ -1601,7 +1291,7 @@ function createChatTurnStoreActions(
               userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
               sendToLLM: async (msgs, tools) => {
                 assertTurnAuthority();
-                await retirePriorCaptureForIneligibleSend();
+                await captureTurn.retirePriorCapture(sessionIdForPersist);
                 if (cancelBeforeTransport()) {
                   throw new Error("CHAT_TURN_CANCELLED_BEFORE_TRANSPORT");
                 }
@@ -1635,7 +1325,7 @@ function createChatTurnStoreActions(
                       : {}),
                   });
                 }
-                notifyAccepted();
+                captureTurn.notifyAccepted(options?._onAccepted);
                 assertTurnAuthority();
                 turnCoordinator.transition(sendControl, "agent-running");
                 transportStarted = true;
@@ -2284,7 +1974,7 @@ function createChatTurnStoreActions(
         // Revoke prior same-session authority only after the route and turn
         // have otherwise reached the existing pre-transport admission point.
         if (!captureRouteEligible) {
-          await retirePriorCaptureForIneligibleSend();
+          await captureTurn.retirePriorCapture(sessionIdForPersist);
           if (cancelBeforeTransport()) return;
           assertTurnAuthority();
         }
@@ -2701,11 +2391,11 @@ function createChatTurnStoreActions(
                 .then(
                   async () => {
                     if (info.stopReason === "stopped" || sendControl.aborted) {
-                      await cancelCurrentCapture();
+                      await captureTurn.cancel();
                     } else {
-                      keepCurrentCapture = true;
+                      captureTurn.keepCurrent();
                       sendControl.preTransportAdmissionPending = false;
-                      pendingCaptureCancellationRetries.delete(sendControl);
+                      captureTurn.clearCancellationRetry();
                     }
                   },
                   (error: unknown) => {
@@ -2723,7 +2413,7 @@ function createChatTurnStoreActions(
                 })
                 .then(resolve, async (error: unknown) => {
                   try {
-                    await cancelCurrentCapture();
+                    await captureTurn.cancel();
                   } catch (cleanupError) {
                     error = cleanupError;
                   }
@@ -2805,7 +2495,7 @@ function createChatTurnStoreActions(
           turnRuntime.setStoppedStreamFinalizer(finalizeStoppedStream);
 
           assertTurnAuthority();
-          notifyAccepted();
+          captureTurn.notifyAccepted(options?._onAccepted);
           assertTurnAuthority();
           turnCoordinator.transition(sendControl, "streaming");
           transportStarted = true;
@@ -2911,7 +2601,7 @@ function createChatTurnStoreActions(
         let e = caught;
         let captureCleanupFailed = false;
         try {
-          await cancelCurrentCapture();
+          await captureTurn.cancel();
         } catch (cleanupError) {
           captureCleanupFailed = true;
           debugLog.error(
@@ -3012,17 +2702,11 @@ function createChatTurnStoreActions(
             : {}),
         });
       } finally {
-        const unresolvedCurrentCapture =
-          sendControl.preTransportAdmissionPending &&
-          capturedWorkspaceIsCurrent();
-        if (
-          unresolvedCurrentCapture &&
-          pendingCaptureCancellationRetries.has(sendControl)
-        ) {
-          pendingCaptureCancellationRetriesReady.add(sendControl);
-        }
+        const unresolvedCurrentCapture = captureTurn.resolveFinally(
+          capturedWorkspaceIsCurrent(),
+        );
         if (isCurrentTurn()) {
-          if (!pendingCaptureOnlyControls.has(sendControl)) {
+          if (!captureTurn.isCaptureOnly()) {
             // isStreaming is set to false inside onDone/onError callbacks
             // but guard here in case of early exit.
             if (get().isStreaming) set({ isStreaming: false });
@@ -3035,112 +2719,7 @@ function createChatTurnStoreActions(
       }
     },
 
-    stopGeneration: () => {
-      stopGenerationVersion += 1;
-      // A send may still be waiting for Ollama metadata before placeholders are
-      // published. Invalidate that claim so Stop (or a new authority) can recover
-      // without waiting for the endpoint timeout.
-      turnRuntime.clearSendPreflight();
-      // agent ループの中断を要求してから、回答待ちの ask_user を sentinel 解決する。
-      // フラグを先に立てるので、resolve で再開したループは shouldAbort を見て
-      // tool_result を送らずに即 return する（stop が agent path を止められない
-      // 問題への対処）。フラグ→resolve の順序が肝。
-      const turnCoordinator = turnRuntime.coordinator;
-      const stoppedControl = turnCoordinator.current();
-      const stoppedTurnId = stoppedControl?.id ?? null;
-      const stoppedSessionId =
-        stoppedControl?.sessionId ?? get().activeSessionId;
-      const stoppedProjectId =
-        stoppedControl?.request.projectId ??
-        get().activeProjectId ??
-        getCurrentProjectId();
-      if (stoppedControl) {
-        turnCoordinator.abort(stoppedControl);
-        if (!stoppedControl.transportStarted) {
-          const preserveCapturedHuman =
-            pendingCaptureOnlyControls.has(stoppedControl);
-          set((state) => ({
-            messages: state.messages.filter(
-              (message) =>
-                message.id !== stoppedControl.assistantMessageId &&
-                (preserveCapturedHuman ||
-                  message.id !== stoppedControl.userMessageId),
-            ),
-            streamingDraft:
-              state.streamingDraft?.messageId ===
-              stoppedControl.assistantMessageId
-                ? null
-                : state.streamingDraft,
-          }));
-        }
-      }
-      // Flush while this turn still owns the identity; flushDelta deliberately
-      // rejects stale owners, so clearing the id first would drop the final frame.
-      turnRuntime.flushPendingDelta();
-      const agentTransportWillFinalize = Boolean(
-        stoppedControl?.transportStarted && stoppedControl.surface === "agent",
-      );
-      if (
-        stoppedControl?.transportStarted &&
-        stoppedControl.surface === "chat"
-      ) {
-        turnRuntime.finalizeStoppedStream();
-      }
-      // Keep the turn claim while a committed capture is awaiting its exact
-      // terminal cancellation; a replacement may enter only after that receipt.
-      if (
-        !agentTransportWillFinalize &&
-        stoppedControl &&
-        !stoppedControl.preTransportAdmissionPending
-      ) {
-        turnCoordinator.release(stoppedControl);
-      }
-      const cancelAcceptedCapture = stoppedControl
-        ? pendingCaptureCancellationActions.get(stoppedControl)
-        : undefined;
-      if (stoppedControl && cancelAcceptedCapture) {
-        void cancelAcceptedCapture().then(
-          () => turnCoordinator.release(stoppedControl),
-          (error: unknown) => {
-            if (pendingCaptureCancellationRetries.has(stoppedControl)) {
-              pendingCaptureCancellationRetriesReady.add(stoppedControl);
-            }
-            debugLog.warn(
-              "ChatStore",
-              "cancel current chat capture on Stop",
-              errorDetail(error),
-            );
-          },
-        );
-      }
-      // Stop は送信開始時に凍結した transport を使う。Codex App Server は
-      // subprocess 全体を終了せず、対象 Thread/Turn だけを interrupt する。
-      const stoppedTransport =
-        stoppedControl?.transport ??
-        turnRuntime.activeRoute()?.transport ??
-        "http";
-      if (
-        stoppedTransport === "codex-app-server" &&
-        stoppedTurnId &&
-        stoppedSessionId
-      ) {
-        void codexAppApi
-          .abortCodexAppTurn({
-            projectId: stoppedProjectId,
-            sessionId: stoppedSessionId,
-            grimodexTurnId: stoppedTurnId,
-          })
-          .catch(() => {});
-      }
-      if (!agentTransportWillFinalize) {
-        turnRuntime.runStreamCleanup();
-      }
-      get()._cancelPendingUserQuestion();
-      set({
-        isStreaming: agentTransportWillFinalize,
-        agentProgress: null,
-      });
-    },
+    stopGeneration: turnLifecycle.stopGeneration,
   };
 }
 
@@ -3180,41 +2759,6 @@ export function createConfiguredChatTurnStoreActions(
   });
   return {
     ...actions,
-    async sendMessage(content, commandInstruction, options) {
-      const navigationAdmission = tryAcquireChatTurnAdmissionLease();
-      if (!navigationAdmission) return;
-      let admissionReleased = false;
-      const releaseNavigationAdmission = (): void => {
-        if (admissionReleased) return;
-        admissionReleased = true;
-        navigationAdmission.release();
-      };
-      try {
-        if (!canScheduleQuiescenceMutation()) return;
-        // A completed turn owns the next persistence position until its retry
-        // succeeds. Keep this gate outside trackTurn: a failed admission retry
-        // must remain sticky in the registry, not become a second settled turn
-        // failure.
-        if (ports.turnRuntime.hasPendingCompletedTurnPersistence()) {
-          await ports.turnRuntime.retryPendingCompletedTurns();
-        }
-        if (!canScheduleQuiescenceMutation()) return;
-        const admittedOptions = {
-          ...options,
-          _onAccepted: () => {
-            // `notifyAccepted` runs after turn placeholders/finalizers exist
-            // and immediately before transport starts. From this point a Scene
-            // transition can stop the turn and persist to captured authority.
-            releaseNavigationAdmission();
-            options?._onAccepted?.();
-          },
-        };
-        return await ports.turnRuntime.trackTurn(
-          actions.sendMessage(content, commandInstruction, admittedOptions),
-        );
-      } finally {
-        releaseNavigationAdmission();
-      }
-    },
+    sendMessage: withChatTurnAdmission(actions.sendMessage, ports.turnRuntime),
   };
 }
