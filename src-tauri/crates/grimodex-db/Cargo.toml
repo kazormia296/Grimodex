@@ -25,6 +25,8 @@ libc = "0.2"
 
 [features]
 default = []
+# Private current-Human capture API used only by the Electron Native bridge.
+native-current-human-capture = []
 # Offline C2-ZC fixture generation is an explicitly opted-in support tool. It
 # must not be linked into Electron/N-API or other default production builds.
 c2zc-fixture-builder = []

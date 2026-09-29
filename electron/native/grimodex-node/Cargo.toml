@@ -44,7 +44,7 @@ required-features = ["test-lifecycle"]
 napi = { version = "2", default-features = false, features = ["napi8", "async", "serde-json"] }
 napi-derive = "2"
 grimodex-core = { path = "../../../src-tauri/crates/grimodex-core" }
-grimodex-db = { path = "../../../src-tauri/crates/grimodex-db" }
+grimodex-db = { path = "../../../src-tauri/crates/grimodex-db", features = ["native-current-human-capture"] }
 # lint_text / segment_bunsetsu (Phase 3)。embed-unidic により .node が
 # +200MB 級になる — Tauri バイナリと同じトレードオフ (実測は Phase 3 記録)。
 grimodex-lint = { path = "../../../src-tauri/crates/grimodex-lint" }

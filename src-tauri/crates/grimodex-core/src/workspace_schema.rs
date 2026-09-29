@@ -54,6 +54,80 @@ pub const NIR1_GENERATION_MESSAGE_UPDATE_TRIGGER_SQL: &str =
          UPDATE nir1_generation_message_versions SET invalidated = 1 WHERE message_id IN (OLD.id, NEW.id);
      END";
 
+pub const NIR1_CHAT_INPUT_CAPTURE_NEW_HUMAN_TRIGGER_SQL: &str =
+    "CREATE TRIGGER nir1_chat_input_capture_new_human_invalidate
+     AFTER INSERT ON chat_messages
+     WHEN NEW.role = 'user'
+     BEGIN
+         UPDATE nir1_chat_input_captures
+            SET state = 'superseded'
+          WHERE chat_session_id = NEW.session_id
+            AND message_id <> NEW.id
+            AND state = 'current';
+     END";
+
+pub const NIR1_CHAT_INPUT_CAPTURE_PROJECT_DELETE_TRIGGER_SQL: &str =
+    "CREATE TRIGGER nir1_chat_input_capture_project_delete
+     BEFORE DELETE ON projects
+     BEGIN
+         DELETE FROM nir1_chat_input_captures WHERE project_id = OLD.id;
+     END";
+
+pub const NIR1_CHAT_INPUT_CAPTURE_SESSION_DELETE_TRIGGER_SQL: &str =
+    "CREATE TRIGGER nir1_chat_input_capture_session_delete
+     BEFORE DELETE ON chat_sessions
+     BEGIN
+         DELETE FROM nir1_chat_input_captures WHERE chat_session_id = OLD.id;
+     END";
+
+pub const NIR1_CHAT_INPUT_CAPTURE_MESSAGE_DELETE_TRIGGER_SQL: &str =
+    "CREATE TRIGGER nir1_chat_input_capture_message_delete
+     BEFORE DELETE ON chat_messages
+     BEGIN
+         DELETE FROM nir1_chat_input_captures WHERE message_id = OLD.id;
+     END";
+
+pub const CHAT_MESSAGE_SOURCE_PROVENANCE_DELETE_TRIGGER_SQL: &str =
+    "CREATE TRIGGER chat_message_source_provenance_delete
+     BEFORE DELETE ON chat_messages
+     BEGIN
+         UPDATE codex_entries SET source_chat_message_id = NULL WHERE source_chat_message_id = OLD.id;
+         UPDATE snippets SET source_chat_message_id = NULL WHERE source_chat_message_id = OLD.id;
+     END";
+
+pub const NIR1_CHAT_INPUT_CAPTURE_TRANSITION_TRIGGER_SQL: &str =
+    "CREATE TRIGGER nir1_chat_input_capture_transition_guard
+     BEFORE UPDATE ON nir1_chat_input_captures
+     WHEN OLD.state <> 'current'
+       OR NEW.state NOT IN ('superseded','cancelled','closed')
+       OR NEW.capture_id IS NOT OLD.capture_id
+       OR NEW.project_id IS NOT OLD.project_id
+       OR NEW.chat_session_id IS NOT OLD.chat_session_id
+       OR NEW.scene_id IS NOT OLD.scene_id
+       OR NEW.submission_id IS NOT OLD.submission_id
+       OR NEW.submission_digest IS NOT OLD.submission_digest
+       OR NEW.message_id IS NOT OLD.message_id
+       OR NEW.message_version_id IS NOT OLD.message_version_id
+       OR NEW.owner_json IS NOT OLD.owner_json
+       OR NEW.created_at_ms IS NOT OLD.created_at_ms
+     BEGIN
+         SELECT RAISE(ABORT, 'NIR1_CHAT_CAPTURE_TRANSITION_INVALID');
+     END";
+
+pub const NIR1_CHAT_INPUT_SUBMISSION_KEY_UPDATE_TRIGGER_SQL: &str =
+    "CREATE TRIGGER nir1_chat_input_submission_key_no_update
+     BEFORE UPDATE ON nir1_chat_input_submission_keys
+     BEGIN
+         SELECT RAISE(ABORT, 'NIR1_CHAT_SUBMISSION_KEY_IMMUTABLE');
+     END";
+
+pub const NIR1_CHAT_INPUT_SUBMISSION_KEY_DELETE_TRIGGER_SQL: &str =
+    "CREATE TRIGGER nir1_chat_input_submission_key_no_delete
+     BEFORE DELETE ON nir1_chat_input_submission_keys
+     BEGIN
+         SELECT RAISE(ABORT, 'NIR1_CHAT_SUBMISSION_KEY_IMMUTABLE');
+     END";
+
 const AI_AUDIT_COLUMNS: &[(&str, &str, bool, i32)] = &[
     ("id", "INTEGER", false, 1),
     ("scope_id", "TEXT", true, 0),
@@ -622,8 +696,16 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// index storage. Version 36 adds the NIR-1 A1 scene-scope authority storage
 /// and its pre-A1 compatibility backfill boundary. Version 37 adds NIR-1
 /// generation attempts and immutable message/input qualification references.
+/// Version 38 adds a current Human submission capture; it never backfills
+/// legacy chat rows into current-turn authority. Version 39 adds durable,
+/// append-only submission-key tombstones so deletion cannot reopen a retry ID.
+/// Version 40 atomically retires prior current captures when any Human chat row
+/// is inserted, including inserts from another WAL connection. Version 41
+/// replaces capture parent cascades with exact Native-owned delete triggers and
+/// RESTRICT foreign keys so ordinary renderer chat deletion cannot be denied
+/// by the protected capture authorizer.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 37
+    Ok(SCHEMA_VERSION == 41
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -666,6 +748,10 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v35_nir1_index_storage(conn)?
         && has_v36_scene_scope_storage(conn)?
         && has_v37_generation_storage(conn)?
+        && has_v38_current_human_capture_storage(conn)?
+        && has_v39_chat_input_submission_key_storage(conn)?
+        && has_v40_chat_input_capture_new_human_trigger(conn)?
+        && has_v41_chat_input_capture_lifecycle(conn)?
         && has_current_query_indexes(conn)?
         // The durable wake outbox and the V2 pointer monotonicity guard ship
         // as an in-version repair of SCHEMA 34: their absence forces a full
@@ -838,6 +924,236 @@ fn has_v37_generation_storage(conn: &Connection) -> anyhow::Result<bool> {
         && version_sql.contains("check(originin('human','generated'))")
         && version_sql.contains("invalidatedintegernotnulldefault0check(invalidatedin(0,1))")
         && version_sql.contains("check((origin='human'andparent_attempt_idisnull)or(origin='generated'andparent_attempt_idisnotnull))"))
+}
+
+fn has_v38_current_human_capture_storage(conn: &Connection) -> anyhow::Result<bool> {
+    const EXPECTED: &[(&str, &str, bool, i32)] = &[
+        ("capture_id", "TEXT", false, 1),
+        ("project_id", "TEXT", true, 0),
+        ("chat_session_id", "TEXT", true, 0),
+        ("scene_id", "TEXT", true, 0),
+        ("submission_id", "TEXT", true, 0),
+        ("submission_digest", "TEXT", true, 0),
+        ("message_id", "TEXT", true, 0),
+        ("message_version_id", "TEXT", true, 0),
+        ("owner_json", "TEXT", true, 0),
+        ("state", "TEXT", true, 0),
+        ("created_at_ms", "INTEGER", true, 0),
+    ];
+    if !table_exists(conn, "nir1_chat_input_captures")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "nir1_chat_input_captures")?;
+    if columns.len() != EXPECTED.len()
+        || !EXPECTED.iter().all(|(name, kind, not_null, primary_key)| {
+            columns.iter().any(|column| {
+                column.name == *name
+                    && column.declared_type == *kind
+                    && column.not_null == *not_null
+                    && column.primary_key == *primary_key
+            })
+        })
+    {
+        return Ok(false);
+    }
+    if !foreign_key_targets(
+        conn,
+        "nir1_chat_input_captures",
+        "project_id",
+        "projects",
+        "id",
+    )? || !foreign_key_targets(
+        conn,
+        "nir1_chat_input_captures",
+        "chat_session_id",
+        "chat_sessions",
+        "id",
+    )? || !foreign_key_targets(
+        conn,
+        "nir1_chat_input_captures",
+        "message_id",
+        "chat_messages",
+        "id",
+    )? {
+        return Ok(false);
+    }
+    let version_fk: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list('nir1_chat_input_captures')
+          WHERE \"from\"='message_version_id' AND \"table\"='nir1_generation_message_versions'
+            AND \"to\"='id' AND on_delete='RESTRICT')",
+        [],
+        |row| row.get(0),
+    )?;
+    let capture_sql = compact_sql(&table_sql(conn, "nir1_chat_input_captures")?);
+    let current_index_sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='index'
+              AND name='idx_nir1_chat_input_captures_current'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let trigger_sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='trigger'
+              AND name='nir1_chat_input_capture_transition_guard'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(version_fk
+        && capture_sql.contains("unique(chat_session_id,submission_id)")
+        && capture_sql.contains("check(length(submission_digest)=71andsubmission_digestglob'sha256:*'andsubstr(submission_digest,8)notglob'*[^0-9a-f]*')")
+        && capture_sql.contains("message_idtextnotnullunique")
+        && capture_sql.contains("message_version_idtextnotnullunique")
+        && capture_sql.contains("check(octet_length(owner_json)<=65536andjson_valid(owner_json)andjson_type(owner_json)='object')")
+        && capture_sql.contains("check(statein('current','superseded','cancelled','closed'))")
+        && current_index_sql.as_deref().is_some_and(|sql| {
+            index_columns(conn, "idx_nir1_chat_input_captures_current")
+                .is_ok_and(|columns| columns == ["project_id", "chat_session_id"])
+                && compact_sql(sql).ends_with("wherestate='current'")
+        })
+        && trigger_sql.as_deref().map(compact_sql)
+            == Some(compact_sql(NIR1_CHAT_INPUT_CAPTURE_TRANSITION_TRIGGER_SQL)))
+}
+
+fn has_v40_chat_input_capture_new_human_trigger(conn: &Connection) -> anyhow::Result<bool> {
+    let trigger_sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='trigger'
+              AND name='nir1_chat_input_capture_new_human_invalidate'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(trigger_sql.as_deref().map(compact_sql)
+        == Some(compact_sql(NIR1_CHAT_INPUT_CAPTURE_NEW_HUMAN_TRIGGER_SQL)))
+}
+
+pub fn has_v41_chat_input_capture_lifecycle(conn: &Connection) -> anyhow::Result<bool> {
+    if !has_v38_current_human_capture_storage(conn)?
+        || !has_v40_chat_input_capture_new_human_trigger(conn)?
+    {
+        return Ok(false);
+    }
+
+    let foreign_key_count: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_foreign_key_list('nir1_chat_input_captures')",
+        [],
+        |row| row.get(0),
+    )?;
+    if foreign_key_count != 4 {
+        return Ok(false);
+    }
+
+    for (from, parent) in [
+        ("project_id", "projects"),
+        ("chat_session_id", "chat_sessions"),
+        ("message_id", "chat_messages"),
+        ("message_version_id", "nir1_generation_message_versions"),
+    ] {
+        if !foreign_key_matches_action(
+            conn,
+            "nir1_chat_input_captures",
+            from,
+            parent,
+            "id",
+            "RESTRICT",
+        )? {
+            return Ok(false);
+        }
+    }
+
+    for (table, from) in [
+        ("codex_entries", "source_chat_message_id"),
+        ("snippets", "source_chat_message_id"),
+    ] {
+        if !foreign_key_matches_action(conn, table, from, "chat_messages", "id", "RESTRICT")? {
+            return Ok(false);
+        }
+    }
+
+    for (name, expected) in [
+        (
+            "nir1_chat_input_capture_project_delete",
+            NIR1_CHAT_INPUT_CAPTURE_PROJECT_DELETE_TRIGGER_SQL,
+        ),
+        (
+            "nir1_chat_input_capture_session_delete",
+            NIR1_CHAT_INPUT_CAPTURE_SESSION_DELETE_TRIGGER_SQL,
+        ),
+        (
+            "nir1_chat_input_capture_message_delete",
+            NIR1_CHAT_INPUT_CAPTURE_MESSAGE_DELETE_TRIGGER_SQL,
+        ),
+        (
+            "chat_message_source_provenance_delete",
+            CHAT_MESSAGE_SOURCE_PROVENANCE_DELETE_TRIGGER_SQL,
+        ),
+    ] {
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if actual.as_deref().map(compact_sql) != Some(compact_sql(expected)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn has_v39_chat_input_submission_key_storage(conn: &Connection) -> anyhow::Result<bool> {
+    const EXPECTED: &[(&str, &str, bool, i32)] = &[
+        ("submission_id", "TEXT", false, 1),
+        ("capture_id", "TEXT", true, 0),
+        ("submission_digest", "TEXT", true, 0),
+        ("created_at_ms", "INTEGER", true, 0),
+    ];
+    if !table_exists(conn, "nir1_chat_input_submission_keys")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "nir1_chat_input_submission_keys")?;
+    if columns.len() != EXPECTED.len()
+        || !EXPECTED.iter().all(|(name, kind, not_null, primary_key)| {
+            columns.iter().any(|column| {
+                column.name == *name
+                    && column.declared_type == *kind
+                    && column.not_null == *not_null
+                    && column.primary_key == *primary_key
+            })
+        })
+    {
+        return Ok(false);
+    }
+    let foreign_keys: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_foreign_key_list('nir1_chat_input_submission_keys')",
+        [],
+        |row| row.get(0),
+    )?;
+    let table_sql = compact_sql(&table_sql(conn, "nir1_chat_input_submission_keys")?);
+    let trigger_sql = |name: &str| -> anyhow::Result<Option<String>> {
+        Ok(conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?)
+    };
+    Ok(foreign_keys == 0
+        && table_sql.contains("capture_idtextnotnullunique")
+        && table_sql.contains("check(length(submission_digest)=71andsubmission_digestglob'sha256:*'andsubstr(submission_digest,8)notglob'*[^0-9a-f]*')")
+        && trigger_sql("nir1_chat_input_submission_key_no_update")?
+            .as_deref()
+            .map(compact_sql)
+            == Some(compact_sql(NIR1_CHAT_INPUT_SUBMISSION_KEY_UPDATE_TRIGGER_SQL))
+        && trigger_sql("nir1_chat_input_submission_key_no_delete")?
+            .as_deref()
+            .map(compact_sql)
+            == Some(compact_sql(NIR1_CHAT_INPUT_SUBMISSION_KEY_DELETE_TRIGGER_SQL)))
 }
 
 fn has_v36_scene_scope_storage(conn: &Connection) -> anyhow::Result<bool> {
@@ -2347,6 +2663,57 @@ fn foreign_key_matches(
     parent: &str,
     to: &str,
 ) -> anyhow::Result<bool> {
+    foreign_key_matches_action(conn, table, from, parent, to, "CASCADE")
+}
+
+fn foreign_key_targets(
+    conn: &Connection,
+    table: &str,
+    from: &str,
+    parent: &str,
+    to: &str,
+) -> anyhow::Result<bool> {
+    foreign_key_exists(conn, table, from, parent, to)
+}
+
+fn foreign_key_matches_action(
+    conn: &Connection,
+    table: &str,
+    from: &str,
+    parent: &str,
+    to: &str,
+    expected_action: &str,
+) -> anyhow::Result<bool> {
+    let foreign_keys = foreign_key_rows(conn, table)?;
+    Ok(foreign_keys
+        .iter()
+        .any(|(actual_from, actual_parent, actual_to, on_delete)| {
+            actual_from == from
+                && actual_parent == parent
+                && actual_to == to
+                && on_delete.eq_ignore_ascii_case(expected_action)
+        }))
+}
+
+fn foreign_key_exists(
+    conn: &Connection,
+    table: &str,
+    from: &str,
+    parent: &str,
+    to: &str,
+) -> anyhow::Result<bool> {
+    let foreign_keys = foreign_key_rows(conn, table)?;
+    Ok(foreign_keys
+        .iter()
+        .any(|(actual_from, actual_parent, actual_to, _)| {
+            actual_from == from && actual_parent == parent && actual_to == to
+        }))
+}
+
+fn foreign_key_rows(
+    conn: &Connection,
+    table: &str,
+) -> anyhow::Result<Vec<(String, String, String, String)>> {
     let mut statement = conn.prepare(
         "SELECT \"from\", \"table\", \"to\", on_delete
            FROM pragma_foreign_key_list(?1)",
@@ -2361,14 +2728,7 @@ fn foreign_key_matches(
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(foreign_keys
-        .iter()
-        .any(|(actual_from, actual_parent, actual_to, on_delete)| {
-            actual_from == from
-                && actual_parent == parent
-                && actual_to == to
-                && on_delete.eq_ignore_ascii_case("CASCADE")
-        }))
+    Ok(foreign_keys)
 }
 
 fn compact_sql(sql: &str) -> String {

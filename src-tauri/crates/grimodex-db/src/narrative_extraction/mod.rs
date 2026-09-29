@@ -74,17 +74,16 @@ pub use nir1_entity_relation::{
 };
 pub use nir1_graph::{read_nir1_graph, Nir1GraphReader, Nir1GraphRequest, Nir1GraphResponse};
 pub use reconciliation_envelope::SourceBasisRow;
+pub use repository::project_lifecycle_namespace_for_database;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 pub(crate) use repository::{
     project_creation_reservation_active_for_database,
     release_project_destructive_permit_in_namespace,
     try_reserve_project_destructive_permit_in_namespace,
 };
-pub use repository::project_lifecycle_namespace_for_database;
 pub use repository::{
-    release_project_creation, release_project_creation_for_handle,
-    try_reserve_project_creation, try_reserve_project_creation_for_database,
-    try_reserve_project_creation_in_namespace,
+    release_project_creation, release_project_creation_for_handle, try_reserve_project_creation,
+    try_reserve_project_creation_for_database, try_reserve_project_creation_in_namespace,
 };
 pub(crate) use scene_scope::backfill_scene_scope_storage_in_tx;
 pub(crate) use scene_scope::ensure_scene_scope_binding_in_tx;
@@ -105,6 +104,7 @@ pub use scene_scope::{
     read_narrative_scene_scope, update_narrative_scene_scope,
     update_narrative_scene_scope_registry, NarrativeSceneScopeReadV1,
     NarrativeSceneScopeRegistryUpdatePayload, NarrativeSceneScopeUpdatePayload,
+    NarrativeSceneScopeUpdateV1,
 };
 mod human_derivation;
 pub mod human_material_basis;
@@ -137,6 +137,11 @@ pub use nir1_packing::{
     read_and_pack_native_a2_context, NativeNir1AuthorityBinding, NativeNir1DecisionBinding,
     NativeNir1PackedContext, NativeNir1PackingRequest, NativeNir1RawContextItem,
     NativeNir1ScopeBinding, NativeNir1SelectedContextItem,
+};
+#[cfg(feature = "native-current-human-capture")]
+pub use nir1_packing::{
+    read_and_pack_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs,
+    NativeNir1PreparedContextItem, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
 };
 pub use retrieval_admission::{
     read_retrieval_query_context, read_retrieval_scene_source, read_revision_retrieval_eligibility,
@@ -296,17 +301,16 @@ pub use maintenance_runtime::{
     discover_durable_maintenance_work_with_config,
     discover_durable_maintenance_work_with_coordinates, effective_maintenance_coordinates,
     is_transient_maintenance_preemption, plan_maintenance_trigger,
-    preflight_maintenance_cycle_request, read_run_ledger,
-    read_run_ledger_for_epoch, recovery_canonical_key, retry_backoff_ms,
-    terminalize_interrupted_runs, terminalize_interrupted_runs_for_epoch,
-    terminalize_stale_interrupted_runs, terminalize_stale_interrupted_runs_for_epoch,
-    AutomaticRunKind, DesiredWork, FailureClass, FailureClassification,
-    InterruptedRunTerminalization, MaintenanceExecutionDecision, MaintenanceExecutionMode,
-    MaintenanceTrigger, NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiFault,
-    NarrativeMaintenanceCiSetup, NarrativeMaintenanceCiTrigger, NarrativeSystemWorkMarker,
-    RecoveryAction, RecoveryDecision, RecoveryMode, RunLedgerCounts, StaleActiveRun, WorkKey,
-    LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
-    REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+    preflight_maintenance_cycle_request, read_run_ledger, read_run_ledger_for_epoch,
+    recovery_canonical_key, retry_backoff_ms, terminalize_interrupted_runs,
+    terminalize_interrupted_runs_for_epoch, terminalize_stale_interrupted_runs,
+    terminalize_stale_interrupted_runs_for_epoch, AutomaticRunKind, DesiredWork, FailureClass,
+    FailureClassification, InterruptedRunTerminalization, MaintenanceExecutionDecision,
+    MaintenanceExecutionMode, MaintenanceTrigger, NarrativeMaintenanceCiConfig,
+    NarrativeMaintenanceCiFault, NarrativeMaintenanceCiSetup, NarrativeMaintenanceCiTrigger,
+    NarrativeSystemWorkMarker, RecoveryAction, RecoveryDecision, RecoveryMode, RunLedgerCounts,
+    StaleActiveRun, WorkKey, LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES,
+    NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
 };
 pub use maintenance_runtime::{
     complete_foreground_system_work_run, find_running_foreground_system_work_run,
@@ -352,6 +356,7 @@ pub use legacy_backfill::{
     inject_legacy_backfill_fault_for_project, inject_legacy_backfill_fault_for_work,
     BackfillStatus, BackfillSummary, LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
 };
+pub use maintenance_lifecycle::resolve_reused_maintenance_run;
 pub use repair::{
     repair_narrative_dependency_declarations_for_project,
     repair_narrative_dependency_declarations_for_request, seal_repair_plan, RepairOutcome,
@@ -371,7 +376,6 @@ pub use restore_rebuild::{
     RebuildDerivedStateOutcome, RebuildDerivedStateSummary, RebuildShadowVerificationSummary,
     VerifyRunOutcome,
 };
-pub use maintenance_lifecycle::resolve_reused_maintenance_run;
 #[allow(unused_imports)]
 pub(crate) use semantic_epoch::{create_epoch_in_tx, list_epochs};
 // `pub`: `get_current_epoch`/`CurrentEpoch` resolve the Semantic Epoch a

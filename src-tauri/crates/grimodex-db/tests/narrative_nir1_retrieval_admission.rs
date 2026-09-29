@@ -626,7 +626,8 @@ fn native_a2_packing_rejects_chronicle_revision_without_typed_reader() {
     let db = Database::new(&fixture.path).expect("Native private fixture");
     let request = native_packing_request(&fixture, "nir1-db-adapter", 4096);
     let error = read_and_pack_native_a2_context(&db, request)
-        .expect_err("Chronicle revisions are outside the typed Entity/Relation adapter");
+        .err()
+        .expect("Chronicle revisions are outside the typed Entity/Relation adapter");
     assert!(
         error.to_string().contains("NIR1_NATIVE_A2_UNAVAILABLE"),
         "typed Native reader denial: {error:#}"

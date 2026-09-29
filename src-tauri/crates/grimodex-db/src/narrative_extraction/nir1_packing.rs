@@ -25,16 +25,27 @@ use super::nir1_entity_relation::{
     Nir1EntityRelationDisclosure, Nir1EntityRelationDisclosureRead, Nir1EntityRelationFreshness,
     Nir1EntityRelationRevision,
 };
-use super::retrieval_admission::{
-    read_retrieval_scene_source_bounded, RetrievalSceneSourceBinding, RetrievalSceneSourceRead,
+#[cfg(feature = "native-current-human-capture")]
+use super::retrieval_admission::read_retrieval_scene_source_bounded;
+#[cfg(feature = "native-current-human-capture")]
+use super::retrieval_admission::{RetrievalSceneSourceBinding, RetrievalSceneSourceRead};
+#[cfg(feature = "native-current-human-capture")]
+use crate::narrative_maintenance_connection::ParticipantSqlOperationBudget;
+#[cfg(feature = "native-current-human-capture")]
+use crate::nir1_generation::{
+    read_current_chat_input_capture_in_tx, AcceptedChatInputCapture, InputReference, InputRole,
+    InputTarget, MessageVersion, QualificationKind, QualificationReference,
 };
+#[cfg(feature = "native-current-human-capture")]
+use crate::state::ActiveWorkspaceSnapshot;
 use crate::Database;
 
 const NATIVE_ATOMIC_PART_COUNT: usize = 5;
 
 /// Raw context supplied to the request-local Native packing boundary. Reader
 /// material is always projected from the current typed reader below.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub struct NativeNir1RawContextItem {
     pub id: String,
     pub text: String,
@@ -46,7 +57,8 @@ pub struct NativeNir1RawContextItem {
 /// supplied by a caller. `atomic_group` remains for the existing request
 /// shape, but typed groups derive their identity from the immutable Revision
 /// and Entity/Relation IDs below.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub struct NativeNir1PackingRequest {
     pub project_id: String,
     pub revision_id: String,
@@ -180,7 +192,8 @@ impl NativeNir1ScopeBinding {
 /// materialized in the same SQLite read transaction as the selector summary,
 /// so a caller does not need to perform a second DB read to know which exact
 /// Revision, Decision, Scope, and Freshness qualified the selected text.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub struct NativeNir1AuthorityBinding {
     revision: Nir1EntityRelationRevision,
     revision_id: String,
@@ -242,11 +255,13 @@ impl NativeNir1AuthorityBinding {
 }
 
 /// One selected immutable item plus the selector's opaque group binding.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub struct NativeNir1SelectedContextItem {
     item: ContextItemKind,
     atomic_part: Option<AtomicPart>,
     candidate_binding: Option<[u8; 32]>,
+    owner_revision_id: Option<String>,
 }
 
 impl NativeNir1SelectedContextItem {
@@ -266,7 +281,8 @@ impl NativeNir1SelectedContextItem {
 /// Native-only packing result. The pure core selector summary is preserved,
 /// while the selected item projections and their exact authority binding stay
 /// available without a second DB read.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub struct NativeNir1PackedContext {
     packed: PackedContext,
     selected_items: Vec<NativeNir1SelectedContextItem>,
@@ -308,6 +324,7 @@ pub(super) struct NativeNir1PooledPackingRequest<'a> {
 
 /// Internal request for the product-side candidate composition. It has no
 /// caller-supplied Raw field; the query Scene Source reader supplies that item.
+#[cfg(feature = "native-current-human-capture")]
 pub(super) struct NativeNir1SourcePooledPackingRequest<'a> {
     pub project_id: &'a str,
     pub revision_ids: &'a [String],
@@ -319,6 +336,7 @@ pub(super) struct NativeNir1SourcePooledPackingRequest<'a> {
 /// Request-local reference to a persisted Scene Source. The binding is the
 /// complete Source identity observed by the caller; a token or renderer label
 /// alone cannot authorize the body.
+#[cfg(feature = "native-current-human-capture")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NativeNir1RawSourceRef<'a> {
     pub project_id: &'a str,
@@ -328,11 +346,27 @@ pub(super) struct NativeNir1RawSourceRef<'a> {
 
 /// Exact query Source identity retained beside the selected Raw item so that a
 /// later Native boundary can reauthorize the body before direct input use.
+#[cfg(feature = "native-current-human-capture")]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct NativeNir1RawSourceBinding {
-    pub project_id: String,
-    pub scene_id: String,
-    pub binding: RetrievalSceneSourceBinding,
+pub struct NativeNir1RawSourceBinding {
+    pub(super) project_id: String,
+    pub(super) scene_id: String,
+    pub(super) binding: RetrievalSceneSourceBinding,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl NativeNir1RawSourceBinding {
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub fn scene_id(&self) -> &str {
+        &self.scene_id
+    }
+
+    pub fn binding(&self) -> &RetrievalSceneSourceBinding {
+        &self.binding
+    }
 }
 
 pub(super) struct NativeNir1PooledPackedContext {
@@ -341,6 +375,7 @@ pub(super) struct NativeNir1PooledPackedContext {
     // All consulted unique Revisions, including omitted groups. These are
     // observations; downstream direct input references must follow selected_items.
     pub bindings: Vec<NativeNir1AuthorityBinding>,
+    #[cfg(feature = "native-current-human-capture")]
     pub raw_source_binding: Option<NativeNir1RawSourceBinding>,
 }
 
@@ -407,6 +442,7 @@ impl NativePackingInputBudget {
     /// the final selector envelope. The reader reports a monotonic peak for
     /// persisted columns, parser/output work, and retained Source metadata;
     /// the returned Raw item is charged exactly once by `reserve_raw`.
+    #[cfg(feature = "native-current-human-capture")]
     fn preflight_source_peak(&self, peak_bytes: usize) -> Result<()> {
         let remaining = MAX_PACKING_INPUT_BYTES.saturating_sub(self.used_bytes);
         ensure!(
@@ -433,6 +469,7 @@ impl NativePackingInputBudget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RawBudgetCharge {
     Charge,
+    #[cfg(feature = "native-current-human-capture")]
     AlreadyCharged,
 }
 
@@ -442,36 +479,42 @@ enum RawBudgetCharge {
 /// happens before the bounded Source reader materializes any stored body.
 /// The Source reader and this adapter borrow the caller's transaction and
 /// therefore inherit its existing progress owner; no nested hook is installed.
-pub(super) fn read_nir1_source_raw_context_item(
+#[cfg(feature = "native-current-human-capture")]
+fn read_nir1_current_source_raw_context_item_in_tx(
     conn: &Connection,
-    source_ref: NativeNir1RawSourceRef<'_>,
+    project_id: &str,
+    scene_id: &str,
+    expected: Option<NativeNir1RawSourceRef<'_>>,
     input_budget: &mut NativePackingInputBudget,
     checkpoint: &mut impl FnMut() -> Result<()>,
-) -> Result<NativeNir1RawContextItem> {
+) -> Result<(NativeNir1RawContextItem, NativeNir1RawSourceBinding)> {
     ensure!(
         !conn.is_autocommit(),
         "NIR1_NATIVE_RAW_SOURCE_REQUIRES_READ_TRANSACTION"
     );
     ensure!(
-        !source_ref.project_id.is_empty() && source_ref.project_id.trim() == source_ref.project_id,
+        !project_id.is_empty() && project_id.trim() == project_id,
         "NIR1_NATIVE_RAW_SOURCE_PROJECT_ID_INVALID"
     );
     ensure!(
-        !source_ref.scene_id.is_empty() && source_ref.scene_id.trim() == source_ref.scene_id,
+        !scene_id.is_empty() && scene_id.trim() == scene_id,
         "NIR1_NATIVE_RAW_SOURCE_SCENE_ID_INVALID"
     );
-    ensure!(
-        source_ref.binding.source_key == format!("project:scene:{}", source_ref.scene_id),
-        "NIR1_NATIVE_RAW_SOURCE_IDENTITY_MISMATCH"
-    );
-    ensure!(
-        !source_ref.binding.revision_token.trim().is_empty(),
-        "NIR1_NATIVE_RAW_SOURCE_REVISION_TOKEN_INVALID"
-    );
+    if let Some(source_ref) = expected {
+        ensure!(
+            source_ref.project_id == project_id && source_ref.scene_id == scene_id,
+            "NIR1_NATIVE_RAW_SOURCE_IDENTITY_MISMATCH"
+        );
+        ensure!(
+            source_ref.binding.source_key == format!("project:scene:{scene_id}")
+                && !source_ref.binding.revision_token.trim().is_empty(),
+            "NIR1_NATIVE_RAW_SOURCE_IDENTITY_MISMATCH"
+        );
+    }
     let source = match read_retrieval_scene_source_bounded(
         conn,
-        source_ref.project_id,
-        source_ref.scene_id,
+        project_id,
+        scene_id,
         MAX_PACKING_INPUT_BYTES,
         MAX_PACKING_INPUT_BYTES,
         checkpoint,
@@ -483,16 +526,25 @@ pub(super) fn read_nir1_source_raw_context_item(
         }
     };
     ensure!(
-        source.project_id == source_ref.project_id
-            && source.scene_id == source_ref.scene_id
-            && source.query_source == *source_ref.binding,
-        "NIR1_NATIVE_RAW_SOURCE_STALE"
+        source.project_id == project_id
+            && source.scene_id == scene_id
+            && source.query_source.source_key == format!("project:scene:{scene_id}"),
+        "NIR1_NATIVE_RAW_SOURCE_IDENTITY_MISMATCH"
     );
+    if let Some(source_ref) = expected {
+        ensure!(
+            source.query_source == *source_ref.binding,
+            "NIR1_NATIVE_RAW_SOURCE_STALE"
+        );
+    }
     ensure!(!source.archived, "NIR1_NATIVE_RAW_SOURCE_ARCHIVED");
     checkpoint()?;
 
-    // D1 receives the persisted Source body projected by the trusted reader.
-    // It never substitutes caller text, renderer `kind: raw`, or a token claim.
+    let raw_source_binding = NativeNir1RawSourceBinding {
+        project_id: project_id.to_owned(),
+        scene_id: scene_id.to_owned(),
+        binding: source.query_source.clone(),
+    };
     let text = source.canonical_source_text;
     ensure!(!text.is_empty(), "NIR1_NATIVE_RAW_SOURCE_EMPTY");
     ensure!(
@@ -500,13 +552,31 @@ pub(super) fn read_nir1_source_raw_context_item(
         "NIR1_NATIVE_RAW_SOURCE_OUTPUT_LIMIT {MAX_PACKING_INPUT_BYTES}"
     );
     let raw = NativeNir1RawContextItem {
-        id: source_ref.binding.source_key.clone(),
+        id: source.query_source.source_key,
         tokens: estimate_nir1_context_tokens(&text),
         text,
     };
     input_budget.reserve_raw(&raw)?;
     checkpoint()?;
-    Ok(raw)
+    Ok((raw, raw_source_binding))
+}
+
+#[cfg(feature = "native-current-human-capture")]
+pub(super) fn read_nir1_source_raw_context_item(
+    conn: &Connection,
+    source_ref: NativeNir1RawSourceRef<'_>,
+    input_budget: &mut NativePackingInputBudget,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<NativeNir1RawContextItem> {
+    read_nir1_current_source_raw_context_item_in_tx(
+        conn,
+        source_ref.project_id,
+        source_ref.scene_id,
+        Some(source_ref),
+        input_budget,
+        checkpoint,
+    )
+    .map(|(raw, _)| raw)
 }
 
 /// Read and pool the exact query Scene Raw plus typed Revision candidates in
@@ -514,13 +584,7 @@ pub(super) fn read_nir1_source_raw_context_item(
 /// Graph target bodies and caller-provided Raw labels/text are not inputs.
 /// Source reading charges its Raw bytes here, and the pooled selector skips a
 /// second Raw reservation while still using the same cumulative budget.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "internal Source/pool composition is not a product Native request adapter"
-    )
-)]
+#[cfg(all(test, feature = "native-current-human-capture"))]
 pub(super) fn read_and_pack_native_a2_context_with_source_raw_in_tx(
     conn: &Connection,
     request: NativeNir1SourcePooledPackingRequest<'_>,
@@ -542,12 +606,62 @@ pub(super) fn read_and_pack_native_a2_context_with_source_raw_in_tx(
         "NIR1_NATIVE_RAW_SOURCE_QUERY_SCENE_MISMATCH"
     );
 
-    let raw_source_binding = NativeNir1RawSourceBinding {
-        project_id: source_ref.project_id.to_owned(),
-        scene_id: source_ref.scene_id.to_owned(),
-        binding: source_ref.binding.clone(),
-    };
-    let raw = read_nir1_source_raw_context_item(conn, source_ref, input_budget, checkpoint)?;
+    let (raw, raw_source_binding) = read_nir1_current_source_raw_context_item_in_tx(
+        conn,
+        request.project_id,
+        request.query_scene_id,
+        Some(source_ref),
+        input_budget,
+        checkpoint,
+    )?;
+    pool_native_source_and_context(
+        conn,
+        request,
+        raw,
+        raw_source_binding,
+        input_budget,
+        reserve_retained_binding,
+        checkpoint,
+    )
+}
+
+#[cfg(feature = "native-current-human-capture")]
+pub(super) fn read_and_pack_native_a2_context_with_current_source_in_tx(
+    conn: &Connection,
+    request: NativeNir1SourcePooledPackingRequest<'_>,
+    input_budget: &mut NativePackingInputBudget,
+    reserve_retained_binding: &mut impl FnMut(usize) -> Result<()>,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<NativeNir1PooledPackedContext> {
+    let (raw, raw_source_binding) = read_nir1_current_source_raw_context_item_in_tx(
+        conn,
+        request.project_id,
+        request.query_scene_id,
+        None,
+        input_budget,
+        checkpoint,
+    )?;
+    pool_native_source_and_context(
+        conn,
+        request,
+        raw,
+        raw_source_binding,
+        input_budget,
+        reserve_retained_binding,
+        checkpoint,
+    )
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn pool_native_source_and_context(
+    conn: &Connection,
+    request: NativeNir1SourcePooledPackingRequest<'_>,
+    raw: NativeNir1RawContextItem,
+    raw_source_binding: NativeNir1RawSourceBinding,
+    input_budget: &mut NativePackingInputBudget,
+    reserve_retained_binding: &mut impl FnMut(usize) -> Result<()>,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<NativeNir1PooledPackedContext> {
     let pooled_request = NativeNir1PooledPackingRequest {
         project_id: request.project_id,
         revision_ids: request.revision_ids,
@@ -566,6 +680,548 @@ pub(super) fn read_and_pack_native_a2_context_with_source_raw_in_tx(
     )?;
     packed.raw_source_binding = Some(raw_source_binding);
     Ok(packed)
+}
+
+/// One Native-renderable item adopted by the selector. Its ordinal points to
+/// the exact direct InputReference that authorizes this text.
+#[cfg(feature = "native-current-human-capture")]
+pub struct NativeNir1PreparedContextItem {
+    input_ordinal: usize,
+    text: String,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl NativeNir1PreparedContextItem {
+    pub fn input_ordinal(&self) -> usize {
+        self.input_ordinal
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+/// Request-local DB projection. It is neither a wire DTO nor a dispatch or
+/// attempt capability. Private prompt/context text has no Debug/Serialize
+/// implementation and is dropped with the preparing owner.
+#[cfg(feature = "native-current-human-capture")]
+pub struct NativeNir1PreparedInputs {
+    capture: AcceptedChatInputCapture,
+    project_id: String,
+    query_scene_id: String,
+    user_message_version: MessageVersion,
+    user_message: String,
+    input_references: Vec<InputReference>,
+    qualifications: Vec<QualificationReference>,
+    context_items: Vec<NativeNir1PreparedContextItem>,
+    raw_source_binding: NativeNir1RawSourceBinding,
+    authority_bindings: Vec<NativeNir1AuthorityBinding>,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl NativeNir1PreparedInputs {
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub fn query_scene_id(&self) -> &str {
+        &self.query_scene_id
+    }
+
+    pub fn chat_session_id(&self) -> &str {
+        self.capture.chat_session_id()
+    }
+
+    pub fn user_message_version(&self) -> &MessageVersion {
+        &self.user_message_version
+    }
+
+    pub fn user_message(&self) -> &str {
+        &self.user_message
+    }
+
+    pub fn input_references(&self) -> &[InputReference] {
+        &self.input_references
+    }
+
+    pub fn qualifications(&self) -> &[QualificationReference] {
+        &self.qualifications
+    }
+
+    pub fn context_items(&self) -> &[NativeNir1PreparedContextItem] {
+        &self.context_items
+    }
+
+    pub fn raw_source_binding(&self) -> &NativeNir1RawSourceBinding {
+        &self.raw_source_binding
+    }
+
+    pub fn authority_bindings(&self) -> &[NativeNir1AuthorityBinding] {
+        &self.authority_bindings
+    }
+}
+
+/// Read the exact Human version, current Scene Source, accepted typed
+/// revisions, and their adopted references in one participant-owned WAL
+/// snapshot. The Native-owned callback computes remaining context capacity
+/// from the re-read Human body and the current fixed route/prompt budget.
+#[cfg(feature = "native-current-human-capture")]
+pub fn read_and_pack_native_nir1_prepared_inputs(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_session_id: &str,
+    capture: &AcceptedChatInputCapture,
+    query_scene_id: &str,
+    revision_ids: &[String],
+    sql_budget: ParticipantSqlOperationBudget,
+    context_budget_for_user: impl FnOnce(&str) -> Result<usize>,
+) -> Result<NativeNir1PreparedInputs> {
+    require_non_empty(expected_session_id, "sessionId")?;
+    require_non_empty(query_scene_id, "querySceneId")?;
+    ensure!(
+        capture.chat_session_id() == expected_session_id,
+        "NIR1_CHAT_CAPTURE_SESSION_MISMATCH"
+    );
+    ensure!(
+        capture.scene_id() == query_scene_id,
+        "NIR1_CHAT_CAPTURE_SCOPE_MISMATCH"
+    );
+    ensure!(
+        revision_ids.len() > 0 && revision_ids.len() <= MAX_PACKING_ITEMS,
+        "NIR1_NATIVE_PREPARED_REVISION_COUNT_INVALID"
+    );
+    let mut revision_id_bytes = 0usize;
+    let mut seen_revision_ids = HashSet::with_capacity(revision_ids.len());
+    let mut unique_revision_ids = Vec::with_capacity(revision_ids.len());
+    for revision_id in revision_ids {
+        require_non_empty(revision_id, "revisionId")?;
+        ensure!(
+            revision_id.trim() == revision_id,
+            "NIR1_NATIVE_PREPARED_REVISION_ID_INVALID"
+        );
+        // Match the common pooled reader: retain each exact Revision once, in first-seen order.
+        if seen_revision_ids.insert(revision_id.as_str()) {
+            unique_revision_ids.push(revision_id.clone());
+        }
+        revision_id_bytes = revision_id_bytes
+            .checked_add(revision_id.len())
+            .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BYTES_OVERFLOW"))?;
+    }
+    ensure!(
+        revision_id_bytes <= MAX_PACKING_INPUT_BYTES,
+        "NIR1_NATIVE_PREPARED_REVISION_BYTES_LIMIT"
+    );
+
+    let mut input_budget = NativePackingInputBudget::default();
+    let checkpoint_budget = sql_budget.clone();
+    workspace.db().with_participant_read_transaction_bounded(
+        workspace.participant(),
+        sql_budget,
+        |conn| {
+            let mut checkpoint = || checkpoint_budget.check(workspace.participant());
+            checkpoint()?;
+            let (user_message_version, user_message) = read_current_chat_input_capture_in_tx(
+                conn,
+                capture,
+                capture.owner(),
+                |version_id_bytes, body_bytes| {
+                    input_budget.reserve_lengths(version_id_bytes, body_bytes, 0)
+                },
+            )?;
+            checkpoint()?;
+            let project_id = user_message_version.project_id.clone();
+            let context_budget_tokens = context_budget_for_user(&user_message)?;
+            checkpoint()?;
+            ensure!(
+                context_budget_tokens > 0,
+                "NIR1_NATIVE_PREPARED_CONTEXT_BUDGET_EMPTY"
+            );
+            let mut reserve_retained_binding = |bytes| {
+                ensure!(
+                    bytes <= MAX_PACKING_INPUT_BYTES,
+                    "NIR1_NATIVE_PREPARED_RETAINED_BINDING_LIMIT"
+                );
+                Ok(())
+            };
+            let pooled = read_and_pack_native_a2_context_with_current_source_in_tx(
+                conn,
+                NativeNir1SourcePooledPackingRequest {
+                    project_id: &project_id,
+                    revision_ids: &unique_revision_ids,
+                    query_scene_id,
+                    budget_tokens: context_budget_tokens,
+                    purpose: PackingPurpose::Writing,
+                },
+                &mut input_budget,
+                &mut reserve_retained_binding,
+                &mut checkpoint,
+            )?;
+            checkpoint()?;
+            build_native_nir1_prepared_inputs(
+                capture.clone(),
+                project_id,
+                query_scene_id.to_owned(),
+                user_message_version,
+                user_message,
+                pooled,
+                &mut checkpoint,
+            )
+        },
+    )
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn build_native_nir1_prepared_inputs(
+    capture: AcceptedChatInputCapture,
+    project_id: String,
+    query_scene_id: String,
+    user_message_version: MessageVersion,
+    user_message: String,
+    pooled: NativeNir1PooledPackedContext,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<NativeNir1PreparedInputs> {
+    let raw_source_binding = pooled
+        .raw_source_binding
+        .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_RAW_SOURCE_BINDING_MISSING"))?;
+    let mut raw_ordinal = None;
+    let mut revision_ordinals = HashMap::new();
+    let mut selected_revision_ids = Vec::new();
+    let mut context_references = Vec::new();
+    let mut accepted_ir_count = 0usize;
+
+    for selected in &pooled.selected_items {
+        checkpoint()?;
+        match selected.item() {
+            ContextItemKind::Raw { id, .. } => {
+                ensure!(
+                    raw_ordinal.is_none() && id == &raw_source_binding.binding.source_key,
+                    "NIR1_NATIVE_PREPARED_RAW_SELECTION_MISMATCH"
+                );
+                raw_ordinal = Some(context_references.len() + 1);
+                context_references.push(InputReference {
+                    role: InputRole::Context,
+                    target: InputTarget::RawSource {
+                        source_key: raw_source_binding.binding.source_key.clone(),
+                        revision_token: raw_source_binding.binding.revision_token.clone(),
+                    },
+                });
+            }
+            ContextItemKind::AcceptedIr { .. } => {
+                accepted_ir_count += 1;
+                ensure!(
+                    selected.atomic_part().is_some() && selected.candidate_binding().is_some(),
+                    "NIR1_NATIVE_PREPARED_ACCEPTED_IR_BINDING_MISSING"
+                );
+                let revision_id = selected.owner_revision_id.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_OWNER_MISSING")
+                })?;
+                if !revision_ordinals.contains_key(revision_id) {
+                    let binding = pooled
+                        .bindings
+                        .iter()
+                        .find(|binding| binding.revision_id() == revision_id)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING")
+                        })?;
+                    let ordinal = context_references.len() + 1;
+                    revision_ordinals.insert(revision_id.to_owned(), ordinal);
+                    selected_revision_ids.push(revision_id.to_owned());
+                    context_references.push(InputReference {
+                        role: InputRole::Context,
+                        target: InputTarget::AcceptedRevision {
+                            revision_id: revision_id.to_owned(),
+                            bundle_digest: binding.bundle_digest().to_owned(),
+                        },
+                    });
+                }
+            }
+            _ => anyhow::bail!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL"),
+        }
+    }
+    ensure!(
+        raw_ordinal.is_some() && accepted_ir_count > 0,
+        "NIR1_NATIVE_PREPARED_REQUIRED_CONTEXT_MISSING"
+    );
+
+    let mut input_references = Vec::with_capacity(context_references.len() + 1);
+    input_references.push(InputReference {
+        role: InputRole::User,
+        target: InputTarget::Message {
+            version_id: user_message_version.id.clone(),
+            parent_attempt_id: None,
+        },
+    });
+    input_references.extend(context_references);
+
+    let mut context_items = Vec::with_capacity(pooled.selected_items.len());
+    for selected in pooled.selected_items {
+        checkpoint()?;
+        let input_ordinal = match selected.item() {
+            ContextItemKind::Raw { .. } => raw_ordinal.expect("validated above"),
+            ContextItemKind::AcceptedIr { .. } => *revision_ordinals
+                .get(selected.owner_revision_id.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_OWNER_MISSING")
+                })?)
+                .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_ORDINAL_MISSING"))?,
+            _ => anyhow::bail!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL"),
+        };
+        context_items.push(NativeNir1PreparedContextItem {
+            input_ordinal,
+            text: take_selected_context_text(selected)?,
+        });
+    }
+
+    let mut selected_bindings = Vec::with_capacity(selected_revision_ids.len());
+    for revision_id in &selected_revision_ids {
+        checkpoint()?;
+        selected_bindings.push(
+            pooled
+                .bindings
+                .iter()
+                .find(|binding| binding.revision_id() == revision_id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING"))?,
+        );
+    }
+    let mut qualifications = vec![QualificationReference {
+        input_ordinal: raw_ordinal.expect("validated above"),
+        kind: QualificationKind::Source,
+        identity: raw_source_binding.binding.source_key.clone(),
+        version: raw_source_binding.binding.revision_token.clone(),
+    }];
+    for (revision_id, binding) in selected_revision_ids.iter().zip(&selected_bindings) {
+        checkpoint()?;
+        let input_ordinal = revision_ordinals[revision_id];
+        add_revision_qualifications(
+            &mut qualifications,
+            input_ordinal,
+            &project_id,
+            revision_id,
+            binding,
+            checkpoint,
+        )?;
+    }
+    checkpoint()?;
+    Ok(NativeNir1PreparedInputs {
+        capture: capture.clone(),
+        project_id,
+        query_scene_id,
+        user_message_version,
+        user_message,
+        input_references,
+        qualifications,
+        context_items,
+        raw_source_binding,
+        authority_bindings: selected_bindings,
+    })
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn add_revision_qualifications(
+    qualifications: &mut Vec<QualificationReference>,
+    input_ordinal: usize,
+    project_id: &str,
+    revision_id: &str,
+    binding: &NativeNir1AuthorityBinding,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<()> {
+    let mut seen = HashSet::<(&'static str, String, String)>::new();
+    let mut add = |kind: QualificationKind, identity: String, version: String| {
+        let kind_key = match &kind {
+            QualificationKind::Source => "source",
+            QualificationKind::Revision => "revision",
+            QualificationKind::Decision => "decision",
+            QualificationKind::Freshness => "freshness",
+            QualificationKind::Index => "index",
+            QualificationKind::Scope => "scope",
+            QualificationKind::D1 => "d1",
+        };
+        if seen.insert((kind_key, identity.clone(), version.clone())) {
+            qualifications.push(QualificationReference {
+                input_ordinal,
+                kind,
+                identity,
+                version,
+            });
+        }
+    };
+    add(
+        QualificationKind::Revision,
+        revision_id.to_owned(),
+        binding.bundle_digest().to_owned(),
+    );
+    add(
+        QualificationKind::Decision,
+        binding.decision().id().to_owned(),
+        binding.decision_token().to_owned(),
+    );
+    add(
+        QualificationKind::Freshness,
+        revision_id.to_owned(),
+        binding.freshness_token().to_owned(),
+    );
+    for source in &binding.revision().material_basis.source_basis {
+        checkpoint()?;
+        add(
+            QualificationKind::Source,
+            source.source_key.clone(),
+            source.revision_token.clone(),
+        );
+    }
+    for evidence in &binding.revision().material_basis.evidence_set {
+        checkpoint()?;
+        add(
+            QualificationKind::Source,
+            evidence.source_key.clone(),
+            evidence.revision_token.clone(),
+        );
+    }
+    add(
+        QualificationKind::Scope,
+        format!("project:scope-authority:{project_id}"),
+        binding.scope().scope_authority_revision().to_owned(),
+    );
+    add(
+        QualificationKind::Scope,
+        format!("scene:{}", binding.scope().query_scene_id()),
+        binding.scope().query_scene_scope_token().to_owned(),
+    );
+    add(
+        QualificationKind::Scope,
+        format!("scene-source:{}", binding.scope().query_scene_id()),
+        binding.scope().query_scene_source_token().to_owned(),
+    );
+    add(
+        QualificationKind::Scope,
+        format!("scene-incarnation:{}", binding.scope().query_scene_id()),
+        binding.scope().query_scene_incarnation_id().to_owned(),
+    );
+    add(
+        QualificationKind::Scope,
+        format!("reveal-state:{}", binding.scope().query_scene_id()),
+        binding.scope().reveal_state_token().to_owned(),
+    );
+    add(
+        QualificationKind::Scope,
+        format!("scope-axis:{}", binding.scope().query_scene_id()),
+        canonical_json_digest(&json!({
+            "axis": binding.scope().effective_axis(),
+            "fallbackReason": binding.scope().axis_fallback_reason(),
+        }))?,
+    );
+    for (index, typed_scope) in binding.scope().typed_scope_bindings().iter().enumerate() {
+        checkpoint()?;
+        add(
+            QualificationKind::Scope,
+            format!("revision:{revision_id}:typed-scope:{index}"),
+            canonical_json_digest(&serde_json::to_value(typed_scope)?)?,
+        );
+    }
+    for proof in binding.scope().material_scene_proofs() {
+        checkpoint()?;
+        add(
+            QualificationKind::Scope,
+            format!("scene:{}:{}", proof.scene_id, proof.scene_incarnation_id),
+            proof.scene_scope_token.clone(),
+        );
+    }
+    Ok(())
+}
+
+/// Re-read every adopted input in a new participant-owned read transaction.
+/// The original preparation snapshot is never reused as a return-time proof.
+#[cfg(feature = "native-current-human-capture")]
+pub fn revalidate_native_nir1_prepared_inputs(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_session_id: &str,
+    expected: &NativeNir1PreparedInputs,
+    sql_budget: ParticipantSqlOperationBudget,
+) -> Result<()> {
+    ensure!(
+        expected.capture.chat_session_id() == expected_session_id,
+        "NIR1_NATIVE_PREPARED_SESSION_MISMATCH"
+    );
+    let mut input_budget = NativePackingInputBudget::default();
+    input_budget.reserve_lengths(
+        expected.user_message_version.id.len(),
+        expected.user_message.len(),
+        0,
+    )?;
+    let checkpoint_budget = sql_budget.clone();
+    workspace.db().with_participant_read_transaction_bounded(
+        workspace.participant(),
+        sql_budget,
+        |conn| {
+            let mut checkpoint = || checkpoint_budget.check(workspace.participant());
+            checkpoint()?;
+            let (current_version, current_message) = read_current_chat_input_capture_in_tx(
+                conn,
+                &expected.capture,
+                expected.capture.owner(),
+                |version_id_bytes, body_bytes| {
+                    input_budget.reserve_lengths(version_id_bytes, body_bytes, 0)
+                },
+            )?;
+            checkpoint()?;
+            ensure!(
+                current_version == expected.user_message_version
+                    && current_message == expected.user_message,
+                "NIR1_NATIVE_PREPARED_HUMAN_MESSAGE_STALE"
+            );
+            let source_ref = NativeNir1RawSourceRef {
+                project_id: &expected.raw_source_binding.project_id,
+                scene_id: &expected.raw_source_binding.scene_id,
+                binding: &expected.raw_source_binding.binding,
+            };
+            let raw = read_nir1_source_raw_context_item(
+                conn,
+                source_ref,
+                &mut input_budget,
+                &mut checkpoint,
+            )?;
+            let raw_ordinal = expected
+                .input_references
+                .iter()
+                .position(|reference| matches!(&reference.target, InputTarget::RawSource { .. }))
+                .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_RAW_INPUT_MISSING"))?;
+            let expected_raw = expected
+                .context_items
+                .iter()
+                .find(|item| item.input_ordinal == raw_ordinal)
+                .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_RAW_CONTEXT_MISSING"))?;
+            ensure!(
+                raw.text == expected_raw.text,
+                "NIR1_NATIVE_PREPARED_RAW_SOURCE_BODY_STALE"
+            );
+            for binding in &expected.authority_bindings {
+                checkpoint()?;
+                let current = match evaluate_nir1_entity_relation_disclosure(
+                    conn,
+                    &expected.project_id,
+                    binding.revision_id(),
+                    &expected.query_scene_id,
+                )? {
+                    Nir1EntityRelationDisclosureRead::Eligible(disclosure) => {
+                        authority_binding(&disclosure)?
+                    }
+                    Nir1EntityRelationDisclosureRead::Unavailable { .. } => {
+                        anyhow::bail!("NIR1_NATIVE_PREPARED_REVISION_STALE")
+                    }
+                };
+                checkpoint()?;
+                ensure!(current == *binding, "NIR1_NATIVE_PREPARED_REVISION_STALE");
+            }
+            checkpoint()?;
+            Ok(())
+        },
+    )
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn take_selected_context_text(selected: NativeNir1SelectedContextItem) -> Result<String> {
+    match selected.item {
+        ContextItemKind::Raw { text, .. } | ContextItemKind::AcceptedIr { text, .. } => Ok(text),
+        _ => anyhow::bail!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL"),
+    }
 }
 
 fn canonical_digest_bytes(value: &Value, field: &str) -> Result<[u8; 32]> {
@@ -998,6 +1654,7 @@ fn adapt_typed_revision_candidates(
     binding: &NativeNir1AuthorityBinding,
     input_budget: &mut NativePackingInputBudget,
     candidates: &mut Vec<CandidateContextItem>,
+    candidate_owners: &mut HashMap<String, String>,
     checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<()> {
     let revision = &disclosure.revision;
@@ -1026,7 +1683,7 @@ fn adapt_typed_revision_candidates(
             "nir1:accepted-ir:{}:entity:{}",
             revision.revision_id, entity.entity_id
         );
-        candidates.extend(accepted_ir_group(
+        let group = accepted_ir_group(
             binding,
             authority_digest,
             input_budget,
@@ -1044,7 +1701,14 @@ fn adapt_typed_revision_candidates(
                 "entityId": entity.entity_id,
                 "materialEvidence": evidence,
             }),
-        )?);
+        )?;
+        for candidate in &group {
+            candidate_owners.insert(
+                item_id(candidate.item()).to_owned(),
+                revision.revision_id.clone(),
+            );
+        }
+        candidates.extend(group);
     }
     for relation in &revision.bundle.relations {
         checkpoint()?;
@@ -1076,7 +1740,7 @@ fn adapt_typed_revision_candidates(
             "nir1:accepted-ir:{}:relation:{}",
             revision.revision_id, relation.edge_id
         );
-        candidates.extend(accepted_ir_group(
+        let group = accepted_ir_group(
             binding,
             authority_digest,
             input_budget,
@@ -1102,7 +1766,14 @@ fn adapt_typed_revision_candidates(
                 "relationId": relation.edge_id,
                 "materialEvidence": relation_evidence,
             }),
-        )?);
+        )?;
+        for candidate in &group {
+            candidate_owners.insert(
+                item_id(candidate.item()).to_owned(),
+                revision.revision_id.clone(),
+            );
+        }
+        candidates.extend(group);
     }
     Ok(())
 }
@@ -1110,6 +1781,7 @@ fn adapt_typed_revision_candidates(
 fn selected_items(
     items: &[CandidateContextItem],
     packed: &PackedContext,
+    candidate_owners: &HashMap<String, String>,
 ) -> Result<Vec<NativeNir1SelectedContextItem>> {
     let selected_ids = packed
         .selected_ids
@@ -1123,6 +1795,7 @@ fn selected_items(
             item: candidate.item().clone(),
             atomic_part: candidate.atomic_part(),
             candidate_binding: candidate.candidate_binding().copied(),
+            owner_revision_id: candidate_owners.get(item_id(candidate.item())).cloned(),
         })
         .collect::<Vec<_>>();
     ensure!(
@@ -1259,6 +1932,7 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
         })
         .collect::<Result<Vec<_>>>()?;
     let mut seen = HashSet::new();
+    let mut candidate_owners = HashMap::new();
     let mut bindings = Vec::new();
     for revision_id in request.revision_ids {
         checkpoint()?;
@@ -1296,6 +1970,7 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
             &binding,
             input_budget,
             &mut items,
+            &mut candidate_owners,
             checkpoint,
         )?;
         bindings.push(binding);
@@ -1307,12 +1982,13 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
         items: items.clone(),
     })
     .map_err(anyhow::Error::from)?;
-    let selected_items = selected_items(&items, &packed)?;
+    let selected_items = selected_items(&items, &packed, &candidate_owners)?;
     checkpoint()?;
     Ok(NativeNir1PooledPackedContext {
         packed,
         selected_items,
         bindings,
+        #[cfg(feature = "native-current-human-capture")]
         raw_source_binding: None,
     })
 }

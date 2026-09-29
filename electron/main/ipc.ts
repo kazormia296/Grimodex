@@ -2108,6 +2108,15 @@ export function registerIpcRouter(
             error: "IPC_INVALID_REQUEST: command name must be a string",
           };
         }
+        if (
+          cmd === "capture_current_chat_input" &&
+          event.sender.isDestroyed()
+        ) {
+          return {
+            ok: false,
+            error: "IPC_CAPTURE_SENDER_DESTROYED: no capture was started",
+          };
+        }
         const win = BrowserWindow.fromWebContents(event.sender);
         const injectedHandlers =
           typeof extraShellHandlers === "function"
@@ -2271,6 +2280,99 @@ export function registerIpcRouter(
               : await dispatch();
         } catch (error) {
           envelope = { ok: false, error: toErrorString(error) };
+        }
+        if (cmd === "capture_current_chat_input") {
+          const legacyOnly =
+            envelope.ok &&
+            isRecord(envelope.value) &&
+            envelope.value.status === "legacy-only";
+          const cancelCommittedCapture = async (): Promise<void> => {
+            const rawSubmission = (dispatchArgs as Record<string, unknown>)
+              .submission;
+            const submission =
+              isRecord(rawSubmission) &&
+              [
+                rawSubmission.submissionId,
+                rawSubmission.messageId,
+                rawSubmission.chatSessionId,
+                rawSubmission.sceneId,
+              ].every((value) => typeof value === "string")
+                ? {
+                    submissionId: rawSubmission.submissionId as string,
+                    messageId: rawSubmission.messageId as string,
+                    chatSessionId: rawSubmission.chatSessionId as string,
+                    sceneId: rawSubmission.sceneId as string,
+                  }
+                : null;
+            if (
+              !submission ||
+              !callerIdentity ||
+              !backend?.cancelCurrentChatInput
+            ) {
+              return;
+            }
+            const raw = await backend.cancelCurrentChatInput(
+              submission,
+              JSON.stringify(callerIdentity),
+            );
+            const receipt: unknown = JSON.parse(raw);
+            if (
+              !isRecord(receipt) ||
+              !["cancelled", "not-current", "not-found"].includes(
+                String(receipt.status),
+              ) ||
+              receipt.submissionId !== submission.submissionId ||
+              receipt.messageId !== submission.messageId
+            ) {
+              throw new Error("IPC_CAPTURE_CANCEL_TERMINAL_RECEIPT_INVALID");
+            }
+          };
+          if (envelope.ok && !legacyOnly && event.sender.isDestroyed()) {
+            try {
+              await cancelCommittedCapture();
+            } catch (error) {
+              console.warn(
+                "[ipc] sender-lost chat capture cancellation failed",
+                toErrorString(error),
+              );
+            }
+            envelope = {
+              ok: false,
+              error:
+                "IPC_CAPTURE_OUTCOME_UNKNOWN: sender was destroyed after local Native admission",
+            };
+          } else if (envelope.ok && !legacyOnly) {
+            try {
+              // The Native transaction may have committed before a workspace
+              // or caller transition. Never acknowledge that stale result as
+              // accepted; terminalize that exact insert when the old Native
+              // owner is still live, otherwise the incarnation check rejects reuse.
+              profileEgress?.assertInvoke(cmd, dispatchArgs);
+            } catch (error) {
+              try {
+                await cancelCommittedCapture();
+              } catch (cleanupError) {
+                console.warn(
+                  "[ipc] stale chat capture cancellation failed",
+                  toErrorString(cleanupError),
+                );
+              }
+              envelope = {
+                ok: false,
+                error: `IPC_CAPTURE_OUTCOME_UNKNOWN: ${toErrorString(error)}`,
+              };
+            }
+          } else if (!envelope.ok) {
+            try {
+              // Native may commit and then fail its post-commit workspace check.
+              await cancelCommittedCapture();
+            } catch (error) {
+              console.warn(
+                "[ipc] failed chat capture cleanup failed",
+                toErrorString(error),
+              );
+            }
+          }
         }
         if (cmd === "restore_backup" && envelope.ok) {
           // The renderer also consumes this operation-scoped result, but the

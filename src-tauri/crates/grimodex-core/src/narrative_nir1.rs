@@ -34,6 +34,7 @@ pub const MAX_GRAPH_RECORDS: usize = 512;
 pub const MAX_GRAPH_INPUT_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_PACKING_ITEMS: usize = 512;
 pub const MAX_PACKING_INPUT_BYTES: usize = 2 * 1024 * 1024;
+pub const NIR1_CONTEXT_TOKEN_ESTIMATOR_VERSION: &str = "nir1-context-estimator-v1";
 
 /// Deterministic Rust mirror of the existing ContextBuilder live estimator.
 ///

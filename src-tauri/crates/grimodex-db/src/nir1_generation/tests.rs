@@ -107,6 +107,72 @@ fn human(db: &Database, id: &str, content: &str) -> MessageVersion {
         .expect("bind human")
 }
 
+#[test]
+fn captured_human_message_requires_exact_version_session_and_pre_body_budget() -> Result<()> {
+    let db = database(Path::new(":memory:"));
+    let version = human(&db, "captured-human", "続けて😀この場面を書いてください。");
+    let mut reserved = None;
+    let (read_version, body) = db.with_read_transaction(|conn| {
+        read_captured_human_message_in_tx(
+            conn,
+            &version.id,
+            "generation-session",
+            |id_bytes, body_bytes| {
+                reserved = Some((id_bytes, body_bytes));
+                Ok(())
+            },
+        )
+    })?;
+    assert_eq!(read_version, version);
+    assert_eq!(body, "続けて😀この場面を書いてください。");
+    assert_eq!(reserved, Some((version.id.len(), body.len())));
+
+    let mut reserve_called = false;
+    let error = db
+        .with_read_transaction(|conn| {
+            read_captured_human_message_in_tx(conn, &version.id, "another-session", |_, _| {
+                reserve_called = true;
+                Ok(())
+            })
+        })
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("cross-session Human version unexpectedly read"))?;
+    assert_eq!(
+        error.to_string(),
+        "NIR1_GENERATION_MESSAGE_SESSION_MISMATCH"
+    );
+    assert!(!reserve_called);
+
+    let error = db
+        .with_read_transaction(|conn| {
+            read_captured_human_message_in_tx(conn, &version.id, "generation-session", |_, _| {
+                anyhow::bail!("prepared-input budget refused")
+            })
+        })
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("Human body read without reserved budget"))?;
+    assert_eq!(error.to_string(), "prepared-input budget refused");
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_messages SET content='replaced after capture' WHERE id='captured-human'",
+            [],
+        )?;
+        Ok(())
+    })?;
+    assert!(db
+        .with_read_transaction(|conn| {
+            read_captured_human_message_in_tx(
+                conn,
+                &version.id,
+                "generation-session",
+                |_, _| Ok(()),
+            )
+        })
+        .is_err());
+    Ok(())
+}
+
 fn message_input(version: &MessageVersion) -> InputReference {
     InputReference {
         role: if version.origin == MessageOrigin::Human {
@@ -451,11 +517,12 @@ fn history_snapshot_reader_rejects_oversized_version_identifier_before_fetch() {
              VALUES (?1,'generation-session','user','imported')",
             [&message_id],
         )?;
-        let (body_digest, role) = message_digest_in_tx(
+        let (body_digest, role, _) = message_digest_in_tx(
             conn,
             &message_id,
             "generation-project",
             "generation-session",
+            |_| Ok(()),
         )?;
         assert_eq!(role, "user");
         conn.execute(
@@ -1263,6 +1330,8 @@ fn renderer_sql_cannot_mutate_or_publish_generation_reference_tables() {
         "nir1_generation_message_versions",
         "nir1_generation_input_refs",
         "nir1_generation_qualification_refs",
+        "nir1_chat_input_captures",
+        "nir1_chat_input_submission_keys",
     ] {
         assert!(
             db.execute_renderer(&format!("DELETE FROM {table}"), &[], "run")

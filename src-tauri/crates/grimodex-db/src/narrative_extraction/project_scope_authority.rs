@@ -265,9 +265,6 @@ fn load_live_project_scope_authority_in_snapshot(
     Ok(authority)
 }
 
-/// Resolve the computed live authority under exactly one SQLite SAVEPOINT.
-/// SAVEPOINT is safe both in autocommit mode and inside an existing caller
-/// transaction; this function never opens a nested `BEGIN`.
 pub(crate) fn load_live_project_scope_authority(
     conn: &Connection,
     project_id: &str,

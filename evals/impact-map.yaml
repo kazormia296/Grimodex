@@ -66,7 +66,9 @@ rules:
       - docs/AI経路検証.md
       - src/features/chat/modelRouting.ts
       - src/features/chat/modelRouting.test.ts
+      - src/application/chat/chatTurnStoreActions.ts
       - src/features/chat/turn/**
+      - electron/preload/index.test.ts
       - src/features/chat/types.ts
       - src/features/ai-audit/transportContext.ts
       - src/features/narrative-extraction/reconciler/stageProvenance.ts
@@ -142,6 +144,9 @@ rules:
     reason: Localized prompts and shared output contracts require prompt validation.
     paths:
       - src/prompts/**
+      - test-fixtures/nir1-df06-plain-chat.json
+      - src/features/chat/contextBuilder.ts
+      - src/features/chat/contextBuilder.test.ts
     requirements:
       - GDX-ROUTE-001
       - GDX-GROUND-001
@@ -239,6 +244,8 @@ rules:
       - src/application/narrative-extraction/projectSnapshotAdapter.ts
       - src/application/narrative-extraction/projectSnapshotAdapter.test.ts
       - src/application/narrative-extraction/extractionCoordinator.test.ts
+      - src/db/generated/schema-contract.json
+      - src/db/schema.contract.test.ts
       - electron/shared/ipcContract.ts
       - electron/shared/ipcContract.test.ts
       - scripts/quality/validate-change-feed-writers.mjs
@@ -306,7 +313,7 @@ rules:
     suites:
       - narrative-semantic-contract
   - id: nir1-entity-relation-review
-    reason: NIR-1 typed Entity/Relation review and internal Graph, Packing, and generation receipt contracts keep their core/DB checks together with typed IPC and the review journey; Native activation denial remains separately validated.
+    reason: NIR-1 typed Entity/Relation review and internal Graph, Packing, prepared-request, and generation receipt contracts keep their core/DB checks together with typed IPC and the review journey; Native activation denial remains separately validated.
     paths:
       - src/features/codex/CodexEntityRelationReviewDialog.integration.test.tsx
       - src/features/codex/CodexEntityRelationReviewDialog.test.tsx
@@ -331,6 +338,11 @@ rules:
       - src/features/narrative-semantic-core/nir1PackingApi.ts
       - src/features/ai-context/nir1Packing.ts
       - src/features/ai-context/nir1Packing.test.ts
+      - src/features/ai-context/finalizeTurnPayload.test.ts
+      - test-fixtures/nir1-df06-plain-chat.json
+      - src/prompts/ja/chatSystem.ts
+      - src/prompts/ja/chatSystemBase.txt
+      - src/prompts/ja/chatSystemDataBoundaryReminder.txt
       - evals/nir1-packing/**
       - evals/nir1-g01/**
       - docs/plans/nir1-c-scene-connection-candidate.md
@@ -356,6 +368,7 @@ rules:
       - electron/native/grimodex-node/index.d.ts
       - electron/native/grimodex-node/src/lib.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
+      - electron/native/grimodex-node/src/nir1_prepared_request.rs
       - electron/native/grimodex-node/src/nir1_graph_activation_tests.rs
       - electron/scripts/codex-entity-relation-product-journey.mjs
       - electron/scripts/product-journey-catalog.mjs

@@ -382,6 +382,219 @@ pub struct MessageVersion {
     pub created_at_ms: i64,
 }
 
+/// Main-issued caller and exact Native workspace incarnation for one current
+/// Human capture. `caller_session_id` is deliberately not the chat session ID.
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatInputCaptureOwner {
+    profile_id: String,
+    caller_id: String,
+    caller_epoch: u64,
+    sender_id: u64,
+    caller_workspace_id: String,
+    caller_session_id: String,
+    workspace_id: String,
+    workspace_locator: String,
+    workspace_authority_instance: u64,
+    workspace_recovery_generation: u64,
+    revocation_generation: u64,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl ChatInputCaptureOwner {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        profile_id: String,
+        caller_id: String,
+        caller_epoch: u64,
+        sender_id: u64,
+        caller_workspace_id: String,
+        caller_session_id: String,
+        workspace_id: String,
+        workspace_locator: String,
+        workspace_authority_instance: u64,
+        workspace_recovery_generation: u64,
+        revocation_generation: u64,
+    ) -> Result<Self> {
+        let owner = Self {
+            profile_id,
+            caller_id,
+            caller_epoch,
+            sender_id,
+            caller_workspace_id,
+            caller_session_id,
+            workspace_id,
+            workspace_locator,
+            workspace_authority_instance,
+            workspace_recovery_generation,
+            revocation_generation,
+        };
+        owner.validate()?;
+        Ok(owner)
+    }
+
+    pub fn revocation_generation(&self) -> u64 {
+        self.revocation_generation
+    }
+
+    pub fn same_capture_incarnation(&self, other: &Self) -> bool {
+        self.profile_id == other.profile_id
+            && self.caller_id == other.caller_id
+            && self.caller_epoch == other.caller_epoch
+            && self.sender_id == other.sender_id
+            && self.caller_workspace_id == other.caller_workspace_id
+            && self.caller_session_id == other.caller_session_id
+            && self.workspace_id == other.workspace_id
+            && self.workspace_locator == other.workspace_locator
+            && self.workspace_authority_instance == other.workspace_authority_instance
+            && self.workspace_recovery_generation == other.workspace_recovery_generation
+    }
+
+    fn validate(&self) -> Result<()> {
+        for value in [
+            &self.profile_id,
+            &self.caller_id,
+            &self.caller_workspace_id,
+            &self.caller_session_id,
+            &self.workspace_id,
+            &self.workspace_locator,
+        ] {
+            identity(value)?;
+        }
+        ensure!(self.sender_id > 0, "NIR1_CHAT_CAPTURE_OWNER_INVALID");
+        ensure!(
+            self.caller_workspace_id == self.workspace_locator
+                && self.workspace_authority_instance > 0,
+            "NIR1_CHAT_CAPTURE_OWNER_INVALID"
+        );
+        Ok(())
+    }
+}
+
+/// Untrusted existing-chat submission fields. IDs are insertion/correlation
+/// inputs only; no message-version ID or asserted origin is accepted.
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChatInputCaptureCancellationOutcome {
+    Cancelled,
+    NotCurrent,
+    NotFound,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChatInputCaptureRetirementOutcome {
+    Retired,
+    NotCurrent,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+pub struct NewChatInputSubmission {
+    submission_id: String,
+    message_id: String,
+    chat_session_id: String,
+    scene_id: String,
+    content: String,
+    created_at: String,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl NewChatInputSubmission {
+    pub fn new(
+        submission_id: String,
+        message_id: String,
+        chat_session_id: String,
+        scene_id: String,
+        content: String,
+        created_at: String,
+    ) -> Result<Self> {
+        let submission = Self {
+            submission_id,
+            message_id,
+            chat_session_id,
+            scene_id,
+            content,
+            created_at,
+        };
+        submission.validate()?;
+        Ok(submission)
+    }
+
+    fn validate(&self) -> Result<i64> {
+        for value in [
+            &self.submission_id,
+            &self.message_id,
+            &self.chat_session_id,
+            &self.scene_id,
+        ] {
+            identity(value)?;
+        }
+        ensure!(
+            !self.content.trim().is_empty() && self.content.len() <= MAX_MESSAGE_BODY_BYTES,
+            "NIR1_GENERATION_MESSAGE_BODY_LIMIT"
+        );
+        ensure!(
+            !self.created_at.is_empty() && self.created_at.len() <= MAX_SHORT_TEXT_BYTES,
+            "NIR1_GENERATION_MESSAGE_METADATA_LIMIT"
+        );
+        Ok(chrono::DateTime::parse_from_rfc3339(&self.created_at)
+            .context("NIR1_CHAT_CAPTURE_TIMESTAMP_INVALID")?
+            .timestamp_millis())
+    }
+}
+
+/// Native writer result. Its private fields prevent preparation from being
+/// constructed from a caller-selected historical message-version ID.
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AcceptedChatInputCapture {
+    capture_id: String,
+    project_id: String,
+    chat_session_id: String,
+    scene_id: String,
+    submission_id: String,
+    submission_digest: String,
+    message_id: String,
+    message_version_id: String,
+    owner: ChatInputCaptureOwner,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl AcceptedChatInputCapture {
+    pub fn capture_id(&self) -> &str {
+        &self.capture_id
+    }
+
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub fn chat_session_id(&self) -> &str {
+        &self.chat_session_id
+    }
+
+    pub fn scene_id(&self) -> &str {
+        &self.scene_id
+    }
+
+    pub fn submission_id(&self) -> &str {
+        &self.submission_id
+    }
+
+    pub fn message_id(&self) -> &str {
+        &self.message_id
+    }
+
+    pub fn message_version_id(&self) -> &str {
+        &self.message_version_id
+    }
+
+    pub(crate) fn owner(&self) -> &ChatInputCaptureOwner {
+        &self.owner
+    }
+}
+
 /// Canonical text and thinking live only in the existing chat_messages row.
 /// Thinking uses the existing metadata.thinking_blocks representation.
 #[derive(Clone, Debug)]
@@ -1724,7 +1937,8 @@ fn message_digest_in_tx(
     message: &str,
     project: &str,
     session: &str,
-) -> Result<(String, String)> {
+    reserve_before_body: impl FnOnce(usize) -> Result<()>,
+) -> Result<(String, String, String)> {
     let lengths: (i64, i64, Option<i64>, i64) = conn
         .query_row(
             "SELECT octet_length(m.role),octet_length(m.content),
@@ -1757,6 +1971,7 @@ fn message_digest_in_tx(
         MAX_SHORT_TEXT_BYTES,
         "NIR1_GENERATION_MESSAGE_METADATA_LIMIT",
     )?;
+    reserve_before_body(lengths.1 as usize)?;
     let (role, content, metadata, created_at): (String, String, Option<String>, String) = conn
         .query_row(
             "SELECT m.role,m.content,m.metadata,m.created_at FROM chat_messages m
@@ -1780,6 +1995,7 @@ fn message_digest_in_tx(
             "thinkingBlocks":thinking,"createdAt":created_at}),
         )?,
         role,
+        content,
     ))
 }
 
@@ -1792,6 +2008,21 @@ fn read_message_version_in_tx_with_cancellation(
     id: &str,
     cancellation: Option<&GenerationHistorySnapshotCancellation>,
 ) -> Result<MessageVersion> {
+    read_message_version_in_tx_with_body_and_reservation(
+        conn,
+        id,
+        cancellation,
+        |_, _, _, _| Ok(()),
+    )
+    .map(|(version, _)| version)
+}
+
+fn read_message_version_in_tx_with_body_and_reservation(
+    conn: &Connection,
+    id: &str,
+    cancellation: Option<&GenerationHistorySnapshotCancellation>,
+    reserve_before_body: impl FnOnce(&str, &str, &str, usize) -> Result<()>,
+) -> Result<(MessageVersion, String)> {
     identity(id)?;
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
@@ -1860,7 +2091,10 @@ fn read_message_version_in_tx_with_cancellation(
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
-    let (body_digest, role) = message_digest_in_tx(conn, &row.2, &row.0, &row.1)?;
+    let (body_digest, role, content) =
+        message_digest_in_tx(conn, &row.2, &row.0, &row.1, |length| {
+            reserve_before_body(&row.0, &row.1, &row.2, length)
+        })?;
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
@@ -1876,16 +2110,54 @@ fn read_message_version_in_tx_with_cancellation(
         body_digest == row.4,
         "NIR1_GENERATION_MESSAGE_BODY_MISMATCH"
     );
-    Ok(MessageVersion {
-        id: id.to_owned(),
-        project_id: row.0,
-        session_id: row.1,
-        message_id: row.2,
-        origin,
-        body_digest: row.4,
-        parent_attempt_id: row.5,
-        created_at_ms: lengths.6,
-    })
+    Ok((
+        MessageVersion {
+            id: id.to_owned(),
+            project_id: row.0,
+            session_id: row.1,
+            message_id: row.2,
+            origin,
+            body_digest: row.4,
+            parent_attempt_id: row.5,
+            created_at_ms: lengths.6,
+        },
+        content,
+    ))
+}
+
+/// Re-read the exact immutable Human message version inside its caller-owned
+/// transaction, reserving its bounded body size before materializing content.
+pub fn read_captured_human_message_in_tx(
+    conn: &Connection,
+    version_id: &str,
+    expected_session_id: &str,
+    reserve_before_body: impl FnOnce(usize, usize) -> Result<()>,
+) -> Result<(MessageVersion, String)> {
+    identity(version_id)?;
+    identity(expected_session_id)?;
+    let (version, content) = read_message_version_in_tx_with_body_and_reservation(
+        conn,
+        version_id,
+        None,
+        |_, session_id, _, body_bytes| {
+            ensure!(
+                session_id == expected_session_id,
+                "NIR1_GENERATION_MESSAGE_SESSION_MISMATCH"
+            );
+            reserve_before_body(version_id.len(), body_bytes)
+        },
+    )?;
+    ensure!(
+        version.session_id == expected_session_id
+            && version.origin == MessageOrigin::Human
+            && version.parent_attempt_id.is_none(),
+        "NIR1_GENERATION_HUMAN_MESSAGE_REQUIRED"
+    );
+    ensure!(
+        !content.trim().is_empty(),
+        "NIR1_GENERATION_HUMAN_MESSAGE_EMPTY"
+    );
+    Ok((version, content))
 }
 
 pub fn read_message_version(db: &Database, id: &str) -> Result<MessageVersion> {
@@ -1900,7 +2172,7 @@ fn bind_message_in_tx(
     parent: Option<&str>,
     now_ms: i64,
 ) -> Result<MessageVersion> {
-    let (body_digest, role) = message_digest_in_tx(conn, message, project, session)?;
+    let (body_digest, role, _) = message_digest_in_tx(conn, message, project, session, |_| Ok(()))?;
     let expected_role = if parent.is_some() {
         "assistant"
     } else {
@@ -1995,6 +2267,592 @@ pub fn bind_human_message(
             bind_message_in_tx(conn, project, session, message, None, now_ms)
         })
     })
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn bind_new_human_message_in_tx(
+    conn: &Connection,
+    project: &str,
+    session: &str,
+    message: &str,
+    now_ms: i64,
+) -> Result<MessageVersion> {
+    let (body_digest, role, _) = message_digest_in_tx(conn, message, project, session, |_| Ok(()))?;
+    ensure!(role == "user", "NIR1_GENERATION_HUMAN_ROLE_REQUIRED");
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO nir1_generation_message_versions
+        (id,project_id,session_id,message_id,origin,body_digest,parent_attempt_id,created_at_ms)
+        VALUES (?1,?2,?3,?4,'human',?5,NULL,?6)",
+        params![id, project, session, message, body_digest, now_ms],
+    )?;
+    read_message_version_in_tx(conn, &id)
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn chat_session_scene_in_tx(conn: &Connection, session: &str) -> Result<(String, String)> {
+    let scope: Option<(
+        i64,
+        Option<i64>,
+        Option<i64>,
+        String,
+        Option<String>,
+        Option<String>,
+    )> = conn
+        .query_row(
+            "SELECT octet_length(s.project_id),octet_length(s.node_id),
+                    octet_length(n.node_type),s.project_id,s.node_id,n.node_type
+               FROM chat_sessions AS s
+               LEFT JOIN tree_nodes AS n
+                 ON n.id=s.node_id AND n.project_id=s.project_id
+              WHERE s.id=?1",
+            [session],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (project_len, scene_len, node_type_len, project_id, scene_id, node_type) =
+        scope.context("NIR1_CHAT_CAPTURE_SESSION_MISSING")?;
+    bounded_sqlite_length(project_len, MAX_ID_BYTES, "NIR1_CHAT_CAPTURE_SCOPE_LIMIT")?;
+    bounded_optional_sqlite_length(scene_len, MAX_ID_BYTES, "NIR1_CHAT_CAPTURE_SCOPE_LIMIT")?;
+    bounded_optional_sqlite_length(
+        node_type_len,
+        MAX_SHORT_TEXT_BYTES,
+        "NIR1_CHAT_CAPTURE_SCOPE_LIMIT",
+    )?;
+    identity(&project_id)?;
+    let scene_id = scene_id.context("NIR1_CHAT_CAPTURE_SCENE_REQUIRED")?;
+    identity(&scene_id)?;
+    ensure!(
+        node_type.as_deref() == Some("scene"),
+        "NIR1_CHAT_CAPTURE_SCENE_REQUIRED"
+    );
+    Ok((project_id, scene_id))
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn capture_owner_json(owner: &ChatInputCaptureOwner) -> Result<String> {
+    owner.validate()?;
+    Ok(canonical_json_string(&serde_json::to_value(owner)?)?)
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn capture_submission_digest(
+    owner: &ChatInputCaptureOwner,
+    submission: &NewChatInputSubmission,
+) -> Result<String> {
+    Ok(canonical_json_digest(&json!({
+        "domain":"nir1-current-human-chat-input@1",
+        "owner":owner,
+        "submissionId":submission.submission_id,
+        "messageId":submission.message_id,
+        "chatSessionId":submission.chat_session_id,
+        "sceneId":submission.scene_id,
+        "content":submission.content,
+        "createdAt":submission.created_at,
+    }))?)
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn accepted_capture(
+    capture_id: String,
+    project_id: String,
+    submission: &NewChatInputSubmission,
+    submission_digest: String,
+    message_version_id: String,
+    owner: &ChatInputCaptureOwner,
+) -> AcceptedChatInputCapture {
+    AcceptedChatInputCapture {
+        capture_id,
+        project_id,
+        chat_session_id: submission.chat_session_id.clone(),
+        scene_id: submission.scene_id.clone(),
+        submission_id: submission.submission_id.clone(),
+        submission_digest,
+        message_id: submission.message_id.clone(),
+        message_version_id,
+        owner: owner.clone(),
+    }
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn read_capture_row_in_tx(
+    conn: &Connection,
+    capture_id: &str,
+) -> Result<(
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+)> {
+    identity(capture_id)?;
+    let lengths: Option<(i64, i64, i64, i64, i64, i64, i64, i64, i64)> = conn
+        .query_row(
+            "SELECT octet_length(project_id),octet_length(chat_session_id),
+                    octet_length(scene_id),octet_length(submission_id),
+                    octet_length(submission_digest),octet_length(message_id),
+                    octet_length(message_version_id),octet_length(owner_json),octet_length(state)
+               FROM nir1_chat_input_captures WHERE capture_id=?1",
+            [capture_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
+        )
+        .optional()?;
+    let lengths = lengths.context("NIR1_CHAT_CAPTURE_MISSING")?;
+    for (length, limit) in [
+        (lengths.0, MAX_ID_BYTES),
+        (lengths.1, MAX_ID_BYTES),
+        (lengths.2, MAX_ID_BYTES),
+        (lengths.3, MAX_ID_BYTES),
+        (lengths.4, MAX_DIGEST_BYTES),
+        (lengths.5, MAX_ID_BYTES),
+        (lengths.6, MAX_ID_BYTES),
+        (lengths.7, MAX_BINDING_JSON_BYTES),
+        (lengths.8, MAX_SHORT_TEXT_BYTES),
+    ] {
+        bounded_sqlite_length(length, limit, "NIR1_CHAT_CAPTURE_METADATA_LIMIT")?;
+    }
+    conn.query_row(
+        "SELECT project_id,chat_session_id,scene_id,submission_id,submission_digest,
+                message_id,message_version_id,owner_json,state,created_at_ms
+           FROM nir1_chat_input_captures WHERE capture_id=?1",
+        [capture_id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+                row.get(9)?,
+            ))
+        },
+    )
+    .context("NIR1_CHAT_CAPTURE_MISSING")
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn read_current_chat_input_capture_and_human_in_tx(
+    conn: &Connection,
+    capture: &AcceptedChatInputCapture,
+    expected_owner: &ChatInputCaptureOwner,
+    reserve_before_body: impl FnOnce(usize, usize) -> Result<()>,
+) -> Result<(MessageVersion, String)> {
+    ensure!(
+        &capture.owner == expected_owner,
+        "NIR1_CHAT_CAPTURE_OWNER_MISMATCH"
+    );
+    let owner_json = capture_owner_json(expected_owner)?;
+    let row = read_capture_row_in_tx(conn, &capture.capture_id)?;
+    ensure!(
+        row.0 == capture.project_id
+            && row.1 == capture.chat_session_id
+            && row.2 == capture.scene_id
+            && row.3 == capture.submission_id
+            && row.4 == capture.submission_digest
+            && row.5 == capture.message_id
+            && row.6 == capture.message_version_id
+            && row.7 == owner_json
+            && row.8 == "current",
+        "NIR1_CHAT_CAPTURE_NOT_CURRENT"
+    );
+    let (project_id, scene_id) = chat_session_scene_in_tx(conn, &capture.chat_session_id)?;
+    ensure!(
+        project_id == capture.project_id && scene_id == capture.scene_id,
+        "NIR1_CHAT_CAPTURE_SCOPE_MISMATCH"
+    );
+    let (version, body) = read_captured_human_message_in_tx(
+        conn,
+        &capture.message_version_id,
+        &capture.chat_session_id,
+        reserve_before_body,
+    )?;
+    ensure!(
+        version.project_id == capture.project_id
+            && version.message_id == capture.message_id
+            && version.created_at_ms == row.9,
+        "NIR1_CHAT_CAPTURE_MESSAGE_MISMATCH"
+    );
+    Ok((version, body))
+}
+
+#[cfg(feature = "native-current-human-capture")]
+pub(crate) fn read_current_chat_input_capture_in_tx(
+    conn: &Connection,
+    capture: &AcceptedChatInputCapture,
+    expected_owner: &ChatInputCaptureOwner,
+    reserve_before_body: impl FnOnce(usize, usize) -> Result<()>,
+) -> Result<(MessageVersion, String)> {
+    read_current_chat_input_capture_and_human_in_tx(
+        conn,
+        capture,
+        expected_owner,
+        reserve_before_body,
+    )
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn accept_current_chat_input_in_tx(
+    conn: &Connection,
+    owner: &ChatInputCaptureOwner,
+    submission: &NewChatInputSubmission,
+    owner_json: &str,
+    submission_digest: &str,
+    created_at_ms: i64,
+) -> Result<AcceptedChatInputCapture> {
+    // Submission IDs are global durable retry keys, not session-scoped hints.
+    // Resolve them before session lookup so changing the session cannot turn a
+    // replay into a fresh insert.
+    if let Some((capture_id, persisted_digest)) = conn
+        .query_row(
+            "SELECT capture_id,submission_digest
+               FROM nir1_chat_input_submission_keys WHERE submission_id=?1",
+            [&submission.submission_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?
+    {
+        ensure!(
+            persisted_digest == submission_digest,
+            "NIR1_CHAT_CAPTURE_IDEMPOTENCY_CONFLICT"
+        );
+        let row = read_capture_row_in_tx(conn, &capture_id)?;
+        let (project_id, scene_id) = chat_session_scene_in_tx(conn, &submission.chat_session_id)?;
+        ensure!(
+            row.0 == project_id
+                && row.1 == submission.chat_session_id
+                && row.2 == submission.scene_id
+                && row.3 == submission.submission_id
+                && row.4 == submission_digest
+                && row.5 == submission.message_id
+                && row.7 == owner_json
+                && scene_id == submission.scene_id,
+            "NIR1_CHAT_CAPTURE_IDEMPOTENCY_CONFLICT"
+        );
+        ensure!(row.8 == "current", "NIR1_CHAT_CAPTURE_NOT_CURRENT");
+        let (version, body) = read_current_chat_input_capture_in_tx(
+            conn,
+            &accepted_capture(
+                capture_id.clone(),
+                project_id.clone(),
+                submission,
+                submission_digest.to_owned(),
+                row.6.clone(),
+                owner,
+            ),
+            owner,
+            |_, _| Ok(()),
+        )?;
+        ensure!(
+            version.created_at_ms == created_at_ms && body == submission.content,
+            "NIR1_CHAT_CAPTURE_IDEMPOTENCY_CONFLICT"
+        );
+        return Ok(accepted_capture(
+            capture_id,
+            project_id,
+            submission,
+            submission_digest.to_owned(),
+            version.id,
+            owner,
+        ));
+    }
+
+    let (project_id, scene_id) = chat_session_scene_in_tx(conn, &submission.chat_session_id)?;
+    ensure!(
+        scene_id == submission.scene_id,
+        "NIR1_CHAT_CAPTURE_SCOPE_MISMATCH"
+    );
+
+    // Strict INSERT is intentional: an old row with a renderer-chosen ID must
+    // never be promoted into a new accepted Human turn.
+    conn.execute(
+        "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+         VALUES (?1,?2,'user',?3,?4)",
+        params![
+            submission.message_id,
+            submission.chat_session_id,
+            submission.content,
+            submission.created_at
+        ],
+    )?;
+    let version = bind_new_human_message_in_tx(
+        conn,
+        &project_id,
+        &submission.chat_session_id,
+        &submission.message_id,
+        created_at_ms,
+    )?;
+    conn.execute(
+        "UPDATE nir1_chat_input_captures SET state='superseded'
+          WHERE project_id=?1 AND chat_session_id=?2 AND state='current'",
+        params![project_id, submission.chat_session_id],
+    )?;
+    let capture_id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO nir1_chat_input_captures
+         (capture_id,project_id,chat_session_id,scene_id,submission_id,submission_digest,
+          message_id,message_version_id,owner_json,state,created_at_ms)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'current',?10)",
+        params![
+            capture_id,
+            project_id,
+            submission.chat_session_id,
+            submission.scene_id,
+            submission.submission_id,
+            submission_digest,
+            submission.message_id,
+            version.id,
+            owner_json,
+            created_at_ms,
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO nir1_chat_input_submission_keys
+            (submission_id,capture_id,submission_digest,created_at_ms)
+         VALUES (?1,?2,?3,?4)",
+        params![
+            submission.submission_id,
+            capture_id,
+            submission_digest,
+            created_at_ms
+        ],
+    )?;
+    Ok(accepted_capture(
+        capture_id,
+        project_id,
+        submission,
+        submission_digest.to_owned(),
+        version.id,
+        owner,
+    ))
+}
+
+/// Atomically creates a fresh user message/version and makes only that exact
+/// submission the session's current capture. No event or model attempt is
+/// emitted here; product admission/dispatch remains a separate Native route.
+#[cfg(feature = "native-current-human-capture")]
+pub fn accept_current_human_chat_input(
+    workspace: &ActiveWorkspaceSnapshot,
+    owner: &ChatInputCaptureOwner,
+    submission: &NewChatInputSubmission,
+    budget: ParticipantSqlOperationBudget,
+) -> Result<AcceptedChatInputCapture> {
+    let created_at_ms = submission.validate()?;
+    owner.validate()?;
+    ensure!(
+        owner.workspace_locator.as_str() == workspace.path().to_string_lossy().as_ref()
+            && owner.workspace_authority_instance == workspace.authority.identity(),
+        "NIR1_CHAT_CAPTURE_OWNER_MISMATCH"
+    );
+    let owner_json = capture_owner_json(owner)?;
+    let submission_digest = capture_submission_digest(owner, submission)?;
+    let inner_budget = budget.clone();
+    workspace
+        .authority
+        .db()
+        .with_participant_immediate_transaction_bounded(workspace.participant(), budget, |conn| {
+            inner_budget.check(workspace.participant())?;
+            let capture = accept_current_chat_input_in_tx(
+                conn,
+                owner,
+                submission,
+                &owner_json,
+                &submission_digest,
+                created_at_ms,
+            )?;
+            inner_budget.check(workspace.participant())?;
+            Ok(capture)
+        })
+}
+
+/// One-way cancellation for the exact accepted owner/capture. A terminal or
+/// superseded capture cannot be revived or redirected to another submission.
+#[cfg(feature = "native-current-human-capture")]
+pub fn cancel_current_human_chat_input(
+    workspace: &ActiveWorkspaceSnapshot,
+    capture: &AcceptedChatInputCapture,
+    expected_owner: &ChatInputCaptureOwner,
+    budget: ParticipantSqlOperationBudget,
+) -> Result<()> {
+    ensure!(
+        &capture.owner == expected_owner
+            && expected_owner.workspace_locator.as_str()
+                == workspace.path().to_string_lossy().as_ref()
+            && expected_owner.workspace_authority_instance == workspace.authority.identity(),
+        "NIR1_CHAT_CAPTURE_OWNER_MISMATCH"
+    );
+    let owner_json = capture_owner_json(expected_owner)?;
+    workspace
+        .authority
+        .db()
+        .with_participant_immediate_transaction_bounded(workspace.participant(), budget, |conn| {
+            read_current_chat_input_capture_in_tx(conn, capture, expected_owner, |_, _| Ok(()))?;
+            let changed = conn.execute(
+                "UPDATE nir1_chat_input_captures SET state='cancelled'
+                  WHERE capture_id=?1 AND owner_json=?2 AND state='current'",
+                params![capture.capture_id, owner_json],
+            )?;
+            ensure!(changed == 1, "NIR1_CHAT_CAPTURE_NOT_CURRENT");
+            Ok(())
+        })
+}
+
+/// Terminalize one exact durable submission by its main-authorized sender.
+/// This operation can only remove currentness; it never creates a capture.
+#[cfg(feature = "native-current-human-capture")]
+pub fn retire_current_human_chat_input(
+    workspace: &ActiveWorkspaceSnapshot,
+    authorized_owner: &ChatInputCaptureOwner,
+    chat_session_id: &str,
+    budget: ParticipantSqlOperationBudget,
+) -> Result<ChatInputCaptureRetirementOutcome> {
+    identity(chat_session_id)?;
+    authorized_owner.validate()?;
+    ensure!(
+        authorized_owner.workspace_locator.as_str() == workspace.path().to_string_lossy().as_ref()
+            && authorized_owner.workspace_authority_instance == workspace.authority.identity(),
+        "NIR1_CHAT_CAPTURE_OWNER_MISMATCH"
+    );
+    let inner_budget = budget.clone();
+    workspace
+        .authority
+        .db()
+        .with_participant_immediate_transaction_bounded(workspace.participant(), budget, |conn| {
+            inner_budget.check(workspace.participant())?;
+            let session: Option<(i64, i64, String)> = conn
+                .query_row(
+                    "SELECT octet_length(id),octet_length(project_id),project_id
+                       FROM chat_sessions WHERE id=?1",
+                    [chat_session_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            let (session_len, project_len, project_id) =
+                session.context("NIR1_CHAT_CAPTURE_SESSION_MISSING")?;
+            bounded_sqlite_length(session_len, MAX_ID_BYTES, "NIR1_CHAT_CAPTURE_SCOPE_LIMIT")?;
+            bounded_sqlite_length(project_len, MAX_ID_BYTES, "NIR1_CHAT_CAPTURE_SCOPE_LIMIT")?;
+            identity(&project_id)?;
+            let changed = conn.execute(
+                "UPDATE nir1_chat_input_captures SET state='superseded'
+                  WHERE project_id=?1 AND chat_session_id=?2 AND state='current'",
+                params![project_id, chat_session_id],
+            )?;
+            ensure!(changed <= 1, "NIR1_CHAT_CAPTURE_CURRENT_INVARIANT_BROKEN");
+            inner_budget.check(workspace.participant())?;
+            Ok(if changed == 1 {
+                ChatInputCaptureRetirementOutcome::Retired
+            } else {
+                ChatInputCaptureRetirementOutcome::NotCurrent
+            })
+        })
+}
+
+#[cfg(feature = "native-current-human-capture")]
+pub fn cancel_current_human_chat_input_by_submission(
+    workspace: &ActiveWorkspaceSnapshot,
+    authorized_owner: &ChatInputCaptureOwner,
+    submission_id: &str,
+    message_id: &str,
+    chat_session_id: &str,
+    scene_id: &str,
+    budget: ParticipantSqlOperationBudget,
+) -> Result<ChatInputCaptureCancellationOutcome> {
+    for value in [submission_id, message_id, chat_session_id, scene_id] {
+        identity(value)?;
+    }
+    authorized_owner.validate()?;
+    ensure!(
+        authorized_owner.workspace_locator.as_str() == workspace.path().to_string_lossy().as_ref()
+            && authorized_owner.workspace_authority_instance == workspace.authority.identity(),
+        "NIR1_CHAT_CAPTURE_OWNER_MISMATCH"
+    );
+    let inner_budget = budget.clone();
+    workspace
+        .authority
+        .db()
+        .with_participant_immediate_transaction_bounded(workspace.participant(), budget, |conn| {
+            inner_budget.check(workspace.participant())?;
+            let key: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT capture_id,submission_digest
+                       FROM nir1_chat_input_submission_keys WHERE submission_id=?1",
+                    [submission_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            let Some((capture_id, key_digest)) = key else {
+                return Ok(ChatInputCaptureCancellationOutcome::NotFound);
+            };
+            let exists: Option<i64> = conn
+                .query_row(
+                    "SELECT 1 FROM nir1_chat_input_captures WHERE capture_id=?1",
+                    [&capture_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if exists.is_none() {
+                return Ok(ChatInputCaptureCancellationOutcome::NotCurrent);
+            }
+            let row = read_capture_row_in_tx(conn, &capture_id)?;
+            ensure!(
+                row.3 == submission_id
+                    && row.4 == key_digest
+                    && row.5 == message_id
+                    && row.1 == chat_session_id
+                    && row.2 == scene_id,
+                "NIR1_CHAT_CAPTURE_IDEMPOTENCY_CONFLICT"
+            );
+            let persisted_owner: ChatInputCaptureOwner =
+                serde_json::from_str(&row.7).context("NIR1_CHAT_CAPTURE_OWNER_INVALID")?;
+            ensure!(
+                persisted_owner.same_capture_incarnation(authorized_owner),
+                "NIR1_CHAT_CAPTURE_OWNER_MISMATCH"
+            );
+            if row.8 != "current" {
+                return Ok(ChatInputCaptureCancellationOutcome::NotCurrent);
+            }
+            let changed = conn.execute(
+                "UPDATE nir1_chat_input_captures SET state='cancelled'
+                  WHERE capture_id=?1 AND submission_id=?2 AND message_id=?3
+                    AND owner_json=?4 AND state='current'",
+                params![capture_id, submission_id, message_id, row.7],
+            )?;
+            inner_budget.check(workspace.participant())?;
+            Ok(if changed == 1 {
+                ChatInputCaptureCancellationOutcome::Cancelled
+            } else {
+                ChatInputCaptureCancellationOutcome::NotCurrent
+            })
+        })
 }
 
 fn receipt_digest(terminal: &StoredTerminal) -> Result<String> {

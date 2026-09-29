@@ -574,3 +574,53 @@ export async function invoke<T = unknown>(
     throw normalizeIpcFailure(cmd, error);
   }
 }
+
+export interface CaptureCurrentChatInputSubmission {
+  submissionId: string;
+  messageId: string;
+  chatSessionId: string;
+  sceneId: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface CaptureCurrentChatInputReceipt {
+  status: "accepted";
+  projectId: string;
+  chatSessionId: string;
+  sceneId: string;
+  messageId: string;
+}
+
+export interface LegacyOnlyChatInputResult {
+  status: "legacy-only";
+}
+
+export interface CancelCurrentChatInputReceipt {
+  status: "cancelled" | "not-current" | "not-found";
+  submissionId: string;
+  messageId: string;
+}
+
+export interface RetireCurrentChatInputReceipt {
+  status: "retired" | "not-current";
+  chatSessionId: string;
+}
+
+export function retireCurrentChatInput(
+  chatSessionId: string,
+): Promise<RetireCurrentChatInputReceipt | LegacyOnlyChatInputResult> {
+  return invoke("retire_current_chat_input", { chatSessionId });
+}
+
+export function captureCurrentChatInput(
+  submission: CaptureCurrentChatInputSubmission,
+): Promise<CaptureCurrentChatInputReceipt | LegacyOnlyChatInputResult> {
+  return invoke("capture_current_chat_input", { submission });
+}
+
+export function cancelCurrentChatInput(
+  submission: Omit<CaptureCurrentChatInputSubmission, "content" | "createdAt">,
+): Promise<CancelCurrentChatInputReceipt> {
+  return invoke("cancel_current_chat_input", { submission });
+}
