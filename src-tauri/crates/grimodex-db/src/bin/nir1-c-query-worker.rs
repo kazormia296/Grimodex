@@ -14,7 +14,8 @@ use grimodex_db::{
 };
 use rusqlite::{Connection, OpenFlags};
 use std::{
-    io::{Read, Write},
+    fs::File,
+    io::{LineWriter, Read, Write},
     path::PathBuf,
     sync::Arc,
 };
@@ -98,6 +99,33 @@ fn registration_error_stage(
         return StartupStage::CanonicalRegistrationSqliteError;
     }
     StartupStage::CanonicalRegistration
+}
+
+fn take_protocol_output() -> Result<LineWriter<File>> {
+    #[cfg(unix)]
+    let file = {
+        use std::os::fd::FromRawFd;
+        // SAFETY: this worker transfers its inherited stdout fd to this sole
+        // writer and never uses the global stdout handle for protocol output.
+        unsafe { File::from_raw_fd(libc::STDOUT_FILENO) }
+    };
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle};
+        let handle = std::io::stdout().as_raw_handle();
+        ensure!(
+            !handle.is_null() && handle as isize != -1,
+            "worker stdout handle unavailable"
+        );
+        // SAFETY: this worker transfers its inherited stdout handle to this
+        // sole writer and never uses the global stdout handle for protocol output.
+        unsafe { File::from_raw_handle(handle) }
+    };
+    Ok(LineWriter::new(file))
+}
+
+fn close_protocol_output(output: LineWriter<File>) {
+    drop(output);
 }
 
 fn main() -> std::process::ExitCode {
@@ -211,7 +239,7 @@ fn run(startup_stage: &mut StartupStage) -> Result<()> {
     // Registration promotes its Q-owned pending proof only after this actual
     // zero-live seal has closed S and the final reader lifecycle check succeeds.
     *startup_stage = StartupStage::Ready;
-    let mut output = std::io::stdout().lock();
+    let mut output = take_protocol_output()?;
     output.write_all(b"R")?;
     output.flush()?;
     let mut input = std::io::stdin().lock();
@@ -333,6 +361,7 @@ fn run(startup_stage: &mut StartupStage) -> Result<()> {
     {
         output.write_all(&[0xA5])?;
         output.flush()?;
+        close_protocol_output(output);
         std::process::exit(23);
     }
     #[cfg(all(feature = "nir1-c-query-test-seam", target_os = "linux"))]
@@ -349,13 +378,12 @@ fn run(startup_stage: &mut StartupStage) -> Result<()> {
     if std::env::var_os("NIR1_C_QUERY_TEST_HOLD_AFTER_COMMIT")
         .is_some_and(|value| value.to_str() == Some("held"))
     {
-        drop(output);
-        let closed = unsafe { libc::close(libc::STDOUT_FILENO) };
-        ensure!(closed == 0, "test worker could not close committed stdout");
+        close_protocol_output(output);
         loop {
             std::thread::park_timeout(std::time::Duration::from_secs(30));
         }
     }
+    close_protocol_output(output);
     #[cfg(feature = "nir1-c-query-test-seam")]
     std::process::exit(23);
     #[cfg(not(feature = "nir1-c-query-test-seam"))]

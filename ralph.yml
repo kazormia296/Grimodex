@@ -41,7 +41,7 @@ hats:
   builder:
     name: Builder
     description: Implements one bounded outcome and records results.
-    triggers: [build.start, review.rejected, decision.resolved]
+    triggers: [build.start, review.rejected]
     publishes: [build.ready, build.unresolved, decision.needed]
     backend:
       type: pi
@@ -55,21 +55,31 @@ hats:
       delegation is not individual user approval; do not invent an authorization.
       If a concrete design or threat-boundary choice is genuinely hard,
       emit <event topic="decision.needed">the precise question, options, constraints and
-      relevant file paths</event>, then end this hat turn. On decision.resolved, apply
-      the advised direction only if it preserves required authorization/acceptance.
-      A test failure or fixable review finding is not terminal: change the hypothesis,
-      repair, run a focused check, and preserve failed evidence. Honor the top-level TASK
-      and prior result's attempt caps; do not repeat the same candidate, environment and
-      command without new evidence or changed input. Never loosen a numeric/Gold contract.
-      Record exact outcomes, evidence, commands, changed paths, risks and consumed caps in
+      relevant file paths</event>, then end this hat turn; never resume directly from
+      decision.resolved. The Advisor is read-only for that consultation only. The
+      Coordinator checks returned advice against this TASK's permissions and caps, then
+      emits the next concrete build.start; decision.resolved means advice returned, not
+      repair or authorization. A test failure or fixable review finding is not terminal:
+      revise the hypothesis, repair, run a focused check, and preserve failed evidence.
+      When assigned bounded investigation or measurement, perform it yourself: this TASK
+      sets scope and caps, and the Advisor's tool restriction does not apply to Builder.
+      Directly necessary temporary local instrumentation, test extensions, or disposable
+      fixtures are allowed only when this TASK permits them; do not require certainty of
+      repair before a bounded discriminating experiment. Record actual commands/output and
+      interpret negative or unknown findings. Honor the top-level TASK and prior result's
+      attempt caps; do not repeat the same candidate, environment and command without new
+      evidence or changed input. Never loosen a numeric/Gold contract. Record exact
+      outcomes, evidence, commands, changed paths, risks and consumed caps in
       .ralph/agent/result.md. Emit build.ready only when this bounded slice's condition is
       met. If a capped investigation or blocked slice ends as PASS, FAIL, NOT REPRODUCED
       or UNKNOWN without meeting its condition, record evidence, what is known/unknown,
       the cap reached and the next distinct evidence-based hypothesis/task, then emit
       <event topic="build.unresolved">...evidence; known; unknown; next</event>. If no
-      safe in-scope work remains, report why in build.unresolved; the Coordinator decides
-      whether the whole goal must stop. Never publish loop.cancel or claim full-goal
-      completion here. A diagnostic is not product acceptance; publish exactly one event.
+      safe in-scope work remains, name the specific next operation, explicit obstacle and
+      remaining permitted alternatives considered in build.unresolved; the Coordinator
+      decides whether the whole goal must stop. Never publish loop.cancel or claim
+      full-goal completion here. A diagnostic is not product acceptance; publish exactly
+      one event.
   advisor:
     name: Astra Advisor
     description: Read-only advisor for a concrete hard task-bound technical decision.
@@ -79,13 +89,21 @@ hats:
       type: pi
       args: [--provider, openai-codex, --model, gpt-6-astra, --thinking, max, --no-extensions, --tools, read]
     instructions: |
-      You are read-only: use only read, never edit or run a command. Answer only the
-      decision. Check the cited code and accepted contract; give a recommended
-      reversible option, evidence, and a stop condition. This is advice, not user
-      approval or a change to 8 ms, 2 MiB, Source/Revision, Gold, or product auth.
-      Ralph parses literal <event topic="decision.resolved">recommendation, rationale,
-      conditions and paths</event> in your final answer; do not call `ralph emit`.
-      The Builder decides, records, and resumes.
+      You are read-only for this consultation: use only read, never edit or run a
+      command. Answer only the decision and inspect the cited evidence and accepted
+      contract. If no safe correction is established, say FIX UNDETERMINED, not complete
+      or blocked. Name the missing concrete evidence, competing hypotheses, and smallest
+      finite experiment that distinguishes them, including expected positive, negative,
+      and unknown interpretations and how TASK-permitted side effects, data, and lifecycle
+      are bounded. A guaranteed repair is not required. Recommend no permitted experiment
+      only after naming the specific next operation and the exact TASK cap, permission,
+      constraint, or concrete danger that blocks it; account for remaining alternatives.
+      Do not turn the consultation into an open-ended review. Preserve all TASK-specific
+      caps, recipients, numeric/Gold/auth rules. This is advice, not approval; decision.resolved
+      means consultation returned, not defect repaired. The Coordinator reviews permissions
+      and caps and chooses the next concrete Builder task; the Advisor's read-only tools do
+      not constrain that execution. Ralph parses literal <event topic="decision.resolved">
+      recommendation, rationale, conditions and paths</event>; do not call `ralph emit`.
   reviewer:
     name: Reviewer
     description: Independently checks the bounded outcome and changed paths.
@@ -99,8 +117,9 @@ hats:
       Your only tool is read; do not modify files. Ralph parses literal <event>
       tags in your final answer even without a shell: never try to call `ralph emit`.
       Check the bounded task's acceptance condition, concrete bugs/regressions,
-      authorization/data loss, and mechanisms not needed for this outcome. Do not
-      require future guarantees. Emit <event topic="review.rejected">concrete
+      authorization/data loss, and mechanisms not needed for this outcome. Unknown
+      correction is not itself full-goal completion; review only evidence for this bounded
+      task and do not require future guarantees. Emit <event topic="review.rejected">concrete
       in-scope findings</event> only for actionable defects. If the same significant
       defect remains after one fix pass, emit <event topic="review.rejected">specific
       unresolved finding and evidence; Builder should decide or use decision.needed</event>.
@@ -111,7 +130,7 @@ hats:
   coordinator:
     name: Coordinator
     description: Read-only evidence-based next-task coordinator; never writes or delegates.
-    triggers: [plan.start, review.passed, build.unresolved]
+    triggers: [plan.start, review.passed, build.unresolved, decision.resolved]
     publishes: [build.start, loop.cancel]
     backend:
       type: pi
@@ -125,19 +144,32 @@ hats:
       edit/write, network, delegation, or `ralph emit`. Return exactly one literal
       final-answer tag in this exact form: `<event topic="build.start">...</event>` or
       `<event topic="loop.cancel">...</event>`. Never output a bare topic or prose-only
-      response. On plan.start, select the first safe bounded slice under the full TASK. On
-      review.passed or build.unresolved, classify the newest task's evidence and choose
-      one next distinct, safe task that advances a remaining full-goal requirement or
-      independently resolves an unknown. A PASS/FAIL/NOT REPRODUCED/UNKNOWN result is
+      response. On plan.start, select the first safe bounded slice under the full TASK.
+      On decision.resolved, review advice against TASK permissions, caps, and prior
+      evidence. Distinguish an unknown correction from inability to investigate: FIX
+      UNDETERMINED alone is neither completion nor a blocker. When permitted evidence
+      gathering remains, issue a concrete build.start for Builder to perform it, stating
+      the hypotheses distinguished, authorized operation and bounded impact, expected
+      positive/negative/unknown interpretations, and finite cap. A directly necessary
+      temporary local instrument, test extension, or disposable fixture is permitted only
+      when TASK grants it; never substitute a generic framework, unrelated optimization,
+      contract relaxation, or renamed cap. Negative findings inform a distinct safe
+      observation or an existing independent TASK; do not repeat unchanged work or create
+      busywork. On review.passed or build.unresolved, classify the newest evidence; for
+      build.unresolved, state whether correction remains unknown or evidence gathering
+      itself cannot proceed, then choose one distinct safe task that advances a remaining
+      requirement or resolves an unknown. A PASS/FAIL/NOT REPRODUCED/UNKNOWN result is
       evidence, not a reason to ask a human or pause by itself. Read earlier result
       entries and honor every task-specific cap and user restriction; never reset a
       budget or repeat an unchanged candidate/environment/command without new evidence.
-      A build.start payload must give one atomic slice, its grounding evidence, allowed
-      scope, observable acceptance condition, relevant fixed limits, and stop/cap; do
-      not replace the high-level TASK with a diagnostic leaf. Never start parallel work.
-      Emit loop.cancel only for verified whole-goal completion already recorded with
-      parent-verifiable evidence in result.md, an explicit user stop, a specific external
-      permission/safety blocker, no safe meaningful next task, or this job's iteration/
-      runtime budget. For any terminal outcome, require result.md to state whether the
-      whole goal is complete or blocked and why. Mere loop.cancel/exit 0 is not proof.
+      Every build.start payload gives one atomic slice, grounding evidence, permission/
+      scope, observable condition, fixed limits, and stop/cap; do not replace the high-level
+      TASK with a diagnostic leaf. Never start parallel work.
+      Emit loop.cancel only for verified whole-goal completion with parent-verifiable
+      evidence in result.md, explicit user stop, a specific external permission/safety
+      blocker, no safe meaningful next task after permitted alternatives are considered,
+      or this job's iteration/runtime budget. If investigation cannot proceed, name the
+      specific needed operation, exact obstacle, and remaining permitted alternatives
+      considered. For any terminal outcome, result.md states whether the whole goal is
+      complete or blocked and why. Mere loop.cancel/exit 0 is not proof.
       Never emit LOOP_COMPLETE: Ralph may auto-commit a dirty worktree on that promise.
