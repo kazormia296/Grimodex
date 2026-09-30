@@ -1128,10 +1128,9 @@
         },
         {
           "label": "Run product journey shard 1",
-          "command": "xvfb-run",
+          "command": "node",
           "args": [
-            "--auto-display",
-            "--server-args=-screen 0 1920x1080x24",
+            "scripts/local-ci-xvfb.mjs",
             "node",
             "electron/scripts/product-journey-shards.mjs",
             "run",
@@ -1154,10 +1153,9 @@
         },
         {
           "label": "Run product journey shard 2",
-          "command": "xvfb-run",
+          "command": "node",
           "args": [
-            "--auto-display",
-            "--server-args=-screen 0 1920x1080x24",
+            "scripts/local-ci-xvfb.mjs",
             "node",
             "electron/scripts/product-journey-shards.mjs",
             "run",
@@ -1180,10 +1178,9 @@
         },
         {
           "label": "Run product journey shard 3",
-          "command": "xvfb-run",
+          "command": "node",
           "args": [
-            "--auto-display",
-            "--server-args=-screen 0 1920x1080x24",
+            "scripts/local-ci-xvfb.mjs",
             "node",
             "electron/scripts/product-journey-shards.mjs",
             "run",

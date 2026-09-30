@@ -172,7 +172,7 @@ fn verify_execution(conn: &Connection, project: &str, outcome: &NirEmbeddedDocum
                 "NIR1 vector dimension mismatch"
             );
             let mut norm = 0.0_f64;
-            for chunk in embedding.chunks_exact(4) {
+            for chunk in embedding.as_chunks::<4>().0 {
                 let value = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                 ensure!(value.is_finite(), "NIR1 non-finite vector");
                 norm += f64::from(value).powi(2);

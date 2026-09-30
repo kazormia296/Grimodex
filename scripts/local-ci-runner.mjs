@@ -118,11 +118,16 @@ export async function runLocalCiTasks(
     deadlineMs = Number.POSITIVE_INFINITY,
     executeTask,
     maxSlots = 1,
+    maxParallelTasks = maxSlots,
     notify = () => {},
     signal = null,
   } = {},
 ) {
   validateLocalCiTasks(tasks, { maxSlots });
+  requirePositiveInteger(maxParallelTasks, "local CI maxParallelTasks");
+  if (maxParallelTasks > maxSlots) {
+    throw new Error("local CI maxParallelTasks must not exceed maxSlots");
+  }
   if (typeof executeTask !== "function") {
     throw new Error("local CI executeTask must be a function");
   }
@@ -197,6 +202,7 @@ export async function runLocalCiTasks(
       let admitted = false;
       if (!admissionStopped) {
         for (const task of tasks) {
+          if (running.size >= maxParallelTasks) break;
           if (startedIds.has(task.id)) continue;
           if (
             (task.after ?? []).some(

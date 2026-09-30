@@ -17,6 +17,16 @@ overlapping, `slots` reserves part of the global twelve-slot limit, and
 `timeoutMs` optionally shortens the task timeout. The runner validates IDs,
 dependencies, slot bounds, and cycles before starting a command.
 
+Use `--max-parallel-tasks N` (1 through 12, default 12) to additionally limit
+the number of tasks admitted at once on a constrained host. For example,
+`pnpm ci:local:full -- --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks 1`
+runs tasks serially while preserving the twelve-slot budget, every task's
+command, internal worker count, timeout, and acceptance criteria. Twelve-slot
+tasks still run normally. The selected limit is bound into the existing receipt
+plan; pass the same option to `pnpm ci:local:verify -- full` with the same base
+and head. Quick supports the same option. This limits task overlap, not the
+resource consumption inside an individual task.
+
 PR-bound Quick evidence is collected only after focused validation and the
 requested candidate commit. Confirm the candidate worktree is clean, resolve
 `candidate_base` and `candidate_head` once, and pass those same expanded values

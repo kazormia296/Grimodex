@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import {
   access,
@@ -18,6 +19,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import yaml from "js-yaml";
 
@@ -1802,6 +1804,7 @@ test("local CI argument parsing supports comparison, resume, and dry-run", () =>
       from: "security",
       head: "topic",
       list: false,
+      maxParallelTasks: null,
       profile: "full",
       report: "/tmp/local-ci.json",
       recoverLock: false,
@@ -1809,6 +1812,28 @@ test("local CI argument parsing supports comparison, resume, and dry-run", () =>
     },
   );
   assert.equal(parseLocalCiArgs(["--verify", "full"]).verify, true);
+  assert.equal(
+    parseLocalCiArgs(["full", "--max-parallel-tasks", "1"]).maxParallelTasks,
+    1,
+  );
+  for (const value of [
+    "0",
+    "-1",
+    "1.5",
+    "NaN",
+    "Infinity",
+    "1e1",
+    "9007199254740992",
+  ]) {
+    assert.throws(
+      () => parseLocalCiArgs(["full", "--max-parallel-tasks", value]),
+      /positive integer/u,
+    );
+  }
+  assert.throws(
+    () => parseLocalCiArgs(["full", "--max-parallel-tasks"]),
+    /requires a value/u,
+  );
   assert.throws(
     () => parseLocalCiArgs(["--verify", "--verify-staging", "full"]),
     /Unknown argument: --verify-staging/u,
@@ -2030,6 +2055,90 @@ function finalizationTestResult(runId) {
     version: 3,
   };
 }
+
+test("external staging verifier receives the parallel cap and rejects its omission", async (t) => {
+  // Synthetic verifier fixture only: never publish a canonical Quick receipt.
+  const runId = randomUUID();
+  const directory = path.join(repoRoot, ".artifacts/local-ci/runs", runId);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const args = {
+    profile: "quick",
+    base: "HEAD",
+    head: "HEAD",
+    maxParallelTasks: 1,
+  };
+  const plan = buildLocalCiPlan(await readRegistry(), args);
+  const candidate = await resolveLocalCiCandidate(plan);
+  const tasks = [];
+  for (const task of plan.tasks) {
+    const logs = {};
+    for (const stream of ["stdout", "stderr"]) {
+      const relative = `.artifacts/local-ci/runs/${runId}/logs/${task.id}.${stream}.log`;
+      await mkdir(path.dirname(path.join(repoRoot, relative)), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(repoRoot, relative),
+        "synthetic verifier fixture\n",
+      );
+      logs[stream] = {
+        path: relative,
+        size: Buffer.byteLength("synthetic verifier fixture\n"),
+        sha256: `sha256:${createHash("sha256").update("synthetic verifier fixture\n").digest("hex")}`,
+      };
+    }
+    tasks.push({
+      id: task.id,
+      status: "passed",
+      exitCode: 0,
+      signal: null,
+      durationMs: 1,
+      cleanup: { complete: true },
+      logs,
+    });
+  }
+  const result = {
+    ...finalizationTestResult(runId),
+    candidate,
+    candidateAfter: candidate,
+    plan: createLocalCiPlanDescriptor(plan),
+    registryDigest: plan.registryDigest,
+    durationMs: 1,
+    tasks,
+  };
+  const finalized = await finalizeLocalCiExecution({
+    args,
+    result,
+    runId,
+    root: repoRoot,
+    reportPath: path.join(directory, "synthetic-quick.json"),
+    stagingReceiptPath: path.join(directory, "synthetic-staging.json"),
+    signal: new AbortController().signal,
+    invocationStarted: performance.now(),
+  });
+  assert.equal(finalized.success, true, JSON.stringify(finalized.result.receiptError));
+  assert.equal(finalized.result.finalization.externalVerify.status, "passed");
+  await assert.rejects(
+    promisify(execFile)(
+      process.execPath,
+      [
+        path.join(repoRoot, "scripts/local-ci-staging-verifier.mjs"),
+        "quick",
+        "--base",
+        "HEAD",
+        "--head",
+        "HEAD",
+        "--report",
+        finalized.reportPath,
+      ],
+      { timeout: 10000 },
+    ),
+    (error) => {
+      assert.match(error.stderr, /exact task plan/u);
+      return true;
+    },
+  );
+});
 
 async function fullFinalizationFixture(root, runId) {
   const candidate = completeCandidate();
@@ -3949,10 +4058,9 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
   assert.equal(mcpBuildTask.command.env.CARGO_BUILD_JOBS, "2");
   for (const shard of ["1", "2", "3"]) {
     const task = tasksById.get(`journeys.shard-${shard}`);
-    assert.equal(task.command.command, "xvfb-run");
+    assert.equal(task.command.command, "node");
     assert.deepEqual(task.command.args, [
-      "--auto-display",
-      "--server-args=-screen 0 1920x1080x24",
+      "scripts/local-ci-xvfb.mjs",
       "node",
       "electron/scripts/product-journey-shards.mjs",
       "run",
@@ -4398,6 +4506,29 @@ test("Full priority admits ready browser work when two slots reopen before later
   assert.equal((await running).status, "passed");
 });
 
+test("parallel task cap preserves the complete plan and default slot budget", async () => {
+  const registry = await readRegistry();
+  const options = { profile: "full", base: "origin/master", head: "HEAD" };
+  const normal = buildLocalCiPlan(registry, options);
+  const serial = buildLocalCiPlan(registry, {
+    ...options,
+    maxParallelTasks: 1,
+  });
+  assert.equal(normal.maxParallelTasks, 12);
+  assert.equal(serial.maxSlots, 12);
+  assert.equal(serial.maxParallelTasks, 1);
+  assert.deepEqual(serial.tasks, normal.tasks);
+  assert.deepEqual(serial.stages, normal.stages);
+  assert.deepEqual(serial.coverage, normal.coverage);
+  assert.equal(serial.registryDigest, normal.registryDigest);
+  for (const maxParallelTasks of [0, -1, 1.5, 13, NaN, Infinity]) {
+    assert.throws(
+      () => buildLocalCiPlan(registry, { ...options, maxParallelTasks }),
+      /--max-parallel-tasks/u,
+    );
+  }
+});
+
 test("receipt plan binding rejects descriptor changes and unclean task results", async () => {
   const registry = await readRegistry();
   const plan = buildLocalCiPlan(registry, {
@@ -4446,6 +4577,40 @@ test("receipt plan binding rejects descriptor changes and unclean task results",
   );
 
   const tampered = structuredClone(receipt);
+  const serialPlan = buildLocalCiPlan(registry, {
+    profile: "quick",
+    base: "origin/master",
+    head: "HEAD",
+    maxParallelTasks: 1,
+  });
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(receipt, {
+        candidate,
+        plan: serialPlan,
+        profile: "quick",
+      }),
+    /exact task plan/u,
+  );
+  const serialReceipt = structuredClone(receipt);
+  serialReceipt.plan = createLocalCiPlanDescriptor(serialPlan);
+  assert.equal(
+    verifyLocalCiReceipt(serialReceipt, {
+      candidate,
+      plan: serialPlan,
+      profile: "quick",
+    }),
+    serialReceipt,
+  );
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(serialReceipt, {
+        candidate,
+        plan,
+        profile: "quick",
+      }),
+    /exact task plan/u,
+  );
   tampered.plan.tasks[0].command.args.push("--changed");
   assert.throws(
     () => verifyLocalCiReceipt(tampered, { candidate, plan, profile: "quick" }),

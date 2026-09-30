@@ -80,12 +80,114 @@ test("honors dependencies, named lanes, and the global slot bound", async () => 
   );
 });
 
+test("parallel task cap serializes without excluding twelve-slot tasks", async () => {
+  const tasks = [
+    { id: "a", slots: 2 },
+    { id: "b", slots: 12 },
+    { id: "c", slots: 1 },
+  ];
+  const events = [];
+  const result = await runLocalCiTasks(tasks, {
+    maxSlots: 12,
+    maxParallelTasks: 1,
+    async executeTask(task) {
+      events.push(`start:${task.id}`);
+      await delay(1);
+      events.push(`end:${task.id}`);
+      return pass();
+    },
+  });
+  assert.equal(result.status, "passed");
+  assert.deepEqual(events, [
+    "start:a",
+    "end:a",
+    "start:b",
+    "end:b",
+    "start:c",
+    "end:c",
+  ]);
+  assert.equal(result.tasks.length, tasks.length);
+});
+
+test("parallel cap composes with lanes, dependencies, and weighted slots", async () => {
+  const tasks = [
+    { id: "a", lane: "shared", slots: 2 },
+    { id: "b", lane: "shared", slots: 2 },
+    { id: "c", slots: 1 },
+    { id: "d", after: ["b"], slots: 12 },
+  ];
+  const active = new Set();
+  const finished = new Set();
+  let peak = 0;
+  const result = await runLocalCiTasks(tasks, {
+    maxSlots: 12,
+    maxParallelTasks: 2,
+    async executeTask(task) {
+      for (const other of active) {
+        assert.ok(!task.lane || task.lane !== other.lane);
+      }
+      for (const id of task.after ?? []) assert.ok(finished.has(id));
+      active.add(task);
+      peak = Math.max(peak, active.size);
+      assert.ok(active.size <= 2);
+      assert.ok([...active].reduce((sum, entry) => sum + entry.slots, 0) <= 12);
+      await delay(1);
+      active.delete(task);
+      finished.add(task.id);
+      return pass();
+    },
+  });
+  assert.equal(result.status, "passed");
+  assert.equal(peak, 2);
+});
+
+test("parallel cap rejects invalid values before starting a task", async () => {
+  for (const maxParallelTasks of [0, -1, 1.5, 13, NaN, Infinity]) {
+    await assert.rejects(
+      runLocalCiTasks([{ id: "a" }], {
+        maxSlots: 12,
+        maxParallelTasks,
+        executeTask() {
+          assert.fail("invalid cap admitted work");
+        },
+      }),
+      /maxParallelTasks/u,
+    );
+  }
+});
+
+test("serial admission waits for aborted work and never starts pending tasks", async () => {
+  const controller = new AbortController();
+  const events = [];
+  const result = await runLocalCiTasks([{ id: "active" }, { id: "pending" }], {
+    maxSlots: 12,
+    maxParallelTasks: 1,
+    signal: controller.signal,
+    async executeTask(task, { signal }) {
+      events.push(`start:${task.id}`);
+      const aborted = new Promise((resolve) =>
+        signal.addEventListener("abort", resolve, { once: true }),
+      );
+      controller.abort();
+      await aborted;
+      await delay(1);
+      events.push(`closed:${task.id}`);
+      return pass({ interrupted: true });
+    },
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.interrupted, true);
+  assert.deepEqual(events, ["start:active", "closed:active"]);
+  assert.equal(result.tasks[1].status, "not-run");
+});
+
 test("stops admission after failure and waits for admitted work", async () => {
   const events = [];
   const result = await runLocalCiTasks(
     [{ id: "fail" }, { id: "running" }, { id: "later", after: ["fail"] }],
     {
-      maxSlots: 2,
+      maxSlots: 12,
+      maxParallelTasks: 2,
       async executeTask(task) {
         events.push(`start:${task.id}`);
         if (task.id === "fail") await delay(5);
