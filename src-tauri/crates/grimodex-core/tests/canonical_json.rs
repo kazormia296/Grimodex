@@ -1,0 +1,110 @@
+use grimodex_core::{canonical_json_digest, canonical_json_string};
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+#[derive(Debug, Deserialize)]
+struct NumberParityFixture {
+    cases: Vec<NumberParityCase>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NumberParityCase {
+    id: String,
+    value: Value,
+    bits: Option<String>,
+    #[serde(rename = "canonicalJson")]
+    canonical_json: String,
+    digest: String,
+}
+
+#[test]
+fn sorts_nested_object_keys_and_keeps_array_order() {
+    let value = json!({
+        "z": 1,
+        "nested": { "日本語": "値", "a": true },
+        "array": [{ "b": 2, "a": 1 }, "x"],
+    });
+
+    assert_eq!(
+        canonical_json_string(&value).expect("canonical JSON"),
+        r#"{"array":[{"a":1,"b":2},"x"],"nested":{"a":true,"日本語":"値"},"z":1}"#
+    );
+}
+
+#[test]
+fn emits_sha256_prefixed_digest_for_canonical_bytes() {
+    let value = json!({ "b": 2, "a": 1 });
+
+    assert_eq!(
+        canonical_json_digest(&value).expect("canonical digest"),
+        "sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
+    );
+}
+
+#[test]
+fn matches_ecmascript_number_spelling_and_digest_goldens() {
+    let fixture: NumberParityFixture = serde_json::from_str(include_str!(
+        "../../../../policies/narrative/fixtures/canonical-json-number-parity.json"
+    ))
+    .expect("canonical JSON number parity fixture parses");
+
+    for case in fixture.cases {
+        let value = case
+            .bits
+            .as_deref()
+            .map(|bits| {
+                let bits = u64::from_str_radix(bits, 16).expect("f64 bits");
+                Value::Number(
+                    serde_json::Number::from_f64(f64::from_bits(bits)).expect("finite f64"),
+                )
+            })
+            .unwrap_or(case.value);
+        assert_eq!(
+            canonical_json_string(&value).expect("canonical JSON"),
+            case.canonical_json,
+            "{}",
+            case.id
+        );
+        assert_eq!(
+            canonical_json_digest(&value).expect("canonical digest"),
+            case.digest,
+            "{}",
+            case.id
+        );
+    }
+}
+
+#[test]
+fn parses_ecmascript_number_goldens_with_exact_binary64_roundtrip() {
+    let fixture: NumberParityFixture = serde_json::from_str(include_str!(
+        "../../../../policies/narrative/fixtures/canonical-json-number-parity.json"
+    ))
+    .expect("canonical JSON number parity fixture parses");
+
+    for case in fixture.cases {
+        let Some(bits) = case.bits.as_deref() else {
+            continue;
+        };
+        let expected_bits = u64::from_str_radix(bits, 16).expect("f64 bits");
+        let parsed: Value =
+            serde_json::from_str(&case.canonical_json).expect("canonical number parses");
+        assert_eq!(
+            parsed.as_f64().expect("canonical number is f64").to_bits(),
+            expected_bits,
+            "{} parser roundtrip",
+            case.id
+        );
+        assert_eq!(
+            canonical_json_string(&parsed).expect("canonical JSON"),
+            case.canonical_json,
+            "{} canonical JSON",
+            case.id
+        );
+        assert_eq!(
+            canonical_json_digest(&parsed).expect("canonical digest"),
+            case.digest,
+            "{} digest",
+            case.id
+        );
+    }
+}

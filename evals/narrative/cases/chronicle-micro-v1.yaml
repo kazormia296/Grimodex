@@ -1,0 +1,635 @@
+schemaVersion: 1
+suiteId: chronicle-micro-v1
+cases:
+  - schemaVersion: 1
+    id: chronicle.micro.actual-gate-collapse-001
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-actual-gate-collapse]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-actual-gate-collapse
+        title: 北門の夜
+        text: 夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。衛兵は鐘を鳴らし、通行人を広場へ退避させた。
+    expected:
+      observations:
+        required:
+          - id: required-gate-collapse
+            semanticKey: north-gate-collapse
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-actual-gate-collapse
+                  quote: 北門の鎖が切れ、重い門扉が街路へ倒れた。
+              clustering: north-gate-collapse
+              significance: major
+              proposalGate: propose
+        forbidden: []
+    criticalViolationClasses: []
+
+  - schemaVersion: 1
+    id: chronicle.micro.plan-only-002
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-plan-only]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-plan-only
+        title: 作戦会議
+        text: リナは地図を指さした。「明朝、北門を開けて避難民を入れよう」会議は結論を出さずに終わった。
+    expected:
+      observations:
+        required:
+          - id: required-planned-gate-opening
+            semanticKey: planned-gate-opening
+            dimensions:
+              eventDetection: true
+              actuality: planned
+              attribution: "character:rina"
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-plan-only
+                  quote: 「明朝、北門を開けて避難民を入れよう」
+              clustering: planned-gate-opening
+              significance: major
+              proposalGate: suppress
+        forbidden:
+          - id: forbidden-plan-promoted-to-fact
+            semanticKey: planned-gate-opening
+            dimensions:
+              actuality: actual
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: plan-as-actual
+        description: A stated plan must not be promoted to an event that already happened.
+        match:
+          semanticKey: planned-gate-opening
+          dimension: actuality
+          value: actual
+
+  - schemaVersion: 1
+    id: chronicle.micro.rumor-only-003
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-rumor-only]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-rumor-only
+        title: 市場の噂
+        text: 市場で、セナは声を潜めた。「港の倉庫が全部焼けたらしいよ」彼女自身は港を見ていなかった。
+    expected:
+      observations:
+        required:
+          - id: required-rumored-warehouse-fire
+            semanticKey: rumored-warehouse-fire
+            dimensions:
+              eventDetection: true
+              actuality: rumored
+              attribution: "character:sena"
+              narrativeFrame: reported
+              evidence:
+                - documentId: scene-rumor-only
+                  quote: 「港の倉庫が全部焼けたらしいよ」
+              clustering: rumored-warehouse-fire
+              significance: major
+              proposalGate: suppress
+        forbidden:
+          - id: forbidden-rumor-promoted-to-fact
+            semanticKey: rumored-warehouse-fire
+            dimensions:
+              actuality: actual
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: rumor-as-actual
+        description: An unverified character rumor must not become narrator-asserted fact.
+        match:
+          semanticKey: rumored-warehouse-fire
+          dimension: actuality
+          value: actual
+
+  - schemaVersion: 1
+    id: chronicle.micro.blocked-attempt-004
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-blocked-attempt]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-blocked-attempt
+        title: 封印扉
+        text: ユウは封印扉の鍵を回そうとしたが、錆びた軸は動かず、扉は閉じたままだった。追手の足音だけが近づいた。
+    expected:
+      observations:
+        required:
+          - id: required-unlock-attempt-blocked
+            semanticKey: unlock-sealed-door-attempt
+            dimensions:
+              eventDetection: true
+              actuality: attempted
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-blocked-attempt
+                  quote: 封印扉の鍵を回そうとしたが、錆びた軸は動かず、扉は閉じたままだった。
+              clustering: unlock-sealed-door-attempt
+              significance: major
+              proposalGate: propose
+        forbidden:
+          - id: forbidden-attempt-read-as-success
+            semanticKey: unlock-sealed-door-attempt
+            dimensions:
+              actuality: actual
+    criticalViolationClasses:
+      - id: blocked-attempt-as-success
+        description: A blocked attempt must not be reported as a completed event.
+        match:
+          semanticKey: unlock-sealed-door-attempt
+          dimension: actuality
+          value: actual
+
+  - schemaVersion: 1
+    id: chronicle.micro.dream-only-005
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-dream-only]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-dream-only
+        title: 沈む塔の夢
+        text: ミオは眠りの中で、銀の塔が海へ沈むのを見た。目覚めると、窓の外には塔がそのまま立っていた。
+    expected:
+      observations:
+        required:
+          - id: required-dreamed-tower-sinking
+            semanticKey: dreamed-tower-sinking
+            dimensions:
+              eventDetection: true
+              actuality: dreamed
+              attribution: "character:mio"
+              narrativeFrame: dream
+              evidence:
+                - documentId: scene-dream-only
+                  quote: 銀の塔が海へ沈むのを見た。
+              clustering: dreamed-tower-sinking
+              significance: major
+              proposalGate: suppress
+        forbidden:
+          - id: forbidden-dream-promoted-to-mainline
+            semanticKey: dreamed-tower-sinking
+            dimensions:
+              actuality: actual
+              narrativeFrame: story-world
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: dream-as-actual
+        description: Dream content must not be promoted to story-world actuality.
+        match:
+          semanticKey: dreamed-tower-sinking
+          dimension: actuality
+          value: actual
+
+  - schemaVersion: 1
+    id: chronicle.micro.hypothetical-only-006
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-hypothetical-only]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-hypothetical-only
+        title: 堤防の説明
+        text: 「もし西の堤防が切れれば、下町は水に沈むだろう」と技師は説明した。堤防の損傷は確認されていない。
+    expected:
+      observations:
+        required:
+          - id: required-hypothetical-flood
+            semanticKey: hypothetical-west-dike-flood
+            dimensions:
+              eventDetection: true
+              actuality: hypothetical
+              attribution: "character:engineer"
+              narrativeFrame: hypothetical
+              evidence:
+                - documentId: scene-hypothetical-only
+                  quote: 「もし西の堤防が切れれば、下町は水に沈むだろう」
+              clustering: hypothetical-west-dike-flood
+              significance: major
+              proposalGate: suppress
+        forbidden:
+          - id: forbidden-hypothesis-promoted-to-fact
+            semanticKey: hypothetical-west-dike-flood
+            dimensions:
+              actuality: actual
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: hypothetical-as-actual
+        description: A conditional consequence must not be recorded as having occurred.
+        match:
+          semanticKey: hypothetical-west-dike-flood
+          dimension: actuality
+          value: actual
+
+  - schemaVersion: 1
+    id: chronicle.micro.flashback-actual-007
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-flashback-actual]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-flashback-actual
+        title: 赤い空の記憶
+        text: 十年前の冬、王都の鐘楼は落雷で焼失した。アオは今も、その夜の赤い空を覚えている。
+    expected:
+      observations:
+        required:
+          - id: required-old-bell-tower-fire
+            semanticKey: old-capital-bell-tower-fire
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: flashback
+              evidence:
+                - documentId: scene-flashback-actual
+                  quote: 十年前の冬、王都の鐘楼は落雷で焼失した。
+              clustering: old-capital-bell-tower-fire
+              significance: major
+              proposalGate: propose
+        forbidden:
+          - id: forbidden-flashback-read-as-present
+            semanticKey: old-capital-bell-tower-fire
+            dimensions:
+              narrativeFrame: story-world
+    criticalViolationClasses:
+      - id: flashback-frame-lost
+        description: A past event in an explicit recollection must retain its flashback frame.
+        match:
+          semanticKey: old-capital-bell-tower-fire
+          dimension: narrativeFrame
+          value: story-world
+
+  - schemaVersion: 1
+    id: chronicle.micro.duplicate-mention-008
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-bridge-collapse, scene-bridge-report]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-bridge-collapse
+        title: 川向こうの爆音
+        text: 川向こうで爆音が響き、石橋の中央部が崩れ落ちた。荷車は手前で止まり、川へ落ちなかった。
+      - id: scene-bridge-report
+        title: 翌朝の証言
+        text: 翌朝、避難してきた兵士も「昨夜、石橋の中央が落ちた」と証言した。彼は崩落を南岸から目撃していた。
+    expected:
+      observations:
+        required:
+          - id: required-bridge-collapse-direct
+            semanticKey: stone-bridge-collapse-direct
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-bridge-collapse
+                  quote: 石橋の中央部が崩れ落ちた。
+              clustering: stone-bridge-collapse
+              significance: major
+              proposalGate: propose
+          - id: required-bridge-collapse-report
+            semanticKey: stone-bridge-collapse-report
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: "character:soldier"
+              narrativeFrame: reported
+              evidence:
+                - documentId: scene-bridge-report
+                  quote: 「昨夜、石橋の中央が落ちた」
+              clustering: stone-bridge-collapse
+              significance: major
+              proposalGate: propose
+        forbidden:
+          - id: forbidden-duplicate-split
+            semanticKey: stone-bridge-collapse-report
+            dimensions:
+              clustering: stone-bridge-collapse-split
+    criticalViolationClasses:
+      - id: duplicate-event-split
+        description: Two mentions of the same bridge collapse must not form separate event clusters.
+        match:
+          semanticKey: stone-bridge-collapse-report
+          dimension: clustering
+          value: stone-bridge-collapse-split
+
+  - schemaVersion: 1
+    id: chronicle.micro.non-event-description-009
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-non-event-description]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-non-event-description
+        title: 静かな書庫
+        text: 書庫には青い背表紙の本が十二冊並び、窓辺の時計が静かに時を刻んでいた。机には冷めた茶が置かれていた。
+    expected:
+      observations:
+        required: []
+        forbidden:
+          - id: forbidden-description-as-event
+            semanticKey: fabricated-library-incident
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-non-event-description
+                  quote: 書庫には青い背表紙の本が十二冊並び、窓辺の時計が静かに時を刻んでいた。
+              clustering: fabricated-library-incident
+              significance: major
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: non-event-fabricated
+        description: Static setting description must not be fabricated into a Chronicle event.
+        match:
+          semanticKey: fabricated-library-incident
+          dimension: eventDetection
+          value: true
+
+  - schemaVersion: 1
+    id: chronicle.micro.exact-quote-selection-010
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-exact-quote-selection]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-exact-quote-selection
+        title: 二つの鐘
+        text: 鐘が一度鳴ったが、誰も動かなかった。しばらくして非常鐘が三度鳴り、東区の住民は広場へ避難した。
+    expected:
+      observations:
+        required:
+          - id: required-east-district-evacuation
+            semanticKey: east-district-evacuation
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-exact-quote-selection
+                  quote: 非常鐘が三度鳴り、東区の住民は広場へ避難した。
+              clustering: east-district-evacuation
+              significance: major
+              proposalGate: propose
+        forbidden:
+          - id: forbidden-first-bell-as-major
+            semanticKey: first-bell-ringing
+            dimensions:
+              significance: major
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: incidental-bell-proposed
+        description: The first bell with no consequence must not replace the exact evacuation evidence.
+        match:
+          semanticKey: first-bell-ringing
+          dimension: proposalGate
+          value: propose
+
+  - schemaVersion: 1
+    id: chronicle.micro.negated-event-011
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-negated-event]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-negated-event
+        title: 朝の点検
+        text: 朝の点検で、鐘楼は倒れていないことが確認された。ひびも昨日から増えていなかった。
+    expected:
+      observations:
+        required:
+          - id: required-collapse-not-detected
+            semanticKey: bell-tower-collapse
+            dimensions:
+              eventDetection: false
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-negated-event
+                  quote: 鐘楼は倒れていないことが確認された。
+              clustering: bell-tower-collapse
+              significance: major
+              proposalGate: suppress
+        forbidden:
+          - id: forbidden-negation-inversion
+            semanticKey: bell-tower-collapse
+            dimensions:
+              eventDetection: true
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: negation-inverted
+        description: An explicitly negated collapse must not become a positive event.
+        match:
+          semanticKey: bell-tower-collapse
+          dimension: eventDetection
+          value: true
+
+  - schemaVersion: 1
+    id: chronicle.micro.disputed-attribution-012
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-disputed-attribution]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-disputed-attribution
+        title: 港をめぐる証言
+        text: カイは宿で「東倉庫は焼け落ちた」と言い切った。しかし語り手が港を見渡すと、東倉庫は無傷で、煙も上がっていなかった。
+    expected:
+      observations:
+        required:
+          - id: required-kai-warehouse-claim
+            semanticKey: east-warehouse-fire-claim
+            dimensions:
+              eventDetection: true
+              actuality: rumored
+              attribution: "character:kai"
+              narrativeFrame: reported
+              evidence:
+                - documentId: scene-disputed-attribution
+                  quote: 「東倉庫は焼け落ちた」
+              clustering: east-warehouse-fire
+              significance: major
+              proposalGate: suppress
+          - id: required-narrator-refutation
+            semanticKey: east-warehouse-fire-refutation
+            dimensions:
+              eventDetection: false
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-disputed-attribution
+                  quote: 東倉庫は無傷で、煙も上がっていなかった。
+              clustering: east-warehouse-fire
+              significance: major
+              proposalGate: suppress
+        forbidden:
+          - id: forbidden-kai-claim-as-fact
+            semanticKey: east-warehouse-fire-claim
+            dimensions:
+              actuality: actual
+              attribution: narrator
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: disputed-claim-as-fact
+        description: A contradicted character claim must not be promoted to narrator fact.
+        match:
+          semanticKey: east-warehouse-fire-claim
+          dimension: actuality
+          value: actual
+
+  - schemaVersion: 1
+    id: chronicle.micro.partial-coverage-013
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: partial
+      includedDocumentIds: [scene-partial-witness]
+      omittedDocumentIds: [scene-partial-locked]
+    documents:
+      - id: scene-partial-witness
+        title: 閲覧できた広場
+        text: 広場では、正午に給水塔が倒壊し、通りが水で塞がれた。封鎖中の地下区画の記録は取得できなかった。
+      - id: scene-partial-locked
+        title: 取得対象外の地下区画
+        text: 地下区画では、同じ正午に旧水路の隔壁が破損した。この文書は評価実行時の corpus から意図的に除外される。
+    expected:
+      observations:
+        required:
+          - id: required-water-tower-collapse
+            semanticKey: water-tower-collapse
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-partial-witness
+                  quote: 正午に給水塔が倒壊し、通りが水で塞がれた。
+              clustering: water-tower-collapse
+              significance: major
+              proposalGate: propose
+        forbidden: []
+    criticalViolationClasses: []
+
+  - schemaVersion: 1
+    id: chronicle.micro.significance-gate-014
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-10T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-significance-gate]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-significance-gate
+        title: 食堂の警報
+        text: 食堂でリオが銀の匙を床に落とした。直後、都市警報が発令され、住民全員が北の避難所へ移動を始めた。
+    expected:
+      observations:
+        required:
+          - id: required-dropped-spoon
+            semanticKey: rio-dropped-spoon
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-significance-gate
+                  quote: リオが銀の匙を床に落とした。
+              clustering: rio-dropped-spoon
+              significance: incidental
+              proposalGate: suppress
+          - id: required-city-evacuation
+            semanticKey: city-evacuation-order
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-significance-gate
+                  quote: 都市警報が発令され、住民全員が北の避難所へ移動を始めた。
+              clustering: city-evacuation-order
+              significance: major
+              proposalGate: propose
+        forbidden:
+          - id: forbidden-spoon-as-chronicle
+            semanticKey: rio-dropped-spoon
+            dimensions:
+              significance: major
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: incidental-action-proposed
+        description: An incidental action must not be proposed as a Chronicle event.
+        match:
+          semanticKey: rio-dropped-spoon
+          dimension: proposalGate
+          value: propose

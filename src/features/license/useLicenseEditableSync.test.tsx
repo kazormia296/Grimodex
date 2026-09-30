@@ -14,6 +14,12 @@ import {
   _resetDocumentSaveCoordinatorForTests,
   runExclusiveDocumentMutation,
 } from "@/features/editor/document/documentSaveCoordinator";
+import {
+  acquireTimelapseReplacementFence,
+  isTimelapseReplacementFenceActiveForDocument,
+} from "@/features/timelapse/documentCoverage";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 describe("useLicenseEditableSync lifecycle barrier", () => {
   beforeEach(() => {
@@ -29,6 +35,8 @@ describe("useLicenseEditableSync lifecycle barrier", () => {
   afterEach(() => {
     _resetQuiescenceLeasesForTests();
     _resetDocumentSaveCoordinatorForTests();
+    publishCurrentProjectId(null);
+    setCurrentWorkspaceIdentity(null);
   });
 
   it("makes every participating TipTap surface read-only until the last lease releases", () => {
@@ -101,6 +109,182 @@ describe("useLicenseEditableSync lifecycle barrier", () => {
       release();
       await replacement;
     });
+    expect(setEditable).toHaveBeenLastCalledWith(true, false);
+  });
+
+  it.each([
+    [
+      "tree database",
+      { kind: "tree", id: "scene-db", storage: "database" } as const,
+      {
+        projectId: "project-fence",
+        domain: "editor",
+        entityType: "scene",
+        entityId: "scene-db",
+        storage: "database",
+      } as const,
+    ],
+    [
+      "tree file",
+      { kind: "tree", id: "scene-file", storage: "file" } as const,
+      {
+        projectId: "project-fence",
+        domain: "editor",
+        entityType: "scene",
+        entityId: "scene-file",
+        storage: "file",
+      } as const,
+    ],
+    [
+      "codex base",
+      { kind: "codex", id: "codex-1", phaseId: null } as const,
+      {
+        projectId: "project-fence",
+        domain: "codex",
+        entityType: "codex_entry",
+        entityId: "codex-1",
+      } as const,
+    ],
+    [
+      "snippet",
+      { kind: "snippet", id: "snippet-1" } as const,
+      {
+        projectId: "project-fence",
+        domain: "snippet",
+        entityType: "snippet",
+        entityId: "snippet-1",
+      } as const,
+    ],
+  ])(
+    "synchronously denies the exact loaded %s document",
+    (_label, key, identity) => {
+      publishCurrentProjectId("project-fence");
+      setCurrentWorkspaceIdentity({ path: "/fence.gdx", openRevision: 1 });
+      const setEditable = vi.fn();
+      const editor = {
+        isDestroyed: false,
+        setEditable,
+      } as unknown as Editor;
+      renderHook(() =>
+        useLicenseEditableSync(editor, false, key, "project-fence"),
+      );
+
+      let fence!: ReturnType<typeof acquireTimelapseReplacementFence>;
+      act(() => {
+        fence = acquireTimelapseReplacementFence({
+          projectId: "project-fence",
+          document: identity,
+        });
+      });
+      expect(setEditable).toHaveBeenLastCalledWith(false, false);
+
+      act(() => fence.release());
+      expect(setEditable).toHaveBeenLastCalledWith(true, false);
+    },
+  );
+
+  it.each([
+    [
+      "different document",
+      "project-fence",
+      {
+        projectId: "project-fence",
+        domain: "editor",
+        entityType: "scene",
+        entityId: "scene-other",
+        storage: "database",
+      } as const,
+    ],
+    [
+      "different scene storage",
+      "project-fence",
+      {
+        projectId: "project-fence",
+        domain: "editor",
+        entityType: "scene",
+        entityId: "scene-db",
+        storage: "file",
+      } as const,
+    ],
+  ])(
+    "does not deny the loaded document for a %s fence",
+    (_label, projectId, identity) => {
+      publishCurrentProjectId("project-fence");
+      setCurrentWorkspaceIdentity({ path: "/fence.gdx", openRevision: 1 });
+      const setEditable = vi.fn();
+      const editor = {
+        isDestroyed: false,
+        setEditable,
+      } as unknown as Editor;
+      const key = {
+        kind: "tree",
+        id: "scene-db",
+        storage: "database",
+      } as const;
+      renderHook(() =>
+        useLicenseEditableSync(editor, false, key, "project-fence"),
+      );
+
+      let fence!: ReturnType<typeof acquireTimelapseReplacementFence>;
+      act(() => {
+        fence = acquireTimelapseReplacementFence({
+          projectId,
+          document: identity,
+        });
+      });
+      expect(setEditable).toHaveBeenLastCalledWith(true, false);
+      act(() => fence.release());
+    },
+  );
+
+  it("keeps the direct timelapse fence query project-scoped", () => {
+    const key = {
+      kind: "tree",
+      id: "scene-db",
+      storage: "database",
+    } as const;
+    const fence = acquireTimelapseReplacementFence({
+      projectId: "other-project",
+      document: {
+        projectId: "other-project",
+        domain: "editor",
+        entityType: "scene",
+        entityId: "scene-db",
+        storage: "database",
+      },
+    });
+    expect(
+      isTimelapseReplacementFenceActiveForDocument("project-fence", key),
+    ).toBe(false);
+    expect(
+      isTimelapseReplacementFenceActiveForDocument("other-project", key),
+    ).toBe(true);
+    fence.release();
+  });
+
+  it("denies every loaded document for a project-wide replacement fence", () => {
+    publishCurrentProjectId("project-fence");
+    setCurrentWorkspaceIdentity({ path: "/fence.gdx", openRevision: 1 });
+    const setEditable = vi.fn();
+    const editor = {
+      isDestroyed: false,
+      setEditable,
+    } as unknown as Editor;
+    const key = {
+      kind: "tree",
+      id: "scene-db",
+      storage: "database",
+    } as const;
+    renderHook(() =>
+      useLicenseEditableSync(editor, false, key, "project-fence"),
+    );
+
+    let fence!: ReturnType<typeof acquireTimelapseReplacementFence>;
+    act(() => {
+      fence = acquireTimelapseReplacementFence({ projectId: "project-fence" });
+    });
+    expect(setEditable).toHaveBeenLastCalledWith(false, false);
+    act(() => fence.release());
     expect(setEditable).toHaveBeenLastCalledWith(true, false);
   });
 

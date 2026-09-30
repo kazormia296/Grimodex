@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create Branch"
+  short_description: "Start from a fetched base branch"
+  default_prompt: "Use $create-branch to create a clean work branch from the latest origin/master or a specified base branch."

@@ -1,5 +1,10 @@
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import type { TemporalNodeId } from "@/features/narrative-extraction/temporal/nodes";
+import type {
+  StoryCompare,
+  StoryRankResult,
+} from "@/features/narrative-extraction/temporal/solver/resolveStoryRanks";
 
 export type PhaseResolutionMode = "reading" | "story" | "auto";
 export type ResolutionAxis = "reading" | "story";
@@ -116,7 +121,130 @@ export function buildSceneTimeIndex(
   };
 }
 
+/**
+ * Graph-derived overlay on top of a {@link SceneTimeIndex} (spec §25).
+ *
+ * Produced by {@link buildTemporalSceneIndex} once a Temporal Constraint
+ * Graph has been solved for the project. All maps/sets key on scene id
+ * (never `TemporalNodeId`) so downstream UI never has to reason about the
+ * graph's opaque node namespace.
+ */
+export interface TemporalSceneIndex extends SceneTimeIndex {
+  /** Digest of the solved graph this overlay was derived from, or null pre-solve. */
+  readonly temporalGraphDigest: string | null;
+  /** Scene id -> topological story-rank layer (lower = earlier). Absent = unresolved by the graph. */
+  readonly resolvedStoryRanks: ReadonlyMap<string, number>;
+  /** Scene id -> equal-time group key. Scenes sharing a key are the same story instant. */
+  readonly equalTimeGroups: ReadonlyMap<string, string>;
+  /** Live scenes the graph does not (yet) place on the story axis. */
+  readonly unresolvedSceneIds: ReadonlySet<string>;
+  /** Scenes touched by a hard temporal conflict; graph rank is untrusted for these. */
+  readonly conflictSceneIds: ReadonlySet<string>;
+  /**
+   * Precise pairwise story comparison sourced from the solver's rank result
+   * (before/after/equal/incomparable), keyed by scene id. Undefined when no
+   * graph data was supplied to {@link buildTemporalSceneIndex}.
+   */
+  readonly compareGraphOrder?: (
+    left: string,
+    right: string,
+  ) => StoryCompare | null;
+}
+
+export interface BuildTemporalSceneIndexOptions {
+  readonly temporalGraphDigest?: string | null;
+  /** Story rank result from `resolveStoryRanks` (solver output), keyed by TemporalNodeId. */
+  readonly storyRanks?: StoryRankResult;
+  /** 1:1 mapping from graph node id to the scene id it represents. */
+  readonly sceneIdByNodeId?: ReadonlyMap<TemporalNodeId, string>;
+  /** Node ids the solver flagged as part of a hard conflict. */
+  readonly conflictNodeIds?: readonly TemporalNodeId[];
+}
+
+/**
+ * Wrap a base {@link SceneTimeIndex} with optional solver-derived story rank
+ * data. Without `storyRanks`, the result behaves exactly like the base index
+ * (graph fields are empty / null) so existing reading/manual-story callers
+ * are unaffected.
+ */
+export function buildTemporalSceneIndex(
+  base: SceneTimeIndex,
+  options: BuildTemporalSceneIndexOptions = {},
+): TemporalSceneIndex {
+  const sceneIdByNodeId =
+    options.sceneIdByNodeId ?? new Map<TemporalNodeId, string>();
+  const resolvedStoryRanks = new Map<string, number>();
+  const equalTimeGroups = new Map<string, string>();
+  let compareGraphOrder: TemporalSceneIndex["compareGraphOrder"];
+
+  if (options.storyRanks) {
+    const storyRanks = options.storyRanks;
+    for (const layer of storyRanks.layers) {
+      for (const nodeId of layer.nodeIds) {
+        const sceneId = sceneIdByNodeId.get(nodeId);
+        if (sceneId !== undefined) resolvedStoryRanks.set(sceneId, layer.rank);
+      }
+    }
+    for (const [nodeId, group] of storyRanks.equalTimeGroups) {
+      const sceneId = sceneIdByNodeId.get(nodeId);
+      if (sceneId !== undefined) equalTimeGroups.set(sceneId, group);
+    }
+
+    const nodeIdByScene = new Map<string, TemporalNodeId>();
+    for (const [nodeId, sceneId] of sceneIdByNodeId) {
+      nodeIdByScene.set(sceneId, nodeId);
+    }
+    compareGraphOrder = (left: string, right: string): StoryCompare | null => {
+      const leftNodeId = nodeIdByScene.get(left);
+      const rightNodeId = nodeIdByScene.get(right);
+      if (leftNodeId === undefined || rightNodeId === undefined) return null;
+      return storyRanks.compare(leftNodeId, rightNodeId);
+    };
+  }
+
+  const conflictSceneIds = new Set<string>();
+  for (const nodeId of options.conflictNodeIds ?? []) {
+    const sceneId = sceneIdByNodeId.get(nodeId);
+    if (sceneId !== undefined) conflictSceneIds.add(sceneId);
+  }
+
+  const unresolvedSceneIds = new Set<string>();
+  if (options.storyRanks) {
+    for (const sceneId of base.readingOrder.keys()) {
+      if (!resolvedStoryRanks.has(sceneId)) unresolvedSceneIds.add(sceneId);
+    }
+  }
+
+  return {
+    ...base,
+    temporalGraphDigest: options.temporalGraphDigest ?? null,
+    resolvedStoryRanks,
+    equalTimeGroups,
+    unresolvedSceneIds,
+    conflictSceneIds,
+    ...(compareGraphOrder ? { compareGraphOrder } : {}),
+  };
+}
+
+function asTemporalSceneIndex(
+  index: SceneTimeIndex,
+): TemporalSceneIndex | null {
+  return "compareGraphOrder" in index &&
+    typeof (index as Partial<TemporalSceneIndex>).compareGraphOrder ===
+      "function"
+    ? (index as TemporalSceneIndex)
+    : null;
+}
+
 export function isAutoStoryReady(index: SceneTimeIndex): boolean {
+  const temporal = asTemporalSceneIndex(index);
+  if (temporal && temporal.conflictSceneIds.size === 0) {
+    const liveSceneIds = [...index.readingOrder.keys()];
+    const allComparable =
+      liveSceneIds.length > 0 &&
+      liveSceneIds.every((id) => temporal.resolvedStoryRanks.has(id));
+    if (allComparable) return true;
+  }
   return (
     index.liveSceneCount > 0 &&
     index.scheduledSceneCount === index.liveSceneCount
@@ -145,6 +273,29 @@ export function compareSceneTime(
   const rightReadingOrder = index.readingOrder.get(rightSceneId);
   if (leftReadingOrder === undefined || rightReadingOrder === undefined) {
     return null;
+  }
+
+  // Graph ranks take priority over manual storyTimeOrder, but never for
+  // "reading" (which is explicitly graph-independent) and never for a scene
+  // currently flagged by a hard conflict (its graph position is untrusted).
+  if (mode !== "reading") {
+    const temporal = asTemporalSceneIndex(index);
+    if (
+      temporal &&
+      !temporal.conflictSceneIds.has(leftSceneId) &&
+      !temporal.conflictSceneIds.has(rightSceneId)
+    ) {
+      const graphResult = temporal.compareGraphOrder?.(
+        leftSceneId,
+        rightSceneId,
+      );
+      if (graphResult) {
+        if (graphResult.kind === "before") return -1;
+        if (graphResult.kind === "after") return 1;
+        if (graphResult.kind === "equal") return 0;
+        // "incomparable" falls through to manual storyTimeOrder / reading.
+      }
+    }
   }
 
   const storyOrder =

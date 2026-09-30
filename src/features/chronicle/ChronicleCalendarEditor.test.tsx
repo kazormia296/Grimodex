@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi } from "vitest";
-import { render, fireEvent } from "@testing-library/react";
+import { render, fireEvent, waitFor } from "@testing-library/react";
 import {
   ChronicleCalendarEditor,
   localizedDefaultSeasons,
 } from "./ChronicleCalendarEditor";
+import { ProjectCalendarVersionConflictError } from "./calendarOcc";
 
 describe("localizedDefaultSeasons", () => {
   it("既定季節名はロケールでローカライズ（ja=春夏秋冬 / en=Spring..）", () => {
@@ -28,6 +29,74 @@ describe("localizedDefaultSeasons", () => {
 });
 
 describe("ChronicleCalendarEditor", () => {
+  it("closes only after an asynchronous save succeeds", async () => {
+    let resolveSave: (() => void) | undefined;
+    const onSave = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    const onClose = vi.fn();
+    const { container, getByRole } = render(
+      <ChronicleCalendarEditor
+        initial={{ daysPerYear: 100, seasonBoundaries: [] }}
+        onSave={onSave}
+        onClose={onClose}
+      />,
+    );
+
+    const buttons = container.querySelectorAll("button");
+    fireEvent.click(buttons[buttons.length - 1]!);
+    expect(onSave).toHaveBeenCalledOnce();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(getByRole("button", { name: "閉じる" }));
+    expect(onClose).not.toHaveBeenCalled();
+
+    resolveSave?.();
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  });
+
+  it("keeps edited values open and reports a recoverable OCC conflict", async () => {
+    let rejectSave: ((reason: Error) => void) | undefined;
+    const onSave = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectSave = reject;
+          }),
+      )
+      .mockResolvedValueOnce(undefined);
+    const onClose = vi.fn();
+    const { container, getByRole } = render(
+      <ChronicleCalendarEditor
+        initial={{ daysPerYear: 100, seasonBoundaries: [] }}
+        onSave={onSave}
+        onClose={onClose}
+      />,
+    );
+    const numberInputs = container.querySelectorAll<HTMLInputElement>(
+      'input[type="number"]',
+    );
+    const daysPerYearInput = numberInputs[1]!;
+    fireEvent.change(daysPerYearInput, { target: { value: "123" } });
+
+    let buttons = container.querySelectorAll("button");
+    fireEvent.click(buttons[buttons.length - 1]!);
+    fireEvent.click(getByRole("button", { name: "閉じる" }));
+    expect(onClose).not.toHaveBeenCalled();
+    rejectSave?.(new ProjectCalendarVersionConflictError("p1"));
+    await waitFor(() => expect(getByRole("alert")).toBeTruthy());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(daysPerYearInput.value).toBe("123");
+
+    buttons = container.querySelectorAll("button");
+    fireEvent.click(buttons[buttons.length - 1]!);
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[1]?.[0].daysPerYear).toBe(123);
+  });
+
   it("initial=null ならグレゴリオ暦が既定で読み込まれる（12ヶ月・7曜・閏2月）", () => {
     const onSave = vi.fn();
     const { getByText } = render(
@@ -48,7 +117,7 @@ describe("ChronicleCalendarEditor", () => {
     expect(cal.ageReckoning).toBe("full");
   });
 
-  it("保存で空名季節を除き昇順に正規化して onSave", () => {
+  it("保存で空名季節を除き昇順に正規化して onSave", async () => {
     const onSave = vi.fn();
     const onClose = vi.fn();
     const { getByText } = render(
@@ -81,7 +150,7 @@ describe("ChronicleCalendarEditor", () => {
       eras: [],
       lunarTzMinutes: 480,
     });
-    expect(onClose).toHaveBeenCalled();
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
   it("月を定義すると daysPerYear は月長合計に導出される", () => {

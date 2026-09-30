@@ -90,6 +90,9 @@ describe("Electron release packaging contract", () => {
       "dist/**",
       "dist-electron/**",
       "package.json",
+      "LICENSE",
+      "LICENSING.md",
+      "NOTICE",
       "electron/native/grimodex-node/grimodex-node.node",
     ]);
     expect(config.asarUnpack).toEqual([
@@ -181,7 +184,7 @@ describe("Electron release packaging contract", () => {
     expect(config.publish).toEqual({
       provider: "github",
       owner: "kazormia296",
-      repo: "Grimodex",
+      repo: "GrimodexReleases",
     });
   });
 });

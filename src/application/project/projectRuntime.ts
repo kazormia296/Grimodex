@@ -7,6 +7,7 @@ export interface ProjectMetadataProjection {
 
 export interface ProjectBackgroundActivation {
   projectId: string;
+  expectedWorkspacePath?: string;
   canStart: () => boolean;
   isMutationCurrent: () => boolean;
 }

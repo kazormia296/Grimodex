@@ -231,6 +231,7 @@ export async function sendAgentMessage(
   expectedOllamaEndpoint?: string | null,
 ): Promise<AgentLLMResponse> {
   const auditRuntime = await loadAiAuditRuntime();
+  const chatMessageId = auditContext.chatMessageId;
   const args: Record<string, unknown> = {
     messages,
     tools,
@@ -248,6 +249,7 @@ export async function sendAgentMessage(
     expectedOllamaEndpoint: expectedOllamaEndpoint ?? null,
     ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
     ...(resolvedToolProtocol != null ? { resolvedToolProtocol } : {}),
+    ...(chatMessageId ? { chatMessageId } : {}),
   };
   const route = auditRuntime.resolveChatAuditRoute(args);
   const audit = await auditRuntime.beginAiAuditExecution({
@@ -1077,7 +1079,6 @@ export async function listPinnedSnippetEntries(
       pinnedType: "snippet" as const,
     }));
 }
-
 /** A map sticky returned as a chat-context pinned item. */
 export interface PinnedStickyEntryWithData {
   id: string;
@@ -1406,7 +1407,6 @@ export async function addSummary(
   }
   return buildSummary(rows[0]);
 }
-
 export async function markMessagesSummarized(
   messageIds: string[],
 ): Promise<void> {

@@ -5,7 +5,7 @@
  * povCharacterId / locationId 等は payload に保持されるが、参照先 Codex が
  * 削除済みの可能性があるため復元時に validate して broken-link 警告に積む。
  */
-import { createNode, saveSceneContent, getNode } from "@/features/tree/api";
+import { createNode, getNode } from "@/features/tree/api";
 import { getCodexEntry } from "@/features/codex/api";
 import type { ScenePayload, TrashItemData } from "../types";
 import type { RestoreOutcome } from "./types";
@@ -60,8 +60,8 @@ export async function restoreScene(
       synopsis: payload.metadata.synopsis ?? undefined,
       sortOrder: options.sortOrderOverride ?? payload.metadata.sortOrder,
       status: payload.metadata.status ?? undefined,
+      content: payload.body,
     });
-    await saveSceneContent(newId, payload.body);
   } catch (e) {
     return {
       ok: false,

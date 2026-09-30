@@ -9,7 +9,8 @@
 name = "grimodex-node"
 version = "0.1.0"
 edition = "2021"
-license = "Elastic-2.0"
+license-file = "../../../LICENSE"
+publish = false
 description = "Grimodex native backend for the Electron shell (napi-rs bindings over grimodex-db)"
 
 [features]
@@ -21,12 +22,20 @@ licensing = ["grimodex-license/licensing"]
 # so main can copy legacy Tauri keyring entries into safeStorage. The method is
 # never registered in renderer IPC, and old credentials stay for rollback.
 legacy-keyring-migration = ["grimodex-ai/keyring"]
+# Isolated Layer-A lifecycle harness. This feature is CI-only and is never
+# enabled by the normal N-API build or release packaging.
+test-lifecycle = []
 
 # 空 workspace: src-tauri workspace へ吸収させない (Phase 0 スパイク実証)
 [workspace]
 
 [lib]
 crate-type = ["cdylib"]
+
+[[bin]]
+name = "lifecycle-harness"
+path = "src/bin/lifecycle-harness.rs"
+required-features = ["test-lifecycle"]
 
 [dependencies]
 # async = tokio_rt。同期 #[napi] は Node main thread = Electron main プロセス
@@ -35,7 +44,7 @@ crate-type = ["cdylib"]
 napi = { version = "2", default-features = false, features = ["napi8", "async", "serde-json"] }
 napi-derive = "2"
 grimodex-core = { path = "../../../src-tauri/crates/grimodex-core" }
-grimodex-db = { path = "../../../src-tauri/crates/grimodex-db" }
+grimodex-db = { path = "../../../src-tauri/crates/grimodex-db", features = ["native-current-human-capture"] }
 # lint_text / segment_bunsetsu (Phase 3)。embed-unidic により .node が
 # +200MB 級になる — Tauri バイナリと同じトレードオフ (実測は Phase 3 記録)。
 grimodex-lint = { path = "../../../src-tauri/crates/grimodex-lint" }
@@ -57,6 +66,8 @@ grimodex-license = { path = "../../../src-tauri/crates/grimodex-license" }
 serde = "1"
 serde_json = "1"
 anyhow = "1"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["sync"] }
 
 [build-dependencies]
@@ -64,6 +75,7 @@ napi-build = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+grimodex-db = { path = "../../../src-tauri/crates/grimodex-db", features = ["workspace-maintenance-test-support"] }
 
 [profile.release]
 strip = "symbols"

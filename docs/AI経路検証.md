@@ -128,6 +128,17 @@ usage 台帳 / session_id routing）ではない。
 | **④ CLI/Codex runtime**                           | claude/codex/opencode・Codex App Server・pre-turn fallback                                      | transport audit contract ＋実機 smoke（実モデル品質は stub）           |
 | **➖ 埋め込み/検索**                              | semantic index/search / semantic reranker / fts_search                                          | 生成品質は n/a・推論監査は必須（FTS5 のみ audit n/a）                  |
 
+## Gate B2との認証境界
+
+Gate B2 Contract v8 はcredential-free Engineering Certificationであり、GitHub Actionsから
+外部AI providerへ接続せず、外部AI資格情報を使わない。Formal GateのHeavyはloopback serverと
+実Chromiumを使うWeb AI consent journeyだけである。Report／Decisionの`assuranceScope`は
+`liveProviderExecution`と`modelQuality`を明示的に`excluded`とする。
+
+実provider/modelの応答品質はmaintainer-localのLive Model Qualificationで別に評価する。
+この結果は`QUALIFIED` / `HOLD` / `FAILED` / `INCOMPLETE`を使い、Gate B2の
+`PASS` / `BLOCK`へ昇格・流用しない。
+
 ## Web Editor AI の同意境界
 
 `GDX-AI-CONSENT-001` により、Web Editor はユーザーが選択した HTTP provider の
@@ -145,11 +156,12 @@ Local LLM／BYOK だけを有効化する。アプリ所有の API key、
 が変わった場合は fail closed とし、過去の同意を流用しない。BYOK の API key は現在の
 ページの実行メモリだけに置き、IndexedDB や Local Storage へ永続化しない。
 
-これらの contract test は実 provider の成功を証明しない。資格情報付きかつ
-teardown 可能なブラウザ runner は存在しないため、manifest の
-`blocked-web-ai-consent-live` を `passed` と読み替えてはならない。
-この blocked 評価はユーザー所有の HTTP Local LLM／BYOK 経路だけを対象とし、
-管理型 AI を意味しない。
+これらの contract test は実 provider のモデル品質を証明しない。Gate B2 の
+candidate-bound browser runner は loopback OpenAI-compatible server と Chromium を使い、
+実 HTTP の refusal／approval／destination re-consent、IndexedDB／Local Storage の
+teardown を確認する。`pnpm eval:web-ai-consent:live` は jsdom による informational
+補助であり、実ブラウザ証跡の代替ではない。この評価はユーザー所有の HTTP Local
+LLM／BYOK 経路だけを対象とし、管理型 AI を意味しない。
 また Sakana の公式 API は 2026-07-24 時点で公開 Web origin の preflight に応答しないため、
 Vite 開発 proxy では検証できるが静的な本番 Web Editor からの直接実行は Heavy 未達とする。
 原稿と BYOK key を受け取る Grimodex relay は現行の「開発者サーバーへ原稿を送らない」
@@ -159,40 +171,44 @@ Vite 開発 proxy では検証できるが静的な本番 Web Editor からの�
 テストに再構築しない）。② のビルダー（map/tree の `buildSystemPrompt`/`buildUserPrompt`、
 `parseCards`）は本検証のため production で `export` 済み。
 
-## 実行方法
+## Live Model Qualificationの実行
 
-すべて既定 SKIP（キー未設定なら skip / 即 return）。実トークン課金あり。
-以下の OpenRouter ライブハーネスはデスクトップ AI 経路の開発・検証用に維持するもので、
-Web Editor の管理型 provider またはアプリ所有キーの経路ではない。
-
-### JS（① agent loop / ② 単発 / streaming）
+実トークン課金を伴う5本のOpenRouter suiteは
+[`evals/qualifications/live-models.yaml`](../evals/qualifications/live-models.yaml)を正本として、
+Quality Manifestに登録済みのHeavy commandを一括実行する。API keyはローカル環境だけに置く。
 
 ```sh
-# agent loop（既存）
-OPENROUTER_API_KEY=sk-... pnpm test --run \
-  src/features/chat/agent/agentToolCall.live.test.ts
+export OPENROUTER_API_KEY
+pnpm qualify:ai-live -- \
+  --candidate HEAD \
+  --model openai/gpt-5.6-luna \
+  --reasoning-effort medium
 
-# 単発サーフェス一式（synopsis/title/要約/伏線×3/beat/map/tree/streaming）
-OPENROUTER_API_KEY=sk-... pnpm test --run \
-  src/features/ai-verification/singleShot.live.test.ts
-
-# relation 注入 eval（既存）
-OPENROUTER_API_KEY=sk-... pnpm test --run \
-  src/features/codex/relationInjectionEval.live.test.ts
+# 1経路だけを評価
+pnpm qualify:ai-live -- \
+  --candidate HEAD \
+  --model openai/gpt-5.6-luna \
+  --reasoning-effort medium \
+  --suite heavy-rust-post-effect-live
 ```
 
-モデル上書き: `OPENROUTER_MODEL`（既定 `openai/gpt-4o-mini`）。
+runnerはGitHub Actionsを拒否する。clean treeを既定要件とし、API key不足なら子プロセスを
+1つも開始せず`INCOMPLETE`を記録する。stdout／stderrとstructured artifactは資格情報を
+除去してdigest化し、`.artifacts/live-model-qualification/`の新しいrun directoryへ保存する。
+API key、Authorization header、生環境一覧、credential付きURL、HTTP dumpは保存しない。
 
-### Rust（③ 校閲 post-effect graders）
+実行を推奨するのは次の場合に限る。
 
-```sh
-OPENROUTER_API_KEY=sk-... cargo test --no-default-features \
-  post_effect_live -- --nocapture
-```
+- default model／providerを変更したとき
+- Prompt／Parser／response schemaを変更したとき
+- AI抽出を主要機能として含むリリース前
+- provider側の回帰またはユーザー報告を調査するとき
 
-`--no-default-features` は CLAUDE.md の方針（default features 有効だと libort_sys の
-glibc symbol mismatch でローカルリンク失敗）。テスト本体は
-[`post_effect.rs` 末尾の `post_effect_live_tests`](../src-tauri/src/commands/post_effect.rs)。
+毎PR、毎push、定期scheduleでは実行しない。個別の`.live.test.ts` commandはfocusedな
+開発診断用に維持するが、資格情報不足によるVitestのSKIPをQualification成功とは扱わない。
+Rust post-effectは引き続き`--no-default-features`で実行する。default featuresを有効にすると
+環境によって`libort_sys`のglibc symbol mismatchが起きるためである。テスト本体は
+[`post_effect.rs`末尾の`post_effect_live_tests`](../src-tauri/src/commands/post_effect.rs)。
 
 ### 完全性メタテスト（キー不要・通常スイート）
 

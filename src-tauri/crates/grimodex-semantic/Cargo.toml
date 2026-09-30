@@ -2,7 +2,8 @@
 name = "grimodex-semantic"
 version = "0.1.0"
 edition = "2021"
-license = "Elastic-2.0"
+license-file.workspace = true
+publish.workspace = true
 description = "Tauri-independent semantic indexing, search, chunking, and embedding core shared by Grimodex desktop backends"
 
 [features]
@@ -42,6 +43,10 @@ tokenizers = { version = "0.23", optional = true, default-features = false, feat
 reqwest = { version = "0.13", optional = true, features = ["stream"] }
 tracing = "0.1"
 unicode-normalization = "0.1"
+unicode-segmentation = "1.13"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }

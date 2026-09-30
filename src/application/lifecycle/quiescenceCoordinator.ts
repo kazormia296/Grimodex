@@ -4,7 +4,12 @@ import {
   hasUnresolvedEditorChanges,
 } from "@/lib/editorQuiescence";
 import { flushQuiescenceParticipants } from "./quiescenceParticipants";
-import { flushQuiescenceProviderStage } from "@/lib/quiescenceProviders";
+import {
+  flushQuiescenceProviderStage,
+  QuiescenceProviderStageError,
+  type QuiescenceProviderFailure,
+  type QuiescenceProviderId,
+} from "@/lib/quiescenceProviders";
 import {
   activateLifecycleTransition,
   type LifecycleTransitionTrace,
@@ -25,19 +30,81 @@ export type QuiescenceStage =
 export interface QuiescenceFailure {
   stage: QuiescenceStage;
   error: unknown;
+  /** Compatibility alias retained for recovery/export consumers. */
+  originalError: unknown;
+  providerId?: QuiescenceProviderId;
+  providerStage?: import("@/lib/quiescenceProviders").QuiescenceProviderStage;
+}
+
+const GENERIC_QUIESCENCE_ERROR_MESSAGE =
+  "Document lifecycle did not reach quiescence";
+
+function hasErrorPrototype(value: unknown): value is Error {
+  try {
+    if (value instanceof Error) return true;
+  } catch {
+    // A revoked Proxy can throw while checking its prototype chain.
+  }
+  if (value === null || typeof value !== "object") return false;
+  let current: object | null = value;
+  for (let depth = 0; depth < 8 && current !== null; depth += 1) {
+    try {
+      current = Object.getPrototypeOf(current);
+    } catch {
+      return false;
+    }
+    if (current === Error.prototype) return true;
+  }
+  return false;
+}
+
+function singleQuiescenceFailureMessage(
+  failures: readonly QuiescenceFailure[],
+): string | null {
+  try {
+    if (failures.length !== 1) return null;
+    const originalError = failures[0]?.originalError;
+    if (!hasErrorPrototype(originalError)) return null;
+    const message = originalError.message;
+    return typeof message === "string" && message.length > 0 ? message : null;
+  } catch {
+    // Error/prototype/message getters are untrusted at this boundary.
+    return null;
+  }
 }
 
 export class StrictQuiescenceError extends Error {
   readonly failures: readonly QuiescenceFailure[];
+  readonly providerFailures: readonly QuiescenceProviderFailure[];
 
   constructor(failures: readonly QuiescenceFailure[]) {
     super(
-      failures.length === 1 && failures[0]?.error instanceof Error
-        ? failures[0].error.message
-        : "Document lifecycle did not reach quiescence",
+      singleQuiescenceFailureMessage(failures) ??
+        GENERIC_QUIESCENCE_ERROR_MESSAGE,
     );
     this.name = "StrictQuiescenceError";
     this.failures = failures;
+    const providerFailures: QuiescenceProviderFailure[] = [];
+    try {
+      for (let index = 0; index < failures.length; index += 1) {
+        const failure = failures[index];
+        if (
+          !failure ||
+          failure.providerId === undefined ||
+          failure.providerStage === undefined
+        ) {
+          continue;
+        }
+        providerFailures.push({
+          stage: failure.providerStage,
+          providerId: failure.providerId,
+          originalError: failure.originalError,
+        });
+      }
+    } catch {
+      // A hostile failure record is not allowed to veto the lifecycle error.
+    }
+    this.providerFailures = providerFailures;
   }
 }
 
@@ -56,12 +123,16 @@ export interface QuiescenceDependencies {
 
 const defaultDependencies: QuiescenceDependencies = {
   awaitAiExecutions: () => flushQuiescenceProviderStage("ai-executions"),
-  flushAutoSaves: () => flushQuiescenceProviderStage("autosave"),
+  flushAutoSaves: () =>
+    flushQuiescenceProviderStage("autosave", { preexistingDraft: true }),
   flushParticipants: flushQuiescenceParticipants,
   flushExternalWriteBacks: () =>
     flushQuiescenceProviderStage("external-write-back"),
   awaitEditorWrites: awaitPendingEditorWrites,
-  awaitScopedMutations: () => flushQuiescenceProviderStage("scoped-mutations"),
+  awaitScopedMutations: () =>
+    flushQuiescenceProviderStage("scoped-mutations", {
+      preexistingDraft: true,
+    }),
   awaitSceneWrites: () => flushQuiescenceProviderStage("scene-writes"),
   hasUnresolvedEditorChanges,
   flushTimelapse: () => flushQuiescenceProviderStage("timelapse"),
@@ -101,7 +172,31 @@ export async function flushStrictQuiescence(
       markQuiescence(`${stage}.complete`);
     } catch (error) {
       markQuiescence(`${stage}.failed`);
-      failures.push({ stage, error });
+      let providerFailures: readonly QuiescenceProviderFailure[] | undefined;
+      try {
+        if (error instanceof QuiescenceProviderStageError) {
+          providerFailures = error.providerFailures;
+        }
+      } catch {
+        providerFailures = undefined;
+      }
+      if (providerFailures !== undefined) {
+        try {
+          failures.push(
+            ...providerFailures.map((failure) => ({
+              stage,
+              error: failure.originalError,
+              originalError: failure.originalError,
+              providerId: failure.providerId,
+              providerStage: failure.stage,
+            })),
+          );
+        } catch {
+          failures.push({ stage, error, originalError: error });
+        }
+      } else {
+        failures.push({ stage, error, originalError: error });
+      }
     }
   };
 
@@ -118,9 +213,13 @@ export async function flushStrictQuiescence(
     await run("scene-writes", dependencies.awaitSceneWrites);
     if (dependencies.hasUnresolvedEditorChanges()) {
       markQuiescence("unresolved-editor.failed");
+      const unresolvedEditorError = new Error(
+        i18next.t("autoSave.unresolvedChanges"),
+      );
       failures.push({
         stage: "unresolved-editor",
-        error: new Error(i18next.t("autoSave.unresolvedChanges")),
+        error: unresolvedEditorError,
+        originalError: unresolvedEditorError,
       });
     } else {
       markQuiescence("unresolved-editor.complete");

@@ -24,10 +24,16 @@ import {
   createTrashItem,
   deleteTrashItem,
   pruneTrashItems,
+  restoreStructuralTrashItem,
   supportsTrashBin,
 } from "./api";
 import type { TrashItemInput } from "./types";
 import { getCreateResultMetadata } from "@/lib/createResultMetadata";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
 
 type AnyWindow = Record<string, unknown>;
 
@@ -48,9 +54,13 @@ const input: TrashItemInput = {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  _resetQuiescenceLeasesForTests();
+  publishCurrentProjectId("p1");
 });
 
 afterEach(() => {
+  _resetQuiescenceLeasesForTests();
+  publishCurrentProjectId(null);
   delete (window as unknown as AnyWindow).__TAURI_INTERNALS__;
   delete (window as unknown as AnyWindow).grimodex;
 });
@@ -112,6 +122,37 @@ describe("trash_bin API（Electron シェル）", () => {
     expect(created.isInteresting).toBe(false);
   });
 
+  it("close 中の既存 capture だけが preexisting permit で native create へ到達する", async () => {
+    installElectronBridge();
+    invokeMock.mockResolvedValue({
+      id: "trash-preexisting",
+      project_id: "p1",
+      kind: "text-fragment",
+      sub_kind: "text-fragment",
+      preview_text: "消した文字屑",
+      payload: '{"text":"消した文字屑","spans":[]}',
+      char_count: 6,
+      is_interesting: 0,
+      deleted_at: "2026-07-10T00:00:00.000Z",
+    });
+    const lease = acquireQuiescenceLease("window-close");
+    try {
+      await expect(
+        createTrashItem(input, {
+          charCount: 6,
+          isInteresting: false,
+          preexistingDraft: true,
+        }),
+      ).resolves.toMatchObject({ id: "trash-preexisting" });
+
+      await expect(
+        createTrashItem(input, { charCount: 6, isInteresting: false }),
+      ).rejects.toThrow(/mutation authority/);
+    } finally {
+      lease.release();
+    }
+  });
+
   it("deletedAt 省略を native に保ち、削除済み replay metadata を正規化後も保持する", async () => {
     installElectronBridge();
     invokeMock.mockResolvedValue({
@@ -134,6 +175,64 @@ describe("trash_bin API（Electron シェル）", () => {
     expect(getCreateResultMetadata(created)).toEqual({
       replayed: true,
       entityPresent: false,
+    });
+  });
+
+  it("構造復元を安定requestIdとproject/session identity付きNative commandへ送る", async () => {
+    installElectronBridge();
+    invokeMock.mockResolvedValue({
+      newId: "restored-scene:t1",
+      brokenLinks: ["folder"],
+    });
+    const item = {
+      id: "t1",
+      projectId: "p1",
+      kind: "structure-item" as const,
+      subKind: "scene" as const,
+      originSceneId: null,
+      originCodexId: null,
+      previewText: "Scene",
+      previewMeta: null,
+      payload: {
+        originalId: "old-scene",
+        title: "Scene",
+        body: "{}",
+        beats: "[]",
+        povCharacterId: null,
+        folderHintId: null,
+        folderHintName: null,
+        metadata: {
+          synopsis: null,
+          status: null,
+          nodeType: "scene" as const,
+          locationId: null,
+          sortOrder: "a0",
+          storyTimeOrder: null,
+          storyTimeLabel: null,
+        },
+        charCount: 0,
+      },
+      charCount: 5,
+      isInteresting: true,
+      deletedAt: "2026-08-13T00:00:00.000Z",
+    };
+
+    await expect(
+      restoreStructuralTrashItem(item, { dropX: 10, dropY: 20 }),
+    ).resolves.toEqual({
+      newId: "restored-scene:t1",
+      brokenLinks: ["folder"],
+    });
+    expect(invokeMock).toHaveBeenCalledWith("trash_bin_restore", {
+      payload: {
+        requestId: "trash-restore:t1",
+        sessionId: expect.any(String),
+        projectId: "p1",
+        itemId: "t1",
+        boardIdOverride: null,
+        dropX: 10,
+        dropY: 20,
+      },
     });
   });
 

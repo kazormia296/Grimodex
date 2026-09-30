@@ -288,6 +288,44 @@ describe("third-party license generation", () => {
     );
   });
 
+  it("ships the complete AMD FidelityFX FSR 1 notice for adapted shaders", async () => {
+    const fsr = generator
+      .gatherReferenceImplementations()
+      .find(({ name }) => name === "AMD FidelityFX Super Resolution 1");
+
+    assert.ok(fsr, "the manually adapted FSR 1 shader must be attributed");
+    assert.equal(fsr.license, "MIT");
+    assert.equal(
+      fsr.repository,
+      "https://github.com/GPUOpen-Effects/FidelityFX-FSR",
+    );
+    assert.match(
+      fsr.licenseText,
+      /Copyright \(c\) 2021 Advanced Micro Devices/,
+    );
+    assert.match(
+      fsr.licenseText,
+      /Permission is hereby granted, free of charge/,
+    );
+    assert.match(
+      fsr.licenseText,
+      /included in all\s+copies or substantial portions of the Software/,
+    );
+    assert.match(fsr.licenseText, /THE SOFTWARE IS PROVIDED "AS IS"/);
+
+    const [rootNotices, publicNotices] = await Promise.all([
+      readFile(path.join(root, "THIRD_PARTY_LICENSES.md"), "utf8"),
+      readFile(path.join(root, "public/THIRD_PARTY_LICENSES.md"), "utf8"),
+    ]);
+    assert.equal(publicNotices, rootNotices);
+    const fsrNotice = rootNotices.slice(
+      rootNotices.indexOf("### AMD FidelityFX Super Resolution 1"),
+      rootNotices.indexOf("### react-ide-workspace-layout"),
+    );
+    assert.match(fsrNotice, /Permission is hereby granted, free of charge/);
+    assert.match(fsrNotice, /THE SOFTWARE IS PROVIDED "AS IS"/);
+  });
+
   it("keeps generated copies fresh and byte-identical", async () => {
     const [rootLicenses, publicLicenses] = await Promise.all([
       readFile(path.join(root, "THIRD_PARTY_LICENSES.md")),

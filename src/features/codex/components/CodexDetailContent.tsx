@@ -70,6 +70,8 @@ import {
 } from "@/features/concurrency/externalWriteStore";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { trackPendingEditorWrite } from "@/lib/editorQuiescence";
+import type { QuiescenceProviderFlushOptions } from "@/lib/quiescenceProviders";
+import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
 
 type VersionedWriter = (baseVersion: number) => Promise<VersionedSaveOutcome>;
 
@@ -171,6 +173,9 @@ export function CodexDetailContent({
   const [summary, setSummary] = useState(entry.summary ?? "");
   const [notes, setNotes] = useState(
     !entry.notes || entry.notes === "{}" ? "" : entry.notes,
+  );
+  const timelapseDocumentRef = useRef<TimelapseDocumentRef | undefined>(
+    undefined,
   );
   const [contextMode, setContextMode] = useState<CodexContextMode>(
     (entry.contextMode as CodexContextMode) ?? "mentioned",
@@ -411,9 +416,18 @@ export function CodexDetailContent({
   ]);
 
   const persistTextPatch = useCallback(
-    async (data: Parameters<typeof updateText>[1]) => {
+    async (
+      data: Parameters<typeof updateText>[1],
+      context?: QuiescenceProviderFlushOptions,
+    ) => {
       const outcome = await enqueueVersionedWrite((baseVersion) =>
-        updateText(entry.id, data, { baseVersion }),
+        updateText(entry.id, data, {
+          baseVersion,
+          ...(data.content !== undefined && timelapseDocumentRef.current
+            ? { timelapseDocument: timelapseDocumentRef.current }
+            : {}),
+          ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
+        }),
       );
       if (!outcome.persisted) {
         throw new AlreadyNotifiedSaveError(
@@ -490,11 +504,17 @@ export function CodexDetailContent({
     pause: pauseSummarySave,
     resume: resumeSummarySave,
   } = useAutoSave(
-    useCallback(async () => {
-      await persistTextPatch({
-        summary: summaryRef.current,
-      });
-    }, [persistTextPatch]),
+    useCallback(
+      async (context?: QuiescenceProviderFlushOptions) => {
+        await persistTextPatch(
+          {
+            summary: summaryRef.current,
+          },
+          context,
+        );
+      },
+      [persistTextPatch],
+    ),
     1000,
   );
 
@@ -505,39 +525,42 @@ export function CodexDetailContent({
     pause: pauseContentSave,
     resume: resumeContentSave,
   } = useAutoSave(
-    useCallback(async () => {
-      const content = contentRef.current;
-      await persistTextPatch({ content });
-      try {
-        const intervalMs =
-          useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
-          60 *
-          1000;
-        if (shouldAutoRevision(entry.id, intervalMs)) {
-          const rev = await createRevision({
-            entityType: "codex_entry",
-            entityId: entry.id,
-            content,
-            snapshotType: "auto",
-          });
-          if (rev) {
-            recordAutoRevision(entry.id);
-            const keepCount = useSettingsStore
-              .getState()
-              .getNumber("revision.keepCount", 50);
-            pruneRevisions("codex_entry", entry.id, keepCount).catch(
-              console.error,
-            );
+    useCallback(
+      async (context?: QuiescenceProviderFlushOptions) => {
+        const content = contentRef.current;
+        await persistTextPatch({ content }, context);
+        try {
+          const intervalMs =
+            useSettingsStore.getState().getNumber("revision.autoInterval", 5) *
+            60 *
+            1000;
+          if (shouldAutoRevision(entry.id, intervalMs)) {
+            const rev = await createRevision({
+              entityType: "codex_entry",
+              entityId: entry.id,
+              content,
+              snapshotType: "auto",
+            });
+            if (rev) {
+              recordAutoRevision(entry.id);
+              const keepCount = useSettingsStore
+                .getState()
+                .getNumber("revision.keepCount", 50);
+              pruneRevisions("codex_entry", entry.id, keepCount).catch(
+                console.error,
+              );
+            }
           }
+        } catch (e) {
+          debugLog.warn(
+            "AutoSave",
+            "revision failed (content saved)",
+            errorDetail(e),
+          );
         }
-      } catch (e) {
-        debugLog.warn(
-          "AutoSave",
-          "revision failed (content saved)",
-          errorDetail(e),
-        );
-      }
-    }, [entry.id, persistTextPatch, shouldAutoRevision, recordAutoRevision]),
+      },
+      [entry.id, persistTextPatch, shouldAutoRevision, recordAutoRevision],
+    ),
     2000,
   );
 
@@ -548,9 +571,12 @@ export function CodexDetailContent({
     pause: pauseNotesSave,
     resume: resumeNotesSave,
   } = useAutoSave(
-    useCallback(async () => {
-      await persistTextPatch({ notes: notesRef.current });
-    }, [persistTextPatch]),
+    useCallback(
+      async (context?: QuiescenceProviderFlushOptions) => {
+        await persistTextPatch({ notes: notesRef.current }, context);
+      },
+      [persistTextPatch],
+    ),
     2000,
   );
 
@@ -824,8 +850,12 @@ export function CodexDetailContent({
     scheduleSummarySave();
   };
 
-  const handleContentChange = (content: string) => {
+  const handleContentChange = (
+    content: string,
+    timelapseDocument?: TimelapseDocumentRef,
+  ) => {
     contentRef.current = content;
+    timelapseDocumentRef.current = timelapseDocument;
     markDirty();
     scheduleContentSave();
   };

@@ -1,0 +1,200 @@
+cases:
+  - id: eval-narrative-replay-provenance
+    suiteId: narrative-semantic-contract
+    requirementIds: [GDX-NARR-EVAL-001, GDX-NARR-SEMANTIC-CONTRACT-001]
+    fixture:
+      runId: narrative-replay-provenance
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-08-10T09:00:00+09:00"
+      channel: native
+      grantedPolicies: []
+      availableTools: []
+      state:
+        conversationId: narrative-replay-provenance-conversation
+        workspaceId: narrative-replay-provenance-workspace
+        artifactRoot: narrative-replay-provenance-artifacts
+      teardown: [conversation, workspace, artifacts]
+    input:
+      prompt: Validate a versioned Narrative replay without transport credentials.
+      attemptedTools: []
+      executedTools: []
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: []
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: stable
+      requiredEvidence: [versioned-human-gold, credential-free-replay]
+      outputValidators: [schema, artifact-link]
+
+  - id: eval-narrative-exact-evidence
+    suiteId: narrative-extraction
+    requirementIds: [GDX-NARR-EVIDENCE-001]
+    fixture:
+      runId: narrative-exact-evidence
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-08-10T09:05:00+09:00"
+      channel: native
+      grantedPolicies: []
+      availableTools: []
+      state:
+        conversationId: narrative-exact-evidence-conversation
+        workspaceId: narrative-exact-evidence-workspace
+        artifactRoot: narrative-exact-evidence-artifacts
+      teardown: [conversation, workspace, artifacts]
+    input:
+      prompt: Resolve the quoted Narrative evidence against the immutable Source View.
+      attemptedTools: []
+      executedTools: []
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: []
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [exact-source-view-quote, production-evidence-resolver]
+      outputValidators: [schema, source-attribution]
+
+  - id: eval-narrative-semantic-frame
+    suiteId: narrative-extraction
+    requirementIds: [GDX-NARR-SEMANTIC-001]
+    fixture:
+      runId: narrative-semantic-frame
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-08-10T09:10:00+09:00"
+      channel: native
+      grantedPolicies: []
+      availableTools: []
+      state:
+        conversationId: narrative-semantic-frame-conversation
+        workspaceId: narrative-semantic-frame-workspace
+        artifactRoot: narrative-semantic-frame-artifacts
+      teardown: [conversation, workspace, artifacts]
+    input:
+      prompt: Score actuality, attribution, and narrative frame independently.
+      attemptedTools: []
+      executedTools: []
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: []
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: stable
+      requiredEvidence: [actuality, attribution, narrative-frame]
+      outputValidators: [schema, source-attribution]
+
+  - id: eval-narrative-partial-coverage
+    suiteId: narrative-extraction
+    requirementIds: [GDX-NARR-COVERAGE-001]
+    fixture:
+      runId: narrative-partial-coverage
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-08-10T09:15:00+09:00"
+      channel: native
+      grantedPolicies: []
+      availableTools: []
+      state:
+        conversationId: narrative-partial-coverage-conversation
+        workspaceId: narrative-partial-coverage-workspace
+        artifactRoot: narrative-partial-coverage-artifacts
+      teardown: [conversation, workspace, artifacts]
+    input:
+      prompt: Preserve omitted-document coverage without claiming corpus completeness.
+      attemptedTools: []
+      executedTools: []
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: []
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [included-documents, omitted-documents]
+      outputValidators: [schema, no-stale-claim, no-side-effect]
+
+  - id: eval-narrative-detail-contract
+    suiteId: narrative-extraction
+    requirementIds: [GDX-NARR-DETAIL-001]
+    fixture:
+      runId: narrative-detail-contract
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-08-10T09:20:00+09:00"
+      channel: native
+      grantedPolicies: []
+      availableTools: []
+      state:
+        conversationId: narrative-detail-contract-conversation
+        workspaceId: narrative-detail-contract-workspace
+        artifactRoot: narrative-detail-contract-artifacts
+      teardown: [conversation, workspace, artifacts]
+    input:
+      prompt: Validate stable Detail bindings and typed canonical values without dispatching a model.
+      attemptedTools: []
+      executedTools: []
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: []
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence:
+        - stable-definition-binding
+        - field-type-compatible-value
+        - explicit-inherit-set-clear
+      outputValidators: [schema, no-side-effect]
+
+  - id: eval-narrative-temporal-contract
+    suiteId: narrative-extraction
+    requirementIds: [GDX-NARR-TEMPORAL-001]
+    fixture:
+      runId: narrative-temporal-contract
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-08-10T09:25:00+09:00"
+      channel: native
+      grantedPolicies: []
+      availableTools: []
+      state:
+        conversationId: narrative-temporal-contract-conversation
+        workspaceId: narrative-temporal-contract-workspace
+        artifactRoot: narrative-temporal-contract-artifacts
+      teardown: [conversation, workspace, artifacts]
+    input:
+      prompt: Validate deterministic Temporal IR and Calendar snapshots without dispatching a model.
+      attemptedTools: []
+      executedTools: []
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: []
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence:
+        - temporal-axis-separation
+        - calendar-snapshot-identity
+        - virtual-domain-constraints
+        - projection-source-folding
+        - partial-order-preserved
+      outputValidators: [schema, no-side-effect]

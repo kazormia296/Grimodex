@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   trackSceneContentWrite,
   awaitPendingSceneContentWrite,
+  awaitPendingSceneWriteStrict,
   serializeSceneWrite,
   awaitAllPendingSceneWrites,
 } from "./pendingSceneWrites";
@@ -119,6 +120,15 @@ describe("pendingSceneWrites", () => {
     await reader;
     // reader は後続 write の完了後に解決する (追い越さない)
     expect(order).toEqual(["write2", "read"]);
+  });
+  it("propagates a failed write to snapshot-grade readers", async () => {
+    const d = deferred();
+    trackSceneContentWrite("snapshot-strict", d.promise);
+
+    const waiter = awaitPendingSceneWriteStrict("snapshot-strict");
+    d.reject(new Error("snapshot source write failed"));
+
+    await expect(waiter).rejects.toThrow("snapshot-strict");
   });
 });
 

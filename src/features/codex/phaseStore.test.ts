@@ -11,6 +11,7 @@ vi.mock("./phaseApi", () => ({
   listDetailOverridesByPhaseIds: vi.fn(),
   upsertDetailOverride: vi.fn(),
   deleteDetailOverride: vi.fn(),
+  patchPhaseAggregate: vi.fn(),
 }));
 
 import * as phaseApi from "./phaseApi";
@@ -39,8 +40,7 @@ const mockCreatePhase = vi.mocked(phaseApi.createPhase);
 const mockUpdatePhase = vi.mocked(phaseApi.updatePhase);
 const mockGetPhase = vi.mocked(phaseApi.getPhase);
 const mockDeletePhase = vi.mocked(phaseApi.deletePhase);
-const mockUpsertDetailOverride = vi.mocked(phaseApi.upsertDetailOverride);
-const mockDeleteDetailOverride = vi.mocked(phaseApi.deleteDetailOverride);
+const mockPatchPhaseAggregate = vi.mocked(phaseApi.patchPhaseAggregate);
 
 const mockPhase: CodexEntryPhase = {
   id: "phase-1",
@@ -476,6 +476,45 @@ describe("phaseStore", () => {
       );
     });
 
+    it("forwards a preexisting-draft permit to the Phase API", async () => {
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [{ ...mockPhase, version: 3 }] },
+      });
+      mockUpdatePhase.mockResolvedValue({ ...mockPhase, version: 4 });
+
+      const options = { baseVersion: 3, preexistingDraft: true };
+      await usePhaseStore
+        .getState()
+        .updatePhase("phase-1", { contentOverride: "draft" }, options);
+
+      expect(mockUpdatePhase).toHaveBeenCalledWith(
+        "phase-1",
+        { contentOverride: "draft" },
+        { baseVersion: 3, preexistingDraft: true },
+      );
+    });
+
+    it("does not add a preexisting-draft permit to ordinary Phase saves", async () => {
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [{ ...mockPhase, version: 3 }] },
+      });
+      mockUpdatePhase.mockResolvedValue({ ...mockPhase, version: 4 });
+
+      await usePhaseStore.getState().updatePhase(
+        "phase-1",
+        { contentOverride: "ordinary" },
+        {
+          baseVersion: 3,
+        },
+      );
+
+      expect(mockUpdatePhase).toHaveBeenCalledWith(
+        "phase-1",
+        { contentOverride: "ordinary" },
+        { baseVersion: 3 },
+      );
+    });
+
     it("履歴 undo の OCC 衝突時はコマンドを保持する", async () => {
       const { PhaseVersionConflictError } = await import("./phaseOcc");
       usePhaseStore.setState({
@@ -597,17 +636,23 @@ describe("phaseStore", () => {
 
   describe("upsertDetailOverride", () => {
     it("overrideをupsertしてstoreに反映する", async () => {
-      mockUpsertDetailOverride.mockResolvedValue(mockOverride);
+      usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [mockPhase] },
+      });
+      mockPatchPhaseAggregate.mockResolvedValue({
+        phase: { ...mockPhase, version: mockPhase.version + 1 },
+        overrides: [mockOverride],
+      });
 
       await usePhaseStore
         .getState()
         .upsertDetailOverride("phase-1", "def-1", "新しい値");
 
-      expect(mockUpsertDetailOverride).toHaveBeenCalledWith(
-        "phase-1",
-        "def-1",
-        "新しい値",
-      );
+      expect(mockPatchPhaseAggregate).toHaveBeenCalledWith({
+        phaseId: "phase-1",
+        baseVersion: mockPhase.version,
+        detailOverrides: [{ definitionId: "def-1", value: "新しい値" }],
+      });
       expect(usePhaseStore.getState().detailOverrides["phase-1"]).toContain(
         mockOverride,
       );
@@ -617,12 +662,21 @@ describe("phaseStore", () => {
   describe("deleteDetailOverride", () => {
     it("overrideを削除してstoreから除去する", async () => {
       usePhaseStore.setState({
+        phasesByEntry: { "entry-1": [mockPhase] },
         detailOverrides: { "phase-1": [mockOverride] },
       });
-      mockDeleteDetailOverride.mockResolvedValue(undefined);
+      mockPatchPhaseAggregate.mockResolvedValue({
+        phase: { ...mockPhase, version: mockPhase.version + 1 },
+        overrides: [],
+      });
 
       await usePhaseStore.getState().deleteDetailOverride("phase-1", "def-1");
 
+      expect(mockPatchPhaseAggregate).toHaveBeenCalledWith({
+        phaseId: "phase-1",
+        baseVersion: mockPhase.version,
+        detailOverrides: [],
+      });
       expect(usePhaseStore.getState().detailOverrides["phase-1"]).toEqual([]);
     });
   });

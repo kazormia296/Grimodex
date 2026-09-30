@@ -84,6 +84,22 @@ describe("LayoutShell Zen projection", () => {
     );
   });
 
+  it("publishes layout initialization as a live DOM contract", () => {
+    act(() => {
+      useLayoutStore.setState({ initialized: false });
+    });
+    const { container } = render(<LayoutShell />);
+    const shell = container.querySelector<HTMLElement>("[data-layout-shell]");
+
+    expect(shell).toHaveAttribute("data-layout-initialized", "false");
+
+    act(() => {
+      useLayoutStore.setState({ initialized: true });
+    });
+
+    expect(shell).toHaveAttribute("data-layout-initialized", "true");
+  });
+
   it("publishes the same Glass root around a solo non-Editor panel", () => {
     const { container } = render(<LayoutShell hidden soloPanelId="chat" />);
     const root = container.querySelector<HTMLElement>(

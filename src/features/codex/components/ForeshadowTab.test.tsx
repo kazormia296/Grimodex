@@ -38,6 +38,7 @@ function makeItem(
     abandoned: false,
     secret: false,
     loadBearing: null,
+    version: 0,
     createdAt: new Date(),
     updatedAt: new Date(),
     label: "seeded",

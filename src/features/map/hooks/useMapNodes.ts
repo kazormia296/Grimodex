@@ -12,6 +12,7 @@ import {
   deleteAiBranch,
   getAiBranchSnapshot,
   restoreAiBranchSnapshot,
+  createMapHistoryWriteLease,
   extractPreviewText,
 } from "../mapApi";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
@@ -636,7 +637,7 @@ export function useMapNodes({
                   const snapshot = !useGlobalHistoryStore.getState().isReplaying
                     ? await getAiBranchSnapshot(ab.id)
                     : null;
-                  await deleteAiBranch(ab.id);
+                  const forwardReceipt = await deleteAiBranch(ab.id);
                   nodeCallbacksRef.current.setAiBranches((prev) =>
                     prev.filter((b) => b.id !== ab.id),
                   );
@@ -649,11 +650,20 @@ export function useMapNodes({
 
                   if (snapshot) {
                     const cap = snapshot;
+                    const undoLease = createMapHistoryWriteLease(
+                      "undo",
+                      forwardReceipt,
+                    );
+                    const redoLease = createMapHistoryWriteLease(
+                      "redo",
+                      forwardReceipt,
+                    );
                     useGlobalHistoryStore.getState().push({
                       kind: "map",
                       label: i18next.t("map.history.aiBranchDelete"),
                       async undo() {
-                        await restoreAiBranchSnapshot(cap);
+                        await restoreAiBranchSnapshot(cap, undoLease.acquire());
+                        undoLease.committed();
                         nodeCallbacksRef.current.setAiBranches((prev) => [
                           ...prev,
                           cap.branch,
@@ -664,7 +674,11 @@ export function useMapNodes({
                         ]);
                       },
                       async redo() {
-                        await deleteAiBranch(cap.branch.id);
+                        await deleteAiBranch(
+                          cap.branch.id,
+                          redoLease.acquire(),
+                        );
+                        redoLease.committed();
                         nodeCallbacksRef.current.setAiBranches((prev) =>
                           prev.filter((b) => b.id !== cap.branch.id),
                         );

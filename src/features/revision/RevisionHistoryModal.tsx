@@ -6,15 +6,21 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { useRevisionStore } from "./revisionStore";
-import { createRevision } from "./api";
-import { saveSceneContent } from "@/features/tree/api";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { getReadonlyEditorExtensions } from "@/features/editor/extensions";
 import { EditorContentSkeleton } from "@/features/editor/EditorContentSkeleton";
 import { RevisionRowSkeletonList } from "@/components/ui/skeleton-patterns";
 import type { RevisionMeta } from "./api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getNode } from "@/features/tree/api";
+import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
+import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/placedBeatPreview";
+import { restoreSceneRevisionNative } from "./revisionRestoreNative";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
+import { notifySameRendererDocumentWrite } from "@/features/concurrency/documentWriteNotification";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -375,45 +381,88 @@ export function RevisionHistoryModal() {
   };
 
   const handleRestoreConfirm = useCallback(async () => {
-    if (!selectedContent || !entityId || !entityType || !mainEditor) return;
-    // 復元は mainEditor.setContent で doc 全体を置換するため、未確定の inline-AI
-    // diff があれば止める。
+    if (
+      !selectedContent ||
+      !selectedRevisionId ||
+      !entityId ||
+      !entityType ||
+      !mainEditor
+    ) {
+      return;
+    }
+    // Gate C1 intentionally exposes only the typed Scene aggregate. Other
+    // revision surfaces remain read-only until they gain equivalent Native
+    // authority instead of falling back to renderer-composed writes.
+    if (entityType !== "scene") {
+      toast.error(t("revision.restoreFailed"));
+      return;
+    }
     if (guardInlineAiPending()) return;
 
     setIsRestoring(true);
     try {
-      // 1. Save current content as a manual snapshot (safety net)
-      if (currentContent) {
-        await createRevision({
-          entityType,
-          entityId,
-          content: currentContent,
-          snapshotType: "manual",
-        });
+      const node = await getNode(entityId);
+      const documentKey = {
+        kind: "tree" as const,
+        id: entityId,
+        storage: "database" as const,
+      };
+      if (
+        !node ||
+        node.projectId !== getCurrentProjectId() ||
+        typeof node.content !== "string"
+      ) {
+        throw new Error("Revision restore scene authority is unavailable");
       }
-
-      // 2. Parse the selected ProseMirror JSON
-      const json = JSON.parse(selectedContent) as object;
-
-      // 3. Set editor content
-      mainEditor.commands.setContent(json);
-
-      // 4. Save the restored content as ProseMirror JSON
-      if (entityType === "scene") {
-        await saveSceneContent(entityId, JSON.stringify(mainEditor.getJSON()));
+      if (useEditorSessionStore.getState().isDocumentDirty(documentKey)) {
+        throw new Error("Save the current scene before restoring a revision");
       }
-
-      // Marker only: `setContent` above dispatches a normal editor transaction,
-      // so EditorPane.onTransaction already records the doc.step that replays
-      // this restore. No rebaseline needed (unlike a project-snapshot restore).
-      recordChangeEvent({
-        domain: "revision",
-        opType: "content.restore",
-        entityType,
+      await restoreSceneRevisionNative({
+        requestId: crypto.randomUUID(),
+        sessionId: getRecorderSessionId(),
+        projectId: node.projectId,
+        entityType: "scene",
         entityId,
-        sceneId: entityType === "scene" ? entityId : null,
-        payload: { entityType, entityId },
+        revisionId: selectedRevisionId,
+        content: selectedContent,
+        currentContent: node.content,
+        expectedVersion: node.version,
+        charCount: countSceneBodyCharsFromJson(selectedContent),
+        placedBeatPreview: (() => {
+          const preview = extractPlacedBeatPreviewFromString(selectedContent);
+          return preview === "[]" ? null : preview;
+        })(),
       });
+
+      try {
+        // The editor changes only after the Native commit. `emitUpdate:false`
+        // prevents a second autosave / Change Event for the same restore.
+        const restoredJson = JSON.parse(selectedContent) as object;
+        mainEditor.commands.setContent(restoredJson, {
+          emitUpdate: false,
+          errorOnInvalidContent: true,
+        });
+        notifySameRendererDocumentWrite(documentKey, {
+          domain: "revision",
+          opType: "content.restore",
+          entityId,
+        });
+        await useTreeStore.getState().reloadTreeOrThrow(node.projectId);
+      } catch (projectionError) {
+        // Native already committed. Never report the domain operation as
+        // failed (which could invite a duplicate restore); force a clean
+        // persisted reload and log only the renderer projection failure.
+        notifySameRendererDocumentWrite(documentKey, {
+          domain: "revision",
+          opType: "content.restore",
+          entityId,
+        });
+        debugLog.error(
+          "RevisionHistory",
+          "restore committed but renderer resync failed",
+          errorDetail(projectionError),
+        );
+      }
 
       setConfirmRestore(false);
       toast.success(t("revision.restored"));
@@ -428,7 +477,7 @@ export function RevisionHistoryModal() {
     selectedContent,
     entityId,
     entityType,
-    currentContent,
+    selectedRevisionId,
     mainEditor,
     closeHistory,
     t,

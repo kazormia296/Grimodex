@@ -7,6 +7,7 @@ export const SNAPSHOT_RESTORE_TABLES = [
   "codex_entries",
   "codex_tags",
   "codex_detail_definitions",
+  "codex_detail_semantic_bindings",
   "codex_entry_tags",
   "codex_detail_values",
   "codex_entry_phases",
@@ -36,6 +37,8 @@ export const SNAPSHOT_RESTORE_TABLES = [
   "tree_node_labels",
   "foreshadows",
   "foreshadow_setups",
+  "foreshadow_payoffs",
+  "foreshadow_setup_payoff_links",
   "foreshadow_codex_links",
   "map_boards",
   "map_ai_branches",
@@ -78,6 +81,13 @@ export interface ProjectSnapshotRestoreContext {
   liveCodexTagIds: string[];
 }
 
+export interface ProjectSnapshotApplyRestoreResult {
+  canonicalSequence: number;
+  changeEventUid?: string;
+  maintenanceTransactionId?: string;
+  noOp: boolean;
+}
+
 export interface SnapshotInsertPlan {
   table: SnapshotRestoreTable;
   row: RawRow;
@@ -106,10 +116,15 @@ export async function loadNativeProjectSnapshotRestoreContext(
 }
 
 export async function applyNativeProjectSnapshotRestore(payload: {
+  requestId: string;
+  sessionId: string;
   projectId: string;
   snapshotId: string;
   scopes: RestoreScope[];
   inserts: SnapshotInsertPlan[];
-}): Promise<void> {
-  await invoke("project_snapshot_apply_restore", { payload });
+}): Promise<ProjectSnapshotApplyRestoreResult> {
+  return invoke<ProjectSnapshotApplyRestoreResult>(
+    "project_snapshot_apply_restore",
+    { payload },
+  );
 }

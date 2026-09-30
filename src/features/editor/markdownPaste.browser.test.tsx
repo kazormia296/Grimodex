@@ -6,7 +6,7 @@
  * happy-dom では実 paste イベントの clipboardData や keydown→paste の順序を
  * 忠実に再現できないため browser test で gate する。
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEditor, EditorContent } from "@tiptap/react";
@@ -16,6 +16,7 @@ import { createAttributionPlugin } from "@/features/attribution/AttributionPlugi
 import { createAiEditedPlugin } from "@/features/attribution/AiEditedPlugin";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import {
   pasteExternalText,
   notePlainPasteKeyDown,
@@ -86,6 +87,12 @@ async function mount() {
   return { pm, editor };
 }
 
+beforeEach(() => {
+  useSettingsStore.setState((state) => ({
+    cache: { ...state.cache, "editor.aozoraInput": "true" },
+  }));
+});
+
 afterEach(() => {
   useEditorStore.getState().setEditor(null);
   consumePlainPaste(); // テスト間でフラグを残さない
@@ -114,6 +121,19 @@ async function mountFileBacked() {
 }
 
 describe("markdown paste 統合 (browser)", () => {
+  it("通常ペースト: 青空記法をルビ・傍点・縦中横へ変換する", async () => {
+    const { pm } = await mount();
+    await userEvent.paste(
+      "｜東雲《しののめ》と漢字《かんじ》、《《重要》》、［＃縦中横］25［＃縦中横終わり］",
+    );
+
+    await waitFor(() => {
+      expect(pm.querySelectorAll("ruby")).toHaveLength(2);
+    });
+    expect(pm.querySelectorAll(".emphasis-dots")).toHaveLength(1);
+    expect(pm.querySelectorAll(".tcy")).toHaveLength(1);
+  });
+
   it("通常ペースト: Markdown 記法が見出し/太字に変換される", async () => {
     const { pm, editor } = await mount();
     await userEvent.paste("# 見出し\n\n**太字**の段落");

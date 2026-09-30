@@ -1,0 +1,191 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-semantic-core-authorities",
+  "authorities": [
+    {
+      "concern": "evidence-freshness",
+      "canonicalAuthority": "C2 consumer freshness evaluator",
+      "compatibilityMirror": "legacy projection freshness",
+      "writePolicy": "canonical-only"
+    },
+    {
+      "concern": "semantic-assessment",
+      "canonicalAuthority": "reconciler proposal revision",
+      "compatibilityMirror": null,
+      "writePolicy": "proposal-only"
+    },
+    {
+      "concern": "domain-state",
+      "canonicalAuthority": "typed native writer",
+      "compatibilityMirror": "browser mock mirror",
+      "writePolicy": "typed-writer-only"
+    },
+    {
+      "concern": "search-generation",
+      "canonicalAuthority": "nir1-reviewed-chronicle-v1 producer",
+      "compatibilityMirror": null,
+      "writePolicy": "declared-bindings-only"
+    },
+    {
+      "concern": "review",
+      "canonicalAuthority": "decision ledger",
+      "compatibilityMirror": "none",
+      "writePolicy": "decision-only"
+    },
+    {
+      "concern": "maintenance-finding-observation",
+      "canonicalAuthority": "freshness-run-publish-transaction",
+      "compatibilityMirror": null,
+      "writePolicy": "evaluator-publish-only"
+    },
+    {
+      "concern": "maintenance-terminal-finding-observation",
+      "canonicalAuthority": "maintenance-run-finalization-transaction",
+      "compatibilityMirror": null,
+      "writePolicy": "maintenance-finalization-only"
+    },
+    {
+      "concern": "maintenance-attention",
+      "canonicalAuthority": "attention-typed-writer",
+      "compatibilityMirror": null,
+      "writePolicy": "typed-writer-only"
+    }
+  ],
+  "semanticIndexAllowedFields": [
+    "generation",
+    "builtAt",
+    "sourceDigest",
+    "dependencySetDigest",
+    "dirtyCacheFlag",
+    "producerId",
+    "producerVersion"
+  ],
+  "semanticIndexReservation": {
+    "status": "reserved",
+    "authorityFootprint": {
+      "surfaces": [
+        {
+          "id": "metadataRows",
+          "relation": "narrative_semantic_index_metadata",
+          "rowSet": "all-project-rows",
+          "predicate": "project_id = ?1"
+        },
+        {
+          "id": "activeD1HeadRows",
+          "relation": "narrative_dependency_declaration_heads",
+          "rowSet": "active-sealed-D1-heads",
+          "predicate": "project_id = ?1 AND consumer_kind = 'semantic-index'"
+        },
+        {
+          "id": "v1EdgeRows",
+          "relation": "narrative_dependency_edges",
+          "rowSet": "V1-edges",
+          "predicate": "project_id = ?1 AND consumer_kind = 'semantic-index'"
+        },
+        {
+          "id": "consumerFreshnessRows",
+          "relation": "narrative_consumer_freshness",
+          "rowSet": "consumer-freshness",
+          "predicate": "project_id = ?1 AND consumer_kind = 'semantic-index'"
+        }
+      ],
+      "passCondition": "unrecognized-all-zero",
+      "nonZeroDisposition": "manual-terminal",
+      "rebuildTarget": "forbidden",
+      "classification": "exclude-only-validated-declared-bindings"
+    },
+    "chunkRows": {
+      "allowed": true,
+      "classification": "rebuildable-acceleration",
+      "narrativeDependencyAuthorityClaim": "forbidden"
+    },
+    "futureBinding": {
+      "status": "dormant",
+      "approvalGate": "NIR-1",
+      "firstCandidate": "one-shared-producer",
+      "mapping": {
+        "metadata.index_key": "D1.consumer_key=freshness.consumer_key",
+        "metadata.generation": "active-sealed-D1-head.consumer-scoped-producer_generation",
+        "metadata.dependency_set_digest": "active-sealed-D1-set.digest"
+      },
+      "unapprovedDecisions": [
+        "fixed-keys",
+        "producer-registry",
+        "source-identities",
+        "writers",
+        "D1-declarations",
+        "metadata-migration",
+        "restore-invalidation",
+        "reserved-to-declared-activation",
+        "producer-granularity",
+        "metadata-producer-identity-composition",
+        "dirty-pending-semantics",
+        "Codex-source-granularity"
+      ],
+      "scope": "all-other-producers"
+    },
+    "declaredBindings": [
+      {
+        "consumerKey": "nir1-reviewed-chronicle:v1",
+        "producerId": "nir1-reviewed-chronicle-v1",
+        "producerVersion": "nir1-reviewed-chronicle/v1",
+        "registryGeneration": "nir1-reviewed-chronicle/v1",
+        "declarationSetGeneration": "positive-monotonic-per-project",
+        "metadataBinding": {
+          "indexKey": "equals-consumer-key",
+          "producerId": "explicit-exact-producer-id",
+          "producerVersion": "explicit-exact-producer-version",
+          "generation": "equals-active-sealed-D1-head-consumer-scoped-generation",
+          "dependencySetDigest": "equals-active-sealed-D1-set-digest"
+        },
+        "eligibilitySource": {
+          "kind": "nir1-chronicle-eligibility-set",
+          "keyFormat": "project:nir1-chronicle-eligibility:{projectId}",
+          "digestBasis": "sorted-current-revision-envelope-and-own-human-decision-identities",
+          "freshnessInDigest": "forbidden"
+        },
+        "writer": {
+          "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+          "symbol": "publish_chronicle_index_build_in_tx"
+        },
+        "recognizedUnavailable": "rebuildable-not-query-usable",
+        "queryUsability": "canonical-fresh-and-clean-current-native-proof",
+        "unknownOrIncoherentBinding": "manual-terminal"
+      },
+      {
+        "consumerKey": "nir1-reviewed-entity-relation:v1",
+        "producerId": "nir1-reviewed-entity-relation-v1",
+        "producerVersion": "nir1-reviewed-entity-relation/v1",
+        "registryGeneration": "nir1-reviewed-entity-relation/v1",
+        "declarationSetGeneration": "positive-monotonic-per-project",
+        "metadataBinding": {
+          "indexKey": "equals-consumer-key",
+          "producerId": "explicit-exact-producer-id",
+          "producerVersion": "explicit-exact-producer-version",
+          "generation": "equals-active-sealed-D1-head-consumer-scoped-generation",
+          "dependencySetDigest": "equals-active-sealed-D1-set-digest"
+        },
+        "eligibilitySource": {
+          "kind": "nir1-entity-relation-eligibility-set",
+          "keyFormat": "project:nir1-entity-relation-eligibility:{projectId}",
+          "digestBasis": "sorted-qualified-current-revision-object-revision-decision-source-token-roster",
+          "freshnessInDigest": "forbidden"
+        },
+        "writer": {
+          "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+          "symbol": "publish_nir1_entity_relation_index_in_tx"
+        },
+        "recognizedUnavailable": "rebuildable-not-query-usable",
+        "queryUsability": "canonical-fresh-and-clean-current-native-proof",
+        "unknownOrIncoherentBinding": "manual-terminal"
+      }
+    ]
+  },
+  "forbiddenFreshnessClaims": [
+    "assertion-is-authoritative-fresh",
+    "assertionFresh",
+    "isAuthoritativeFresh",
+    "semanticTruth"
+  ],
+  "secondaryFreshnessAuthorityPolicy": "forbid"
+}

@@ -1942,6 +1942,44 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     expect(middlePanCursorOverlay(container).hidden).toBe(true);
   });
 
+  it("middle pan は所有する release の貼り付けだけを抑止し、終了後に購読を残さない", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const release = (button = 1, buttons = 0) => {
+      const event = new MouseEvent("mouseup", {
+        button,
+        buttons,
+        bubbles: true,
+        cancelable: true,
+      });
+      fireEvent(document, event);
+      return event.defaultPrevented;
+    };
+
+    expect(release()).toBe(false);
+    fireEvent.mouseDown(track(container), {
+      button: 1,
+      clientX: 100,
+      clientY: 20,
+    });
+    fireEvent.mouseMove(document, { clientX: 160, clientY: 20 });
+    expect(release(0, 4)).toBe(false);
+    expect(middlePanCursorOverlay(container).hidden).toBe(false);
+    expect(props.onViewChange).not.toHaveBeenCalled();
+
+    expect(release()).toBe(true);
+    expect(props.onViewChange).toHaveBeenCalledTimes(1);
+    expect(props.onViewChange).toHaveBeenCalledWith({
+      pxPerDay: 2,
+      viewStartDay: -30,
+    });
+    expect(middlePanCursorOverlay(container).hidden).toBe(true);
+    expect(release()).toBe(false);
+    expect(props.onViewChange).toHaveBeenCalledTimes(1);
+  });
+
   it("pan 対象 layer は初回 rAF 前から transform origin を確定する", () => {
     const props = makeProps();
     const { container, getByTestId } = render(

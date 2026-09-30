@@ -26,6 +26,29 @@ import {
   updateSetup,
 } from "./api";
 
+function authoritativeForeshadowRow(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: "f1",
+    project_id: "p1",
+    title: "伏線A",
+    intent: null,
+    notes: null,
+    payoff_scene_id: null,
+    payoff_from_pos: null,
+    payoff_to_pos: null,
+    payoff_confirmed: 0,
+    abandoned: 0,
+    secret: 0,
+    load_bearing: null,
+    version: 0,
+    created_at: 1714000000000,
+    updated_at: 1714000001000,
+    ...overrides,
+  };
+}
+
 describe("foreshadow api tauri mapping", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
@@ -46,6 +69,7 @@ describe("foreshadow api tauri mapping", () => {
       payoff_to_pos: null,
       payoff_confirmed: 0,
       abandoned: 0,
+      version: 0,
       created_at: 1714000000000,
       updated_at: 1714000001000,
     });
@@ -114,6 +138,7 @@ describe("foreshadow api tauri mapping", () => {
           payoff_confirmed: 0,
           abandoned: 0,
           load_bearing: null,
+          version: 0,
           created_at: 1714000000000,
           updated_at: 1714000001000,
         },
@@ -212,6 +237,7 @@ describe("foreshadow api tauri mapping", () => {
           payoff_to_pos: null,
           payoff_confirmed: 0,
           abandoned: 0,
+          version: 0,
           created_at: 1714000000000,
           updated_at: 1714000001000,
         },
@@ -251,45 +277,128 @@ describe("foreshadow api tauri mapping", () => {
   });
 
   it("routes setup update and delete through tauri commands", async () => {
-    mockInvoke.mockResolvedValue(undefined);
+    mockInvoke
+      .mockResolvedValueOnce(authoritativeForeshadowRow({ version: 8 }))
+      .mockResolvedValueOnce({
+        setupId: null,
+        foreshadow: authoritativeForeshadowRow({ version: 9 }),
+      });
 
-    await updateSetup("s1", {
-      aiStrength: "subtle",
-      aiReasoning: "{}",
-      lastEvaluatedAt: new Date(1714000000000),
-    });
-    await deleteSetup("s1");
+    await updateSetup(
+      "s1",
+      {
+        aiStrength: "subtle",
+        aiReasoning: "{}",
+        lastEvaluatedAt: new Date(1714000000000),
+      },
+      7,
+    );
+    await deleteSetup("s1", 8);
 
     expect(mockInvoke).toHaveBeenCalledWith("foreshadow_update_setup", {
       id: "s1",
       patch: {
+        projectId: "default-project",
+        requestId: expect.any(String),
+        sessionId: expect.any(String),
+        eventUid: expect.any(String),
+        origin: "human",
+        authorityRoute: "human-direct",
+        caller: "human-ui",
+        controls: [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: null,
+        writesAuthorityProtectedField: false,
+        originalTransactionId: null,
         aiStrength: "subtle",
         aiReasoning: "{}",
         lastEvaluatedAt: 1714000000000,
+        baseVersion: 7,
       },
     });
     expect(mockInvoke).toHaveBeenCalledWith("foreshadow_resolve_orphan", {
-      payload: { setupId: "s1", action: "delete" },
+      payload: {
+        projectId: "default-project",
+        requestId: expect.any(String),
+        sessionId: expect.any(String),
+        eventUid: expect.any(String),
+        origin: "human",
+        originalTransactionId: null,
+        authorityRoute: "human-direct",
+        caller: "human-ui",
+        controls: [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: null,
+        writesAuthorityProtectedField: false,
+        setupId: "s1",
+        action: "delete",
+        baseVersion: 8,
+      },
     });
+    const setupPatch = mockInvoke.mock.calls.find(
+      ([command]) => command === "foreshadow_update_setup",
+    )?.[1]?.patch;
+    expect(setupPatch).not.toHaveProperty("undoJournalId");
   });
 
   it("preserves omitted fields and explicit null in update payload", async () => {
-    mockInvoke.mockResolvedValue(undefined);
+    mockInvoke.mockResolvedValue(
+      authoritativeForeshadowRow({
+        title: "更新タイトル",
+        version: 5,
+      }),
+    );
 
-    await updateForeshadow("f1", {
-      title: "更新タイトル",
-      payoffSceneId: null,
-      payoffFromPos: null,
-      payoffToPos: null,
-    });
-
-    expect(mockInvoke).toHaveBeenCalledWith("foreshadow_update", {
-      id: "f1",
-      patch: {
+    await updateForeshadow(
+      "f1",
+      {
         title: "更新タイトル",
         payoffSceneId: null,
         payoffFromPos: null,
         payoffToPos: null,
+      },
+      4,
+      "p1",
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith("foreshadow_update", {
+      id: "f1",
+      patch: {
+        projectId: "p1",
+        requestId: expect.any(String),
+        sessionId: expect.any(String),
+        eventUid: expect.any(String),
+        origin: "human",
+        authorityRoute: "human-direct",
+        caller: "human-ui",
+        controls: [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: null,
+        writesAuthorityProtectedField: false,
+        originalTransactionId: null,
+        title: "更新タイトル",
+        payoffSceneId: null,
+        payoffFromPos: null,
+        payoffToPos: null,
+        baseVersion: 4,
       },
     });
   });

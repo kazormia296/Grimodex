@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import yaml from "js-yaml";
 
 import {
   LIGHT_SUITE_DEFINITIONS,
@@ -12,7 +13,12 @@ import {
   formatImpactSummary,
   parseImpactMap,
   selectImpact,
+  validateAcceptanceGateRegistration,
 } from "./impact-map.mjs";
+import {
+  C2ZC_RUST_ACCEPTANCE_GATES,
+  C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND,
+} from "../c2zc-rust-acceptance-receipt.mjs";
 
 test("the AI routing light suite executes browser transport contracts", () => {
   const commandText = JSON.stringify(
@@ -21,6 +27,1095 @@ test("the AI routing light suite executes browser transport contracts", () => {
   assert.match(commandText, /src\/lib\/browser-ai\.test\.ts/);
   assert.match(commandText, /src\/lib\/browser-mock\.ai-runtime\.test\.ts/);
   assert.match(commandText, /test:cloudflare-editor-deploy/);
+  assert.match(commandText, /electron\/preload\/index\.test\.ts/);
+});
+
+test("the current Human capture preload test selects the AI routing contract", async () => {
+  const [impactMapSource, qualityManifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(
+      new URL("../../evals/quality-manifest.yaml", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const selection = selectImpact(parseImpactMap(impactMapSource), [
+    "electron/preload/index.test.ts",
+  ]);
+  const manifest = yaml.load(qualityManifestSource);
+
+  assert.deepEqual(selection.unmatchedPaths, []);
+  assert.ok(selection.matchedRuleIds.includes("ai-routing"));
+  assert.ok(selection.suiteIds.includes("ai-routing"));
+  assert.ok(selection.requirementIds.includes("GDX-ROUTE-001"));
+  assert.equal(selection.fallback, false);
+  assert.ok(
+    manifest.requirements
+      .find((requirement) => requirement.id === "GDX-ROUTE-001")
+      .lightTests.includes("electron/preload/index.test.ts"),
+  );
+});
+
+test("Windows command runners invoke pnpm shims directly", async () => {
+  const [impactSource, evaluationRuntimeSource, certifySource] =
+    await Promise.all([
+      readFile(new URL("./impact-map.mjs", import.meta.url), "utf8"),
+      readFile(
+        new URL("./quality-evaluation-runtime.mjs", import.meta.url),
+        "utf8",
+      ),
+      readFile(new URL("./certify-gate-b2.mjs", import.meta.url), "utf8"),
+    ]);
+  assert.match(impactSource, /pnpm\.cmd/);
+  assert.match(evaluationRuntimeSource, /pnpm\.cmd/);
+  assert.doesNotMatch(impactSource, /process\.env\.ComSpec/);
+  assert.doesNotMatch(evaluationRuntimeSource, /process\.env\.ComSpec/);
+  assert.doesNotMatch(certifySource, /process\.env\.ComSpec/);
+  assert.doesNotMatch(impactSource, /\["\/d", "\/s", "\/c"/);
+  assert.doesNotMatch(evaluationRuntimeSource, /\["\/d", "\/s", "\/c"/);
+  assert.doesNotMatch(certifySource, /\["\/d", "\/s", "\/c"/);
+});
+
+test("the Narrative Extraction suite executes the deterministic Human Gold gate", () => {
+  const commandText = JSON.stringify(
+    LIGHT_SUITE_DEFINITIONS["narrative-extraction"].commands,
+  );
+  assert.match(commandText, /eval:narrative/);
+});
+
+test("the Narrative runtime suite executes incremental Freshness integration", () => {
+  const commands = LIGHT_SUITE_DEFINITIONS["narrative-runtime"].commands;
+  const commandLines = commands.map((command) => command.join(" "));
+  const commandText = JSON.stringify(commands);
+  assert.match(commandText, /test:narrative:run-kind-policy/);
+  assert.match(commandText, /test:narrative:execution-state/);
+  assert.match(commandText, /electron\/main\/narrativeFreshness\.test\.ts/);
+  assert.match(commandText, /electron\/tsconfig\.json/);
+  assert.match(commandText, /narrative_runtime_authority/);
+  assert.match(commandText, /narrative_incremental_freshness_runtime/);
+  assert.match(commandText, /narrative_change_feed/);
+  assert.ok(
+    commandLines.includes(
+      "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --test narrative_change_feed fresh_schema_22_contains_the_canonical_writer_origin_contract -- --exact --test-threads=1",
+    ),
+  );
+  assert.match(commandText, /electron\/native\/grimodex-node\/Cargo\.toml/);
+  assert.ok(
+    commandLines.includes(
+      "pnpm test:electron --run electron/main/narrativeFreshness.test.ts",
+    ),
+  );
+  assert.ok(
+    commandLines.includes("pnpm exec tsc -p electron/tsconfig.json --noEmit"),
+  );
+  assert.ok(
+    commandLines.includes(
+      "cargo check --manifest-path electron/native/grimodex-node/Cargo.toml",
+    ),
+  );
+  assert.ok(
+    commandLines.includes(
+      "node --test scripts/product-journey-phase1.test.mjs scripts/c2-5b-product-journeys.test.mjs scripts/c2zc-product-journeys.test.mjs",
+    ),
+  );
+});
+
+test("the Narrative semantic suite executes terminal timestamp and projection gates", () => {
+  const commandText = JSON.stringify(
+    LIGHT_SUITE_DEFINITIONS["narrative-semantic-contract"].commands,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::execution_state::tests::run_transition_persists_millisecond_rfc3339_timestamps/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::repository::unit_tests::every_generic_public_task_api_rejects_runtime_owned_automatic_runs/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::repository::unit_tests::list_resumable_runs_orders_mixed_legacy_and_rfc3339_instants/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::legacy_backfill::tests::backfill_owner_finalizer_survives_generic_cancel_phase_gap/,
+  );
+  assert.match(commandText, /narrative_scope_authority_runtime/);
+  assert.match(commandText, /narrative_scope_authority_basis/);
+  assert.match(commandText, /scopeAuthorityBasisV2\.contract\.test\.ts/);
+  assert.match(commandText, /projectSnapshotAdapter\.test\.ts/);
+  assert.match(commandText, /extractionCoordinator\.test\.ts/);
+  assert.match(commandText, /electron\/shared\/ipcContract\.test\.ts/);
+  assert.match(
+    commandText,
+    /narrative_extraction::restore_rebuild::tests::rebuild_finalization_after_epoch_rotation_is_failed_and_returns_error/,
+  );
+  assert.match(commandText, /narrative_terminal_failure_projection/);
+});
+
+test("the NIR-1 Entity/Relation suite covers the typed review seam and its contracts", () => {
+  const commandText = JSON.stringify(
+    LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands,
+  );
+  for (const expected of [
+    "CodexEntityRelationReviewDialog.integration.test.tsx",
+    "useCodexEntityRelationReview.test.tsx",
+    "nir1PhaseParity.test.ts",
+    "nir1RevealParity.test.ts",
+    "finalizeTurnPayload.test.ts",
+    "nir1_prepared_request::tests",
+    "nir1EntityRelationRevisionApi.test.ts",
+    "tauri.electron.test.ts",
+    "electron/main/ipc.test.ts",
+    "electron/main/profileEgress.test.ts",
+    "electron/shared/nir1EntityRelationIpcContract.test.ts",
+    "narrative_nir1",
+    "narrative_extraction::nir1_entity_relation",
+    "release_schema_migration",
+    "workspace_migration_supervisor",
+    "scripts/codex-entity-relation-product-journey.test.mjs",
+    "product-journey-shards.test.mjs",
+  ]) {
+    assert.match(commandText, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});
+
+test("NIR-1 Entity/Relation paths select their dedicated suite without losing shared overlap", async () => {
+  const [source, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(
+      new URL("../../evals/quality-manifest.yaml", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const map = parseImpactMap(source);
+  const manifest = yaml.load(manifestSource);
+  const dedicatedPaths = [
+    "src/features/codex/CodexEntityRelationReviewDialog.tsx",
+    "src/features/codex/useCodexEntityRelationReview.ts",
+    "src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.ts",
+    "src/lib/tauri.ts",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs",
+    "src/features/related-scenes/nir1RelatedScenesFusion.ts",
+    "src/features/related-scenes/nir1RelatedScenesFusion.test.ts",
+    "src/features/ai-context/finalizeTurnPayload.test.ts",
+    "test-fixtures/nir1-df06-plain-chat.json",
+    "src/prompts/ja/chatSystem.ts",
+    "src/prompts/ja/chatSystemBase.txt",
+    "src/prompts/ja/chatSystemDataBoundaryReminder.txt",
+    "electron/native/grimodex-node/src/nir1_prepared_request.rs",
+    "scripts/codex-entity-relation-product-journey.test.mjs",
+  ];
+  for (const changedPath of dedicatedPaths) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("nir1-entity-relation-review"));
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"));
+    for (const requirementId of [
+      "GDX-NARR-SEMANTIC-CONTRACT-001",
+      "GDX-GROUND-001",
+      "GDX-ARTIFACT-001",
+      "GDX-TRACE-001",
+      "GDX-POLICY-001",
+    ]) {
+      assert.ok(selection.requirementIds.includes(requirementId), changedPath);
+    }
+    assert.equal(selection.fallback, false);
+  }
+  for (const requirementId of ["GDX-GROUND-001", "GDX-ARTIFACT-001"]) {
+    const requirement = manifest.requirements.find(
+      (candidate) => candidate.id === requirementId,
+    );
+    assert.ok(requirement, requirementId);
+    for (const implementation of [
+      "electron/native/grimodex-node/src/nir1_prepared_request.rs",
+      "src/prompts/ja/chatSystem.ts",
+      "src/prompts/ja/chatSystemBase.txt",
+      "src/prompts/ja/chatSystemDataBoundaryReminder.txt",
+      "test-fixtures/nir1-df06-plain-chat.json",
+    ]) {
+      assert.ok(
+        requirement.implementedBy.includes(implementation),
+        `${requirementId}: ${implementation}`,
+      );
+    }
+    for (const lightTest of [
+      "electron/native/grimodex-node/src/nir1_prepared_request.rs",
+      "src/features/ai-context/finalizeTurnPayload.test.ts",
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs",
+    ]) {
+      assert.ok(
+        requirement.lightTests.includes(lightTest),
+        `${requirementId}: ${lightTest}`,
+      );
+    }
+  }
+  const promptSelection = selectImpact(map, [
+    "src/prompts/ja/chatSystem.ts",
+    "src/prompts/ja/chatSystemBase.txt",
+    "src/prompts/ja/chatSystemDataBoundaryReminder.txt",
+  ]);
+  assert.deepEqual(promptSelection.unmatchedPaths, []);
+  assert.ok(promptSelection.matchedRuleIds.includes("localized-prompts"));
+  assert.ok(promptSelection.suiteIds.includes("prompt-contract"));
+  assert.ok(promptSelection.suiteIds.includes("nir1-entity-relation-review"));
+  assert.equal(promptSelection.fallback, false);
+
+  const sharedFixtureSelection = selectImpact(map, [
+    "test-fixtures/nir1-df06-plain-chat.json",
+  ]);
+  assert.deepEqual(sharedFixtureSelection.unmatchedPaths, []);
+  assert.ok(
+    sharedFixtureSelection.matchedRuleIds.includes("localized-prompts"),
+  );
+  assert.ok(
+    sharedFixtureSelection.matchedRuleIds.includes(
+      "nir1-entity-relation-review",
+    ),
+  );
+  assert.deepEqual(
+    [...sharedFixtureSelection.suiteIds].sort(),
+    ["nir1-entity-relation-review", "prompt-contract"].sort(),
+  );
+  assert.equal(sharedFixtureSelection.fallback, false);
+  assert.equal(sharedFixtureSelection.allSelected, false);
+
+  const contextBuilderTestPath = "src/features/chat/contextBuilder.test.ts";
+  const promptContractCommand = LIGHT_SUITE_DEFINITIONS[
+    "prompt-contract"
+  ].commands.map((command) => command.join(" "));
+  assert.ok(
+    promptContractCommand.some((command) =>
+      command.includes(contextBuilderTestPath),
+    ),
+  );
+  for (const changedPath of [
+    "src/features/chat/contextBuilder.ts",
+    contextBuilderTestPath,
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.deepEqual(selection.unmatchedPaths, [], changedPath);
+    assert.ok(
+      selection.matchedRuleIds.includes("localized-prompts"),
+      changedPath,
+    );
+    assert.deepEqual(selection.suiteIds, ["prompt-contract"], changedPath);
+    for (const requirementId of ["GDX-GROUND-001", "GDX-ARTIFACT-001"]) {
+      assert.ok(selection.requirementIds.includes(requirementId), changedPath);
+    }
+    assert.equal(selection.fallback, false, changedPath);
+    assert.equal(selection.allSelected, false, changedPath);
+  }
+  for (const requirementId of ["GDX-GROUND-001", "GDX-ARTIFACT-001"]) {
+    const requirement = manifest.requirements.find(
+      (candidate) => candidate.id === requirementId,
+    );
+    assert.ok(
+      requirement?.lightTests.includes(contextBuilderTestPath),
+      requirementId,
+    );
+  }
+
+  const sharedSelection = selectImpact(map, ["electron/shared/ipcContract.ts"]);
+  assert.ok(sharedSelection.matchedRuleIds.includes("nir1-entity-relation-review"));
+  assert.ok(sharedSelection.matchedRuleIds.includes("narrative-semantic-contract"));
+  assert.ok(sharedSelection.suiteIds.includes("narrative-semantic-contract"));
+  assert.equal(sharedSelection.fallback, false);
+
+  const sharedBoundaryExpectations = [
+    ["electron/main/ipc.ts", "narrative-semantic-contract"],
+    ["electron/main/profileEgress.ts", "narrative-runtime-authority"],
+    ["src/lib/tauri.ts", "narrative-semantic-contract"],
+    [
+      "src/features/related-scenes/nir1RelatedScenesFusion.ts",
+      "retrieval-grounding",
+    ],
+    [
+      "src/features/related-scenes/nir1RelatedScenesFusion.test.ts",
+      "retrieval-grounding",
+    ],
+    [
+      "electron/scripts/product-journey-catalog.mjs",
+      "narrative-maintenance-product-journeys",
+    ],
+    [
+      "electron/scripts/product-journey-impact.mjs",
+      "narrative-maintenance-product-journeys",
+    ],
+    [
+      "scripts/electron-product-journeys.test.mjs",
+      "narrative-maintenance-product-journeys",
+    ],
+    [
+      "scripts/product-journey-backlog.test.mjs",
+      "narrative-maintenance-product-journeys",
+    ],
+    [
+      "scripts/product-journey-impact.test.mjs",
+      "narrative-maintenance-product-journeys",
+    ],
+  ];
+  for (const [changedPath, overlappingRuleId] of sharedBoundaryExpectations) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("nir1-entity-relation-review"));
+    assert.ok(selection.matchedRuleIds.includes(overlappingRuleId), changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+  }
+
+  const unknownSelection = selectImpact(map, ["tmp/unclassified-a2-path.ts"]);
+  assert.equal(unknownSelection.fallback, true);
+  assert.deepEqual(unknownSelection.suiteIds, map.allSuites);
+  const emptySelection = selectImpact(map, []);
+  assert.equal(emptySelection.fallback, true);
+  assert.deepEqual(emptySelection.suiteIds, map.allSuites);
+  const unavailableSelection = selectImpact(map, ["src/features/codex/useCodexEntityRelationReview.ts"], {
+    forceAllReason: "changed range unavailable",
+  });
+  assert.equal(unavailableSelection.fallback, true);
+  assert.deepEqual(unavailableSelection.suiteIds, map.allSuites);
+
+  const qualityDefinitionSelection = selectImpact(map, ["evals/quality-manifest.yaml"]);
+  assert.deepEqual(qualityDefinitionSelection.suiteIds, map.allSuites);
+  assert.equal(qualityDefinitionSelection.fallback, false);
+});
+
+test("Change Feed writer policy-only edits run the quality workflow alongside runtime policy gates", async () => {
+  const [source, packageSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../../package.json", import.meta.url), "utf8"),
+  ]);
+  const map = parseImpactMap(source);
+  const packageJson = JSON.parse(packageSource);
+  const selection = selectImpact(map, [
+    "policies/narrative/change-feed-writers.json",
+  ]);
+
+  assert.ok(
+    selection.matchedRuleIds.includes("narrative-change-feed-policy-quality"),
+  );
+  assert.ok(selection.matchedRuleIds.includes("narrative-runtime-authority"));
+  assert.ok(selection.matchedRuleIds.includes("narrative-semantic-contract"));
+  assert.ok(selection.suiteIds.includes("quality-workflow"));
+  assert.ok(selection.suiteIds.includes("narrative-runtime"));
+  assert.ok(selection.suiteIds.includes("tool-policy"));
+  assert.ok(selection.suiteIds.includes("narrative-semantic-contract"));
+  assert.match(
+    packageJson.scripts["test:quality"],
+    /scripts\/quality\/validate-change-feed-writers\.test\.mjs/,
+  );
+  assert.equal(selection.fallback, false);
+  assert.equal(selection.allSelected, false);
+});
+
+test("D-final current-Human acceptance and schema-v40 authority have executable Light coverage", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(
+      new URL("../../evals/quality-manifest.yaml", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const action = "src/application/chat/chatTurnStoreActions.ts";
+  const coordinator = "src/features/chat/turn/turnCoordinator.ts";
+  const acceptanceTest = "src/features/chat/chatStore.test.ts";
+
+  for (const changedPath of [action, coordinator]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.deepEqual(selection.unmatchedPaths, [], changedPath);
+    assert.ok(selection.matchedRuleIds.includes("ai-routing"), changedPath);
+    assert.ok(selection.suiteIds.includes("ai-routing"), changedPath);
+    for (const requirement of ["GDX-ROUTE-001", "GDX-PRECHECK-001"]) {
+      assert.ok(selection.requirementIds.includes(requirement), changedPath);
+      const entry = manifest.requirements.find(
+        (item) => item.id === requirement,
+      );
+      assert.ok(
+        entry.implementedBy.includes(changedPath),
+        `${requirement}: ${changedPath}`,
+      );
+    }
+  }
+
+  const route = manifest.requirements.find(
+    (item) => item.id === "GDX-ROUTE-001",
+  );
+  const precheck = manifest.requirements.find(
+    (item) => item.id === "GDX-PRECHECK-001",
+  );
+  assert.ok(route.lightTests.includes(acceptanceTest));
+  assert.ok(precheck.lightTests.includes(acceptanceTest));
+  assert.ok(
+    LIGHT_SUITE_DEFINITIONS["ai-routing"].commands.some((command) =>
+      command.includes(acceptanceTest),
+    ),
+  );
+
+  const migration = "src-tauri/crates/grimodex-db/src/migrate.rs";
+  const generatedContract = "src/db/generated/schema-contract.json";
+  const contractTest = "src/db/schema.contract.test.ts";
+  for (const changedPath of [migration, generatedContract, contractTest]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(
+      selection.matchedRuleIds.includes("narrative-semantic-contract"),
+      changedPath,
+    );
+    assert.ok(
+      selection.suiteIds.includes("narrative-semantic-contract"),
+      changedPath,
+    );
+    assert.equal(selection.fallback, false, changedPath);
+  }
+
+  const semantic = manifest.requirements.find(
+    (item) => item.id === "GDX-NARR-SEMANTIC-CONTRACT-001",
+  );
+  assert.ok(semantic.implementedBy.includes(migration));
+  assert.ok(semantic.implementedBy.includes(generatedContract));
+  assert.ok(semantic.lightTests.includes(migration));
+  assert.ok(semantic.lightTests.includes(contractTest));
+  const artifact = manifest.requirements.find(
+    (item) => item.id === "GDX-ARTIFACT-001",
+  );
+  assert.ok(artifact.implementedBy.includes(generatedContract));
+  assert.ok(artifact.lightTests.includes(contractTest));
+
+  const semanticCommands = LIGHT_SUITE_DEFINITIONS[
+    "narrative-semantic-contract"
+  ].commands.map((command) => command.join(" "));
+  assert.ok(semanticCommands.some((command) => command.includes(contractTest)));
+  assert.ok(
+    semanticCommands.includes(
+      "cargo test --manifest-path src-tauri/crates/grimodex-db/Cargo.toml --lib migrate::tests::schema_40_adds_session_scoped_human_capture_retirement_without_backfill -- --exact --test-threads=1",
+    ),
+  );
+  assert.ok(
+    semanticCommands.includes(
+      "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib migrate::tests::schema_41_migrates_v39_and_v40_capture_rows_without_losing_tombstones -- --exact --test-threads=1",
+    ),
+  );
+
+  const releaseMigration =
+    "src-tauri/crates/grimodex-db/tests/release_schema_migration.rs";
+  const workspaceMigration =
+    "src-tauri/crates/grimodex-db/tests/workspace_migration_supervisor.rs";
+  for (const changedPath of [releaseMigration, workspaceMigration]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.deepEqual(selection.unmatchedPaths, [], changedPath);
+    assert.ok(
+      selection.matchedRuleIds.includes("nir1-entity-relation-review"),
+      changedPath,
+    );
+    assert.ok(
+      selection.suiteIds.includes("nir1-entity-relation-review"),
+      changedPath,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+      changedPath,
+    );
+    assert.ok(semantic.lightTests.includes(changedPath));
+    assert.equal(selection.fallback, false, changedPath);
+  }
+  const nir1Commands = LIGHT_SUITE_DEFINITIONS[
+    "nir1-entity-relation-review"
+  ].commands.map((command) => command.join(" "));
+  assert.ok(
+    nir1Commands.includes(
+      "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --test release_schema_migration",
+    ),
+  );
+  assert.ok(
+    nir1Commands.includes(
+      "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --test workspace_migration_supervisor",
+    ),
+  );
+
+  const changeFeed = "src-tauri/crates/grimodex-db/tests/narrative_change_feed.rs";
+  const changeFeedSelection = selectImpact(map, [changeFeed]);
+  assert.deepEqual(changeFeedSelection.unmatchedPaths, []);
+  assert.ok(
+    changeFeedSelection.matchedRuleIds.includes(
+      "narrative-maintenance-product-journeys",
+    ),
+  );
+  assert.ok(changeFeedSelection.suiteIds.includes("narrative-runtime"));
+  assert.ok(changeFeedSelection.requirementIds.includes("GDX-POLICY-001"));
+  assert.ok(
+    manifest.requirements
+      .find((item) => item.id === "GDX-POLICY-001")
+      .lightTests.includes(changeFeed),
+  );
+  assert.equal(changeFeedSelection.fallback, false);
+  assert.ok(
+    LIGHT_SUITE_DEFINITIONS["narrative-runtime"].commands.some((command) =>
+      command.includes("fresh_schema_22_contains_the_canonical_writer_origin_contract"),
+    ),
+  );
+
+  const rendererSql = "src-tauri/crates/grimodex-db/src/execute.rs";
+  const rendererSqlTest =
+    "execute::tests::renderer_v40_chat_insert_allows_only_canonical_capture_state_retirement";
+  const rendererDeleteTest =
+    "execute::tests::renderer_parent_deletes_cleanup_captures_through_native_triggers";
+  const rendererSqlSelection = selectImpact(map, [rendererSql]);
+  assert.deepEqual(rendererSqlSelection.unmatchedPaths, []);
+  assert.ok(
+    rendererSqlSelection.matchedRuleIds.includes("narrative-runtime-authority"),
+  );
+  assert.ok(rendererSqlSelection.suiteIds.includes("narrative-runtime"));
+  assert.ok(rendererSqlSelection.requirementIds.includes("GDX-POLICY-001"));
+  assert.equal(rendererSqlSelection.fallback, false);
+  const policy = manifest.requirements.find(
+    (item) => item.id === "GDX-POLICY-001",
+  );
+  assert.ok(policy.implementedBy.includes(rendererSql));
+  assert.ok(policy.lightTests.includes(rendererSql));
+  assert.ok(
+    LIGHT_SUITE_DEFINITIONS["narrative-runtime"].commands.some((command) =>
+      command.includes(rendererSqlTest),
+    ),
+  );
+  assert.ok(
+    LIGHT_SUITE_DEFINITIONS["narrative-runtime"].commands.some((command) =>
+      command.includes(rendererDeleteTest),
+    ),
+  );
+});
+
+test("NIR-1 post-B paths select executable core/DB checks and retain separate Native acceptance", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const implementations = [
+    "src-tauri/crates/grimodex-core/src/narrative_nir1_receipt.rs",
+    "src-tauri/crates/grimodex-db/src/nir1_generation.rs",
+    "electron/native/grimodex-node/src/nir1_generation.rs",
+    "src-tauri/crates/grimodex-db/src/nir1_generation_history.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/candidates.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/input.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scenes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/memory.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs",
+  ];
+  const tests = [
+    "src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs",
+    "src-tauri/crates/grimodex-db/src/nir1_generation/tests.rs",
+    "electron/native/grimodex-node/src/nir1_generation.rs",
+    "src-tauri/crates/grimodex-db/src/nir1_generation_history.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/oracle_tests.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs",
+  ];
+  const nativeAcceptance = "electron/native/grimodex-node/src/nir1_graph_activation_tests.rs";
+  const g01Assets = ["evals/nir1-g01/fixture.v1.json", "src/features/related-scenes/nir1G01Feasibility.test.ts"];
+  const postBCandidatePaths = [
+    "docs/plans/nir1-c-scene-connection-candidate.md",
+    "docs/plans/nir1-d1-snapshot-candidate.md",
+    "docs/plans/nir1-d2b-dispatch-candidate.md",
+    "docs/plans/nir1-d2b-history-gap-candidate.md",
+    "docs/plans/nir1-d2b-storage-candidate.md",
+    "docs/plans/nir1-post-b-candidate.md",
+    "src-tauri/crates/grimodex-db/Cargo.toml",
+    "src-tauri/crates/grimodex-db/src/lib.rs",
+    "src-tauri/crates/grimodex-db/src/profile_egress_policy.rs",
+    "src-tauri/crates/grimodex-db/tests/release_schema_migration.rs",
+    "src-tauri/crates/grimodex-db/tests/workspace_migration_supervisor.rs",
+    "src/db/narrativeChangeFeedSchema.test.ts",
+  ];
+  for (const changedPath of [
+    ...implementations,
+    ...tests,
+    nativeAcceptance,
+    ...g01Assets,
+    ...postBCandidatePaths,
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("nir1-entity-relation-review"), changedPath);
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+  }
+  const postBSelection = selectImpact(map, postBCandidatePaths);
+  assert.deepEqual(postBSelection.unmatchedPaths, []);
+  assert.equal(postBSelection.fallback, false);
+  assert.equal(postBSelection.allSelected, false);
+  assert.deepEqual(postBSelection.suiteIds, [
+    "nir1-entity-relation-review",
+    "narrative-runtime",
+    "tool-policy",
+  ]);
+  assert.ok(
+    postBSelection.matchedRuleIds.includes("narrative-runtime-authority"),
+  );
+  assert.ok(postBSelection.suiteIds.includes("narrative-runtime"));
+  assert.ok(postBSelection.suiteIds.includes("tool-policy"));
+  for (const requirementId of ["GDX-ARTIFACT-001", "GDX-NARR-SEMANTIC-CONTRACT-001"]) {
+    const requirement = manifest.requirements.find((candidate) => candidate.id === requirementId);
+    assert.ok(requirement, requirementId);
+    for (const implementation of implementations) {
+      assert.ok(requirement.implementedBy.includes(implementation), `${requirementId}: ${implementation}`);
+    }
+    for (const testPath of tests) {
+      assert.ok(requirement.lightTests.includes(testPath), `${requirementId}: ${testPath}`);
+    }
+  }
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands
+    .map((command) => command.join(" "));
+  const ground = manifest.requirements.find((candidate) => candidate.id === "GDX-GROUND-001");
+  assert.ok(ground.implementedBy.includes(g01Assets[0]));
+  assert.ok(ground.lightTests.includes(g01Assets[1]));
+  assert.ok(commandLines.some((command) => command.includes(g01Assets[1])));
+  for (const command of [
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-core --test narrative_nir1_receipt",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::nir1_graph -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::nir1_packing -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation::tests -- --test-threads=1",
+    "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib nir1_generation::tests -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation_history::tests -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --test release_schema_migration",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --test workspace_migration_supervisor",
+  ]) {
+    assert.ok(commandLines.includes(command), command);
+  }
+  const semantic = manifest.requirements.find((candidate) => candidate.id === "GDX-NARR-SEMANTIC-CONTRACT-001");
+  assert.ok(semantic.heavyTests.includes(nativeAcceptance));
+  assert.equal(semantic.lightTests.includes(nativeAcceptance), false);
+});
+
+test("final NIR drafts and workspace authority select narrow quality suites", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const nirDrafts = [
+    "docs/plans/nir1-c-memory-capacity-delta-draft.md",
+    "docs/plans/nir1-c-scene-body-disclosure-delta-draft.md",
+    "docs/plans/nir1-c-target-scene-body-authority-proposal-draft.md",
+    "docs/plans/nir1-d2b-history-authority-proposal-draft.md",
+  ];
+  const workspaceAuthority =
+    "src-tauri/crates/grimodex-db/src/state.rs";
+
+  for (const changedPath of nirDrafts) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.deepEqual(selection.unmatchedPaths, [], changedPath);
+    assert.ok(
+      selection.matchedRuleIds.includes("nir1-entity-relation-review"),
+      changedPath,
+    );
+    assert.deepEqual(selection.suiteIds, ["nir1-entity-relation-review"], changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+    assert.equal(selection.allSelected, false, changedPath);
+  }
+
+  const authoritySelection = selectImpact(map, [workspaceAuthority]);
+  assert.deepEqual(authoritySelection.unmatchedPaths, []);
+  for (const ruleId of [
+    "narrative-semantic-contract",
+    "nir1-entity-relation-review",
+    "narrative-maintenance-product-journeys",
+    "narrative-runtime-authority",
+  ]) {
+    assert.ok(authoritySelection.matchedRuleIds.includes(ruleId), ruleId);
+  }
+  assert.deepEqual(
+    [...authoritySelection.suiteIds].sort(),
+    [
+      "narrative-runtime",
+      "narrative-semantic-contract",
+      "nir1-entity-relation-review",
+      "tool-policy",
+    ].sort(),
+  );
+  assert.equal(authoritySelection.fallback, false);
+  assert.equal(authoritySelection.allSelected, false);
+
+  const combinedSelection = selectImpact(map, [
+    ...nirDrafts,
+    workspaceAuthority,
+  ]);
+  assert.deepEqual(combinedSelection.unmatchedPaths, []);
+  assert.equal(combinedSelection.fallback, false);
+  assert.equal(combinedSelection.allSelected, false);
+  assert.deepEqual(
+    [...combinedSelection.suiteIds].sort(),
+    [...authoritySelection.suiteIds].sort(),
+  );
+});
+
+test("incremental Freshness runtime changes select the Narrative runtime gate", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+
+  for (const changedPath of [
+    "policies/narrative/narrative-run-kind-policy.json",
+    "policies/narrative/schemas/narrative-run-kind-policy.schema.json",
+    "scripts/quality/validate-run-kind-policy.mjs",
+    "scripts/quality/validate-run-kind-policy.test.mjs",
+    "scripts/quality/validate-execution-state-authority.mjs",
+    "scripts/quality/validate-execution-state-authority.test.mjs",
+    "policies/narrative/narrative-failure-policy.json",
+    "electron/main/index.ts",
+    "electron/main/narrativeFreshness.ts",
+    "electron/main/narrativeFreshness.test.ts",
+    "electron/shared/ipcContract.ts",
+    "electron/shared/ipcContract.test.ts",
+    "electron/native/grimodex-node/Cargo.toml",
+    "electron/native/grimodex-node/index.d.ts",
+    "electron/native/grimodex-node/src/lib.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+    "src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs",
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(
+      selection.matchedRuleIds.includes("narrative-runtime-authority"),
+      changedPath,
+    );
+    assert.ok(selection.requirementIds.includes("GDX-POLICY-001"));
+    assert.ok(selection.requirementIds.includes("GDX-TRACE-001"));
+    assert.ok(selection.suiteIds.includes("narrative-runtime"));
+    assert.equal(selection.fallback, false);
+  }
+});
+
+test("the Narrative Extraction command includes deterministic Detail contracts", async () => {
+  const packageJson = JSON.parse(
+    await readFile(new URL("../../package.json", import.meta.url), "utf8"),
+  );
+  const command = packageJson.scripts["eval:narrative"];
+
+  assert.match(command, /src\/features\/codex\/details/);
+  assert.match(command, /detailPresets\.test\.ts/);
+  assert.match(command, /detailPresets\.semantic\.test\.ts/);
+});
+
+test("the Narrative Extraction command includes deterministic Temporal contracts", async () => {
+  const packageJson = JSON.parse(
+    await readFile(new URL("../../package.json", import.meta.url), "utf8"),
+  );
+  const command = packageJson.scripts["eval:narrative"];
+
+  assert.match(command, /narrative-extraction\/temporal/);
+  assert.match(command, /application\/narrative-extraction\/temporal/);
+  assert.match(command, /chronicle\/calendar/);
+  assert.match(command, /ChronicleCalendarEditor\.test\.tsx/);
+  assert.match(command, /ChronicleCalendarPopover\.test\.tsx/);
+  assert.match(command, /ChronicleToolbar\.test\.tsx/);
+  assert.match(command, /projectCalendarSchema\.test\.ts/);
+  assert.match(command, /projectSnapshotApi\.test\.ts/);
+});
+
+test("Narrative Extraction changes select every Narrative semantic requirement", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const selection = selectImpact(map, [
+    "src/features/narrative-extraction/eval/scorer.ts",
+  ]);
+
+  assert.ok(selection.matchedRuleIds.includes("narrative-extraction"));
+  assert.ok(selection.suiteIds.includes("narrative-extraction"));
+  for (const requirementId of [
+    "GDX-NARR-EVAL-001",
+    "GDX-NARR-EVIDENCE-001",
+    "GDX-NARR-SEMANTIC-001",
+    "GDX-NARR-COVERAGE-001",
+    "GDX-NARR-DETAIL-001",
+    "GDX-NARR-TEMPORAL-001",
+  ]) {
+    assert.ok(selection.requirementIds.includes(requirementId));
+  }
+  assert.equal(selection.fallback, false);
+});
+
+test("Narrative diagnostic fixtures route through the conservative quality gate", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const selection = selectImpact(map, [
+    "evals/narrative/cases/chronicle-motif-boundary-v1.yaml",
+  ]);
+
+  assert.ok(selection.matchedRuleIds.includes("quality-foundation"));
+  assert.ok(selection.matchedRuleIds.includes("narrative-extraction"));
+  for (const requirementId of [
+    "GDX-NARR-EVAL-001",
+    "GDX-NARR-EVIDENCE-001",
+    "GDX-NARR-SEMANTIC-001",
+  ]) {
+    assert.ok(selection.requirementIds.includes(requirementId));
+  }
+  assert.equal(selection.requirementIds.includes("GDX-NARR-MOTIF-001"), false);
+  assert.deepEqual(selection.suiteIds, map.allSuites);
+  assert.equal(selection.fallback, false);
+});
+
+test("shared agent instructions and Claude adapters select all Light suites explicitly", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  for (const instructionPath of [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GLOBAL_CLAUDE.md",
+    "src-CLAUDE.md",
+    "src-tauri-CLAUDE.md",
+    "README.md",
+    ".agents/skills/implement-feature/SKILL.md",
+    ".claude/skills/implement-feature/SKILL.md",
+    ".claude/skills/update-licenses/SKILL.md",
+    "policies/quality/iron-laws.md",
+  ]) {
+    const selection = selectImpact(map, [instructionPath]);
+    assert.ok(selection.matchedRuleIds.includes("quality-foundation"), instructionPath);
+    assert.deepEqual(selection.suiteIds, map.allSuites, instructionPath);
+    assert.ok(selection.requirementIds.includes("GDX-PRECHECK-001"), instructionPath);
+    assert.ok(selection.requirementIds.includes("GDX-TRACE-001"), instructionPath);
+    assert.equal(selection.fallback, false, instructionPath);
+  }
+});
+
+test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(
+      new URL("../../evals/quality-manifest.yaml", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const requirement = manifest.requirements.find(
+    (candidate) => candidate.id === "GDX-NARR-SEMANTIC-CONTRACT-001",
+  );
+  assert.ok(requirement, "semantic contract requirement must exist");
+  const artifactRequirement = manifest.requirements.find(
+    (candidate) => candidate.id === "GDX-ARTIFACT-001",
+  );
+  assert.ok(artifactRequirement, "artifact requirement must exist");
+  for (const relativePath of [
+    "policies/narrative/narrative-artifact-authority.json",
+    "policies/narrative/schemas/narrative-artifact-authority.schema.json",
+  ]) {
+    assert.ok(
+      artifactRequirement.implementedBy.includes(relativePath),
+      `${relativePath} must be listed in artifact requirement implementedBy`,
+    );
+  }
+
+  const implementations = [
+    "policies/narrative/fixtures/canonical-json-number-parity.json",
+    "src/features/narrative-semantic-core/contracts/scopeV2.ts",
+    "src/features/narrative-semantic-core/contracts/narrativeIr.ts",
+    "src/features/narrative-semantic-core/contracts/scopeRelation.ts",
+    "src/features/narrative-extraction/source/digest.ts",
+    "src/features/narrative-extraction/source/scopeAuthorityBasisV2.ts",
+    "src/features/narrative-extraction/source/types.ts",
+    "src/features/tree/api.ts",
+    "src/application/narrative-extraction/nativeApi.ts",
+    "src/application/narrative-extraction/projectSnapshotAdapter.ts",
+    "electron/shared/ipcContract.ts",
+    "src-tauri/crates/grimodex-core/src/canonical_json.rs",
+    "src-tauri/crates/grimodex-core/src/narrative_ir.rs",
+    "src-tauri/crates/grimodex-core/src/narrative_scope_authority_basis.rs",
+    "src/features/narrative-extraction/reconciler/stageExecution.ts",
+    "src/features/narrative-extraction/reconciler/types.ts",
+    "src/features/narrative-extraction/reconciler/v2Adapter.ts",
+    "src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts",
+    "src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts",
+    "src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts",
+    "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+    "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
+    "src/application/narrative-extraction/extractionCoordinator.ts",
+    "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/scope_authority_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+  ];
+  const tests = [
+    "src/features/narrative-semantic-core/contracts/scopeV2.test.ts",
+    "src/features/narrative-semantic-core/contracts/narrativeIr.test.ts",
+    "src/features/narrative-semantic-core/contracts/scopeRelation.test.ts",
+    "src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts",
+    "src/features/narrative-extraction/source/scopeAuthorityBasisV2.contract.test.ts",
+    "src/features/tree/api.listProjection.test.ts",
+    "src/application/narrative-extraction/projectSnapshotAdapter.test.ts",
+    "src/application/narrative-extraction/extractionCoordinator.test.ts",
+    "electron/shared/ipcContract.test.ts",
+    "src-tauri/crates/grimodex-core/tests/canonical_json.rs",
+    "src-tauri/crates/grimodex-core/tests/narrative_ir.rs",
+    "src-tauri/crates/grimodex-core/tests/narrative_scope_authority_basis.rs",
+    "src/features/narrative-extraction/reconciler/stageExecution.test.ts",
+    "src/features/narrative-extraction/reconciler/v2Adapter.test.ts",
+    "src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts",
+    "src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts",
+    "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts",
+    "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+    "src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs",
+    "src-tauri/crates/grimodex-db/tests/narrative_scope_authority_runtime.rs",
+    "scripts/quality/impact-map.test.mjs",
+  ];
+
+  for (const relativePath of implementations) {
+    assert.ok(
+      requirement.implementedBy.includes(relativePath),
+      `${relativePath} must be listed in semantic contract implementedBy`,
+    );
+  }
+  for (const relativePath of tests) {
+    assert.ok(
+      requirement.lightTests.includes(relativePath),
+      `${relativePath} must be listed in semantic contract lightTests`,
+    );
+  }
+
+  for (const relativePath of [
+    ...implementations,
+    ...tests.filter(
+      (relativePath) => relativePath !== "scripts/quality/impact-map.test.mjs",
+    ),
+  ]) {
+    const selection = selectImpact(map, [relativePath]);
+    assert.ok(
+      selection.matchedRuleIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic contract rule`,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+      `${relativePath} must select the semantic contract requirement`,
+    );
+    assert.ok(
+      selection.suiteIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic Light suite`,
+    );
+    assert.equal(selection.fallback, false, relativePath);
+  }
+
+  for (const relativePath of [
+    "policies/narrative/narrative-artifact-authority.json",
+    "policies/narrative/schemas/narrative-artifact-authority.schema.json",
+  ]) {
+    const selection = selectImpact(map, [relativePath]);
+    assert.ok(
+      selection.matchedRuleIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic contract rule`,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+      `${relativePath} must retain the semantic contract requirement`,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-ARTIFACT-001"),
+      `${relativePath} must select the artifact requirement`,
+    );
+    assert.ok(
+      selection.suiteIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic Light suite`,
+    );
+    assert.equal(selection.fallback, false, relativePath);
+  }
+});
+
+test("isolated Chronicle stage provenance changes select semantic and AI audit/routing gates", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  for (const changedPath of [
+    "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+    "src/features/narrative-extraction/reconciler/stageProvenance.test.ts",
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("narrative-semantic-contract"));
+    assert.ok(selection.matchedRuleIds.includes("ai-audit-runtime"));
+    assert.ok(selection.matchedRuleIds.includes("ai-routing"));
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+    );
+    assert.ok(selection.requirementIds.includes("GDX-AI-AUDIT-001"));
+    assert.ok(selection.requirementIds.includes("GDX-ROUTE-001"));
+    assert.ok(selection.suiteIds.includes("narrative-semantic-contract"));
+    assert.ok(selection.suiteIds.includes("ai-routing"));
+    assert.equal(selection.fallback, false);
+  }
+  const transportSelection = selectImpact(map, [
+    "src/features/ai-audit/transportContext.ts",
+  ]);
+  assert.ok(transportSelection.matchedRuleIds.includes("ai-routing"));
+  assert.ok(transportSelection.matchedRuleIds.includes("ai-audit-runtime"));
+  assert.ok(transportSelection.requirementIds.includes("GDX-AI-AUDIT-001"));
+});
+
+test("Temporal IR, adapter, and Calendar changes select the Temporal requirement", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+
+  for (const changedPath of [
+    "src/features/narrative-extraction/temporal/graph.ts",
+    "src/application/narrative-extraction/temporal/sceneTemporalAdapter.ts",
+    "src/features/chronicle/calendar/extractionCalendarSnapshot.ts",
+    "src/features/chronicle/ChronicleCalendarEditor.tsx",
+    "src/features/chronicle/ChronicleCalendarPopover.tsx",
+    "src/features/chronicle/ChronicleCalendarPopover.test.tsx",
+    "src/features/revision/projectSnapshotApi.ts",
+    "src/db/schema.ts",
+    "src/db/generated/schema-contract.json",
+    "src/db/projectCalendarSchema.test.ts",
+    "src/lib/browser-mock.ts",
+    "scripts/schema-seed-ja.sql",
+    "src-tauri/crates/grimodex-core/src/workspace_schema.rs",
+    "src-tauri/crates/grimodex-db/src/migrate.rs",
+    "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.requirementIds.includes("GDX-NARR-TEMPORAL-001"));
+    assert.ok(selection.suiteIds.includes("narrative-extraction"));
+    assert.equal(selection.fallback, false);
+  }
+});
+
+test("Detail codec and preset changes select the Narrative Detail requirement", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+
+  for (const changedPath of [
+    "src/features/codex/details/detailValueCodec.ts",
+    "src/features/codex/detailPresets.ts",
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("narrative-extraction"));
+    assert.ok(selection.requirementIds.includes("GDX-NARR-DETAIL-001"));
+    assert.ok(selection.suiteIds.includes("narrative-extraction"));
+    assert.equal(selection.fallback, false);
+  }
 });
 
 test("the extracted chat stream transport preserves audit and Web Editor impact coverage", async () => {
@@ -43,6 +1138,31 @@ test("the extracted chat stream transport preserves audit and Web Editor impact 
   assert.equal(selection.fallback, false);
 });
 
+test("standard-build producer selects provenance and lifecycle fixture coverage", async () => {
+  const map = parseImpactMap(await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  ));
+  for (const changedPath of [
+    "scripts/quality/run-nir1-retrieval.mjs",
+    "scripts/quality/nir1-retrieval/standard-build.mjs",
+    "scripts/quality/nir1-retrieval/standard-build.test.mjs",
+    "docs/plans/nir1-standard-build-producer.md",
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.equal(selection.fallback, false, changedPath);
+    assert.ok(selection.matchedRuleIds.includes("nir1-standard-build"));
+    for (const requirement of ["GDX-PRECHECK-001", "GDX-ARTIFACT-001", "GDX-TRACE-001"])
+      assert.ok(selection.requirementIds.includes(requirement), changedPath);
+    assert.ok(selection.suiteIds.includes("quality-workflow"), changedPath);
+    assert.ok(selection.suiteIds.includes("retrieval-grounding"), changedPath);
+  }
+  assert.ok(LIGHT_SUITE_DEFINITIONS["retrieval-grounding"].commands.some(
+    (command) => command[0] === "node" && command[1] === "--test"
+      && command.includes("scripts/quality/nir1-retrieval/standard-build.test.mjs"),
+  ));
+});
+
 test("semantic recall and reranker runtimes preserve audit impact coverage", async () => {
   const source = await readFile(
     new URL("../../evals/impact-map.yaml", import.meta.url),
@@ -58,13 +1178,58 @@ test("semantic recall and reranker runtimes preserve audit impact coverage", asy
   for (const runtimePath of runtimePaths) {
     const selection = selectImpact(map, [runtimePath]);
 
-    assert.ok(selection.matchedRuleIds.includes("ai-audit-runtime"), runtimePath);
-    assert.ok(selection.matchedRuleIds.includes("retrieval-grounding"), runtimePath);
-    assert.ok(selection.requirementIds.includes("GDX-AI-AUDIT-001"), runtimePath);
+    assert.ok(
+      selection.matchedRuleIds.includes("ai-audit-runtime"),
+      runtimePath,
+    );
+    assert.ok(
+      selection.matchedRuleIds.includes("retrieval-grounding"),
+      runtimePath,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-AI-AUDIT-001"),
+      runtimePath,
+    );
     assert.ok(selection.suiteIds.includes("ai-routing"), runtimePath);
     assert.ok(selection.suiteIds.includes("retrieval-grounding"), runtimePath);
     assert.equal(selection.fallback, false, runtimePath);
   }
+});
+
+test("NIR-1 capacity paths select their feature-gated diagnostic suite", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  for (const changedPath of [
+    "evals/nir1-capacity/manifest.v1.json",
+    "scripts/nir1-material-capacity-probe.test.mjs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_diagnostics.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
+    "src-tauri/crates/grimodex-db/src/bin/nir1-material-capacity.rs",
+    "src-tauri/crates/grimodex-db/tests/nir1_capacity_binary.rs",
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("nir1-capacity-diagnostics"), changedPath);
+    assert.ok(selection.suiteIds.includes("nir1-capacity-diagnostics"), changedPath);
+    assert.ok(selection.requirementIds.includes("GDX-ISOLATION-001"), changedPath);
+    assert.ok(selection.requirementIds.includes("GDX-TRACE-001"), changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+  }
+  const suiteCommands = JSON.stringify(LIGHT_SUITE_DEFINITIONS["nir1-capacity-diagnostics"].commands);
+  assert.match(suiteCommands, /nir1-material-capacity-probe\.test\.mjs/);
+  assert.match(suiteCommands, /nir1-material-diagnostics/);
+  assert.match(suiteCommands, /narrative_extraction::nir1_capacity/);
+  assert.ok(
+    LIGHT_SUITE_DEFINITIONS["nir1-capacity-diagnostics"].commands.some(
+      (command) =>
+        command.includes("nir1-material-diagnostics") &&
+        command.includes("--test") &&
+        command.includes("nir1_capacity_binary"),
+    ),
+    "capacity diagnostics must run the feature-gated binary integration target",
+  );
 });
 
 const execFileAsync = promisify(execFile);
@@ -253,4 +1418,131 @@ test("an invalid comparison base is reported instead of silently trusting a part
 
   assert.equal(changed.complete, false);
   assert.match(changed.reason, /diff/i);
+});
+
+test("C2-ZC impact registration is structured and rejects gate command/test/receipt/order mutations", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  const rule = map.rules.find(
+    (candidate) => candidate.id === "narrative-maintenance-product-journeys",
+  );
+  assert.ok(rule?.acceptanceGates);
+  assert.deepEqual(
+    rule.acceptanceGates.map((gate) => gate.id),
+    C2ZC_RUST_ACCEPTANCE_GATES.map((gate) => gate.id),
+  );
+  assert.deepEqual(rule.acceptanceGates[2], {
+    id: "c2-zc-readiness-corruption-fail-closed",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+        "--",
+        "--exact",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
+      test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+      fullTestName:
+        "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+      proof: "direct persisted Rebuild evidence corruption blocks readiness",
+    },
+    source:
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs",
+    test: "rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+    fullTestName:
+      "narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed",
+    requiresReceipt: true,
+  });
+  assert.deepEqual(rule.acceptanceGates[5], {
+    id: "c2-zc-production-verify-coverage",
+    argv: {
+      command: "cargo",
+      args: [
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+        "--",
+        "--exact",
+        "--nocapture",
+      ],
+      cwd: ".",
+    },
+    contract: {
+      source:
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+      test: "a_verify_run_records_its_report_under_a_completed_run",
+      fullTestName:
+        "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+      proof:
+        "production Verify persists and validates exact 13/13 check coverage",
+    },
+    source:
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+    test: "a_verify_run_records_its_report_under_a_completed_run",
+    fullTestName:
+      "narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run",
+    requiresReceipt: true,
+  });
+  assert.doesNotThrow(() => validateAcceptanceGateRegistration({ map }));
+
+  for (const mutate of [
+    (gates) => {
+      gates[0].argv.args[0] = "run";
+    },
+    (gates) => {
+      gates[0].contract.test = "other_test";
+    },
+    (gates) => {
+      gates[0].requiresReceipt = false;
+    },
+    (gates) => gates.reverse(),
+  ]) {
+    const mutatedMap = structuredClone(map);
+    const mutatedRule = mutatedMap.rules.find(
+      (candidate) => candidate.id === rule.id,
+    );
+    mutate(mutatedRule.acceptanceGates);
+    assert.throws(
+      () => validateAcceptanceGateRegistration({ map: mutatedMap }),
+      /acceptance|gate|command|test|receipt|order/i,
+    );
+  }
+
+  const mutatedRegistry = {
+    stages: {
+      "c2-zc-rust-acceptance-gate": {
+        commands: [
+          {
+            command: C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND.command,
+            args: ["scripts/changed-receipt-runner.mjs"],
+          },
+        ],
+      },
+    },
+  };
+  assert.throws(
+    () =>
+      validateAcceptanceGateRegistration({
+        map,
+        localCiRegistry: mutatedRegistry,
+      }),
+    /registry|runner|command|receipt/i,
+  );
 });

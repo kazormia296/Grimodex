@@ -41,10 +41,16 @@ import {
   tryAcquireTreeNavigationLease,
 } from "@/lib/chatNavigationGuard";
 import {
+  createQuiescenceProviderId,
   flushQuiescenceProviderStage,
   registerQuiescenceProvider,
 } from "@/lib/quiescenceProviders";
 import { reserveChatMessageAdds } from "@/features/timelapse/captureChat";
+import {
+  _resetTimelapseGenesisBarriersForTests,
+  beginTimelapseGenesisBarrier,
+  registerTimelapseGenesisRetry,
+} from "@/features/timelapse/genesisBarrier";
 
 vi.mock("sonner", () => ({
   toast: {
@@ -479,6 +485,85 @@ const msg2: ChatMessage = {
   createdAt: "2025-01-01T00:00:01Z",
 };
 
+function configurePlainCaptureTurn(baseUrl = "http://127.0.0.1:12345/v1") {
+  const activeSession = { ...session1, model: "local-test-model" };
+  useAiSettingsStore.setState({
+    settings: {
+      ...DEFAULT_AI_SETTINGS,
+      provider: "openai-compatible",
+      model: "local-test-model",
+      modelApiVariant: null,
+      toolProtocolMode: "native",
+      openaiCompatibleEndpoints: [
+        {
+          id: "local-endpoint",
+          label: "Local endpoint",
+          baseUrl,
+          customMaxContext: 16_384,
+          customMaxOutput: 1_024,
+        },
+      ],
+      activeOpenaiCompatibleEndpointId: "local-endpoint",
+    },
+    models: [],
+  });
+  useChatStore.setState({
+    activeProjectId: "proj-1",
+    activeSceneId: "scene-1",
+    activeSessionId: activeSession.id,
+    sessions: [activeSession],
+    messages: [],
+    chatScope: "scene",
+    scopeAnchorId: null,
+    threadFocusOverride: null,
+    agentMode: false,
+    ragEnabled: false,
+  });
+  return activeSession;
+}
+
+function installChatCaptureBridge(
+  implementation: (
+    command: string,
+    args?: Record<string, unknown>,
+  ) => Promise<unknown>,
+  retirement: (args?: Record<string, unknown>) => Promise<unknown> = (args) =>
+    Promise.resolve({
+      ok: true,
+      value: {
+        status: "not-current",
+        chatSessionId: args?.chatSessionId,
+      },
+    }),
+) {
+  const invoke = vi.fn((command: string, args?: Record<string, unknown>) =>
+    command === "retire_current_chat_input"
+      ? retirement(args)
+      : implementation(command, args),
+  );
+  vi.stubGlobal("window", {
+    grimodex: {
+      shell: "electron",
+      invoke,
+    },
+  });
+  return invoke;
+}
+
+function captureAcceptedEnvelope(args?: Record<string, unknown>) {
+  const submission = args?.submission as Record<string, string>;
+  return {
+    ok: true,
+    value: {
+      status: "accepted",
+      projectId: "proj-1",
+      chatSessionId: submission.chatSessionId,
+      sceneId: submission.sceneId,
+      messageId: submission.messageId,
+    },
+  };
+}
+
 describe("useChatStore", () => {
   beforeEach(() => {
     __discardPendingCompletedChatTurnsForTests();
@@ -631,6 +716,1377 @@ describe("useChatStore", () => {
     } finally {
       useAiSettingsStore.setState({ settings: previousSettings });
     }
+  });
+
+  describe("local plain-chat input capture", () => {
+    it("uses the exact Human message and preserves Native legacy-only sends", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      const activeSession = configurePlainCaptureTurn();
+      const invoke = installChatCaptureBridge(async (command, args) => {
+        if (command === "capture_current_chat_input") {
+          return { ok: true, value: { status: "legacy-only" } };
+        }
+        if (command === "cancel_current_chat_input") {
+          const submission = args?.submission as Record<string, string>;
+          return {
+            ok: true,
+            value: {
+              status: "cancelled",
+              submissionId: submission.submissionId,
+              messageId: submission.messageId,
+            },
+          };
+        }
+        return { ok: true, value: [] };
+      });
+      mockStreamResponse("local reply");
+      const onAccepted = vi.fn(() => {
+        void useChatStore.getState().sendMessage("overlapping local turn");
+      });
+
+      try {
+        await useChatStore
+          .getState()
+          .sendMessage("capture this exact text", undefined, {
+            _onAccepted: onAccepted,
+          });
+
+        const captureCallIndex = invoke.mock.calls.findIndex(
+          ([command]) => command === "capture_current_chat_input",
+        );
+        expect(captureCallIndex).toBeGreaterThanOrEqual(0);
+        const submission = invoke.mock.calls[captureCallIndex]?.[1]
+          ?.submission as Record<string, string> | undefined;
+        const userMessage = useChatStore
+          .getState()
+          .messages.find((message) => message.role === "user");
+        expect(submission).toMatchObject({
+          submissionId: expect.any(String),
+          messageId: userMessage?.id,
+          chatSessionId: activeSession.id,
+          sceneId: "scene-1",
+          content: userMessage?.content,
+          createdAt: userMessage?.createdAt,
+        });
+        expect(userMessage?.content).toBe("capture this exact text");
+        expect(onAccepted).toHaveBeenCalledOnce();
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+        expect(
+          invoke.mock.calls.filter(
+            ([command]) => command === "capture_current_chat_input",
+          ),
+        ).toHaveLength(1);
+        expect(invoke.mock.invocationCallOrder[captureCallIndex]).toBeLessThan(
+          onAccepted.mock.invocationCallOrder[0]!,
+        );
+        expect(onAccepted.mock.invocationCallOrder[0]).toBeLessThan(
+          mockSendChatMessageStream.mock.invocationCallOrder[0]!,
+        );
+        expect(
+          invoke.mock.calls.some(
+            ([command]) => command === "cancel_current_chat_input",
+          ),
+        ).toBe(false);
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("captures an existing local scene Human before protected session lookup", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      const activeSession = configurePlainCaptureTurn();
+      const previousSessionLookup =
+        mockGetSessionForProject.getMockImplementation();
+      mockGetSessionForProject.mockImplementation(async () => {
+        throw new Error("D2A_EGRESS_DENIED: plaintext-publication");
+      });
+      const invoke = installChatCaptureBridge(async (command, args) => {
+        if (command === "capture_current_chat_input") {
+          return captureAcceptedEnvelope(args);
+        }
+        if (command === "cancel_current_chat_input") {
+          const submission = args?.submission as Record<string, string>;
+          return {
+            ok: true,
+            value: {
+              status: "cancelled",
+              submissionId: submission.submissionId,
+              messageId: submission.messageId,
+            },
+          };
+        }
+        return { ok: true, value: [] };
+      });
+
+      try {
+        await useChatStore.getState().sendMessage("capture before SQL");
+
+        expect(
+          invoke.mock.calls.find(
+            ([command]) => command === "capture_current_chat_input",
+          )?.[1]?.submission,
+        ).toMatchObject({
+          chatSessionId: activeSession.id,
+          sceneId: "scene-1",
+          content: "capture before SQL",
+        });
+        expect(mockGetSessionForProject).not.toHaveBeenCalled();
+        expect(mockAddMessage).not.toHaveBeenCalled();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(useChatStore.getState().isStreaming).toBe(true);
+
+        useChatStore.getState().stopGeneration();
+        await vi.waitFor(() =>
+          expect(
+            invoke.mock.calls.some(
+              ([command]) => command === "cancel_current_chat_input",
+            ),
+          ).toBe(true),
+        );
+        expect(useChatStore.getState().messages).toHaveLength(1);
+        expect(useChatStore.getState().messages[0]).toMatchObject({
+          id: (
+            invoke.mock.calls.find(
+              ([command]) => command === "capture_current_chat_input",
+            )?.[1]?.submission as Record<string, string>
+          ).messageId,
+          sessionId: activeSession.id,
+          role: "user",
+          content: "capture before SQL",
+        });
+        expect(useChatStore.getState().isStreaming).toBe(false);
+      } finally {
+        if (useChatStore.getState().isStreaming) {
+          useChatStore.getState().stopGeneration();
+        }
+        if (previousSessionLookup) {
+          mockGetSessionForProject.mockImplementation(previousSessionLookup);
+        }
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("cancels a binding-mismatched capture without SQL or provider dispatch", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      const invoke = installChatCaptureBridge(async (command, args) => {
+        if (command === "capture_current_chat_input") {
+          const response = captureAcceptedEnvelope(args);
+          return {
+            ...response,
+            value: { ...response.value, projectId: "foreign-project" },
+          };
+        }
+        if (command === "cancel_current_chat_input") {
+          const submission = args?.submission as Record<string, string>;
+          return {
+            ok: true,
+            value: {
+              status: "cancelled",
+              submissionId: submission.submissionId,
+              messageId: submission.messageId,
+            },
+          };
+        }
+        return { ok: true, value: [] };
+      });
+
+      try {
+        await useChatStore.getState().sendMessage("reject mismatched receipt");
+
+        expect(
+          invoke.mock.calls
+            .map(([command]) => command)
+            .filter((command) =>
+              [
+                "capture_current_chat_input",
+                "cancel_current_chat_input",
+              ].includes(command),
+            ),
+        ).toEqual(["capture_current_chat_input", "cancel_current_chat_input"]);
+        expect(mockGetSessionForProject).not.toHaveBeenCalled();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(useChatStore.getState().messages).toEqual([]);
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("cancels a capture when its frozen local route changes before receipt", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      let resolveCapture!: (value: unknown) => void;
+      let captureArgs: Record<string, unknown> | undefined;
+      const captureStarted = deferred<void>();
+      const invoke = installChatCaptureBridge((command, args) => {
+        if (command === "capture_current_chat_input") {
+          captureArgs = args;
+          captureStarted.resolve();
+          return new Promise((resolve) => {
+            resolveCapture = resolve;
+          });
+        }
+        if (command === "cancel_current_chat_input") {
+          const submission = args?.submission as Record<string, string>;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              status: "cancelled",
+              submissionId: submission.submissionId,
+              messageId: submission.messageId,
+            },
+          });
+        }
+        return Promise.resolve({ ok: true, value: [] });
+      });
+
+      try {
+        const send = useChatStore.getState().sendMessage("route-bound input");
+        await captureStarted.promise;
+        useAiSettingsStore.setState((state) => ({
+          settings: state.settings
+            ? { ...state.settings, model: "changed-local-model" }
+            : null,
+        }));
+        resolveCapture(captureAcceptedEnvelope(captureArgs));
+        await send;
+
+        expect(
+          invoke.mock.calls
+            .map(([command]) => command)
+            .filter((command) =>
+              [
+                "capture_current_chat_input",
+                "cancel_current_chat_input",
+              ].includes(command),
+            ),
+        ).toEqual(["capture_current_chat_input", "cancel_current_chat_input"]);
+        expect(mockGetSessionForProject).not.toHaveBeenCalled();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(useChatStore.getState().messages).toHaveLength(1);
+        expect(useChatStore.getState().messages[0]).toMatchObject({
+          role: "user",
+          content: "route-bound input",
+        });
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does not capture an ineligible route or dispatch after protected SQL denial", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      mockGetSessionForProject.mockRejectedValueOnce(
+        new Error("D2A_EGRESS_DENIED: plaintext-publication"),
+      );
+      const invoke = installChatCaptureBridge(async () => ({
+        ok: true,
+        value: [],
+      }));
+
+      try {
+        await useChatStore
+          .getState()
+          .sendMessage("mentioned input", undefined, {
+            mentionedSceneIds: ["scene-2"],
+          });
+
+        expect(
+          invoke.mock.calls.some(
+            ([command]) => command === "capture_current_chat_input",
+          ),
+        ).toBe(false);
+        expect(mockGetSessionForProject).toHaveBeenCalledOnce();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("continues an unrestricted local-eligible send without capture authority", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      const invoke = installChatCaptureBridge(async (command) =>
+        command === "capture_current_chat_input"
+          ? { ok: true, value: { status: "legacy-only" } }
+          : { ok: true, value: [] },
+      );
+      mockStreamResponse("legacy reply");
+      const onAccepted = vi.fn();
+
+      try {
+        await useChatStore
+          .getState()
+          .sendMessage("ordinary local chat", undefined, {
+            _onAccepted: onAccepted,
+          });
+
+        expect(onAccepted).toHaveBeenCalledOnce();
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+        expect(
+          invoke.mock.calls.filter(
+            ([command]) => command === "capture_current_chat_input",
+          ),
+        ).toHaveLength(1);
+        expect(
+          invoke.mock.calls.some(
+            ([command]) => command === "cancel_current_chat_input",
+          ),
+        ).toBe(false);
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("continues an unrestricted remote legacy send without retirement", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn("https://api.example/v1");
+      const invoke = installChatCaptureBridge(
+        async () => ({ ok: true, value: [] }),
+        async () => ({ ok: true, value: { status: "legacy-only" } }),
+      );
+      mockStreamResponse("remote reply");
+      const onAccepted = vi.fn();
+
+      try {
+        await useChatStore
+          .getState()
+          .sendMessage("ordinary remote chat", undefined, {
+            _onAccepted: onAccepted,
+          });
+
+        expect(onAccepted).toHaveBeenCalledOnce();
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+        expect(
+          invoke.mock.calls
+            .map(([command]) => command)
+            .filter(
+              (command) =>
+                command === "capture_current_chat_input" ||
+                command === "retire_current_chat_input",
+            ),
+        ).toEqual(["retire_current_chat_input"]);
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("continues an unrestricted Agent legacy send without retirement", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      useChatStore.setState({
+        agentMode: true,
+        sessionAgentToolsSnapshot: null,
+      });
+      const invoke = installChatCaptureBridge(
+        async () => ({ ok: true, value: [] }),
+        async () => ({ ok: true, value: { status: "legacy-only" } }),
+      );
+      mockSendAgentMessage.mockResolvedValueOnce({
+        blocks: [{ type: "text", content: "agent reply" }],
+        stopReason: "end_turn",
+      });
+      const onAccepted = vi.fn();
+
+      try {
+        await useChatStore
+          .getState()
+          .sendMessage("ordinary Agent chat", undefined, {
+            _onAccepted: onAccepted,
+          });
+
+        expect(onAccepted).toHaveBeenCalledOnce();
+        expect(mockSendAgentMessage).toHaveBeenCalledOnce();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(
+          invoke.mock.calls
+            .map(([command]) => command)
+            .filter(
+              (command) =>
+                command === "capture_current_chat_input" ||
+                command === "retire_current_chat_input",
+            ),
+        ).toEqual(["retire_current_chat_input"]);
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("cancels accepted A, then retires before mentioned Human turn B", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      const activeSession = configurePlainCaptureTurn();
+      const invoke = installChatCaptureBridge(
+        async (command, args) => {
+          if (command === "capture_current_chat_input") {
+            return captureAcceptedEnvelope(args);
+          }
+          if (command === "cancel_current_chat_input") {
+            const submission = args?.submission as Record<string, string>;
+            return {
+              ok: true,
+              value: {
+                status: "cancelled",
+                submissionId: submission.submissionId,
+                messageId: submission.messageId,
+              },
+            };
+          }
+          return { ok: true, value: [] };
+        },
+        (args) =>
+          Promise.resolve({
+            ok: true,
+            value: { status: "retired", chatSessionId: args?.chatSessionId },
+          }),
+      );
+      mockStreamResponse("A reply");
+      try {
+        await useChatStore.getState().sendMessage("Turn A");
+        mockStreamResponse("B reply");
+        const onAcceptedB = vi.fn();
+        await useChatStore
+          .getState()
+          .sendMessage("Turn B with a scene mention", undefined, {
+            mentionedSceneIds: ["scene-2"],
+            _onAccepted: onAcceptedB,
+          });
+
+        const captureLifecycleCalls = invoke.mock.calls.filter(
+          ([command]) =>
+            command === "capture_current_chat_input" ||
+            command === "cancel_current_chat_input" ||
+            command === "retire_current_chat_input",
+        );
+        expect(captureLifecycleCalls.map(([command]) => command)).toEqual([
+          "capture_current_chat_input",
+          "cancel_current_chat_input",
+          "retire_current_chat_input",
+        ]);
+        const acceptedSubmission = captureLifecycleCalls[0]?.[1]
+          ?.submission as Record<string, string>;
+        expect(captureLifecycleCalls[1]?.[1]?.submission).toEqual({
+          submissionId: acceptedSubmission.submissionId,
+          messageId: acceptedSubmission.messageId,
+          chatSessionId: activeSession.id,
+          sceneId: "scene-1",
+        });
+        expect(captureLifecycleCalls[2]?.[1]).toEqual({
+          chatSessionId: activeSession.id,
+        });
+        expect(onAcceptedB).toHaveBeenCalledOnce();
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+        const turnAMessage = useChatStore
+          .getState()
+          .messages.find((message) => message.content === "Turn A");
+        expect(turnAMessage).toMatchObject({
+          id: acceptedSubmission.messageId,
+          sessionId: activeSession.id,
+          role: "user",
+          content: "Turn A",
+        });
+        expect(
+          useChatStore
+            .getState()
+            .messages.some(
+              (message) =>
+                message.role === "assistant" && message.content === "",
+            ),
+        ).toBe(false);
+        const retirementIndex = invoke.mock.calls.findIndex(
+          ([command]) => command === "retire_current_chat_input",
+        );
+        expect(invoke.mock.invocationCallOrder[retirementIndex]).toBeLessThan(
+          onAcceptedB.mock.invocationCallOrder[0]!,
+        );
+        expect(onAcceptedB.mock.invocationCallOrder[0]).toBeLessThan(
+          mockSendChatMessageStream.mock.invocationCallOrder[0]!,
+        );
+        const persistedB = mockAddMessage.mock.calls.find(
+          ([sessionId, role, content]) =>
+            sessionId === activeSession.id &&
+            role === "user" &&
+            content === "Turn B with a scene mention",
+        );
+        expect(persistedB?.[3]).toMatchObject({
+          metadata: expect.stringContaining("scene-2"),
+        });
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("fails closed when retirement is not confirmed", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      const invoke = installChatCaptureBridge(
+        async () => ({ ok: true, value: [] }),
+        async () => ({ ok: false, error: "NIR1_CHAT_CAPTURE_RETIRE_FAILED" }),
+      );
+      mockStreamResponse("must not dispatch");
+      const onAccepted = vi.fn();
+      try {
+        await useChatStore.getState().sendMessage("mentioned turn", undefined, {
+          mentionedSceneIds: ["scene-2"],
+          _onAccepted: onAccepted,
+        });
+        expect(
+          invoke.mock.calls
+            .map(([command]) => command)
+            .filter((command) => command === "retire_current_chat_input"),
+        ).toEqual(["retire_current_chat_input"]);
+        expect(onAccepted).not.toHaveBeenCalled();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does not capture a newly created scene session", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      const newSession = {
+        ...session1,
+        id: "new-local-session",
+        model: "local-test-model",
+      };
+      useChatStore.setState({
+        activeSessionId: null,
+        sessions: [],
+        messages: [],
+      });
+      mockCreateSession.mockResolvedValueOnce(newSession);
+      const invoke = installChatCaptureBridge(async () => ({
+        ok: true,
+        value: [],
+      }));
+      mockStreamResponse("new session reply");
+      try {
+        await useChatStore.getState().sendMessage("new scene conversation");
+
+        expect(
+          invoke.mock.calls.some(
+            ([command]) => command === "capture_current_chat_input",
+          ),
+        ).toBe(false);
+        expect(mockCreateSession).toHaveBeenCalledOnce();
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("cancels an admitted capture when Stop wins before provider dispatch", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      let resolveCapture!: (value: unknown) => void;
+      let captureArgs: Record<string, unknown> | undefined;
+      const invoke = installChatCaptureBridge((command, args) => {
+        if (command === "capture_current_chat_input") {
+          captureArgs = args;
+          return new Promise((resolve) => {
+            resolveCapture = resolve;
+          });
+        }
+        if (command === "cancel_current_chat_input") {
+          const submission = args?.submission as Record<string, string>;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              status: "cancelled",
+              submissionId: submission.submissionId,
+              messageId: submission.messageId,
+            },
+          });
+        }
+        return Promise.resolve({ ok: true, value: [] });
+      });
+      const onAccepted = vi.fn();
+      try {
+        const send = useChatStore
+          .getState()
+          .sendMessage("stop while capture is pending", undefined, {
+            _onAccepted: onAccepted,
+          });
+        await vi.waitFor(() => expect(resolveCapture).toBeTypeOf("function"));
+        useChatStore.getState().stopGeneration();
+        resolveCapture(captureAcceptedEnvelope(captureArgs));
+        await send;
+
+        expect(
+          invoke.mock.calls
+            .map(([command]) => command)
+            .filter((command) =>
+              [
+                "capture_current_chat_input",
+                "cancel_current_chat_input",
+              ].includes(command),
+            ),
+        ).toEqual(["capture_current_chat_input", "cancel_current_chat_input"]);
+        expect(onAccepted).not.toHaveBeenCalled();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(useChatStore.getState().messages).toHaveLength(1);
+        expect(useChatStore.getState().messages[0]).toMatchObject({
+          role: "user",
+          content: "stop while capture is pending",
+        });
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("preserves Stop while a legacy stream completion persists", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      const persistedUser = deferred<void>();
+      const persistenceStarted = deferred<void>();
+      mockAddMessage.mockImplementationOnce(async () => {
+        persistenceStarted.resolve();
+        await persistedUser.promise;
+        return makeMessage("user", "stop during persistence");
+      });
+      const invoke = installChatCaptureBridge(async (command, args) => {
+        if (command === "capture_current_chat_input") {
+          return { ok: true, value: { status: "legacy-only" } };
+        }
+        if (command === "cancel_current_chat_input") {
+          const submission = args?.submission as Record<string, string>;
+          return {
+            ok: true,
+            value: {
+              status: "cancelled",
+              submissionId: submission.submissionId,
+              messageId: submission.messageId,
+            },
+          };
+        }
+        return { ok: true, value: [] };
+      });
+      mockStreamResponse("completed response");
+      try {
+        const send = useChatStore
+          .getState()
+          .sendMessage("stop during persistence");
+        await persistenceStarted.promise;
+        useChatStore.getState().stopGeneration();
+        persistedUser.resolve();
+        await send;
+
+        expect(mockAddMessage).toHaveBeenCalledTimes(2);
+        expect(
+          invoke.mock.calls.some(
+            ([command]) => command === "cancel_current_chat_input",
+          ),
+        ).toBe(false);
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+      } finally {
+        persistedUser.resolve();
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("cancels and does not dispatch when acceptance callback stops the turn", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      const invoke = installChatCaptureBridge(async (command, args) => {
+        if (command === "capture_current_chat_input") {
+          return captureAcceptedEnvelope(args);
+        }
+        if (command === "cancel_current_chat_input") {
+          const submission = args?.submission as Record<string, string>;
+          return {
+            ok: true,
+            value: {
+              status: "cancelled",
+              submissionId: submission.submissionId,
+              messageId: submission.messageId,
+            },
+          };
+        }
+        return { ok: true, value: [] };
+      });
+      mockStreamResponse("must not dispatch");
+      const onAccepted = vi.fn(() => useChatStore.getState().stopGeneration());
+      try {
+        await useChatStore
+          .getState()
+          .sendMessage("stop from acceptance callback", undefined, {
+            _onAccepted: onAccepted,
+          });
+
+        expect(onAccepted).toHaveBeenCalledOnce();
+        expect(
+          invoke.mock.calls
+            .map(([command]) => command)
+            .filter((command) =>
+              [
+                "capture_current_chat_input",
+                "cancel_current_chat_input",
+              ].includes(command),
+            ),
+        ).toEqual(["capture_current_chat_input", "cancel_current_chat_input"]);
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(useChatStore.getState().messages).toHaveLength(1);
+        expect(useChatStore.getState().messages[0]).toMatchObject({
+          role: "user",
+          content: "stop from acceptance callback",
+        });
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does not let a replacement send overtake unresolved cancellation", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      let captureCount = 0;
+      let resolveOldCapture!: (value: unknown) => void;
+      let oldCaptureArgs: Record<string, unknown> | undefined;
+      let resolveOldCancellation!: (value: unknown) => void;
+      let oldCancellationArgs: Record<string, string> | undefined;
+      let cancellationCount = 0;
+      let oldSend: Promise<void> | undefined;
+      const invoke = installChatCaptureBridge((command, args) => {
+        if (command === "capture_current_chat_input") {
+          captureCount += 1;
+          if (captureCount === 1) {
+            oldCaptureArgs = args;
+            return new Promise((resolve) => {
+              resolveOldCapture = resolve;
+            });
+          }
+          return Promise.resolve(captureAcceptedEnvelope(args));
+        }
+        if (command === "cancel_current_chat_input") {
+          cancellationCount += 1;
+          const submission = args?.submission as Record<string, string>;
+          if (cancellationCount === 1) {
+            oldCancellationArgs = submission;
+            return new Promise((resolve) => {
+              resolveOldCancellation = resolve;
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            value: {
+              status: "cancelled",
+              submissionId: submission.submissionId,
+              messageId: submission.messageId,
+            },
+          });
+        }
+        return Promise.resolve({ ok: true, value: [] });
+      });
+      const replacementAccepted = vi.fn();
+      mockStreamResponse("replacement reply");
+      try {
+        oldSend = useChatStore.getState().sendMessage("old pending send");
+        await vi.waitFor(() =>
+          expect(resolveOldCapture).toBeTypeOf("function"),
+        );
+        useChatStore.getState().stopGeneration();
+        resolveOldCapture(captureAcceptedEnvelope(oldCaptureArgs));
+        await vi.waitFor(() =>
+          expect(resolveOldCancellation).toBeTypeOf("function"),
+        );
+
+        await useChatStore.getState().sendMessage("replacement", undefined, {
+          _onAccepted: replacementAccepted,
+        });
+        expect(captureCount).toBe(1);
+        expect(replacementAccepted).not.toHaveBeenCalled();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+
+        resolveOldCancellation({
+          ok: true,
+          value: {
+            status: "cancelled",
+            submissionId: oldCancellationArgs?.submissionId,
+            messageId: oldCancellationArgs?.messageId,
+          },
+        });
+        await oldSend;
+        await useChatStore.getState().sendMessage("replacement", undefined, {
+          _onAccepted: replacementAccepted,
+        });
+
+        expect(replacementAccepted).toHaveBeenCalledOnce();
+        expect(captureCount).toBe(2);
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(
+          invoke.mock.calls
+            .map(([command]) => command)
+            .filter((command) =>
+              [
+                "capture_current_chat_input",
+                "cancel_current_chat_input",
+              ].includes(command),
+            ),
+        ).toEqual([
+          "capture_current_chat_input",
+          "cancel_current_chat_input",
+          "capture_current_chat_input",
+        ]);
+      } finally {
+        if (resolveOldCancellation && cancellationCount === 1) {
+          resolveOldCancellation({
+            ok: true,
+            value: {
+              status: "cancelled",
+              submissionId: oldCancellationArgs?.submissionId,
+              messageId: oldCancellationArgs?.messageId,
+            },
+          });
+        }
+        await oldSend;
+        if (useChatStore.getState().isStreaming) {
+          useChatStore.getState().stopGeneration();
+          await vi.waitFor(() => expect(cancellationCount).toBe(2));
+        }
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does not start a replacement when Stop wins during capture cancellation", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      const cancellationStarted = deferred<void>();
+      let resolveCancellation!: (value: unknown) => void;
+      let captureCount = 0;
+      let cancellationCount = 0;
+      const cancelledReceipt = (args?: Record<string, unknown>) => {
+        const submission = args?.submission as Record<string, string>;
+        return {
+          ok: true,
+          value: {
+            status: "cancelled",
+            submissionId: submission.submissionId,
+            messageId: submission.messageId,
+          },
+        };
+      };
+      const invoke = installChatCaptureBridge((command, args) => {
+        if (command === "capture_current_chat_input") {
+          captureCount += 1;
+          return Promise.resolve(
+            captureCount === 1
+              ? captureAcceptedEnvelope(args)
+              : { ok: true, value: { status: "legacy-only" } },
+          );
+        }
+        if (command === "cancel_current_chat_input") {
+          cancellationCount += 1;
+          if (cancellationCount === 1) {
+            cancellationStarted.resolve();
+            return new Promise((resolve) => {
+              resolveCancellation = resolve;
+            });
+          }
+          return Promise.resolve(cancelledReceipt(args));
+        }
+        return Promise.resolve({ ok: true, value: [] });
+      });
+      const replacementAccepted = vi.fn();
+      const onAcceptedA = vi.fn();
+      mockStreamResponse("must not dispatch");
+      let replacement: Promise<void> | undefined;
+      try {
+        await useChatStore
+          .getState()
+          .sendMessage("accepted A", undefined, { _onAccepted: onAcceptedA });
+        replacement = useChatStore
+          .getState()
+          .sendMessage("replacement B", undefined, {
+            _onAccepted: replacementAccepted,
+          });
+        await cancellationStarted.promise;
+
+        useChatStore.getState().stopGeneration();
+        resolveCancellation(
+          cancelledReceipt(
+            invoke.mock.calls.find(
+              ([command]) => command === "cancel_current_chat_input",
+            )?.[1],
+          ),
+        );
+        await replacement;
+
+        expect(captureCount).toBe(1);
+        expect(replacementAccepted).not.toHaveBeenCalled();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(
+          invoke.mock.calls
+            .map(([command]) => command)
+            .filter((command) =>
+              [
+                "capture_current_chat_input",
+                "cancel_current_chat_input",
+              ].includes(command),
+            ),
+        ).toEqual(["capture_current_chat_input", "cancel_current_chat_input"]);
+        expect(useChatStore.getState().messages).toHaveLength(1);
+        expect(useChatStore.getState().messages[0]).toMatchObject({
+          role: "user",
+          content: "accepted A",
+        });
+      } finally {
+        if (resolveCancellation) {
+          resolveCancellation(
+            cancelledReceipt(
+              invoke.mock.calls.find(
+                ([command]) => command === "cancel_current_chat_input",
+              )?.[1],
+            ),
+          );
+        }
+        await replacement;
+        if (useChatStore.getState().isStreaming) {
+          useChatStore.getState().stopGeneration();
+        }
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("blocks replacement after capture-cancel failure until the exact retry succeeds", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      let cancellationCount = 0;
+      let firstCancellation: Record<string, string> | undefined;
+      let resolveRetryCancellation!: (value: unknown) => void;
+      let replacement: Promise<void> | undefined;
+      const retryStarted = deferred<void>();
+      const invoke = installChatCaptureBridge((command, args) => {
+        if (command === "capture_current_chat_input") {
+          return Promise.resolve(captureAcceptedEnvelope(args));
+        }
+        if (command === "cancel_current_chat_input") {
+          cancellationCount += 1;
+          const submission = args?.submission as Record<string, string>;
+          if (cancellationCount === 1) {
+            firstCancellation = submission;
+            return Promise.resolve({
+              ok: false,
+              error: "TEMPORARY_CAPTURE_CANCEL_FAILURE",
+            });
+          }
+          if (cancellationCount === 2) {
+            retryStarted.resolve();
+            return new Promise((resolve) => {
+              resolveRetryCancellation = resolve;
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            value: {
+              status: "cancelled",
+              submissionId: submission.submissionId,
+              messageId: submission.messageId,
+            },
+          });
+        }
+        return Promise.resolve({ ok: true, value: [] });
+      });
+      try {
+        await useChatStore.getState().sendMessage("capture-only turn");
+        expect(cancellationCount).toBe(0);
+
+        const replacementAccepted = vi.fn();
+        await useChatStore
+          .getState()
+          .sendMessage("blocked replacement", undefined, {
+            _onAccepted: replacementAccepted,
+          });
+        expect(cancellationCount).toBe(1);
+        expect(replacementAccepted).not.toHaveBeenCalled();
+        expect(
+          invoke.mock.calls.filter(
+            ([command]) => command === "capture_current_chat_input",
+          ),
+        ).toHaveLength(1);
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+
+        replacement = useChatStore
+          .getState()
+          .sendMessage("replacement after exact cleanup", undefined, {
+            _onAccepted: replacementAccepted,
+          });
+        await retryStarted.promise;
+        expect(
+          invoke.mock.calls.filter(
+            ([command]) => command === "capture_current_chat_input",
+          ),
+        ).toHaveLength(1);
+        expect(replacementAccepted).not.toHaveBeenCalled();
+        expect(invoke.mock.calls[2]?.[1]?.submission).toEqual(
+          firstCancellation,
+        );
+
+        resolveRetryCancellation({
+          ok: true,
+          value: {
+            status: "cancelled",
+            submissionId: firstCancellation?.submissionId,
+            messageId: firstCancellation?.messageId,
+          },
+        });
+        await replacement;
+
+        expect(replacementAccepted).toHaveBeenCalledOnce();
+        expect(cancellationCount).toBe(2);
+        expect(
+          invoke.mock.calls
+            .map(([command]) => command)
+            .filter((command) =>
+              [
+                "capture_current_chat_input",
+                "cancel_current_chat_input",
+              ].includes(command),
+            ),
+        ).toEqual([
+          "capture_current_chat_input",
+          "cancel_current_chat_input",
+          "cancel_current_chat_input",
+          "capture_current_chat_input",
+        ]);
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      } finally {
+        if (resolveRetryCancellation) {
+          resolveRetryCancellation({
+            ok: true,
+            value: {
+              status: "cancelled",
+              submissionId: firstCancellation?.submissionId,
+              messageId: firstCancellation?.messageId,
+            },
+          });
+        }
+        await replacement;
+        const beforeStop = cancellationCount;
+        useChatStore.getState().stopGeneration();
+        await vi.waitFor(() => expect(cancellationCount).toBe(beforeStop + 1));
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("fails closed when Native rejects the capture", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      const invoke = installChatCaptureBridge(async (command, args) => {
+        if (command === "capture_current_chat_input") {
+          return { ok: false, error: "NIR1_CURRENT_CHAT_CAPTURE_REJECTED" };
+        }
+        if (command === "cancel_current_chat_input") {
+          const submission = args?.submission as Record<string, string>;
+          return {
+            ok: true,
+            value: {
+              status: "not-found",
+              submissionId: submission.submissionId,
+              messageId: submission.messageId,
+            },
+          };
+        }
+        return { ok: true, value: [] };
+      });
+      const onAccepted = vi.fn();
+      try {
+        await useChatStore
+          .getState()
+          .sendMessage("do not dispatch without capture", undefined, {
+            _onAccepted: onAccepted,
+          });
+        expect(
+          invoke.mock.calls
+            .map(([command]) => command)
+            .filter((command) =>
+              [
+                "capture_current_chat_input",
+                "cancel_current_chat_input",
+              ].includes(command),
+            ),
+        ).toEqual(["capture_current_chat_input", "cancel_current_chat_input"]);
+        expect(onAccepted).not.toHaveBeenCalled();
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it.each([
+      ["LAN endpoint", "http://192.168.1.25:12345/v1", {}],
+      [
+        "mentioned scene metadata",
+        "http://127.0.0.1:12345/v1",
+        { mentionedSceneIds: ["scene-2"] },
+      ],
+    ])("does not capture %s", async (_label, baseUrl, options) => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn(baseUrl);
+      const invoke = installChatCaptureBridge(async () => ({
+        ok: true,
+        value: [],
+      }));
+      mockStreamResponse("reply");
+      try {
+        await useChatStore
+          .getState()
+          .sendMessage("ordinary chat", undefined, options);
+        expect(
+          invoke.mock.calls.some(
+            ([command]) => command === "capture_current_chat_input",
+          ),
+        ).toBe(false);
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does not capture command-instruction chat", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      const invoke = installChatCaptureBridge(async () => ({
+        ok: true,
+        value: [],
+      }));
+      mockStreamResponse("command reply");
+      try {
+        await useChatStore
+          .getState()
+          .sendMessage("ordinary chat", "run the selected command");
+        expect(
+          invoke.mock.calls.some(
+            ([command]) => command === "capture_current_chat_input",
+          ),
+        ).toBe(false);
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does not capture an Ollama chat route", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      useAiSettingsStore.setState((state) => ({
+        settings: state.settings
+          ? { ...state.settings, provider: "ollama", model: "qwen2.5:latest" }
+          : null,
+      }));
+      mockListAiModels.mockResolvedValueOnce([
+        {
+          id: "qwen2.5:latest",
+          name: "qwen2.5:latest",
+          contextLength: 32_768,
+          effectiveContextLength: 32_768,
+          effectiveContextSource: "runner",
+          supportedParameters: ["tools"],
+        },
+      ]);
+      const invoke = installChatCaptureBridge(async () => ({
+        ok: true,
+        value: [],
+      }));
+      mockStreamResponse("Ollama reply");
+      try {
+        await useChatStore.getState().sendMessage("Ollama chat");
+        expect(
+          invoke.mock.calls.some(
+            ([command]) => command === "capture_current_chat_input",
+          ),
+        ).toBe(false);
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it.each([
+      { label: "Agent", agentMode: true, ragEnabled: false },
+      { label: "RAG", agentMode: false, ragEnabled: true },
+    ])("does not capture $label routes", async ({ agentMode, ragEnabled }) => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      useChatStore.setState({
+        agentMode,
+        ragEnabled,
+        sessionAgentToolsSnapshot: null,
+      });
+      const invoke = installChatCaptureBridge(async () => ({
+        ok: true,
+        value: [],
+      }));
+      if (agentMode) {
+        mockSendAgentMessage.mockResolvedValueOnce({
+          blocks: [{ type: "text", content: "agent reply" }],
+          stopReason: "end_turn",
+        });
+      }
+      try {
+        await useChatStore.getState().sendMessage("not plain chat");
+        expect(
+          invoke.mock.calls.some(
+            ([command]) => command === "capture_current_chat_input",
+          ),
+        ).toBe(false);
+        expect(
+          invoke.mock.calls.filter(
+            ([command]) => command === "retire_current_chat_input",
+          ),
+        ).toHaveLength(1);
+        if (agentMode) {
+          expect(mockSendAgentMessage).toHaveBeenCalledOnce();
+          expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+          expect(invoke.mock.invocationCallOrder[0]).toBeLessThan(
+            mockSendAgentMessage.mock.invocationCallOrder[0]!,
+          );
+        }
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it.each([
+      { label: "Agent", agentMode: true, ragEnabled: false },
+      { label: "RAG", agentMode: false, ragEnabled: true },
+    ])(
+      "does not dispatch $label after Stop from acceptance callback",
+      async ({ agentMode, ragEnabled }) => {
+        const previousSettings = useAiSettingsStore.getState().settings;
+        const activeSession = configurePlainCaptureTurn();
+        const invoke = installChatCaptureBridge(
+          async (command) =>
+            command === "capture_current_chat_input"
+              ? { ok: true, value: { status: "legacy-only" } }
+              : { ok: true, value: [] },
+          (args) =>
+            Promise.resolve({
+              ok: true,
+              value: { status: "retired", chatSessionId: args?.chatSessionId },
+            }),
+        );
+        mockStreamResponse("A reply");
+
+        try {
+          await useChatStore.getState().sendMessage("Turn A");
+          useChatStore.setState({ agentMode, ragEnabled });
+          const onAccepted = vi.fn(() =>
+            useChatStore.getState().stopGeneration(),
+          );
+          await useChatStore.getState().sendMessage("Turn B", undefined, {
+            _onAccepted: onAccepted,
+          });
+
+          const lifecycleCalls = invoke.mock.calls.filter(
+            ([command]) =>
+              command === "capture_current_chat_input" ||
+              command === "retire_current_chat_input",
+          );
+          expect(lifecycleCalls.map(([command]) => command)).toEqual([
+            "capture_current_chat_input",
+            "retire_current_chat_input",
+          ]);
+          expect(lifecycleCalls[1]?.[1]).toEqual({
+            chatSessionId: activeSession.id,
+          });
+          expect(onAccepted).toHaveBeenCalledOnce();
+          expect(
+            invoke.mock.invocationCallOrder[
+              invoke.mock.calls.findIndex(
+                ([command]) => command === "retire_current_chat_input",
+              )
+            ],
+          ).toBeLessThan(onAccepted.mock.invocationCallOrder[0]!);
+          expect(mockSendAgentMessage).not.toHaveBeenCalled();
+          expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+        } finally {
+          useAiSettingsStore.setState({ settings: previousSettings });
+          vi.unstubAllGlobals();
+        }
+      },
+    );
+
+    it("does not capture regeneration", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      const activeSession = configurePlainCaptureTurn();
+      useChatStore.setState({ messages: [msg1, msg2] });
+      const invoke = installChatCaptureBridge(async () => ({
+        ok: true,
+        value: [],
+      }));
+      mockStreamResponse("regenerated reply");
+      try {
+        await useChatStore.getState().regenerate(msg2.id);
+        expect(
+          invoke.mock.calls.some(
+            ([command]) => command === "capture_current_chat_input",
+          ),
+        ).toBe(false);
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+        expect(useChatStore.getState().activeSessionId).toBe(activeSession.id);
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("preserves the legacy 429 retry after Native reports legacy-only", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      vi.useFakeTimers();
+      const retryTimer = vi.spyOn(globalThis, "setTimeout");
+      configurePlainCaptureTurn();
+      const invoke = installChatCaptureBridge(async (command) =>
+        command === "capture_current_chat_input"
+          ? { ok: true, value: { status: "legacy-only" } }
+          : { ok: true, value: [] },
+      );
+      mockStreamError("429 Too Many Requests");
+      try {
+        await useChatStore.getState().sendMessage("retry later");
+        expect(
+          retryTimer.mock.calls.some(([, delay]) => delay === 10_000),
+        ).toBe(true);
+        const captureCallIndex = invoke.mock.calls.findIndex(
+          ([command]) => command === "capture_current_chat_input",
+        );
+        expect(captureCallIndex).toBeGreaterThanOrEqual(0);
+        expect(invoke.mock.invocationCallOrder[captureCallIndex]).toBeLessThan(
+          mockSendChatMessageStream.mock.invocationCallOrder[0]!,
+        );
+        expect(
+          invoke.mock.calls.some(
+            ([command]) => command === "cancel_current_chat_input",
+          ),
+        ).toBe(false);
+        expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
   });
 
   // --- Session management tests ---
@@ -1974,7 +3430,7 @@ describe("useChatStore", () => {
       const flushGate = deferred<void>();
       const flush = vi.fn(() => flushGate.promise);
       const unregister = registerQuiescenceProvider({
-        id: "chat-history-clear-test",
+        id: createQuiescenceProviderId("chat-history-clear-test"),
         stage: "scoped-mutations",
         flush,
       });
@@ -2032,7 +3488,7 @@ describe("useChatStore", () => {
     it("preserves history and in-memory state when strict quiescence fails", async () => {
       const failure = new Error("completed turn is not durable");
       const unregister = registerQuiescenceProvider({
-        id: "chat-history-clear-failure-test",
+        id: createQuiescenceProviderId("chat-history-clear-failure-test"),
         stage: "scoped-mutations",
         flush: vi.fn().mockRejectedValue(failure),
       });
@@ -2056,6 +3512,37 @@ describe("useChatStore", () => {
         expect(isQuiescenceLeaseActive()).toBe(false);
       } finally {
         unregister();
+      }
+    });
+
+    it("handles an immediate genesis retry rejection until the queued clear observes it", async () => {
+      const failure = new Error("timelapse genesis retry failed");
+      const unhandledRejections: unknown[] = [];
+      const captureUnhandledRejection = (reason: unknown): void => {
+        unhandledRejections.push(reason);
+      };
+      useProjectStore.setState({ currentProjectId: "proj-1" });
+      const genesis = beginTimelapseGenesisBarrier("proj-1");
+      genesis.fail(new Error("initial genesis failed"));
+      const unregisterRetry = registerTimelapseGenesisRetry(async () => {
+        throw failure;
+      });
+      process.on("unhandledRejection", captureUnhandledRejection);
+
+      try {
+        const clear = useChatStore.getState().clearProjectChatHistory("proj-1");
+
+        await expect(clear).rejects.toBe(failure);
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+        expect(unhandledRejections).toEqual([]);
+        expect(mockClearProjectChatHistory).not.toHaveBeenCalled();
+        expect(isQuiescenceLeaseActive()).toBe(false);
+      } finally {
+        process.off("unhandledRejection", captureUnhandledRejection);
+        unregisterRetry();
+        _resetTimelapseGenesisBarriersForTests();
+        useProjectStore.setState({ currentProjectId: null });
       }
     });
   });

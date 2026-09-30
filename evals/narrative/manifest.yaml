@@ -1,0 +1,59 @@
+schemaVersion: 1
+id: narrative-extraction-eval
+gold:
+  authority: human
+  canonical: true
+  comparison: semantic-dimensions
+  syntheticCorpusOnly: true
+requirements:
+  - id: GDX-NARR-EVAL-001
+    description: Narrative extraction evaluation is versioned, deterministic, and replayable.
+  - id: GDX-NARR-EVIDENCE-001
+    description: Every required evidence quote is an exact substring of its referenced document.
+  - id: GDX-NARR-SEMANTIC-001
+    description: Actuality, attribution, narrative frame, clustering, significance, and proposal gating remain distinct.
+  - id: GDX-NARR-COVERAGE-001
+    description: Partial corpus coverage must remain explicit and must not be reported as complete.
+suites:
+  - id: chronicle-micro-v1
+    version: 1
+    slice: chronicle
+    tier: micro
+    caseSchema: schemas/case-v1.schema.json
+    caseFile: cases/chronicle-micro-v1.yaml
+    caseCount: 14
+    requirementIds:
+      - GDX-NARR-EVAL-001
+      - GDX-NARR-EVIDENCE-001
+      - GDX-NARR-SEMANTIC-001
+      - GDX-NARR-COVERAGE-001
+    releaseGates:
+      criticalViolationCount: 0
+      unknownEvidenceDocumentCount: 0
+      inexactEvidenceQuoteCount: 0
+      unsupportedCompleteCoverageClaimCount: 0
+    certification:
+      requiresProductionPrompt: true
+      requiresProductionParser: true
+      legacyBaselineIsCertification: false
+  - id: chronicle-motif-boundary-v1
+    version: 1
+    slice: chronicle
+    tier: micro
+    caseSchema: schemas/case-v1.schema.json
+    caseFile: cases/chronicle-motif-boundary-v1.yaml
+    caseCount: 5
+    requirementIds:
+      - GDX-NARR-EVAL-001
+      - GDX-NARR-EVIDENCE-001
+      - GDX-NARR-SEMANTIC-001
+    releaseGates:
+      criticalViolationCount: 0
+      unknownEvidenceDocumentCount: 0
+      inexactEvidenceQuoteCount: 0
+      unsupportedCompleteCoverageClaimCount: 0
+    certification:
+      diagnosticOnly: true
+      requiresProductionPrompt: true
+      requiresProductionParser: true
+      legacyBaselineIsCertification: false

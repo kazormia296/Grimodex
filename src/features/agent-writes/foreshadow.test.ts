@@ -55,6 +55,7 @@ const storedItem = {
   abandoned: false,
   secret: true,
   loadBearing: null,
+  version: 1,
 };
 
 describe("agentCreateForeshadow", () => {
@@ -71,7 +72,12 @@ describe("agentCreateForeshadow", () => {
 
   it("is gated by knowledgeWrite and never invokes when off", async () => {
     h.blockIfPolicyOff.mockReturnValue(true);
-    await expect(agentCreateForeshadow({ title: "x" })).rejects.toThrow();
+    await expect(
+      agentCreateForeshadow({
+        requestId: "agent-tool:create-gated",
+        title: "x",
+      }),
+    ).rejects.toThrow();
     expect(h.blockIfPolicyOff).toHaveBeenCalledWith("knowledgeWrite");
     expect(h.invoke).not.toHaveBeenCalled();
   });
@@ -86,9 +92,32 @@ describe("agentCreateForeshadow", () => {
     expect(h.invoke).toHaveBeenCalledWith("agent_foreshadow_create", {
       payload: {
         requestId: "agent-tool:foreshadow-request",
+        eventUid: "agent-tool:foreshadow-request",
+        origin: "ai-apply",
+        authorityRoute: "interactive-agent-command",
+        caller: "chat-tool-executor",
+        controls: [
+          "knowledge-write-policy",
+          "stable-request-id",
+          "agent-provenance",
+          "field-authority",
+          "typed-writer",
+          "occ",
+          "undo-journal",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: {
+          requestId: "agent-tool:foreshadow-request",
+          traceId: "agent-tool:foreshadow-request",
+        },
+        writesAuthorityProtectedField: false,
+        originalTransactionId: null,
+        undoJournalId: null,
         foreshadowId: "f1",
         projectId: "p1",
         sessionId: "sess-1",
+        writerSessionId: "sess-1",
         title: "刻印の謎",
         intent: null,
         notes: null,
@@ -107,13 +136,18 @@ describe("agentCreateForeshadow", () => {
   });
 
   it("defaults secret to true (MCP parity) but passes an explicit false through", async () => {
-    await agentCreateForeshadow({ title: "open plant", secret: false });
+    await agentCreateForeshadow({
+      requestId: "agent-tool:create-open",
+      title: "open plant",
+      secret: false,
+    });
     expect(h.invoke.mock.calls[0][1].payload.secret).toBe(false);
   });
 
   it("rejects an unknown loadBearing before invoking", async () => {
     await expect(
       agentCreateForeshadow({
+        requestId: "agent-tool:create-invalid",
         title: "x",
         loadBearing: "urgent" as never,
       }),
@@ -121,8 +155,18 @@ describe("agentCreateForeshadow", () => {
     expect(h.invoke).not.toHaveBeenCalled();
   });
 
+  it("rejects an empty request identity before invoking", async () => {
+    await expect(
+      agentCreateForeshadow({ requestId: " ", title: "x" }),
+    ).rejects.toThrow("requestId");
+    expect(h.invoke).not.toHaveBeenCalled();
+  });
+
   it("undo/redo closures apply the journal and reload the store", async () => {
-    await agentCreateForeshadow({ title: "刻印の謎" });
+    await agentCreateForeshadow({
+      requestId: "agent-tool:create-history",
+      title: "刻印の謎",
+    });
     const cmd = h.push.mock.calls[0][0];
     await cmd.undo();
     expect(h.applyUndoJournal).toHaveBeenCalledWith("j1", "undo");
@@ -132,13 +176,21 @@ describe("agentCreateForeshadow", () => {
 
   it("does not push history while replaying", async () => {
     h.isReplaying = true;
-    await agentCreateForeshadow({ title: "刻印の謎" });
+    await agentCreateForeshadow({
+      requestId: "agent-tool:create-replay",
+      title: "刻印の謎",
+    });
     expect(h.push).not.toHaveBeenCalled();
   });
 
   it("throws when the created row is missing after reload", async () => {
     h.items = [];
-    await expect(agentCreateForeshadow({ title: "ghost" })).rejects.toThrow();
+    await expect(
+      agentCreateForeshadow({
+        requestId: "agent-tool:create-ghost",
+        title: "ghost",
+      }),
+    ).rejects.toThrow();
   });
 });
 
@@ -157,7 +209,12 @@ describe("agentUpdateForeshadow", () => {
   it("is gated by knowledgeWrite", async () => {
     h.blockIfPolicyOff.mockReturnValue(true);
     await expect(
-      agentUpdateForeshadow({ foreshadowId: "f1", title: "x" }),
+      agentUpdateForeshadow({
+        requestId: "agent-tool:update-gated",
+        foreshadowId: "f1",
+        baseVersion: 1,
+        title: "x",
+      }),
     ).rejects.toThrow();
     expect(h.blockIfPolicyOff).toHaveBeenCalledWith("knowledgeWrite");
     expect(h.invoke).not.toHaveBeenCalled();
@@ -165,22 +222,65 @@ describe("agentUpdateForeshadow", () => {
 
   it("rejects an empty patch before invoking", async () => {
     await expect(
-      agentUpdateForeshadow({ foreshadowId: "f1" }),
+      agentUpdateForeshadow({
+        requestId: "agent-tool:update-empty",
+        foreshadowId: "f1",
+        baseVersion: 1,
+      }),
     ).rejects.toThrow();
+    expect(h.invoke).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty request identity before invoking", async () => {
+    await expect(
+      agentUpdateForeshadow({
+        requestId: " ",
+        foreshadowId: "f1",
+        baseVersion: 1,
+        title: "x",
+      }),
+    ).rejects.toThrow("requestId");
     expect(h.invoke).not.toHaveBeenCalled();
   });
 
   it("invokes the tracked command with only the provided fields and pushes undo", async () => {
     const result = await agentUpdateForeshadow({
+      requestId: "agent-tool:update-f1",
       foreshadowId: "f1",
+      baseVersion: 1,
       payoffConfirmed: true,
     });
 
     expect(h.invoke).toHaveBeenCalledWith("agent_foreshadow_update", {
       payload: {
+        requestId: "agent-tool:update-f1",
+        eventUid: "agent-tool:update-f1",
+        origin: "ai-apply",
+        authorityRoute: "interactive-agent-command",
+        caller: "chat-tool-executor",
+        controls: [
+          "knowledge-write-policy",
+          "stable-request-id",
+          "agent-provenance",
+          "field-authority",
+          "typed-writer",
+          "occ",
+          "undo-journal",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: {
+          requestId: "agent-tool:update-f1",
+          traceId: "agent-tool:update-f1",
+        },
+        writesAuthorityProtectedField: false,
+        originalTransactionId: null,
+        undoJournalId: null,
         projectId: "p1",
         sessionId: "sess-1",
+        writerSessionId: "sess-1",
         foreshadowId: "f1",
+        baseVersion: 1,
         title: null,
         intent: null,
         notes: null,

@@ -85,11 +85,182 @@ function drawCount(container: HTMLElement) {
   return shaderMount(container)?.getPerformanceStats().drawCount ?? 0;
 }
 
+function productPerformanceStats(container: HTMLElement) {
+  const stats = shaderMount(container)?.getPerformanceStats();
+  if (!stats) throw new Error("Zen shader performance stats are unavailable");
+  return stats as typeof stats & {
+    drawCallCount: number;
+    sceneScale: number;
+    canvasWidth: number;
+    canvasHeight: number;
+    sceneTargetWidth: number;
+    sceneTargetHeight: number;
+  };
+}
+
 function sleep(duration: number) {
   return new Promise((resolve) => window.setTimeout(resolve, duration));
 }
 
 describe("ZenShaderSurface multipass integration", () => {
+  it("uses the existing product Composite for all three resolution modes", async () => {
+    const onRendererStatusChange = vi.fn();
+    const balancedConfig = {
+      ...ZEN_SHADER_DEFAULTS,
+      speed: 0,
+      glass: { ...ZEN_SHADER_DEFAULTS.glass, blur: 0 },
+    };
+    const view = render(
+      <div style={{ position: "relative", width: 240, height: 160 }}>
+        <ZenShaderSurface
+          config={balancedConfig}
+          playing={false}
+          webGlSupported
+          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
+          onRendererStatusChange={onRendererStatusChange}
+        />
+      </div>,
+    );
+
+    await waitFor(() => {
+      expect(onRendererStatusChange).toHaveBeenLastCalledWith("webgl");
+      expect(productPerformanceStats(view.container)).toMatchObject({
+        drawCount: 1,
+        drawCallCount: 2,
+        sceneScale: 3 / 4,
+        canvasWidth: 240,
+        canvasHeight: 160,
+        sceneTargetWidth: 180,
+        sceneTargetHeight: 120,
+      });
+    });
+    const canvas = view.container.querySelector("canvas");
+    const gl = canvas?.getContext("webgl2");
+    expect(canvas).toBeInstanceOf(HTMLCanvasElement);
+    expect(gl).not.toBeNull();
+
+    view.rerender(
+      <div style={{ position: "relative", width: 240, height: 160 }}>
+        <ZenShaderSurface
+          config={{ ...balancedConfig, resolutionMode: "performance" }}
+          playing={false}
+          webGlSupported
+          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
+          onRendererStatusChange={onRendererStatusChange}
+        />
+      </div>,
+    );
+    await waitFor(() => {
+      expect(productPerformanceStats(view.container)).toMatchObject({
+        drawCount: 2,
+        drawCallCount: 4,
+        sceneScale: 2 / 3,
+        canvasWidth: 240,
+        canvasHeight: 160,
+        sceneTargetWidth: 160,
+        sceneTargetHeight: 107,
+      });
+    });
+    expect(view.container.querySelector("canvas")).toBe(canvas);
+    expect(canvas?.getContext("webgl2")).toBe(gl);
+
+    view.rerender(
+      <div style={{ position: "relative", width: 240, height: 160 }}>
+        <ZenShaderSurface
+          config={{ ...balancedConfig, resolutionMode: "native" }}
+          playing={false}
+          webGlSupported
+          webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
+          onRendererStatusChange={onRendererStatusChange}
+        />
+      </div>,
+    );
+    await waitFor(() => {
+      expect(productPerformanceStats(view.container)).toMatchObject({
+        drawCount: 3,
+        drawCallCount: 6,
+        sceneScale: 1,
+        canvasWidth: 240,
+        canvasHeight: 160,
+        sceneTargetWidth: 240,
+        sceneTargetHeight: 160,
+      });
+    });
+    expect(view.container.querySelector("canvas")).toBe(canvas);
+    expect(canvas?.getContext("webgl2")).toBe(gl);
+  });
+
+  it.each(["dither", "halftone"] as const)(
+    "keeps native pixels when Performance is selected with %s enabled",
+    async (effect) => {
+      const effectConfig =
+        effect === "dither"
+          ? {
+              dither: {
+                ...ZEN_SHADER_DEFAULTS.dither,
+                enabled: true,
+                strength: 1,
+              },
+            }
+          : {
+              halftone: {
+                ...ZEN_SHADER_DEFAULTS.halftone,
+                enabled: true,
+                strength: 1,
+              },
+            };
+      const nativeConfig = {
+        ...ZEN_SHADER_DEFAULTS,
+        ...effectConfig,
+        resolutionMode: "native" as const,
+        speed: 0,
+        glass: { ...ZEN_SHADER_DEFAULTS.glass, blur: 0 },
+      };
+      const view = render(
+        <div style={{ position: "relative", width: 240, height: 160 }}>
+          <ZenShaderSurface
+            config={nativeConfig}
+            playing={false}
+            webGlSupported
+            webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
+          />
+        </div>,
+      );
+
+      await waitFor(() =>
+        expect(productPerformanceStats(view.container)).toMatchObject({
+          drawCount: 1,
+          sceneScale: 1,
+          sceneTargetWidth: 240,
+          sceneTargetHeight: 160,
+        }),
+      );
+      const nativePixels = readFrame(view.container);
+      const initialDrawCount = drawCount(view.container);
+
+      view.rerender(
+        <div style={{ position: "relative", width: 240, height: 160 }}>
+          <ZenShaderSurface
+            config={{ ...nativeConfig, resolutionMode: "performance" }}
+            playing={false}
+            webGlSupported
+            webGlContextAttributes={TEST_WEBGL_CONTEXT_ATTRIBUTES}
+          />
+        </div>,
+      );
+
+      await waitFor(() => {
+        expect(drawCount(view.container)).toBeGreaterThan(initialDrawCount);
+        expect(productPerformanceStats(view.container)).toMatchObject({
+          sceneScale: 1,
+          sceneTargetWidth: 240,
+          sceneTargetHeight: 160,
+        });
+      });
+      expect(readFrame(view.container)).toEqual(nativePixels);
+    },
+  );
+
   it("keeps a low-speed live shader visibly animated through final compositing", async () => {
     const onRendererStatusChange = vi.fn();
     const animatedConfig = {

@@ -16,7 +16,8 @@
  */
 
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { recordStateSnapshot } from "./snapshots";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import { recordLayoutSnapshot } from "./snapshots";
 import { getRecorderChainHead } from "./recorder";
 
 export async function seedWorkspaceSnapshot(
@@ -24,17 +25,15 @@ export async function seedWorkspaceSnapshot(
   isAuthoritative: () => boolean = () => true,
 ): Promise<void> {
   if (!isAuthoritative()) return;
+  const workspaceIdentity = getCurrentWorkspaceIdentity();
+  if (!workspaceIdentity) return;
   const { layout, activePresetId, hiddenStripePanels } =
     useLayoutStore.getState();
   if (!isAuthoritative()) return;
-  await recordStateSnapshot({
+  await recordLayoutSnapshot({
+    expectedWorkspacePath: workspaceIdentity.path,
     projectId,
-    domain: "layout",
-    entityType: "workspace",
-    entityId: "workspace",
-    anchorSequence: getRecorderChainHead(),
-    anchorTimestamp: Date.now(),
-    // recordStateSnapshot は同期で JSON.stringify するため clone 不要。
+    expectedAnchorSequence: getRecorderChainHead(),
     // captureLayout の layout.snapshot と同形の payload にし consumer を共通化。
     payload: {
       layout,

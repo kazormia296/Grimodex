@@ -16,7 +16,29 @@ describe("typed entity tag persistence", () => {
   });
 
   it("sets Codex tags without sending renderer-authored SQL", async () => {
-    await setEntryTags("codex-1", ["tag-2", "tag-1"]);
+    await setEntryTags("codex-1", ["tag-2", "tag-1"], {
+      projectId: "project-1",
+      writeContext: {
+        requestId: "tag-request-1",
+        sessionId: "tag-session-1",
+        eventUid: "tag-event-1",
+        origin: "import",
+        authorityRoute: "import-apply",
+        caller: "import-session",
+        controls: [
+          "import-policy",
+          "source-package-evidence",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: null,
+        writesAuthorityProtectedField: false,
+        originalTransactionId: null,
+        undoJournalId: null,
+      },
+    });
 
     expect(invokeMock).toHaveBeenCalledExactlyOnceWith("entity_tags_set", {
       payload: {
@@ -24,20 +46,58 @@ describe("typed entity tag persistence", () => {
         entityId: "codex-1",
         tagIds: ["tag-2", "tag-1"],
         updatedAt: expect.any(String),
+        projectId: "project-1",
+        requestId: "tag-request-1",
+        sessionId: "tag-session-1",
+        eventUid: "tag-event-1",
+        origin: "import",
+        authorityRoute: "import-apply",
+        caller: "import-session",
+        controls: [
+          "import-policy",
+          "source-package-evidence",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: null,
+        writesAuthorityProtectedField: false,
+        originalTransactionId: null,
+        undoJournalId: null,
       },
     });
   });
 
   it("sets snippet tags through the same typed aggregate", async () => {
-    await setSnippetEntryTags("snippet-1", []);
+    await setSnippetEntryTags("snippet-1", [], { projectId: "project-1" });
 
     expect(invokeMock).toHaveBeenCalledExactlyOnceWith("entity_tags_set", {
-      payload: {
+      payload: expect.objectContaining({
         entityKind: "snippet",
         entityId: "snippet-1",
         tagIds: [],
         updatedAt: null,
-      },
+        projectId: "project-1",
+        requestId: expect.any(String),
+        sessionId: expect.any(String),
+        eventUid: expect.any(String),
+        origin: "human",
+        authorityRoute: "human-direct",
+        caller: "human-ui",
+        controls: [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: null,
+        writesAuthorityProtectedField: false,
+        originalTransactionId: null,
+        undoJournalId: null,
+      }),
     });
   });
 });

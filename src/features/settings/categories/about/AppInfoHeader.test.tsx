@@ -34,4 +34,10 @@ describe("AppInfoHeader", () => {
       screen.getByRole("button", { name: "ダウンロード中… 100%" }),
     ).toBeInTheDocument();
   });
+
+  it("identifies the current first-party license as proprietary", () => {
+    render(<AppInfoHeader />);
+
+    expect(screen.getByText("Proprietary")).toBeInTheDocument();
+  });
 });

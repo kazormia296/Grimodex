@@ -14,6 +14,10 @@ import {
   ZEN_BACKGROUND_DEFAULTS,
   ZEN_BACKGROUND_DEFAULT_SHADER_PROPS,
 } from "./zenBackgroundDefaults";
+import {
+  ZEN_SHADER_RESOLUTION_MODES,
+  type ZenShaderResolutionMode,
+} from "./zenShaderResolution";
 
 export const ZEN_SHADER_IDS = PAPER_SHADER_IDS;
 export type ZenShaderId = PaperShaderId;
@@ -34,6 +38,7 @@ export interface ZenShaderConfig {
   /** User-facing percentage. Paper receives a perceptually mapped speed. */
   speed: number;
   speedMode: ZenSpeedMode;
+  resolutionMode: ZenShaderResolutionMode;
   scale: number;
   rotation: number;
   offsetX: number;
@@ -77,6 +82,7 @@ export const ZEN_SHADER_DEFAULTS: ZenShaderConfig = {
   opacity: ZEN_BACKGROUND_DEFAULTS.opacity,
   speed: ZEN_BACKGROUND_DEFAULTS.speedPercent,
   speedMode: ZEN_BACKGROUND_DEFAULTS.speedMode,
+  resolutionMode: ZEN_BACKGROUND_DEFAULTS.resolutionMode,
   scale: ZEN_BACKGROUND_DEFAULTS.scale,
   rotation: ZEN_BACKGROUND_DEFAULTS.rotation,
   offsetX: ZEN_BACKGROUND_DEFAULTS.offsetX,
@@ -287,6 +293,11 @@ export function parseZenShaderConfig(
       value(values, "speedMode"),
       ["slow", "fast"],
       d.speedMode,
+    ),
+    resolutionMode: enumValue(
+      value(values, "resolutionMode"),
+      ZEN_SHADER_RESOLUTION_MODES,
+      d.resolutionMode,
     ),
     scale: finiteNumber(value(values, "scale"), d.scale, 0.25, 4),
     rotation: finiteNumber(value(values, "rotation"), d.rotation, 0, 360),

@@ -13,6 +13,7 @@ import {
 } from "../codexRelationApi";
 import { slugifyRelationType } from "../relationExpansion";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
+import { CodexEntityRelationReviewDialog } from "../CodexEntityRelationReviewDialog";
 
 interface CodexTypedRelationsSectionProps {
   entry: CodexEntry;
@@ -48,6 +49,8 @@ export function CodexTypedRelationsSection({
   );
   const [label, setLabel] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [reviewRelationId, setReviewRelationId] = useState<string | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   const reload = useCallback(async () => {
     const rows = await listCodexRelationsForEntry(entry.id);
@@ -118,7 +121,10 @@ export function CodexTypedRelationsSection({
   };
 
   return (
-    <div className="space-y-2 border-t border-border pt-3">
+    <div
+      className="space-y-2 border-t border-border pt-3"
+      data-testid="codex-typed-relations-section"
+    >
       <div>
         <h3 className="text-xs font-semibold">
           {t("codex.relation.typedTitle")}
@@ -139,6 +145,7 @@ export function CodexTypedRelationsSection({
               <li
                 key={rel.id}
                 className="flex items-start gap-2 rounded border border-border/60 bg-muted/20 px-2 py-1.5 text-xs"
+                data-testid={`codex-typed-relation-row-${rel.id}`}
               >
                 <div className="min-w-0 flex-1">
                   <span className="font-medium">{relLabel}</span>
@@ -162,11 +169,34 @@ export function CodexTypedRelationsSection({
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
+                <button
+                  type="button"
+                  className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                  onClick={() => {
+                    setReviewRelationId(rel.id);
+                    setReviewOpen(true);
+                  }}
+                  data-testid={`codex-typed-relation-prepare-${rel.id}`}
+                >
+                  Entity / Relationレビュー
+                </button>
               </li>
             );
           })}
         </ul>
       )}
+
+      <button
+        type="button"
+        className="w-full rounded border border-[#534AB7]/50 px-2 py-1.5 text-[11px] font-medium text-[#534AB7] hover:bg-[#534AB7]/10"
+        onClick={() => {
+          setReviewRelationId(null);
+          setReviewOpen(true);
+        }}
+        data-testid="codex-typed-relations-open-nir1-review"
+      >
+        Entity / Relationレビューを準備
+      </button>
 
       {/* Add relation form */}
       <form
@@ -180,6 +210,7 @@ export function CodexTypedRelationsSection({
 
         <select
           aria-label={t("codex.relation.targetLabel")}
+          data-testid="codex-typed-relation-target"
           value={targetId}
           onChange={(e) => setTargetId(e.target.value)}
           className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs text-foreground"
@@ -195,6 +226,7 @@ export function CodexTypedRelationsSection({
         <div className="flex gap-1 text-[11px]">
           <button
             type="button"
+            data-testid="codex-typed-relation-direction-outgoing"
             onClick={() => setDirection("outgoing")}
             className={`flex-1 rounded border px-1.5 py-1 ${
               direction === "outgoing"
@@ -206,6 +238,7 @@ export function CodexTypedRelationsSection({
           </button>
           <button
             type="button"
+            data-testid="codex-typed-relation-direction-incoming"
             onClick={() => setDirection("incoming")}
             className={`flex-1 rounded border px-1.5 py-1 ${
               direction === "incoming"
@@ -233,6 +266,7 @@ export function CodexTypedRelationsSection({
         <div className="flex gap-1">
           <input
             value={label}
+            data-testid="codex-typed-relation-label"
             onChange={(e) => setLabel(e.target.value)}
             placeholder={t("codex.relation.labelPlaceholder")}
             className="min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-1 text-xs text-foreground"
@@ -240,12 +274,22 @@ export function CodexTypedRelationsSection({
           <button
             type="submit"
             disabled={submitting}
+            data-testid="codex-typed-relation-add"
             className="shrink-0 rounded bg-[#534AB7] px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50"
           >
             {t("codex.relation.add")}
           </button>
         </div>
       </form>
+      <CodexEntityRelationReviewDialog
+        entry={entry}
+        open={reviewOpen}
+        initialRelationId={reviewRelationId}
+        onOpenChange={(open) => {
+          setReviewOpen(open);
+          if (!open) setReviewRelationId(null);
+        }}
+      />
     </div>
   );
 }

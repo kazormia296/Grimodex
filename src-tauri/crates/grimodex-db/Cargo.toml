@@ -2,12 +2,13 @@
 name = "grimodex-db"
 version = "0.1.0"
 edition = "2021"
-license = "Elastic-2.0"
+license-file.workspace = true
+publish.workspace = true
 description = "Grimodex workspace DB layer shared by the Electron N-API backend, MCP server, and frozen Tauri compatibility shell"
 
 [dependencies]
 rusqlite = { version = "0.40", features = ["bundled", "hooks", "limits"] }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"
 hex = "0.4"
@@ -19,6 +20,59 @@ thiserror = "2"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 unicode-normalization = "0.1"
+grimodex-core = { path = "../grimodex-core" }
+libc = "0.2"
+
+[features]
+default = []
+# Private current-Human capture API used only by the Electron Native bridge.
+native-current-human-capture = []
+# Offline C2-ZC fixture generation is an explicitly opted-in support tool. It
+# must not be linked into Electron/N-API or other default production builds.
+c2zc-fixture-builder = []
+# Opt-in, read-only NIR-1 feasibility diagnostics; no product IPC or writers.
+nir1-material-diagnostics = ["rusqlite/trace"]
+# CI-only failpoints for migration supervisor crash injection. Must never be
+# enabled in production / release Electron builds.
+test-failpoints = []
+# Cross-crate Native tests can hold the DB path claim through fixture cleanup.
+workspace-maintenance-test-support = []
+
+[[bin]]
+name = "migration-crash-harness"
+path = "src/bin/migration-crash-harness.rs"
+required-features = ["test-failpoints"]
+
+[[bin]]
+name = "restore-crash-harness"
+path = "src/bin/restore-crash-harness.rs"
+required-features = ["test-failpoints"]
+
+[[bin]]
+name = "c2zc-restore-fixture"
+path = "src/bin/c2zc-restore-fixture.rs"
+required-features = ["c2zc-fixture-builder"]
+
+[[bin]]
+name = "nir1-material-roster"
+path = "src/bin/nir1-material-roster.rs"
+required-features = ["nir1-material-diagnostics"]
+
+[[bin]]
+name = "nir1-disclosure-precheck"
+path = "src/bin/nir1-disclosure-precheck.rs"
+required-features = ["nir1-material-diagnostics"]
+
+[[bin]]
+name = "nir1-material-capacity"
+path = "src/bin/nir1-material-capacity.rs"
+required-features = ["nir1-material-diagnostics"]
+
+[dev-dependencies]
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+sha2 = "0.11"
+hex = "0.4"
+uuid = { version = "1", features = ["v4"] }
 grimodex-core = { path = "../grimodex-core" }
 
 [target.'cfg(windows)'.dependencies]

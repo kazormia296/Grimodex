@@ -100,6 +100,7 @@ export function GridCardHeader({
 
   useQuiescentDraftParticipant({
     id: `grid-card-title:${nodeId}`,
+    scope: { kind: "tree-node", entityId: nodeId },
     enabled: editing,
     isDirty: () => editingRef.current && draftController.dirty,
     flush: commitEdit,

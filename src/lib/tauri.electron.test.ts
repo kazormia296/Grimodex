@@ -334,6 +334,46 @@ describe("caller timeout policy（electron 分岐）", () => {
     await Promise.resolve();
   });
 
+  it.each([
+    "fts_search",
+    "nir1_evidence_qualify",
+    "nir1_entity_relation_revision_read",
+    "nir1_entity_relation_revision_read_current",
+    "nir1_entity_relation_revision_restore",
+  ])(
+    "%s は lifecycle quiescence を保持せず read caller を cancel する",
+    async (command) => {
+      let resolveBridge!: (value: { ok: true; value: null }) => void;
+      installBridge({
+        invoke: vi.fn().mockReturnValue(
+          new Promise<{ ok: true; value: null }>((resolve) => {
+            resolveBridge = resolve;
+          }),
+        ),
+      });
+      const [{ invoke }, { flushQuiescenceProviderStage }] = await Promise.all([
+        import("./tauri"),
+        import("./quiescenceProviders"),
+      ]);
+      const readResult = invoke(command).catch((error: unknown) => error);
+
+      await Promise.resolve();
+      await expect(
+        flushQuiescenceProviderStage("ipc-actual-tasks"),
+      ).resolves.toBeUndefined();
+      await expect(readResult).resolves.toMatchObject({
+        name: "IpcInvokeError",
+        code: "IPC_READ_CANCELLED",
+        command,
+        retryable: true,
+        outcome: "failed",
+      });
+
+      resolveBridge({ ok: true, value: null });
+      await Promise.resolve();
+    },
+  );
+
   it("semantic derived index は実処理を継続しても strict quiescence を保持しない", async () => {
     let resolveBridge!: (value: { ok: true; value: number }) => void;
     installBridge({
@@ -360,32 +400,281 @@ describe("caller timeout policy（electron 分岐）", () => {
     await expect(derived).resolves.toBe(42);
   });
 
-  it("lifecycle による derived cancel は retryable typed error になる", async () => {
-    let resolveBridge!: (value: { ok: true; value: number }) => void;
-    installBridge({
-      invoke: vi.fn().mockReturnValue(
-        new Promise<{ ok: true; value: number }>((resolve) => {
-          resolveBridge = resolve;
-        }),
-      ),
+  it.each(["semantic_reindex_all", "related_scenes_continue"])(
+    "%s は lifecycle quiescence を保持せず derived caller を cancel する",
+    async (command) => {
+      let resolveBridge!: (value: { ok: true; value: number }) => void;
+      installBridge({
+        invoke: vi.fn().mockReturnValue(
+          new Promise<{ ok: true; value: number }>((resolve) => {
+            resolveBridge = resolve;
+          }),
+        ),
+      });
+      const [
+        { invoke },
+        { cancelDerivedIpcCallersForLifecycle },
+        { flushQuiescenceProviderStage },
+      ] = await Promise.all([
+        import("./tauri"),
+        import("./ipcQueue"),
+        import("./quiescenceProviders"),
+      ]);
+      const derived = invoke<number>(command, { projectId: "project-1" });
+      await Promise.resolve();
+
+      await expect(
+        flushQuiescenceProviderStage("ipc-actual-tasks"),
+      ).resolves.toBeUndefined();
+      cancelDerivedIpcCallersForLifecycle();
+      await expect(derived).rejects.toMatchObject({
+        name: "IpcInvokeError",
+        code: "IPC_DERIVED_CANCELLED",
+        command,
+        retryable: true,
+        outcome: "failed",
+      });
+
+      resolveBridge({ ok: true, value: 0 });
+      await Promise.resolve();
+    },
+  );
+
+  it("cancel 後に完了した related_scenes_begin の ticket を一度だけ release する", async () => {
+    let resolveBegin!: (value: {
+      ok: true;
+      value: {
+        status: "raw-ready";
+        denseHits: [];
+        snapshot: {
+          queryBinding: string;
+          originalSnapshotUsable: true;
+          supportedProfile: true;
+        };
+        ir: { status: "pending"; operationTicket: string };
+      };
+    }) => void;
+    const beginResult = new Promise<Parameters<typeof resolveBegin>[0]>(
+      (resolve) => {
+        resolveBegin = resolve;
+      },
+    );
+    const bridge = installBridge({
+      invoke: vi.fn((command: string) => {
+        if (command === "related_scenes_begin") return beginResult;
+        if (command === "related_scenes_release") {
+          return Promise.resolve({
+            ok: true as const,
+            value: { status: "released" as const },
+          });
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      }),
     });
-    const [{ invoke }, { cancelDerivedIpcCallersForLifecycle }] =
-      await Promise.all([import("./tauri"), import("./ipcQueue")]);
-    const derived = invoke<number>("semantic_reindex_all", {
+    const [
+      { invoke },
+      { cancelDerivedIpcCallersForLifecycle },
+      { flushQuiescenceProviderStage },
+    ] = await Promise.all([
+      import("./tauri"),
+      import("./ipcQueue"),
+      import("./quiescenceProviders"),
+    ]);
+    const callerResult = invoke("related_scenes_begin", {
+      expectedWorkspacePath: "/workspace",
       projectId: "project-1",
-    });
+      currentSceneId: "scene-1",
+      query: "saved prose",
+    }).catch((error: unknown) => error);
     await Promise.resolve();
 
+    await expect(
+      flushQuiescenceProviderStage("ipc-actual-tasks"),
+    ).resolves.toBeUndefined();
     cancelDerivedIpcCallersForLifecycle();
-    await expect(derived).rejects.toMatchObject({
+    await expect(callerResult).resolves.toMatchObject({
       name: "IpcInvokeError",
       code: "IPC_DERIVED_CANCELLED",
+      command: "related_scenes_begin",
       retryable: true,
       outcome: "failed",
     });
 
-    resolveBridge({ ok: true, value: 0 });
+    resolveBegin({
+      ok: true,
+      value: {
+        status: "raw-ready",
+        denseHits: [],
+        snapshot: {
+          queryBinding: "query-1",
+          originalSnapshotUsable: true,
+          supportedProfile: true,
+        },
+        ir: { status: "pending", operationTicket: "ticket-late" },
+      },
+    });
+    await vi.waitFor(() => expect(bridge.invoke).toHaveBeenCalledTimes(2));
+    await expect(
+      flushQuiescenceProviderStage("ipc-actual-tasks"),
+    ).resolves.toBeUndefined();
+    expect(bridge.invoke.mock.calls).toEqual([
+      [
+        "related_scenes_begin",
+        {
+          expectedWorkspacePath: "/workspace",
+          projectId: "project-1",
+          currentSceneId: "scene-1",
+          query: "saved prose",
+        },
+      ],
+      ["related_scenes_release", { operationTicket: "ticket-late" }],
+    ]);
+  });
+
+  it("begin result と同じ turn に cancel しても late ticket を一度だけ release する", async () => {
+    let resolveBegin!: (value: {
+      ok: true;
+      value: {
+        ir: { status: "pending"; operationTicket: string };
+      };
+    }) => void;
+    const beginResult = new Promise<Parameters<typeof resolveBegin>[0]>(
+      (resolve) => {
+        resolveBegin = resolve;
+      },
+    );
+    const bridge = installBridge({
+      invoke: vi.fn((command: string) =>
+        command === "related_scenes_begin"
+          ? beginResult
+          : Promise.resolve({ ok: true, value: { status: "released" } }),
+      ),
+    });
+    const [{ invoke }, { cancelDerivedIpcCallersForLifecycle }] =
+      await Promise.all([import("./tauri"), import("./ipcQueue")]);
+    const callerResult = invoke("related_scenes_begin").catch(
+      (error: unknown) => error,
+    );
     await Promise.resolve();
+
+    resolveBegin({
+      ok: true,
+      value: { ir: { status: "pending", operationTicket: "ticket-race" } },
+    });
+    queueMicrotask(cancelDerivedIpcCallersForLifecycle);
+
+    await expect(callerResult).resolves.toMatchObject({
+      code: "IPC_DERIVED_CANCELLED",
+    });
+    await vi.waitFor(() => expect(bridge.invoke).toHaveBeenCalledTimes(2));
+    expect(bridge.invoke.mock.calls[1]).toEqual([
+      "related_scenes_release",
+      { operationTicket: "ticket-race" },
+    ]);
+  });
+
+  it.each([
+    ["null response", null],
+    ["array response", []],
+    ["missing ir", { status: "raw-ready" }],
+    ["non-pending ir", { ir: { status: "unavailable" } }],
+    ["blank ticket", { ir: { status: "pending", operationTicket: "  " } }],
+  ])("cancel 後の %s は release しない", async (_label, value) => {
+    let resolveBegin!: (value: { ok: true; value: unknown }) => void;
+    const beginResult = new Promise<Parameters<typeof resolveBegin>[0]>(
+      (resolve) => {
+        resolveBegin = resolve;
+      },
+    );
+    const bridge = installBridge({
+      invoke: vi.fn(() => beginResult),
+    });
+    const [{ invoke }, { cancelDerivedIpcCallersForLifecycle }] =
+      await Promise.all([import("./tauri"), import("./ipcQueue")]);
+    const callerResult = invoke("related_scenes_begin").catch(
+      (error: unknown) => error,
+    );
+    await Promise.resolve();
+
+    cancelDerivedIpcCallersForLifecycle();
+    await expect(callerResult).resolves.toMatchObject({
+      code: "IPC_DERIVED_CANCELLED",
+    });
+    resolveBegin({ ok: true, value });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(bridge.invoke).toHaveBeenCalledOnce();
+  });
+
+  it("late ticket の release failure を処理済み rejection として記録する", async () => {
+    let resolveBegin!: (value: {
+      ok: true;
+      value: { ir: { status: "pending"; operationTicket: string } };
+    }) => void;
+    const beginResult = new Promise<Parameters<typeof resolveBegin>[0]>(
+      (resolve) => {
+        resolveBegin = resolve;
+      },
+    );
+    const bridge = installBridge({
+      invoke: vi.fn((command: string) =>
+        command === "related_scenes_begin"
+          ? beginResult
+          : Promise.resolve({ ok: false, error: "release failed" }),
+      ),
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const [{ invoke }, { cancelDerivedIpcCallersForLifecycle }] =
+      await Promise.all([import("./tauri"), import("./ipcQueue")]);
+    const callerResult = invoke("related_scenes_begin").catch(
+      (error: unknown) => error,
+    );
+    await Promise.resolve();
+
+    cancelDerivedIpcCallersForLifecycle();
+    await expect(callerResult).resolves.toMatchObject({
+      code: "IPC_DERIVED_CANCELLED",
+    });
+    resolveBegin({
+      ok: true,
+      value: { ir: { status: "pending", operationTicket: "ticket-fails" } },
+    });
+
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+    expect(bridge.invoke.mock.calls[1]).toEqual([
+      "related_scenes_release",
+      { operationTicket: "ticket-fails" },
+    ]);
+    warn.mockRestore();
+  });
+
+  it("related_scenes_release は実処理が完了するまで lifecycle quiescence を保持する", async () => {
+    let resolveBridge!: (value: { ok: true; value: null }) => void;
+    installBridge({
+      invoke: vi.fn().mockReturnValue(
+        new Promise<{ ok: true; value: null }>((resolve) => {
+          resolveBridge = resolve;
+        }),
+      ),
+    });
+    const [{ invoke }, { flushQuiescenceProviderStage }] = await Promise.all([
+      import("./tauri"),
+      import("./quiescenceProviders"),
+    ]);
+    const release = invoke("related_scenes_release", {
+      operationTicket: "ticket-1",
+    });
+    await Promise.resolve();
+
+    let flushSettled = false;
+    const flush = flushQuiescenceProviderStage("ipc-actual-tasks").then(() => {
+      flushSettled = true;
+    });
+    await Promise.resolve();
+    expect(flushSettled).toBe(false);
+
+    resolveBridge({ ok: true, value: null });
+    await expect(release).resolves.toBeNull();
+    await expect(flush).resolves.toBeUndefined();
   });
 
   it.each([
@@ -507,6 +796,89 @@ describe("caller timeout policy（electron 分岐）", () => {
     );
     await vi.advanceTimersByTimeAsync(290_000);
     await expectation;
+  });
+});
+
+describe("local chat capture wrappers", () => {
+  it("dispatches exact capture and cancellation commands with typed receipts", async () => {
+    const submission = {
+      submissionId: "submission-1",
+      messageId: "message-1",
+      chatSessionId: "session-1",
+      sceneId: "scene-1",
+      content: "exact local user input",
+      createdAt: "2026-09-28T10:00:00.000Z",
+    };
+    const cancelSubmission = {
+      submissionId: submission.submissionId,
+      messageId: submission.messageId,
+      chatSessionId: submission.chatSessionId,
+      sceneId: submission.sceneId,
+    };
+    const bridge = installBridge({
+      invoke: vi.fn(async (command: string) => ({
+        ok: true,
+        value:
+          command === "capture_current_chat_input"
+            ? {
+                status: "accepted",
+                projectId: "project-1",
+                chatSessionId: submission.chatSessionId,
+                sceneId: submission.sceneId,
+                messageId: submission.messageId,
+              }
+            : command === "cancel_current_chat_input"
+              ? {
+                  status: "cancelled",
+                  submissionId: submission.submissionId,
+                  messageId: submission.messageId,
+                }
+              : { status: "retired", chatSessionId: submission.chatSessionId },
+      })),
+    });
+    const {
+      captureCurrentChatInput,
+      cancelCurrentChatInput,
+      retireCurrentChatInput,
+    } = await import("./tauri");
+
+    await expect(captureCurrentChatInput(submission)).resolves.toEqual({
+      status: "accepted",
+      projectId: "project-1",
+      chatSessionId: submission.chatSessionId,
+      sceneId: submission.sceneId,
+      messageId: submission.messageId,
+    });
+    await expect(cancelCurrentChatInput(cancelSubmission)).resolves.toEqual({
+      status: "cancelled",
+      submissionId: submission.submissionId,
+      messageId: submission.messageId,
+    });
+    await expect(
+      retireCurrentChatInput(submission.chatSessionId),
+    ).resolves.toEqual({
+      status: "retired",
+      chatSessionId: submission.chatSessionId,
+    });
+    expect(bridge.invoke).toHaveBeenNthCalledWith(
+      1,
+      "capture_current_chat_input",
+      {
+        submission,
+      },
+    );
+    expect(bridge.invoke).toHaveBeenNthCalledWith(
+      2,
+      "cancel_current_chat_input",
+      {
+        submission: cancelSubmission,
+      },
+    );
+    expect(bridge.invoke).toHaveBeenNthCalledWith(
+      3,
+      "retire_current_chat_input",
+      { chatSessionId: submission.chatSessionId },
+    );
   });
 });
 

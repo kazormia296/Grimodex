@@ -5,6 +5,7 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { InlineAIToolbar } from "./InlineAIToolbar";
 import { useInlineAiStore } from "./inlineAiStore";
 import type { InlineAiStatus } from "./inlineAiTypes";
+import i18next from "@/lib/i18n";
 
 // happy-dom は getBoundingClientRect を実寸で返さない (幾何は browser test で gate)。
 // ここでは可視性/owner ゲート/error 出口/キーバインドのロジックだけを検証する。
@@ -39,10 +40,14 @@ function setStatus(status: InlineAiStatus): void {
   useInlineAiStore.setState({ status });
 }
 
-beforeEach(() => useInlineAiStore.getState().reset());
-afterEach(() => {
+beforeEach(async () => {
+  useInlineAiStore.getState().reset();
+  await i18next.changeLanguage("ja");
+});
+afterEach(async () => {
   cleanup();
   useInlineAiStore.getState().reset();
+  await i18next.changeLanguage("ja");
 });
 
 describe("InlineAIToolbar visibility", () => {
@@ -64,29 +69,72 @@ describe("InlineAIToolbar visibility", () => {
     expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
   });
 
-  it("renders Accept/Reject/Retry when diffShown for the owner", () => {
+  it.each([
+    ["ja", "反映", "破棄", "再試行"],
+    ["en", "Accept", "Reject", "Retry"],
+  ] as const)(
+    "renders localized action labels and invokes callbacks (%s)",
+    async (language, acceptLabel, rejectLabel, retryLabel) => {
+      const onAccept = vi.fn();
+      const onReject = vi.fn();
+      const onRetry = vi.fn();
+      await i18next.changeLanguage(language);
+      setStatus("diffShown");
+      render(
+        <Harness
+          isOwner
+          onAccept={onAccept}
+          onReject={onReject}
+          onRetry={onRetry}
+        />,
+      );
+
+      const accept = screen.getByRole("button", {
+        name: new RegExp(acceptLabel),
+      });
+      const reject = screen.getByRole("button", {
+        name: new RegExp(rejectLabel),
+      });
+      const retry = screen.getByRole("button", {
+        name: new RegExp(retryLabel),
+      });
+      expect(accept).toHaveTextContent(acceptLabel);
+      expect(reject).toHaveTextContent(rejectLabel);
+      expect(retry).toHaveTextContent(retryLabel);
+
+      fireEvent.click(accept);
+      fireEvent.click(reject);
+      fireEvent.click(retry);
+
+      expect(onAccept).toHaveBeenCalledTimes(1);
+      expect(onReject).toHaveBeenCalledTimes(1);
+      expect(onRetry).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("renders the Japanese action labels when diffShown for the owner", () => {
     setStatus("diffShown");
     render(<Harness isOwner />);
     expect(screen.getByRole("status")).toBeTruthy();
-    expect(screen.getByText("Accept").closest("button")).not.toBeDisabled();
-    expect(screen.getByText("Reject")).toBeTruthy();
-    expect(screen.getByText("↺ Retry")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /反映/ })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /破棄/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /再試行/ })).toBeTruthy();
   });
 
   it("disables Accept (and hides Retry) while generating", () => {
     setStatus("generating");
     render(<Harness isOwner />);
-    expect(screen.getByText("Accept").closest("button")).toBeDisabled();
-    expect(screen.queryByText("↺ Retry")).toBeNull();
+    expect(screen.getByRole("button", { name: /反映/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /再試行/ })).toBeNull();
   });
 
   it("error state: keeps the toolbar with disabled Accept and a Retry exit", () => {
     setStatus("error");
     render(<Harness isOwner />);
     expect(screen.getByRole("status")).toBeTruthy();
-    expect(screen.getByText("Accept").closest("button")).toBeDisabled();
-    expect(screen.getByText("Reject")).toBeTruthy();
-    expect(screen.getByText("↺ Retry")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /反映/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /破棄/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /再試行/ })).toBeTruthy();
   });
 });
 

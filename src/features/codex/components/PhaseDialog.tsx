@@ -15,6 +15,11 @@ interface PhaseDialogProps {
     anchorNodeId: string,
     targetPhaseId?: string,
   ) => string;
+  /**
+   * Existing detail overrides already attached to this Phase (spec §18).
+   * Allows saving a Detail-only Phase that has no summary/content/AI override.
+   */
+  existingDetailOverrideCount?: number;
 }
 
 export function PhaseDialog({
@@ -22,6 +27,7 @@ export function PhaseDialog({
   phase,
   onClose,
   resolveCurrentContent,
+  existingDetailOverrideCount = 0,
 }: PhaseDialogProps) {
   const { t } = useTranslation();
   const createPhase = usePhaseStore((s) => s.createPhase);
@@ -53,8 +59,11 @@ export function PhaseDialog({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const hasOverride =
-    summaryEnabled || contentEnabled || aiExposureValue !== "";
-  const canSubmit = label.trim() && anchorNodeId && hasOverride;
+    summaryEnabled ||
+    contentEnabled ||
+    aiExposureValue !== "" ||
+    existingDetailOverrideCount > 0;
+  const canSubmit = Boolean(label.trim() && anchorNodeId && hasOverride);
 
   const handleSubmit = async () => {
     if (!canSubmit || !anchorNodeId) return;

@@ -20,6 +20,19 @@ vi.mock("./api", () => ({
   createNode: vi.fn().mockImplementation((node) => Promise.resolve(node)),
   updateNode: vi.fn().mockResolvedValue(undefined),
   deleteNode: vi.fn().mockResolvedValue(undefined),
+  treeWriteReceipt: vi.fn(() => ({
+    changeEventUid: "tree-test-event",
+    maintenanceTransactionId: "tree-test-maintenance",
+    undoJournalId: "tree-test-journal",
+  })),
+  historyWriteContext: vi.fn((origin: "undo" | "redo") => ({
+    requestId: `tree-test-${origin}`,
+    sessionId: "tree-test-session",
+    eventUid: `tree-test-${origin}-event`,
+    origin,
+    originalTransactionId: "tree-test-maintenance",
+    undoJournalId: "tree-test-journal",
+  })),
 }));
 
 vi.mock("@/features/codex/phaseStore", () => ({
@@ -145,10 +158,11 @@ describe("updateStoryTime", () => {
     expect(node?.storyTimeOrder).toBeNull();
     expect(node?.storyTimeLabel).toBeNull();
     expect(mockRecomputeSceneOrder).toHaveBeenCalledOnce();
-    expect(updateNode).toHaveBeenCalledWith("scene-1", {
-      storyTimeOrder: null,
-      storyTimeLabel: null,
-    });
+    expect(updateNode).toHaveBeenCalledWith(
+      "scene-1",
+      { storyTimeOrder: null, storyTimeLabel: null },
+      expect.objectContaining({ writeContext: expect.any(Object) }),
+    );
   });
 
   it("redo で新値を再適用し recomputeSceneOrder が再度呼ばれる", async () => {
@@ -167,10 +181,11 @@ describe("updateStoryTime", () => {
     expect(node?.storyTimeOrder).toBe("a0V");
     expect(node?.storyTimeLabel).toBe("Day 1");
     expect(mockRecomputeSceneOrder).toHaveBeenCalledOnce();
-    expect(updateNode).toHaveBeenCalledWith("scene-1", {
-      storyTimeOrder: "a0V",
-      storyTimeLabel: "Day 1",
-    });
+    expect(updateNode).toHaveBeenCalledWith(
+      "scene-1",
+      { storyTimeOrder: "a0V", storyTimeLabel: "Day 1" },
+      expect.objectContaining({ writeContext: expect.any(Object) }),
+    );
   });
 
   it("存在しない id の場合は何もしない", async () => {

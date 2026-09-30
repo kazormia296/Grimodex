@@ -12,6 +12,19 @@ export const ForeshadowPayoffMark = Mark.create({
         renderHTML: (attrs) =>
           attrs.foreshadowId ? { "data-fp-id": attrs.foreshadowId } : {},
       },
+      baseVersion: {
+        default: null,
+        parseHTML: (el) => {
+          const raw = el.getAttribute("data-fp-version");
+          if (raw === null) return null;
+          const value = Number(raw);
+          return Number.isSafeInteger(value) && value >= 0 ? value : null;
+        },
+        renderHTML: (attrs) =>
+          Number.isSafeInteger(attrs.baseVersion) && attrs.baseVersion >= 0
+            ? { "data-fp-version": String(attrs.baseVersion) }
+            : {},
+      },
     };
   },
 

@@ -30,6 +30,8 @@ import {
   saveDismissedCandidateKeys,
 } from "./codexCandidateDismissals";
 import { rootCause } from "@/lib/debugLog";
+import { isCodexStructureExtractionReviewEnabled } from "./codexStructureExtractionFlag";
+import { CodexStructureExtractDialog } from "./CodexStructureExtractDialog";
 
 const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -42,8 +44,8 @@ const FOCUS_RING =
  * 却下状態は project 単位で永続化し、毎回同じ語を提案しない。受理した候補は entries
  * 更新で自動的に一覧から消える。read-only スキャン — 自動で Codex には書かない。
  *
- * 却下集合の更新機構 (楽観 ref + 直列化 last-write-wins + undo) は
- * [[CodexIntegrityReport]] と同設計。
+ * Structure Extraction Dialog は開発フラグ / DEV でのみ追加導線として出す
+ * （製品の唯一の受理経路にはしない）。
  */
 export function CodexCandidatesReport() {
   const { t } = useTranslation();
@@ -60,6 +62,8 @@ export function CodexCandidatesReport() {
   );
   const [expanded, setExpanded] = useState(false);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [structureOpen, setStructureOpen] = useState(false);
+  const structureReviewEnabled = isCodexStructureExtractionReviewEnabled();
 
   const dismissedRef = useRef<Set<string>>(dismissed);
   const projectIdRef = useRef(projectId);
@@ -283,184 +287,214 @@ export function CodexCandidatesReport() {
 
   if (visible.length === 0 && hiddenActiveCount === 0) return null;
 
+  const structureDialog = structureReviewEnabled ? (
+    <CodexStructureExtractDialog
+      open={structureOpen}
+      onOpenChange={setStructureOpen}
+    />
+  ) : null;
+
   // 全件却下: 控えめなバーで件数と再表示導線だけ残す。
   if (visible.length === 0) {
     return (
-      <div
-        className="mx-2 my-1 flex items-center gap-1.5 rounded border border-border/60 bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground"
-        data-testid="codex-candidates-all-hidden"
-      >
-        <EyeOff className="h-3.5 w-3.5 shrink-0" />
-        <span className="flex-1">
-          {t("codex.candidates.allDismissed", { count: hiddenActiveCount })}
-        </span>
-        <button
-          type="button"
-          onClick={handleRestoreAll}
-          data-testid="codex-candidates-restore"
-          title={t("codex.candidates.restoreHidden", {
-            count: hiddenActiveCount,
-          })}
-          className={`flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-medium hover:bg-muted hover:text-foreground ${FOCUS_RING}`}
+      <>
+        <div
+          className="mx-2 my-1 flex items-center gap-1.5 rounded border border-border/60 bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground"
+          data-testid="codex-candidates-all-hidden"
         >
-          <Eye className="h-3 w-3" />
-          {t("codex.candidates.show")}
-        </button>
-      </div>
+          <EyeOff className="h-3.5 w-3.5 shrink-0" />
+          <span className="flex-1">
+            {t("codex.candidates.allDismissed", { count: hiddenActiveCount })}
+          </span>
+          <button
+            type="button"
+            onClick={handleRestoreAll}
+            data-testid="codex-candidates-restore"
+            title={t("codex.candidates.restoreHidden", {
+              count: hiddenActiveCount,
+            })}
+            className={`flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-medium hover:bg-muted hover:text-foreground ${FOCUS_RING}`}
+          >
+            <Eye className="h-3 w-3" />
+            {t("codex.candidates.show")}
+          </button>
+        </div>
+        {structureDialog}
+      </>
     );
   }
 
   return (
-    <div className="mx-2 my-1 rounded border border-sky-500/40 bg-sky-500/5 text-sky-900 dark:text-sky-200">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className={`flex w-full items-center gap-1.5 px-2 py-1.5 text-left ${FOCUS_RING}`}
-        aria-expanded={expanded}
-        data-testid="codex-candidates-toggle"
-      >
-        {expanded ? (
-          <ChevronDown className="h-3 w-3 shrink-0" />
-        ) : (
-          <ChevronRight className="h-3 w-3 shrink-0" />
-        )}
-        <Tags className="h-3.5 w-3.5 shrink-0 text-sky-600 dark:text-sky-400" />
-        <span className="flex-1 text-xs font-semibold">
-          {t("codex.candidates.title")}
-        </span>
-        <span className="shrink-0 rounded bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-medium tabular-nums">
-          {visible.length}
-        </span>
-      </button>
+    <>
+      <div className="mx-2 my-1 rounded border border-sky-500/40 bg-sky-500/5 text-sky-900 dark:text-sky-200">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className={`flex w-full items-center gap-1.5 px-2 py-1.5 text-left ${FOCUS_RING}`}
+          aria-expanded={expanded}
+          data-testid="codex-candidates-toggle"
+        >
+          {expanded ? (
+            <ChevronDown className="h-3 w-3 shrink-0" />
+          ) : (
+            <ChevronRight className="h-3 w-3 shrink-0" />
+          )}
+          <Tags className="h-3.5 w-3.5 shrink-0 text-sky-600 dark:text-sky-400" />
+          <span className="flex-1 text-xs font-semibold">
+            {t("codex.candidates.title")}
+          </span>
+          <span className="shrink-0 rounded bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-medium tabular-nums">
+            {visible.length}
+          </span>
+        </button>
 
-      {expanded && (
-        <div className="border-t border-sky-500/20">
-          <ul className="max-h-48 overflow-y-auto px-2 py-1">
-            {visible.map((c) => {
-              const j = judgments.get(candidateKey(c.surface));
-              const aliasName = j?.aliasOfId
-                ? entries.find((e) => e.id === j.aliasOfId)?.name
-                : undefined;
-              return (
-                <li
-                  key={candidateKey(c.surface)}
-                  className="flex items-center gap-1 py-1 text-[11px]"
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1">
-                      <span className="truncate font-medium">{c.surface}</span>
-                      <span className="shrink-0 text-sky-700/70 dark:text-sky-300/70 tabular-nums">
-                        {t("codex.candidates.occurrences", { count: c.count })}
-                      </span>
-                      {j && (
-                        <span className="shrink-0 rounded bg-sky-500/15 px-1 text-[9px] uppercase tracking-wide">
-                          {t(`codex.candidates.type.${j.suggestedType}`)}
+        {expanded && (
+          <div className="border-t border-sky-500/20">
+            <ul className="max-h-48 overflow-y-auto px-2 py-1">
+              {visible.map((c) => {
+                const j = judgments.get(candidateKey(c.surface));
+                const aliasName = j?.aliasOfId
+                  ? entries.find((e) => e.id === j.aliasOfId)?.name
+                  : undefined;
+                return (
+                  <li
+                    key={candidateKey(c.surface)}
+                    className="flex items-center gap-1 py-1 text-[11px]"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1">
+                        <span className="truncate font-medium">
+                          {c.surface}
                         </span>
-                      )}
+                        <span className="shrink-0 text-sky-700/70 dark:text-sky-300/70 tabular-nums">
+                          {t("codex.candidates.occurrences", {
+                            count: c.count,
+                          })}
+                        </span>
+                        {j && (
+                          <span className="shrink-0 rounded bg-sky-500/15 px-1 text-[9px] uppercase tracking-wide">
+                            {t(`codex.candidates.type.${j.suggestedType}`)}
+                          </span>
+                        )}
+                      </span>
+                      {j && aliasName ? (
+                        <span className="block truncate text-[10px] text-amber-700 dark:text-amber-300">
+                          {t("codex.candidates.aliasHint", { name: aliasName })}
+                        </span>
+                      ) : j && j.summary ? (
+                        <span className="block truncate text-[10px] text-sky-700/70 dark:text-sky-300/70">
+                          {j.summary}
+                        </span>
+                      ) : null}
                     </span>
-                    {j && aliasName ? (
-                      <span className="block truncate text-[10px] text-amber-700 dark:text-amber-300">
-                        {t("codex.candidates.aliasHint", { name: aliasName })}
-                      </span>
-                    ) : j && j.summary ? (
-                      <span className="block truncate text-[10px] text-sky-700/70 dark:text-sky-300/70">
-                        {j.summary}
-                      </span>
-                    ) : null}
-                  </span>
-                  {aliasName && (
+                    {aliasName && (
+                      <button
+                        type="button"
+                        onClick={() => void handleRegisterAlias(c)}
+                        title={t("codex.candidates.acceptAlias", {
+                          name: aliasName,
+                        })}
+                        aria-label={t("codex.candidates.acceptAlias", {
+                          name: aliasName,
+                        })}
+                        data-testid="codex-candidates-register-alias"
+                        className={`flex shrink-0 items-center gap-0.5 rounded px-1.5 py-1 font-medium text-amber-700 hover:bg-amber-500/20 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 ${FOCUS_RING}`}
+                      >
+                        <Link2 className="h-3 w-3" />
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => void handleRegisterAlias(c)}
-                      title={t("codex.candidates.acceptAlias", {
-                        name: aliasName,
-                      })}
-                      aria-label={t("codex.candidates.acceptAlias", {
-                        name: aliasName,
-                      })}
-                      data-testid="codex-candidates-register-alias"
-                      className={`flex shrink-0 items-center gap-0.5 rounded px-1.5 py-1 font-medium text-amber-700 hover:bg-amber-500/20 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 ${FOCUS_RING}`}
+                      onClick={() => void handleCreateEntry(c)}
+                      title={
+                        aliasName
+                          ? t("codex.candidates.acceptNew")
+                          : t("codex.candidates.accept")
+                      }
+                      aria-label={
+                        aliasName
+                          ? t("codex.candidates.acceptNew")
+                          : t("codex.candidates.accept")
+                      }
+                      data-testid="codex-candidates-accept"
+                      className={`flex shrink-0 items-center gap-0.5 rounded px-1.5 py-1 font-medium text-sky-700 hover:bg-sky-500/20 hover:text-sky-900 dark:text-sky-300 dark:hover:text-sky-100 ${FOCUS_RING}`}
                     >
-                      <Link2 className="h-3 w-3" />
+                      <Plus className="h-3 w-3" />
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => void handleCreateEntry(c)}
-                    title={
-                      aliasName
-                        ? t("codex.candidates.acceptNew")
-                        : t("codex.candidates.accept")
-                    }
-                    aria-label={
-                      aliasName
-                        ? t("codex.candidates.acceptNew")
-                        : t("codex.candidates.accept")
-                    }
-                    data-testid="codex-candidates-accept"
-                    className={`flex shrink-0 items-center gap-0.5 rounded px-1.5 py-1 font-medium text-sky-700 hover:bg-sky-500/20 hover:text-sky-900 dark:text-sky-300 dark:hover:text-sky-100 ${FOCUS_RING}`}
-                  >
-                    <Plus className="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDismiss(c.surface)}
-                    title={t("codex.candidates.dismiss")}
-                    aria-label={t("codex.candidates.dismiss")}
-                    data-testid="codex-candidates-dismiss"
-                    className={`shrink-0 rounded p-1.5 text-sky-700/70 hover:bg-sky-500/20 hover:text-sky-900 dark:hover:text-sky-100 ${FOCUS_RING}`}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-          <div className="flex items-center gap-2 border-t border-sky-500/20 px-2 py-1">
-            <button
-              type="button"
-              onClick={() => void handleJudge()}
-              disabled={judging || loading}
-              data-testid="codex-candidates-judge"
-              className={`flex items-center gap-1 rounded px-1 py-0.5 text-[10px] font-medium text-sky-700/90 hover:bg-sky-500/20 disabled:opacity-50 dark:text-sky-200 ${FOCUS_RING}`}
-            >
-              {judging ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <Sparkles className="h-3 w-3" />
-              )}
-              {judging
-                ? t("codex.candidates.judging")
-                : t("codex.candidates.judge")}
-            </button>
-            <button
-              type="button"
-              onClick={reload}
-              disabled={loading}
-              data-testid="codex-candidates-refresh"
-              className={`flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-sky-700/80 hover:bg-sky-500/20 disabled:opacity-50 dark:text-sky-300 ${FOCUS_RING}`}
-            >
-              <RefreshCw
-                className={`h-3 w-3 ${loading ? "animate-spin" : ""}`}
-              />
-              {t("codex.candidates.rescan")}
-            </button>
-            {hiddenActiveCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => handleDismiss(c.surface)}
+                      title={t("codex.candidates.dismiss")}
+                      aria-label={t("codex.candidates.dismiss")}
+                      data-testid="codex-candidates-dismiss"
+                      className={`shrink-0 rounded p-1.5 text-sky-700/70 hover:bg-sky-500/20 hover:text-sky-900 dark:hover:text-sky-100 ${FOCUS_RING}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="flex items-center gap-2 border-t border-sky-500/20 px-2 py-1">
               <button
                 type="button"
-                onClick={handleRestoreAll}
-                data-testid="codex-candidates-restore"
-                className={`flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-sky-700/80 hover:bg-sky-500/20 dark:text-sky-300 ${FOCUS_RING}`}
+                onClick={() => void handleJudge()}
+                disabled={judging || loading}
+                data-testid="codex-candidates-judge"
+                className={`flex items-center gap-1 rounded px-1 py-0.5 text-[10px] font-medium text-sky-700/90 hover:bg-sky-500/20 disabled:opacity-50 dark:text-sky-200 ${FOCUS_RING}`}
               >
-                <Eye className="h-3 w-3" />
-                {t("codex.candidates.restoreHidden", {
-                  count: hiddenActiveCount,
-                })}
+                {judging ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3 w-3" />
+                )}
+                {judging
+                  ? t("codex.candidates.judging")
+                  : t("codex.candidates.judge")}
               </button>
-            )}
+              {structureReviewEnabled && (
+                <button
+                  type="button"
+                  onClick={() => setStructureOpen(true)}
+                  data-testid="codex-candidates-open-structure"
+                  className={`flex items-center gap-1 rounded px-1 py-0.5 text-[10px] font-medium text-sky-700/90 hover:bg-sky-500/20 dark:text-sky-200 ${FOCUS_RING}`}
+                >
+                  <Sparkles className="h-3 w-3" />
+                  {t("codex.candidates.openStructureExtract", {
+                    defaultValue: "構造抽出でレビュー",
+                  })}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={reload}
+                disabled={loading}
+                data-testid="codex-candidates-refresh"
+                className={`flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-sky-700/80 hover:bg-sky-500/20 disabled:opacity-50 dark:text-sky-300 ${FOCUS_RING}`}
+              >
+                <RefreshCw
+                  className={`h-3 w-3 ${loading ? "animate-spin" : ""}`}
+                />
+                {t("codex.candidates.rescan")}
+              </button>
+              {hiddenActiveCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleRestoreAll}
+                  data-testid="codex-candidates-restore"
+                  className={`flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-sky-700/80 hover:bg-sky-500/20 dark:text-sky-300 ${FOCUS_RING}`}
+                >
+                  <Eye className="h-3 w-3" />
+                  {t("codex.candidates.restoreHidden", {
+                    count: hiddenActiveCount,
+                  })}
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+      {structureDialog}
+    </>
   );
 }

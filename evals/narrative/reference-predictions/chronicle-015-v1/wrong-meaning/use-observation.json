@@ -1,0 +1,37 @@
+{
+  "observations": [
+    {
+      "localId": "obs-1",
+      "evidence": [
+        {
+          "sourceRef": "__SOURCE_REF_USE__",
+          "quote": "ミナは壁の儀礼剣を引き抜き、捕虜を縛る縄を切った。"
+        }
+      ],
+      "assertion": {
+        "attribution": "narrator",
+        "narrativeFrame": "story-world"
+      },
+      "payload": {
+        "predicate": "捕虜が儀礼剣を使って、ミナを縛る縄を切った",
+        "actuality": "actual",
+        "participants": [
+          {
+            "surface": "捕虜",
+            "role": "agent"
+          },
+          {
+            "surface": "儀礼剣",
+            "role": "instrument"
+          },
+          {
+            "surface": "ミナを縛る縄",
+            "role": "patient"
+          }
+        ],
+        "temporalExpressions": [],
+        "durationKind": "instant"
+      }
+    }
+  ]
+}

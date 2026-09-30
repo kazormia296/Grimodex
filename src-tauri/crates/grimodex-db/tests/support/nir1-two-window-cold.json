@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "nir1-two-window-cold/1",
+  "projectId": "default-project",
+  "normalApprovedChildren": [
+    {
+      "sceneId": "en-rumor-only",
+      "projectId": "default-project",
+      "runId": "dc741c52-091b-4aa2-8ed4-9f9c7490014d",
+      "rootRevisionId": "3ea9a7e1-bbc0-4245-89c6-f1634c421650",
+      "revisionId": "c2689a87-61dd-4204-a759-c033e9ca8788",
+      "envelopeDigest": "sha256:961828dd8045029fffb0416b5e7d63dc0b8bf5de9a4c22f4031415cbb8d7cc60",
+      "decisionId": "bc3ac869-696b-4bc2-bcaa-d269d668504c"
+    },
+    {
+      "sceneId": "en-distractor-rumor-fact",
+      "projectId": "default-project",
+      "runId": "4a2327c6-8d14-4234-aae9-72ce858186a0",
+      "rootRevisionId": "411f5ebc-84b4-406b-ad00-c94da2c8ccb9",
+      "revisionId": "69760899-1f84-4d8d-a655-b574b1f277ab",
+      "envelopeDigest": "sha256:33c7e57ce8dc5399b70f57b04369614f608474ffb0452f4aec56de4e53013dcd",
+      "decisionId": "f331c1db-985c-4507-8e45-1692a43bed8e"
+    }
+  ],
+  "extraSceneId": "en-distractor-gift",
+  "targetSceneId": "en-distractor-rumor-fact",
+  "setupPath": "/home/grimodex/Documents/Grimodex-evidence/nir1/first-product-path/l5-two-window-normal-setup-3/mixed-future-material-two-window/setup.json",
+  "setupSha256": "05fd8956c409634b7a68bc09aa3a8a66a7b30714b3a8c5cd1b3588cb3790121e",
+  "compressedDatabaseSha256": "08d642e01ac077d2e25f7eb7cc816d1f5af547a3a48db02ef257180130acc610",
+  "uncompressedDatabaseSha256": "309c2a8bc304e23cab98b90d8150e03bf40ba794fb49becd0567b14f32c7d85c",
+  "goldenSha256": "57f3c32b97b0bc578aa14f970cb2560171c271b2a99686405ca3461a87b5ac39"
+}

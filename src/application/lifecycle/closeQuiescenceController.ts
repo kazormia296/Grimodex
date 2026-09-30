@@ -1,10 +1,19 @@
 import type { WindowCloseRequestedEvent } from "@/lib/windowControls";
 import {
-  acquireQuiescenceLease,
   isAuthorityBlockingLifecycleIdle,
   waitForAuthorityBlockingLifecycleIdle,
   type QuiescenceLease,
 } from "./quiescenceLease";
+import { acquireQuiescenceLeaseAfterTimelapseGenesis } from "@/features/timelapse/genesisQuiescence";
+import {
+  clearQuiescenceDiagnostics,
+  publishCloseQuiescenceDiagnostics,
+  type ClosePhase,
+} from "./quiescenceDiagnostics";
+import {
+  StrictQuiescenceError,
+  type QuiescenceFailure,
+} from "./quiescenceCoordinator";
 
 export interface CloseQuiescenceController {
   handleCloseRequest: (event: WindowCloseRequestedEvent) => void;
@@ -17,7 +26,7 @@ interface CloseQuiescenceOptions {
   hasImmediateVeto: () => boolean;
   flush: () => Promise<void>;
   close: () => Promise<void>;
-  onFailure: (error: unknown) => void;
+  onFailure: (error: unknown, closePhase: ClosePhase) => void;
 }
 
 export function createCloseQuiescenceController(
@@ -28,9 +37,22 @@ export function createCloseQuiescenceController(
   let lease: QuiescenceLease | null = null;
   let generation = 0;
   let waitAbortController: AbortController | null = null;
+  let closePhase: ClosePhase = "genesis-prelude";
 
-  const ensureLease = (): void => {
-    lease ??= acquireQuiescenceLease("window-close");
+  const ensureLease = async (
+    signal?: AbortSignal,
+  ): Promise<QuiescenceLease> => {
+    if (lease) return lease;
+    const acquired = await acquireQuiescenceLeaseAfterTimelapseGenesis(
+      "window-close",
+      { signal },
+    );
+    if (lease) {
+      acquired.release();
+      return lease;
+    }
+    lease = acquired;
+    return acquired;
   };
 
   const releaseLease = (
@@ -38,6 +60,37 @@ export function createCloseQuiescenceController(
   ): void => {
     lease?.release({ disposition });
     lease = null;
+  };
+
+  const notifyFailure = (error: unknown, phase: ClosePhase): void => {
+    // Diagnostics are strictly best-effort. In particular, `instanceof` and
+    // property reads can cross a rejected IPC/Proxy boundary and must never
+    // prevent the existing failure dialog from opening with the original
+    // error object.
+    let failures: readonly QuiescenceFailure[] | undefined;
+    try {
+      let isStrictFailure = false;
+      try {
+        isStrictFailure = error instanceof StrictQuiescenceError;
+      } catch {
+        isStrictFailure = false;
+      }
+      if (isStrictFailure) {
+        try {
+          failures = (error as StrictQuiescenceError).failures;
+        } catch {
+          failures = undefined;
+        }
+      }
+    } catch {
+      failures = undefined;
+    }
+    try {
+      publishCloseQuiescenceDiagnostics(phase, error, failures);
+    } catch {
+      // A diagnostics failure must not change retry/cancel/discard behavior.
+    }
+    options.onFailure(error, phase);
   };
 
   const runClose = async (attempt: number): Promise<void> => {
@@ -49,16 +102,24 @@ export function createCloseQuiescenceController(
 
   const start = (): void => {
     if (approved || inFlight || options.hasImmediateVeto()) return;
-    ensureLease();
-    // A failed close leaves its authority barrier sealed. Re-open the
-    // controlled read phase so retry can run persistence and so an existing
-    // Project/Workspace lifecycle or destructive data operation can finish
-    // before we attempt teardown.
-    lease?.openTargetReadPhase();
+    clearQuiescenceDiagnostics();
     const attempt = ++generation;
     const abortController = new AbortController();
+    const leaseReady = ensureLease(abortController.signal);
     waitAbortController = abortController;
     const runAttempt = async (): Promise<void> => {
+      closePhase = "genesis-prelude";
+      const activeLease = await leaseReady;
+      if (attempt !== generation) {
+        if (lease === activeLease) releaseLease();
+        else activeLease.release();
+        return;
+      }
+      closePhase = "strict-quiescence";
+      // A failed close leaves its authority barrier sealed. Re-open the
+      // controlled read phase so retry can run persistence and so an existing
+      // Project/Workspace lifecycle or destructive data operation can finish.
+      activeLease.openTargetReadPhase();
       // Re-check synchronously after each wake-up and invoke flush in the same
       // microtask that observes idle. A lifecycle scheduled after the close
       // request but before this attempt runs is therefore included as well.
@@ -80,6 +141,7 @@ export function createCloseQuiescenceController(
       // this is the authority-commit point that prevents an old-scope read
       // from entering while the renderer is being torn down.
       lease?.sealReadsForAuthorityCommit();
+      closePhase = "native-close";
       await runClose(attempt);
     };
     const run = Promise.resolve()
@@ -92,7 +154,7 @@ export function createCloseQuiescenceController(
         // shared lifecycle lease itself remains held until retry, cancel, or a
         // successful close.
         if (inFlight === run) inFlight = null;
-        options.onFailure(error);
+        notifyFailure(error, closePhase);
       })
       .finally(() => {
         if (inFlight === run) inFlight = null;
@@ -125,17 +187,27 @@ export function createCloseQuiescenceController(
     },
     discardAndClose() {
       if (inFlight) return;
-      ensureLease();
-      lease?.openTargetReadPhase();
+      clearQuiescenceDiagnostics();
       const attempt = ++generation;
       const abortController = new AbortController();
+      const leaseReady = ensureLease(abortController.signal);
       waitAbortController = abortController;
       const runDiscard = async (): Promise<void> => {
+        closePhase = "genesis-prelude";
+        const activeLease = await leaseReady;
+        if (attempt !== generation) {
+          if (lease === activeLease) releaseLease();
+          else activeLease.release();
+          return;
+        }
+        closePhase = "authority-quiescence";
+        activeLease.openTargetReadPhase();
         while (attempt === generation && !isAuthorityBlockingLifecycleIdle()) {
           await waitForAuthorityBlockingLifecycleIdle(abortController.signal);
         }
         if (attempt !== generation) return;
         lease?.sealReadsForAuthorityCommit();
+        closePhase = "native-close";
         await runClose(attempt);
       };
       const run = Promise.resolve()
@@ -146,7 +218,7 @@ export function createCloseQuiescenceController(
           if (inFlight === run) inFlight = null;
           // Keep the lease so the failure dialog can retry/cancel without an
           // edit entering between an explicit discard and the next close.
-          options.onFailure(error);
+          notifyFailure(error, closePhase);
         })
         .finally(() => {
           if (inFlight === run) inFlight = null;

@@ -39,12 +39,10 @@ const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_992.0;
 /// **整数値の f64 を i64 に正規化して Tauri ワイヤと同形にする** (再帰)。
 pub fn normalize_integer_numbers(value: &mut serde_json::Value) {
     match value {
-        serde_json::Value::Number(n) => {
-            if n.is_f64() {
-                if let Some(f) = n.as_f64() {
-                    if f.is_finite() && f.fract() == 0.0 && f.abs() <= MAX_SAFE_INTEGER {
-                        *n = serde_json::Number::from(f as i64);
-                    }
+        serde_json::Value::Number(n) if n.is_f64() => {
+            if let Some(f) = n.as_f64() {
+                if f.is_finite() && f.fract() == 0.0 && f.abs() <= MAX_SAFE_INTEGER {
+                    *n = serde_json::Number::from(f as i64);
                 }
             }
         }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rerun Sandbox EPERM"
+  short_description: "Retry verified tsx IPC failures outside sandbox"
+  default_prompt: "Use $rerun-sandbox-eperm to verify this tsx IPC EPERM by rerunning the unchanged test once outside the sandbox."
