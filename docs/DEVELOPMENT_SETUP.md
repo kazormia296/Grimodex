@@ -86,7 +86,7 @@ SKIP_PNPM_INSTALL=1 bash scripts/bootstrap-build-env.sh
 Windows 10 / 11 上で WSL を介さずに N-API モジュールをビルドする場合は、先に以下を
 インストールします。
 
-1. Node.js 20 LTS 以上
+1. Node.js 22 LTS 以上
 2. rustup（既定の `stable-x86_64-pc-windows-msvc` toolchain）
 3. Visual Studio Build Tools の **Desktop development with C++** workload
    - MSVC x64 / x86 build tools
@@ -368,7 +368,7 @@ sudo /usr/local/bin/init-firewall.sh
 
 ```
 .devcontainer/
-├── Dockerfile           # Node.js 20 + Rust + Electron/N-APIビルド依存
+├── Dockerfile           # Node.js 22 + Rust + Electron/N-APIビルド依存
 ├── devcontainer.json    # VS Code設定・ボリューム・環境変数
 └── init-firewall.sh     # ネットワーク制限（許可リスト方式）
 ```

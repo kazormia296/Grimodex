@@ -95,7 +95,7 @@ The supported runtime is Electron. The Tauri app package at the `src-tauri` root
 
 ## Development / 開発
 
-Prerequisites: Node.js 20+, pnpm, and a stable Rust toolchain. Python 3 is needed only when regenerating the embedding model. Electron bundles Chromium, so an external web-engine SDK is not required.
+Prerequisites: Node.js 22+, pnpm, and a stable Rust toolchain. Python 3 is needed only when regenerating the embedding model. Electron bundles Chromium, so an external web-engine SDK is not required.
 
 ```sh
 pnpm install
