@@ -831,7 +831,9 @@ pub struct DebugDumpReport {
 }
 
 fn l2_norm_of_f32_le(blob: &[u8]) -> f64 {
-    blob.chunks_exact(4)
+    blob.as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| {
             let value = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f64;
             value * value
