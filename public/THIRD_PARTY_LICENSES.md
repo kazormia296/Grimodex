@@ -38,7 +38,7 @@ SOFTWARE.
 ```
 </details>
 
-### @ai-sdk/gateway (4.0.36)
+### @ai-sdk/gateway (4.0.90)
 
 - License: Apache-2.0
 - Repository: https://github.com/vercel/ai
@@ -63,7 +63,7 @@ limitations under the License.
 ```
 </details>
 
-### @ai-sdk/provider (4.0.4)
+### @ai-sdk/provider (4.0.18)
 
 - License: Apache-2.0
 - Repository: https://github.com/vercel/ai
@@ -88,7 +88,7 @@ limitations under the License.
 ```
 </details>
 
-### @ai-sdk/provider-utils (5.0.18)
+### @ai-sdk/provider-utils (5.0.46)
 
 - License: Apache-2.0
 - Repository: https://github.com/vercel/ai
@@ -7707,7 +7707,7 @@ SOFTWARE.
 ```
 </details>
 
-### ai (7.0.47)
+### ai (7.0.112)
 
 - License: Apache-2.0
 - Repository: https://github.com/vercel/ai
@@ -10887,7 +10887,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 </details>
 
-### eventsource-parser (3.1.0)
+### eventsource-parser (3.1.1)
 
 - License: MIT
 - Repository: https://github.com/rexxars/eventsource-parser
@@ -17374,7 +17374,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 </details>
 
-### undici (7.29.0)
+### undici (7.29.1)
 
 - License: MIT
 - Repository: https://github.com/nodejs/undici
