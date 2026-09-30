@@ -43,6 +43,11 @@ vi.mock("@/store/globalHistoryStore", () => ({
 }));
 
 import { invoke } from "@/lib/tauri";
+import {
+  _resetTimelapseGenesisBarriersForTests,
+  beginTimelapseGenesisBarrier,
+} from "@/features/timelapse/genesisBarrier";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 function ipcFailure(message: string, outcome: "failed" | "unknown"): Error {
   return Object.assign(new Error(message), { outcome });
@@ -93,6 +98,8 @@ const ctx = (scopeOverride?: Partial<ApplyContext["scope"]>): ApplyContext => ({
 });
 
 beforeEach(() => {
+  _resetTimelapseGenesisBarriersForTests();
+  publishCurrentProjectId("proj-1");
   const createdIds = new Set<string>();
   let receiptSequence = 0;
   (invoke as Mock)
@@ -161,6 +168,22 @@ describe("applyAiTreePlan — orchestration", () => {
       { op: "move", nodeId: "x2", newParentRef: "tmp:g" },
     ],
   };
+
+  it("fails a cascade undo before Native when genesis is closed", async () => {
+    h.nodes = [
+      mkNode({ id: "x1", nodeType: "scene", parentId: null, sortOrder: "a0" }),
+      mkNode({ id: "x2", nodeType: "scene", parentId: null, sortOrder: "a1" }),
+    ];
+    await applyAiTreePlan(groupPlan, ctx());
+    (invoke as Mock).mockClear();
+    const genesis = beginTimelapseGenesisBarrier("proj-1");
+    genesis.fail(new Error("genesis failed"));
+
+    await expect(h.pushed!.undo()).rejects.toMatchObject({
+      name: "TimelapseGenesisBarrierError",
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
   const setGroupNodes = () => {
     h.nodes = [
       mkNode({ id: "x1", nodeType: "scene", parentId: null, sortOrder: "a0" }),

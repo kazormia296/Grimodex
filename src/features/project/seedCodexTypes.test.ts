@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { db } from "@/db/client";
 import {
   projects,
@@ -16,11 +16,13 @@ import { seedCodexTypesFromProject } from "./seedCodexTypes";
 import { PROJECT_ID } from "./constants";
 import { createBrowserMock } from "@/lib/browser-mock";
 import { installBrowserMock } from "@/lib/tauri";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 const SOURCE = PROJECT_ID;
 const TARGET = "seed-target-project";
 
 beforeEach(async () => {
+  publishCurrentProjectId(TARGET);
   installBrowserMock(
     await createBrowserMock({ allowProtectedWriterTestFixtures: true }),
   );
@@ -62,6 +64,10 @@ beforeEach(async () => {
     isBuiltin: 0,
     sortOrder: 5,
   });
+});
+
+afterEach(() => {
+  publishCurrentProjectId(null);
 });
 
 describe("seedCodexTypesFromProject", () => {

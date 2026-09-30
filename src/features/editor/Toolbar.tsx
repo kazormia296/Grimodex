@@ -27,7 +27,14 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import {
+  lazy,
+  Suspense,
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+} from "react";
 import { createPortal } from "react-dom";
 import { useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/react";
@@ -36,7 +43,7 @@ import { cn } from "@/lib/utils";
 import { formatShortcut, isMac } from "@/lib/platform";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
-import { LayersPopover } from "@/features/editor/LayersPopover";
+import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
 import {
   useSettingBoolean,
   useSettingNumber,
@@ -51,6 +58,23 @@ import { useCodexReadingRegistrationPrompt } from "@/features/editor/useCodexRea
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
 import { RubyToolbarGlyph } from "./RubyToolbarGlyph";
+
+const LayersPopover = lazy(() =>
+  import("./LayersPopover").then((module) => ({
+    default: module.LayersPopover,
+  })),
+);
+
+function PendingLayersPopover({
+  triggerRef,
+  onClose,
+}: {
+  triggerRef: React.RefObject<HTMLElement | null>;
+  onClose: () => void;
+}) {
+  useAnchoredPopover(triggerRef, true, onClose, "bottom-end");
+  return null;
+}
 
 function ToolbarButton({
   active,
@@ -872,14 +896,25 @@ export function Toolbar({
       </div>
 
       {/* 本文レイヤーポップオーバー (body へ portal) */}
-      <LayersPopover
-        editor={editor}
-        open={layersOpen}
-        onClose={() => setLayersOpen(false)}
-        triggerRef={layersBtnRef}
-        sceneId={sceneId}
-        nodeType={nodeType}
-      />
+      {layersOpen && (
+        <Suspense
+          fallback={
+            <PendingLayersPopover
+              triggerRef={layersBtnRef}
+              onClose={() => setLayersOpen(false)}
+            />
+          }
+        >
+          <LayersPopover
+            editor={editor}
+            open={layersOpen}
+            onClose={() => setLayersOpen(false)}
+            triggerRef={layersBtnRef}
+            sceneId={sceneId}
+            nodeType={nodeType}
+          />
+        </Suspense>
+      )}
 
       {/* 文字サイズ・行組みポップオーバー */}
       {fontSizeOpen && (

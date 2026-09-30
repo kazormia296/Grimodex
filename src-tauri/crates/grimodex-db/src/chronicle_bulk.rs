@@ -913,7 +913,7 @@ fn update_scene_to_state(
     project_id: &str,
     expected_updated_at: &str,
     target: &BulkSceneState,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<NarrativeChangeEventInput> {
     let updated = conn.execute(
         "UPDATE tree_nodes
             SET pov_character_id = ?1,
@@ -949,7 +949,12 @@ fn update_scene_to_state(
             expected_updated_at
         );
     }
-    Ok(())
+    crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+        conn,
+        project_id,
+        &target.scene_id,
+        &target.updated_at,
+    )
 }
 
 fn event_state_version(state: &BulkEventState) -> anyhow::Result<Option<i64>> {
@@ -1264,9 +1269,15 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
         apply_event_snapshot(conn, project_id, snapshot, Some(version), true)?;
     }
 
+    let mut scene_scope_refresh_events = Vec::new();
     for (target_state, current_state) in target.scenes.iter_mut().zip(&current.scenes) {
         target_state.updated_at = fresh_updated_at(&current_state.updated_at);
-        update_scene_to_state(conn, project_id, &current_state.updated_at, target_state)?;
+        scene_scope_refresh_events.push(update_scene_to_state(
+            conn,
+            project_id,
+            &current_state.updated_at,
+            target_state,
+        )?);
     }
 
     let serialized = serde_json::to_string(&target)?;
@@ -1288,7 +1299,7 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
     }
     let after_event_feed = collect_full_event_feed_states(conn, project_id, &feed_event_ids)?;
     let after_scene_feed = collect_full_scene_feed_states(conn, project_id, &feed_scene_ids)?;
-    narrative_feed_events_with_full_event_states(
+    let mut events = narrative_feed_events_with_full_event_states(
         &current,
         &target,
         &before_event_feed,
@@ -1296,7 +1307,9 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
         &before_scene_feed,
         &after_scene_feed,
         true,
-    )
+    )?;
+    events.extend(scene_scope_refresh_events);
+    Ok(events)
 }
 
 pub fn agent_chronicle_bulk_mutate_impl(
@@ -1692,6 +1705,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
 
             let mut event_results = Vec::new();
             let mut scene_results = Vec::new();
+            let mut scene_scope_refresh_events = Vec::new();
             let mut event_index = 0;
             let mut scene_index = 0;
             for operation in &payload.operations {
@@ -1753,12 +1767,12 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                     | ChronicleBulkOperation::SceneSetDate { .. } => {
                         let before_state = &before.scenes[scene_index];
                         let state = &after.scenes[scene_index];
-                        update_scene_to_state(
+                        scene_scope_refresh_events.push(update_scene_to_state(
                             conn,
                             &payload.project_id,
                             &before_state.updated_at,
                             state,
-                        )?;
+                        )?);
                         scene_results.push(BulkSceneResult {
                             kind: state.kind.clone(),
                             scene_id: state.scene_id.clone(),
@@ -1811,6 +1825,16 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                     timestamp,
                 }],
             )?;
+            let mut feed_events = narrative_feed_events_with_full_event_states(
+                &before,
+                &after,
+                &before_event_feed,
+                &after_event_feed,
+                &before_scene_feed,
+                &after_scene_feed,
+                false,
+            )?;
+            feed_events.extend(scene_scope_refresh_events);
             append_narrative_change_transaction_in_tx(
                 conn,
                 &AppendNarrativeChangeTransactionInput {
@@ -1835,15 +1859,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                             )
                         })?
                         .to_rfc3339(),
-                    events: narrative_feed_events_with_full_event_states(
-                        &before,
-                        &after,
-                        &before_event_feed,
-                        &after_event_feed,
-                        &before_scene_feed,
-                        &after_scene_feed,
-                        false,
-                    )?,
+                    events: feed_events,
                 },
             )?;
 
@@ -1873,14 +1889,10 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
-        db.migrate().expect("migrate");
-        db
+        crate::test_support::current_schema_memory().expect("current-schema fixture")
     }
 
     fn setup(db: &Database) -> (String, String, String, String, String) {
@@ -1910,6 +1922,12 @@ mod tests {
                  VALUES (?1, ?2, 'scene', 'Scene', 'a0', NULL,
                          10, 30, 'time', 11, 45, 'time', 'approx', ?3)",
                 rusqlite::params![scene_id, project_id, "2026-07-29T00:00:00.000Z"],
+            )?;
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                &project_id,
+                &scene_id,
+                "2026-07-29T00:00:00.000Z",
             )?;
             for (id, ordinal) in [(&event_delete_id, "a0"), (&event_clear_id, "a1")] {
                 conn.execute(
@@ -2082,7 +2100,7 @@ mod tests {
         .expect("inspect feed transaction");
 
         let events = narrative_feed_events(&db);
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 4);
         let mut expected_event_ids = [event_clear_id.clone(), event_delete_id.clone()];
         expected_event_ids.sort();
         assert_eq!(
@@ -2104,6 +2122,7 @@ mod tests {
                 ("chronicle-event".to_string(), expected_event_ids[0].clone()),
                 ("chronicle-event".to_string(), expected_event_ids[1].clone()),
                 ("scene".to_string(), scene_id.clone()),
+                ("scene-scope".to_string(), scene_id.clone()),
             ]
         );
 

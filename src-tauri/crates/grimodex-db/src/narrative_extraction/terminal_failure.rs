@@ -5,10 +5,13 @@
 //! the Maintenance Inbox joins them directly as a read model. No Consumer
 //! Freshness, Dependency Edge, Domain state, or Attention row is created here.
 
+use chrono::Datelike;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use serde_json::Value;
 
 use super::evaluator::{EvidenceFreshness, FindingReasonCode};
+use super::execution_state::parse_run_lifecycle_instant;
 use super::finding_identity::{
     material_basis_digest, observation_digest, stable_finding_identity, MaterialBasisInput,
     ObservationDigestInput, MAINTENANCE_FAILURE_FINDING_RULE_ID,
@@ -16,15 +19,16 @@ use super::finding_identity::{
 };
 use super::finding_observation::{
     ensure_epoch_project, latest_terminal_failure_lifecycle_for_identity,
-    latest_terminal_failure_observation_order, record_terminal_failure_lifecycle_in_tx,
+    latest_terminal_failure_observation_anchor, record_terminal_failure_lifecycle_in_tx,
     record_terminal_failure_observation_in_tx, resolve_terminal_failure_lifecycle_in_tx,
     validate_terminal_failure_replay_in_tx, FindingLifecycleState, TerminalFailureLifecycleWrite,
     TerminalFailureObservationWrite, TerminalFailureResolutionWrite, TerminalFailureRunBinding,
 };
 use super::maintenance_runtime::{
-    classify_failure, AutomaticRunKind, FailureClass, WorkKey, LEGACY_BACKFILL_WORK_KEY,
-    REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+    classify_failure, validate_phase_success_outcome, AutomaticRunKind, FailureClass, WorkKey,
+    LEGACY_BACKFILL_WORK_KEY, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
 };
+use super::restore_rebuild::{DependencyGraphVerifyReport, VERIFY_RUN_KIND};
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
 
@@ -33,6 +37,16 @@ use crate::Database;
 pub const TERMINAL_FAILURE_CONSUMER_KIND: &str = "narrative-maintenance-failure";
 
 const TERMINAL_FAILURE_EVIDENCE: EvidenceFreshness = EvidenceFreshness::Unknown;
+
+type SealedVerifyRunRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 /// Map a validated terminal NEX code to the diagnostic reason vocabulary that
 /// predates terminal failures. The NEX code remains the immutable primary
@@ -131,6 +145,87 @@ impl MaintenanceRunContext {
             self.run_kind, self.work_key
         )
     }
+}
+
+/// Return a canonical generated lifecycle instant that is strictly later
+/// than the latest durable transition, even when the wall clock remains on
+/// the same millisecond. The strict lifecycle reader is deliberately called
+/// before advancing the coordinate so imported/restored ambiguity still
+/// fails closed instead of being hidden by a generated timestamp.
+fn generated_terminal_observed_at_after(
+    observed_at: &str,
+    latest_observation_at: Option<&str>,
+    latest_lifecycle_at: Option<&str>,
+) -> anyhow::Result<String> {
+    let observed_at = parse_run_lifecycle_instant(observed_at).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_FINDING_LIFECYCLE_ORDER_INVALID: generated observed_at '{observed_at}' is not a canonical timestamp: {error}"
+        )
+    })?;
+    let mut latest: Option<chrono::DateTime<chrono::Utc>> = None;
+    for value in [latest_observation_at, latest_lifecycle_at]
+        .into_iter()
+        .flatten()
+    {
+        let parsed = parse_run_lifecycle_instant(value).map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_FINDING_LIFECYCLE_ORDER_INVALID: terminal observed_at '{value}' is not a canonical timestamp: {error}"
+            )
+        })?;
+        latest = Some(latest.map_or(parsed, |current| current.max(parsed)));
+    }
+    let next = match latest {
+        None => observed_at,
+        Some(latest) if observed_at > latest => observed_at,
+        Some(latest) => latest
+            .checked_add_signed(chrono::Duration::milliseconds(1))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_FINDING_LIFECYCLE_ORDER_OVERFLOW: cannot advance terminal observed_at beyond '{}', the latest durable coordinate",
+                    latest.to_rfc3339()
+                )
+            })?,
+    };
+    anyhow::ensure!(
+        next.year() <= 9999,
+        "NEX_FINDING_LIFECYCLE_ORDER_OVERFLOW: cannot persist terminal observed_at '{}'",
+        next.to_rfc3339()
+    );
+    Ok(next.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+}
+
+fn next_generated_terminal_observed_at_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    finding_identity: &str,
+    finding_key: &str,
+    semantic_epoch_id: &str,
+    observed_at: &str,
+) -> anyhow::Result<String> {
+    let latest_observation = latest_terminal_failure_observation_anchor(
+        conn,
+        project_id,
+        semantic_epoch_id,
+        finding_identity,
+        finding_key,
+        MAINTENANCE_FAILURE_FINDING_RULE_ID,
+        MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
+    )?
+    .map(|(observed_at, _material_basis, _run_id, _observation_id)| observed_at);
+    let latest_lifecycle = latest_terminal_failure_lifecycle_for_identity(
+        conn,
+        project_id,
+        finding_identity,
+        finding_key,
+        semantic_epoch_id,
+    )?;
+    generated_terminal_observed_at_after(
+        observed_at,
+        latest_observation.as_deref(),
+        latest_lifecycle
+            .as_ref()
+            .map(|row| row.observed_at.as_str()),
+    )
 }
 
 fn load_run_context(
@@ -313,13 +408,33 @@ fn skipped_outcome(
     })
 }
 
-pub(crate) fn project_terminal_failure_for_run_in_tx(
+pub(crate) fn project_terminal_failure_for_run_generated_in_tx(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
     failure_message: &str,
     observed_at: &str,
     allow_unset_terminal_code: bool,
+) -> anyhow::Result<TerminalFailureProjectionOutcome> {
+    project_terminal_failure_for_run_in_tx_with_origin(
+        conn,
+        project_id,
+        run_id,
+        failure_message,
+        observed_at,
+        allow_unset_terminal_code,
+        true,
+    )
+}
+
+fn project_terminal_failure_for_run_in_tx_with_origin(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    failure_message: &str,
+    observed_at: &str,
+    allow_unset_terminal_code: bool,
+    allocate_generated_observed_at: bool,
 ) -> anyhow::Result<TerminalFailureProjectionOutcome> {
     anyhow::ensure!(
         !failure_message.trim().is_empty(),
@@ -373,6 +488,7 @@ pub(crate) fn project_terminal_failure_for_run_in_tx(
         TerminalFailureRunBinding::TerminalCode,
         None,
         observed_at,
+        allocate_generated_observed_at,
     )
 }
 
@@ -390,6 +506,7 @@ fn record_failure_projection_in_tx(
     run_binding: TerminalFailureRunBinding,
     evidence_detail_digest: Option<&str>,
     observed_at: &str,
+    allocate_generated_observed_at: bool,
 ) -> anyhow::Result<TerminalFailureProjectionOutcome> {
     let failure_code = failure_code.to_string();
     let reason_code = reason_code_for_failure(&failure_code)?;
@@ -400,6 +517,19 @@ fn record_failure_projection_in_tx(
         &stable_subject,
     )?;
     let finding_key = context.finding_key();
+    let generated_observed_at = if allocate_generated_observed_at {
+        Some(next_generated_terminal_observed_at_in_tx(
+            conn,
+            project_id,
+            &finding_identity,
+            &finding_key,
+            &context.semantic_epoch_id,
+            observed_at,
+        )?)
+    } else {
+        None
+    };
+    let observed_at = generated_observed_at.as_deref().unwrap_or(observed_at);
     let (observation_digest, material_basis_digest) = terminal_evidence(
         &stable_subject,
         &failure_code,
@@ -515,7 +645,7 @@ pub fn project_terminal_failure_for_run(
     let observed_at = grimodex_core::now_rfc3339_millis();
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            project_terminal_failure_for_run_in_tx(
+            project_terminal_failure_for_run_generated_in_tx(
                 conn,
                 project_id,
                 run_id,
@@ -546,6 +676,123 @@ fn is_synthetic_manual_code(code: &str) -> bool {
             | "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS"
             | "NEX_MAINTENANCE_LEDGER_SELECTOR_INVALID"
     )
+}
+
+fn graph_repair_evidence_detail_digest(report_digest: &str, graph_state_digest: &str) -> String {
+    format!(
+        "sha256:{}",
+        super::digest_plan(&serde_json::json!({
+            "domain": "grimodex:narrative:graph-repair-evidence:v1",
+            "reportDigest": report_digest,
+            "graphStateDigest": graph_state_digest,
+        }))
+    )
+}
+
+/// Reconstruct the graph-repair detail from the exact completed Verify Run
+/// that the terminal Observation names. The Observation table predates this
+/// detail field, so the Run's canonical outcome is the sealed durable anchor;
+/// malformed, rewritten, or unrelated outcomes fail closed instead of
+/// guessing a digest.
+fn sealed_graph_repair_evidence_detail_digest(
+    conn: &Connection,
+    project_id: &str,
+    verify_run_id: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<String> {
+    let expected_work_key = format!("{VERIFY_RUN_KIND}:{semantic_epoch_id}");
+    let row: Option<SealedVerifyRunRow> = conn
+        .query_row(
+            "SELECT project_id, status, run_kind, work_key, semantic_epoch_id,
+                    terminal_reason_code, outcome_summary_json
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            params![verify_run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        run_project_id,
+        status,
+        run_kind,
+        work_key,
+        run_epoch_id,
+        terminal_reason_code,
+        outcome_json,
+    )) = row
+    else {
+        anyhow::bail!(
+            "NEX_FINDING_GRAPH_REPAIR_ANCHOR_MISSING: Verify Run '{}' is missing",
+            verify_run_id
+        );
+    };
+    anyhow::ensure!(
+        run_project_id == project_id
+            && status == "completed"
+            && run_kind == VERIFY_RUN_KIND
+            && work_key.as_deref() == Some(expected_work_key.as_str())
+            && run_epoch_id.as_deref() == Some(semantic_epoch_id)
+            && terminal_reason_code.is_none(),
+        "NEX_FINDING_GRAPH_REPAIR_ANCHOR_INVALID: Verify Run '{}' is not the sealed completed-report anchor",
+        verify_run_id
+    );
+    let outcome_json = outcome_json.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_FINDING_GRAPH_REPAIR_ANCHOR_INVALID: Verify Run '{}' has no outcome",
+            verify_run_id
+        )
+    })?;
+    let outcome: Value = serde_json::from_str(&outcome_json).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_FINDING_GRAPH_REPAIR_ANCHOR_INVALID: Verify Run '{}' outcome is invalid: {error}",
+            verify_run_id
+        )
+    })?;
+    validate_phase_success_outcome(
+        VERIFY_RUN_KIND,
+        project_id,
+        &expected_work_key,
+        Some(semantic_epoch_id),
+        &outcome,
+    )?;
+    anyhow::ensure!(
+        outcome.get("failure").is_none(),
+        "NEX_FINDING_GRAPH_REPAIR_ANCHOR_INVALID: Verify Run '{}' carries failure evidence",
+        verify_run_id
+    );
+    let report: DependencyGraphVerifyReport = serde_json::from_value(
+        outcome
+            .get("report")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Verify outcome report is missing"))?,
+    )?;
+    anyhow::ensure!(
+        !report.is_clean() && !report.requires_rebuild(),
+        "NEX_FINDING_GRAPH_REPAIR_ANCHOR_INVALID: Verify Run '{}' does not carry a non-rebuildable defect",
+        verify_run_id
+    );
+    let report_digest = outcome
+        .get("reportDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Verify outcome report digest is missing"))?;
+    let graph_state_digest = outcome
+        .get("graphStateDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Verify outcome graph state digest is missing"))?;
+    Ok(graph_repair_evidence_detail_digest(
+        report_digest,
+        graph_state_digest,
+    ))
 }
 
 /// Durably project a recovery-synthesized `ManualIntervention` decision as a
@@ -658,6 +905,7 @@ pub(crate) fn project_manual_intervention_finding(
                 run_binding,
                 None,
                 &observed_at,
+                true,
             )
             .map(Some)
         })
@@ -697,14 +945,7 @@ pub(crate) fn project_graph_repair_required_in_tx(
     // clean-Verify skip evidence seals.
     let graph_state_digest =
         super::maintenance_skip_evidence::durable_graph_state_digest(conn, project_id)?;
-    let evidence_detail = format!(
-        "sha256:{}",
-        super::digest_plan(&serde_json::json!({
-            "domain": "grimodex:narrative:graph-repair-evidence:v1",
-            "reportDigest": report_digest,
-            "graphStateDigest": graph_state_digest,
-        }))
-    );
+    let evidence_detail = graph_repair_evidence_detail_digest(report_digest, &graph_state_digest);
     record_failure_projection_in_tx(
         conn,
         project_id,
@@ -714,14 +955,25 @@ pub(crate) fn project_graph_repair_required_in_tx(
         TerminalFailureRunBinding::CompletedReport,
         Some(&evidence_detail),
         observed_at,
+        true,
     )
 }
 
-pub(crate) fn resolve_terminal_failure_for_run_in_tx(
+pub(crate) fn resolve_terminal_failure_for_run_generated_in_tx(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
     observed_at: &str,
+) -> anyhow::Result<TerminalFailureResolutionOutcome> {
+    resolve_terminal_failure_for_run_in_tx_with_origin(conn, project_id, run_id, observed_at, true)
+}
+
+fn resolve_terminal_failure_for_run_in_tx_with_origin(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    observed_at: &str,
+    allocate_generated_observed_at: bool,
 ) -> anyhow::Result<TerminalFailureResolutionOutcome> {
     let context = load_run_context(conn, project_id, run_id, "completed")?;
     let stable_subject = context.stable_subject()?;
@@ -738,16 +990,20 @@ pub(crate) fn resolve_terminal_failure_for_run_in_tx(
             finding_key,
         });
     }
-    let Some((failure_observed_at, current_material_basis_digest)) =
-        latest_terminal_failure_observation_order(
-            conn,
-            project_id,
-            &context.semantic_epoch_id,
-            &finding_identity,
-            &finding_key,
-            MAINTENANCE_FAILURE_FINDING_RULE_ID,
-            MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
-        )?
+    let Some((
+        failure_observed_at,
+        current_material_basis_digest,
+        prior_observation_run_id,
+        prior_observation_id,
+    )) = latest_terminal_failure_observation_anchor(
+        conn,
+        project_id,
+        &context.semantic_epoch_id,
+        &finding_identity,
+        &finding_key,
+        MAINTENANCE_FAILURE_FINDING_RULE_ID,
+        MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
+    )?
     else {
         return Ok(TerminalFailureResolutionOutcome {
             resolved: false,
@@ -790,6 +1046,31 @@ pub(crate) fn resolve_terminal_failure_for_run_in_tx(
             finding_key,
         });
     }
+    let generated_observed_at = if allocate_generated_observed_at {
+        Some(next_generated_terminal_observed_at_in_tx(
+            conn,
+            project_id,
+            &finding_identity,
+            &finding_key,
+            &context.semantic_epoch_id,
+            observed_at,
+        )?)
+    } else {
+        None
+    };
+    let observed_at = generated_observed_at.as_deref().unwrap_or(observed_at);
+    let prior_failure_code =
+        super::finding_observation::decode_terminal_failure_observation_id(&prior_observation_id)?;
+    let evidence_detail_digest = if prior_failure_code == SEMANTIC_GRAPH_REQUIRES_REPAIR_CODE {
+        Some(sealed_graph_repair_evidence_detail_digest(
+            conn,
+            project_id,
+            &prior_observation_run_id,
+            &context.semantic_epoch_id,
+        )?)
+    } else {
+        None
+    };
     let lifecycle_id = resolve_terminal_failure_lifecycle_in_tx(
         conn,
         TerminalFailureResolutionWrite {
@@ -802,6 +1083,9 @@ pub(crate) fn resolve_terminal_failure_for_run_in_tx(
             rule_id: MAINTENANCE_FAILURE_FINDING_RULE_ID,
             rule_version: MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
             material_basis_digest: &current_material_basis_digest,
+            prior_observation_id: &prior_observation_id,
+            prior_observation_run_id: &prior_observation_run_id,
+            evidence_detail_digest: evidence_detail_digest.as_deref(),
             observed_at,
         },
     )?;
@@ -823,7 +1107,31 @@ pub fn resolve_terminal_failure_for_run(
     let observed_at = grimodex_core::now_rfc3339_millis();
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            resolve_terminal_failure_for_run_in_tx(conn, project_id, run_id, &observed_at)
+            resolve_terminal_failure_for_run_generated_in_tx(conn, project_id, run_id, &observed_at)
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generated_terminal_observed_at_after;
+
+    #[test]
+    fn generated_terminal_observed_at_advances_equal_latest_timestamp() {
+        let next = generated_terminal_observed_at_after(
+            "2026-08-22T00:00:01.000Z",
+            Some("2026-08-22T00:00:01.000Z"),
+            Some("2026-08-22T00:00:01.000Z"),
+        )
+        .expect("equal generated coordinates advance by one millisecond");
+        assert_eq!(next, "2026-08-22T00:00:01.001Z");
+
+        let next = generated_terminal_observed_at_after(
+            "2026-08-22T00:00:02.000Z",
+            Some("2026-08-22T00:00:02.003Z"),
+            Some("2026-08-22T00:00:02.002Z"),
+        )
+        .expect("generated coordinate advances past both durable surfaces");
+        assert_eq!(next, "2026-08-22T00:00:02.004Z");
+    }
 }

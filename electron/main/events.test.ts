@@ -217,6 +217,27 @@ describe("registerEventBus: napi TSFn 配線", () => {
     }
   });
 
+  it("D2a gate rejects restricted backend events before renderer broadcast", () => {
+    const backend = makeBackend();
+    const gate = {
+      allowsBackendEvent: vi.fn(
+        (channel: string) => channel === "workspace:opened",
+      ),
+    };
+    registerEventBus(backend, undefined, gate as never);
+    const win = makeWindow(1);
+    allWindows.push(win);
+
+    backend.capturedCallback?.("chat:stream-done", "{}");
+    expect(win.webContents.send).not.toHaveBeenCalled();
+    backend.capturedCallback?.("workspace:opened", '{"path":"/tmp/ws"}');
+    expect(win.webContents.send).toHaveBeenCalledExactlyOnceWith(
+      IPC.event,
+      "workspace:opened",
+      { path: "/tmp/ws" },
+    );
+  });
+
   it("workspace observer を broadcast より先に通知する", () => {
     const backend = makeBackend();
     const order: string[] = [];
@@ -398,5 +419,45 @@ describe("trusted event broadcast", () => {
       sendBackendEventToWindow(11, "codex-app:event", { requestId: 7 }),
     ).not.toThrow();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("renderer gone"));
+  });
+});
+
+describe("NIR-1 invalidation event", () => {
+  it("accepts only the Native opaque query binding and refuses renderer spoofing", () => {
+    const window = makeWindow(41);
+    allWindows.push(window);
+    const backend = makeBackend();
+    registerEventBus(backend);
+    backend.capturedCallback?.("related-scenes:invalidated", '{"queryBinding":"query-binding"}');
+    expect(window.webContents.send).toHaveBeenCalledExactlyOnceWith(IPC.event, "related-scenes:invalidated", { queryBinding: "query-binding" });
+    window.webContents.send.mockClear();
+    emitFromRenderer(window, "related-scenes:invalidated", { queryBinding: "query-binding" });
+    expect(window.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it("does not forward malformed payloads or extra Native data", () => {
+    const window = makeWindow(42);
+    allWindows.push(window);
+    const backend = makeBackend();
+    registerEventBus(backend);
+    for (const payload of ['not-json', '{}', '{"queryBinding":" "}', '{"queryBinding":"ok","envelope":"must-not-leak"}']) {
+      backend.capturedCallback?.("related-scenes:invalidated", payload);
+    }
+    expect(window.webContents.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("NIR-1 newly usable index notification", () => {
+  it("accepts a Native project-only readiness event and refuses extra disclosure", () => {
+    const window = makeWindow(43);
+    allWindows.push(window);
+    const backend = makeBackend();
+    registerEventBus(backend);
+    backend.capturedCallback?.("related-scenes:index-ready", '{"projectId":"project"}');
+    expect(window.webContents.send).toHaveBeenCalledExactlyOnceWith(IPC.event, "related-scenes:index-ready", { projectId: "project" });
+    window.webContents.send.mockClear();
+    backend.capturedCallback?.("related-scenes:index-ready", '{"projectId":"project","count":9}');
+    emitFromRenderer(window, "related-scenes:index-ready", { projectId: "project" });
+    expect(window.webContents.send).not.toHaveBeenCalled();
   });
 });

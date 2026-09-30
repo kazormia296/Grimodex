@@ -9,7 +9,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-import { isNotNull } from "drizzle-orm";
+import { isNotNull, isNull } from "drizzle-orm";
 import { nowInstantString } from "@/lib/time";
 
 export const projects = sqliteTable("projects", {
@@ -217,7 +217,7 @@ export const codexEntries = sqliteTable(
     childrenBudget: text("children_budget").notNull().default("compact"), // 'none' | 'compact' | 'standard' | 'generous'
     sourceChatMessageId: text("source_chat_message_id").references(
       () => chatMessages.id,
-      { onDelete: "set null" },
+      { onDelete: "restrict" },
     ),
     notes: text("notes"), // Private notes (ProseMirror JSON) – never injected into AI context
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
@@ -436,7 +436,7 @@ export const snippets = sqliteTable(
     }),
     sourceChatMessageId: text("source_chat_message_id").references(
       () => chatMessages.id,
-      { onDelete: "set null" },
+      { onDelete: "restrict" },
     ),
     usageCount: integer("usage_count").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
@@ -2370,6 +2370,141 @@ export const narrativeExtractionStageReceipts = sqliteTable(
   ],
 );
 
+// NIR-1 D2b. Native owns these metadata references; bodies remain in their
+// existing stores. Receipt storage alone does not authorize history or dispatch.
+export const nir1GenerationAttempts = sqliteTable(
+  "nir1_generation_attempts",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull(),
+    bindingJson: text("binding_json").notNull(),
+    payloadDigest: text("payload_digest").notNull(),
+    inputDigest: text("input_digest").notNull(),
+    createdAtMs: integer("created_at_ms").notNull(),
+    expiresAtMs: integer("expires_at_ms").notNull(),
+    claimedAtMs: integer("claimed_at_ms"),
+    terminalJson: text("terminal_json"),
+    terminalDigest: text("terminal_digest"),
+    completedAtMs: integer("completed_at_ms"),
+    outputVersionId: text("output_version_id"),
+  },
+  (table) => [
+    index("idx_nir1_generation_attempts_session").on(
+      table.projectId,
+      table.sessionId,
+      table.id,
+    ),
+    index("idx_nir1_generation_attempts_pending")
+      .on(table.projectId, table.id)
+      .where(isNull(table.terminalJson)),
+  ],
+);
+
+export const nir1GenerationMessageVersions = sqliteTable(
+  "nir1_generation_message_versions",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull(),
+    messageId: text("message_id").notNull(),
+    origin: text("origin").notNull(),
+    bodyDigest: text("body_digest").notNull(),
+    parentAttemptId: text("parent_attempt_id").references(
+      () => nir1GenerationAttempts.id,
+    ),
+    createdAtMs: integer("created_at_ms").notNull(),
+    invalidated: integer("invalidated").notNull().default(0),
+  },
+  (table) => [
+    uniqueIndex("uq_nir1_generation_message_versions_message").on(
+      table.messageId,
+    ),
+    index("idx_nir1_generation_message_versions_session").on(
+      table.projectId,
+      table.sessionId,
+      table.id,
+    ),
+  ],
+);
+
+export const nir1GenerationInputRefs = sqliteTable(
+  "nir1_generation_input_refs",
+  {
+    attemptId: text("attempt_id")
+      .notNull()
+      .references(() => nir1GenerationAttempts.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    referenceJson: text("reference_json").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.attemptId, table.ordinal] })],
+);
+
+export const nir1GenerationQualificationRefs = sqliteTable(
+  "nir1_generation_qualification_refs",
+  {
+    attemptId: text("attempt_id")
+      .notNull()
+      .references(() => nir1GenerationAttempts.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    referenceJson: text("reference_json").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.attemptId, table.ordinal] })],
+);
+
+// NIR-1 A1. The existing tree/project Scope authority remains canonical for
+// membership and order; these Native-owned rows carry only typed scope
+// metadata, principals, incarnation, and OCC/source-token state.
+export const narrativeScopeRegistries = sqliteTable(
+  "narrative_scope_registries",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    registryVersion: text("registry_version").notNull(),
+    timelineRefsJson: text("timeline_refs_json").notNull(),
+    worldlineRefsJson: text("worldline_refs_json").notNull(),
+    narrativeLayerRefsJson: text("narrative_layer_refs_json").notNull(),
+    version: integer("version").notNull().default(1),
+    sourceToken: text("source_token").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId] })],
+);
+
+export const narrativeSceneScopeBindings = sqliteTable(
+  "narrative_scene_scope_bindings",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    sceneIncarnationId: text("scene_incarnation_id").notNull(),
+    compatibilityMarker: text("compatibility_marker").notNull(),
+    queryIdentityJson: text("query_identity_json").notNull(),
+    materialConstraintJson: text("material_constraint_json").notNull(),
+    knowledgeHolderJson: text("knowledge_holder_json").notNull(),
+    audienceJson: text("audience_json").notNull(),
+    version: integer("version").notNull().default(1),
+    sourceToken: text("source_token").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.sceneId] }),
+    index("idx_narrative_scene_scope_bindings_scene").on(table.sceneId),
+    index("idx_narrative_scene_scope_bindings_project").on(
+      table.projectId,
+      table.version,
+    ),
+  ],
+);
+
 export const narrativeProposalSets = sqliteTable("narrative_proposal_sets", {
   id: text("id").primaryKey(),
   runId: text("run_id").notNull(),
@@ -3394,7 +3529,7 @@ export const narrativeMaintenanceAttention = sqliteTable(
 );
 
 // SCHEMA_VERSION 24 (Gate C2 Run Kind Policy). A Semantic Index may own only
-// the five fields fixed in semantic-core-authorities.json's
+// the cache fields fixed in semantic-core-authorities.json's
 // semanticIndexAllowedFields; indexKey distinguishes multiple indexes a
 // project may build (e.g. embeddings vs. a future secondary index) under one
 // row shape.
@@ -3410,8 +3545,34 @@ export const narrativeSemanticIndexMetadata = sqliteTable(
     sourceDigest: text("source_digest").notNull(),
     dependencySetDigest: text("dependency_set_digest").notNull(),
     dirtyCacheFlag: integer("dirty_cache_flag").notNull(),
+    producerId: text("producer_id"),
+    producerVersion: text("producer_version"),
   },
   (table) => [primaryKey({ columns: [table.projectId, table.indexKey] })],
+);
+
+// SCHEMA 35. Native-owned derived vectors; no material closure or persisted proof.
+export const narrativeNir1ChronicleVectors = sqliteTable(
+  "narrative_nir1_chronicle_vectors",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    revisionId: text("revision_id").notNull(),
+    generation: integer("generation").notNull(),
+    envelopeDigest: text("envelope_digest").notNull(),
+    statementDigest: text("statement_digest").notNull(),
+    serializerRef: text("serializer_ref").notNull(),
+    modelId: text("model_id").notNull(),
+    artifactSha256: text("artifact_sha256").notNull(),
+    tokenizerSha256: text("tokenizer_sha256").notNull(),
+    embeddingDim: integer("embedding_dim").notNull(),
+    chunkerVersion: text("chunker_version").notNull(),
+    auditOperationId: text("audit_operation_id").notNull(),
+    auditExecutionId: text("audit_execution_id").notNull(),
+    embedding: blob("embedding", { mode: "buffer" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.revisionId] })],
 );
 
 // SCHEMA_VERSION 24 (Gate C2 Run Kind Policy, Repair). Durable claim covering
@@ -3812,6 +3973,13 @@ export const changeEvents = sqliteTable(
   (t) => [
     index("idx_change_events_project_ts").on(t.projectId, t.timestamp),
     index("idx_change_events_scene_ts").on(t.sceneId, t.timestamp),
+    index("idx_change_events_project_domain_op_entity_seq").on(
+      t.projectId,
+      t.domain,
+      t.opType,
+      t.entityId,
+      t.sequence,
+    ),
     uniqueIndex("uq_change_events_project_seq").on(t.projectId, t.sequence),
     uniqueIndex("uq_change_events_project_uid").on(t.projectId, t.eventUid),
   ],
@@ -3910,6 +4078,13 @@ export const stateSnapshots = sqliteTable(
     index("idx_state_snap_domain_seq").on(
       t.projectId,
       t.domain,
+      t.anchorSequence,
+    ),
+    index("idx_state_snap_project_domain_type_entity_seq").on(
+      t.projectId,
+      t.domain,
+      t.entityId,
+      t.entityType,
       t.anchorSequence,
     ),
   ],
@@ -4129,6 +4304,14 @@ export type NarrativeExtractionStageReceipt =
   typeof narrativeExtractionStageReceipts.$inferSelect;
 export type NewNarrativeExtractionStageReceipt =
   typeof narrativeExtractionStageReceipts.$inferInsert;
+export type NarrativeScopeRegistry =
+  typeof narrativeScopeRegistries.$inferSelect;
+export type NewNarrativeScopeRegistry =
+  typeof narrativeScopeRegistries.$inferInsert;
+export type NarrativeSceneScopeBinding =
+  typeof narrativeSceneScopeBindings.$inferSelect;
+export type NewNarrativeSceneScopeBinding =
+  typeof narrativeSceneScopeBindings.$inferInsert;
 export type NarrativeDependencyDeclarationSet =
   typeof narrativeDependencyDeclarationSets.$inferSelect;
 export type NewNarrativeDependencyDeclarationSet =

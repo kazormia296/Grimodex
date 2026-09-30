@@ -10,12 +10,15 @@ use std::sync::Arc;
 
 use grimodex_db::events::EventSink;
 use grimodex_db::state::active_workspace_snapshot;
-use grimodex_db::{with_db_state, AppError, Database, PinnedWorkspaceDb};
+use grimodex_db::{
+    with_db_state, workspace_lifecycle::WorkspaceParticipant, AppError, Database, PinnedWorkspaceDb,
+};
 use grimodex_post_effect::{
     apply_model_override, PostEffectAiClient, PostEffectAiDispatch, PostEffectAiOutput,
     PostEffectAiRequest, PostEffectAiResolvedRoute, PostEffectRuntime,
 };
 
+use crate::profile_egress::ProfileDispatchPermit;
 use crate::state::AppState;
 
 /// DB/event/abort state を同じ Backend instanceへ束縛する runtime。
@@ -23,18 +26,43 @@ use crate::state::AppState;
 pub(crate) struct NodePostEffectRuntime {
     state: Arc<AppState>,
     db: Option<PinnedWorkspaceDb>,
+    /// Detached post-effect workers retain this participant for their whole
+    /// lifetime.  A transition must stop/observe the worker before replacing
+    /// the authority it captured at launch.
+    _participant: Option<WorkspaceParticipant>,
+    /// The permit is cloned into detached run runtimes so the profile startup
+    /// barrier waits for the actual AI task, not only its fire-and-forget
+    /// launch call.
+    dispatch: Option<ProfileDispatchPermit>,
 }
 
 impl NodePostEffectRuntime {
     pub(crate) fn new(state: Arc<AppState>) -> Self {
-        Self { state, db: None }
+        Self {
+            state,
+            db: None,
+            _participant: None,
+            dispatch: None,
+        }
     }
 
     pub(crate) fn new_scoped(
         state: Arc<AppState>,
         expected_workspace_path: &str,
+        dispatch: ProfileDispatchPermit,
     ) -> Result<Self, AppError> {
-        let workspace = active_workspace_snapshot(&state.ws)?;
+        let participant = state
+            .ws
+            .lifecycle_core()
+            .begin_workspace_participant()
+            .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+        let workspace = match active_workspace_snapshot(&state.ws) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                drop(participant);
+                return Err(error);
+            }
+        };
         let active = workspace
             .path()
             .canonicalize()
@@ -52,6 +80,8 @@ impl NodePostEffectRuntime {
         Ok(Self {
             state,
             db: Some(Arc::clone(workspace.db())),
+            _participant: Some(participant),
+            dispatch: Some(dispatch),
         })
     }
 }
@@ -61,10 +91,24 @@ impl PostEffectRuntime for NodePostEffectRuntime {
         if self.db.is_some() {
             return Ok(self.clone());
         }
-        let db = grimodex_db::state::active_database(&self.state.ws)?;
+        let participant = self
+            .state
+            .ws
+            .lifecycle_core()
+            .begin_workspace_participant()
+            .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+        let db = match grimodex_db::state::active_database(&self.state.ws) {
+            Ok(db) => db,
+            Err(error) => {
+                drop(participant);
+                return Err(error);
+            }
+        };
         Ok(Self {
             state: Arc::clone(&self.state),
             db: Some(db),
+            _participant: Some(participant),
+            dispatch: self.dispatch.clone(),
         })
     }
 
@@ -98,6 +142,7 @@ pub(crate) struct NodePostEffectAiClient {
     settings: grimodex_ai::AiSettings,
     api_key: Option<String>,
     api_key_error: Option<String>,
+    dispatch: Option<ProfileDispatchPermit>,
 }
 
 impl NodePostEffectAiClient {
@@ -110,7 +155,13 @@ impl NodePostEffectAiClient {
             settings,
             api_key,
             api_key_error,
+            dispatch: None,
         }
+    }
+
+    pub(crate) fn with_dispatch(mut self, dispatch: ProfileDispatchPermit) -> Self {
+        self.dispatch = Some(dispatch);
+        self
     }
 
     fn resolve_api_key(&self, settings: &grimodex_ai::AiSettings) -> anyhow::Result<String> {
@@ -165,8 +216,12 @@ impl PostEffectAiClient for NodePostEffectAiClient {
         )?;
         let route =
             PostEffectAiResolvedRoute::from_settings_and_prepared(&settings, prepared.clone());
+        let profile_dispatch = self.dispatch.clone();
         let dispatch: PostEffectAiDispatch<'a> = Box::new(move || {
             Box::pin(async move {
+                if let Some(dispatch) = &profile_dispatch {
+                    dispatch.ensure_open()?;
+                }
                 let api_key = self.resolve_api_key(&settings)?;
                 let detected_model = settings.model.clone();
                 let raw_response =
@@ -186,6 +241,9 @@ impl PostEffectAiClient for NodePostEffectAiClient {
         request: PostEffectAiRequest<'a>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<PostEffectAiOutput>> + Send + 'a>> {
         Box::pin(async move {
+            if let Some(dispatch) = &self.dispatch {
+                dispatch.ensure_open()?;
+            }
             let settings = apply_model_override(
                 self.settings.clone(),
                 request.model_override,

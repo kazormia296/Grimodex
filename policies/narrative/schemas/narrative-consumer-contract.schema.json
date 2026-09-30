@@ -92,19 +92,42 @@
             "pattern": "^[a-z][a-z0-9-]*$"
           },
           "status": {
-            "enum": ["declared", "reserved", "not-yet-modelled"]
+            "enum": [
+              "declared",
+              "reserved",
+              "not-yet-modelled"
+            ]
           },
           "consumerKeyMeaning": {
             "type": "string",
             "minLength": 1
           },
           "durableIdentitySource": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
           },
           "notes": {
             "type": "string",
             "minLength": 1
+          },
+          "declaredBindings": {
+            "const": [
+              {
+                "consumerKey": "nir1-reviewed-chronicle:v1",
+                "producerId": "nir1-reviewed-chronicle-v1",
+                "producerVersion": "nir1-reviewed-chronicle/v1",
+                "registryGeneration": "nir1-reviewed-chronicle/v1"
+              },
+              {
+                "consumerKey": "nir1-reviewed-entity-relation:v1",
+                "producerId": "nir1-reviewed-entity-relation-v1",
+                "producerVersion": "nir1-reviewed-entity-relation/v1",
+                "registryGeneration": "nir1-reviewed-entity-relation/v1"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -116,7 +139,9 @@
                   "const": "not-yet-modelled"
                 }
               },
-              "required": ["status"]
+              "required": [
+                "status"
+              ]
             },
             "then": {
               "properties": {
@@ -132,6 +157,63 @@
                 }
               }
             }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "semantic-index"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "status": {
+                  "const": "reserved"
+                },
+                "durableIdentitySource": {
+                  "const": "narrative_semantic_index_metadata.index_key"
+                },
+                "notes": {
+                  "allOf": [
+                    {
+                      "pattern": "no Narrative dependency authority claim"
+                    },
+                    {
+                      "pattern": "no semantic-index Generic Freshness/metadata rows are permitted"
+                    },
+                    {
+                      "pattern": "non-zero footprint is manual-terminal"
+                    },
+                    {
+                      "pattern": "never a Rebuild-Derived target"
+                    },
+                    {
+                      "pattern": "Only existing Scene/Codex/Event/Chat embedding chunk rows"
+                    },
+                    {
+                      "pattern": "rebuildable acceleration"
+                    },
+                    {
+                      "pattern": "cannot imply Narrative dependency authority"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "declaredBindings"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "declaredBindings"
+                ]
+              }
+            }
           }
         ]
       },
@@ -142,10 +224,18 @@
     },
     "unknownConsumerKindEnforcement": {
       "type": "object",
-      "required": ["state", "verifyCheck", "gap"],
+      "required": [
+        "state",
+        "verifyCheck",
+        "gap"
+      ],
       "properties": {
         "state": {
-          "enum": ["not-yet-implemented", "verify-only", "implemented"]
+          "enum": [
+            "not-yet-implemented",
+            "verify-only",
+            "implemented"
+          ]
         },
         "verifyCheck": {
           "const": "consumer-and-source-key-format"

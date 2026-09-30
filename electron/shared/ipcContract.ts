@@ -23,6 +23,10 @@
 // envelope
 // ─────────────────────────────────────────────────────────────────────────────
 
+import {
+  parseWorkspaceRestoreOutcome,
+} from "./workspaceRestoreOutcome.js";
+
 export type IpcErrorCode =
   | "WORKSPACE_SWITCHING"
   | "WORKSPACE_SAFE_MODE"
@@ -96,12 +100,25 @@ export interface OpenWorkspacePayload {
   workspaceId: string;
 }
 
+export interface WorkspaceLifecycleOpenProof {
+  schemaVersion: 1;
+  revision: number;
+  status: "ready";
+  bindingToken: string;
+  activation: "ready";
+}
+
 export type WorkspaceOpenOutcome =
-  | { status: "ready"; workspace: OpenWorkspacePayload }
+  | {
+      status: "ready";
+      workspace: OpenWorkspacePayload;
+      lifecycle?: WorkspaceLifecycleOpenProof;
+    }
   | {
       status: "migrated";
       workspace: OpenWorkspacePayload;
       migration: MigrationReceipt;
+      lifecycle?: WorkspaceLifecycleOpenProof;
     }
   | {
       status: "recovery-required";
@@ -287,6 +304,8 @@ export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
   "post_effect:error",
   "semantic:model_download_progress",
   "semantic:reindex_progress",
+  "related-scenes:invalidated",
+  "related-scenes:index-ready",
   "vivliostyle:log",
   "vivliostyle:done",
   "vivliostyle:error",
@@ -299,6 +318,9 @@ export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
   // napi の TSFn end-to-end 実証チャネル（§7.1、FE 購読者なし）
   "backend:ready",
   "workspace:opened",
+  // Shared lifecycle snapshot projection.  Native emits the raw observer
+  // event; main validates and forwards only the strict opaque DTO.
+  "workspace:lifecycle-state",
   // Codex App Server main-only normalized event envelope.
   "codex-app:event",
 ] as const;
@@ -402,9 +424,87 @@ export interface ExtractCodexEntitySeedsRequestV1 {
   readonly sources: readonly EntitySeedCanonicalSourceV1[];
 }
 
+export interface RetireCurrentChatInputRequest {
+  readonly chatSessionId: string;
+}
+
+export interface RetireCurrentChatInputReceipt {
+  readonly status: "retired" | "not-current";
+  readonly chatSessionId: string;
+}
+
+export interface LegacyOnlyChatInputResult {
+  readonly status: "legacy-only";
+}
+
+type RetireCurrentChatInputResult =
+  | RetireCurrentChatInputReceipt
+  | LegacyOnlyChatInputResult;
+type CaptureCurrentChatInputResult =
+  | CaptureCurrentChatInputReceipt
+  | LegacyOnlyChatInputResult;
+
+export interface CaptureCurrentChatInputSubmission {
+  readonly submissionId: string;
+  readonly messageId: string;
+  readonly chatSessionId: string;
+  readonly sceneId: string;
+  readonly content: string;
+  readonly createdAt: string;
+}
+
+export interface CaptureCurrentChatInputReceipt {
+  readonly status: "accepted";
+  readonly projectId: string;
+  readonly chatSessionId: string;
+  readonly sceneId: string;
+  readonly messageId: string;
+}
+
+export interface CancelCurrentChatInputSubmission {
+  readonly submissionId: string;
+  readonly messageId: string;
+  readonly chatSessionId: string;
+  readonly sceneId: string;
+}
+
+export interface CancelCurrentChatInputReceipt {
+  readonly status: "cancelled" | "not-current" | "not-found";
+  readonly submissionId: string;
+  readonly messageId: string;
+}
+
 export interface NapiBackendLike {
-  dbExecute(sql: string, params: unknown, method: string): Promise<string>;
-  dbExecuteBatch(statements: unknown): Promise<string>;
+  /** Main-only D2a startup barrier; never registered in renderer IPC. */
+  initializeProfileEgress?(): Promise<string>;
+  /** Main-only registration of a main-issued caller identity. */
+  registerProfileEgressCaller?(identity: string): void;
+  /** Main-only invalidation after the trusted workspace binding changes. */
+  invalidateProfileEgressCallers?(): void;
+  /**
+   * Main-issued JSON identity for the restricted profile's generic DB seam.
+   * Renderer claims are ignored by Electron main; Native validates the exact
+   * registered tuple before dispatch.
+   */
+  dbExecute(
+    sql: string,
+    params: unknown,
+    method: string,
+    callerIdentity?: string,
+  ): Promise<string>;
+  dbExecuteBatch(statements: unknown, callerIdentity?: string): Promise<string>;
+  captureCurrentChatInput?(
+    submission: CaptureCurrentChatInputSubmission,
+    callerIdentity: string,
+  ): Promise<string>;
+  cancelCurrentChatInput?(
+    submission: CancelCurrentChatInputSubmission,
+    callerIdentity: string,
+  ): Promise<string>;
+  retireCurrentChatInput?(
+    request: RetireCurrentChatInputRequest,
+    callerIdentity: string,
+  ): Promise<string>;
   narrativeRuntimePolicyGet?(): Promise<string>;
   narrativeRuntimePolicySet?(payload: unknown): Promise<string>;
   editorStickyList?(projectId: string, documentKey: string): Promise<string>;
@@ -435,6 +535,7 @@ export interface NapiBackendLike {
   codexRenameUndo?(payload: unknown): Promise<string>;
   codexRenameApply?(payload: unknown): Promise<string>;
   scanStagingProjectCreate?(payload: unknown): Promise<void>;
+  scanStagingProjectPublish?(payload: unknown): Promise<string>;
   projectCreate?(payload: unknown): Promise<string>;
   projectPatch?(payload: unknown): Promise<string>;
   projectDelete?(payload: unknown): Promise<void>;
@@ -456,6 +557,10 @@ export interface NapiBackendLike {
   ): Promise<string>;
   vacuumDatabase(): Promise<void>;
   openWorkspace(path: string): Promise<string>;
+  /** Main-only lifecycle snapshot; never exposed as a renderer command. */
+  getWorkspaceLifecycleView?(): Promise<string>;
+  /** Main-only idempotent lifecycle shutdown; never exposed to renderer IPC. */
+  shutdownWorkspaceLifecycle?(): Promise<string>;
   validateWorkspacePath(path: string): boolean;
   /** Main-only one-shot bridge; intentionally absent from NAPI_COMMANDS. */
   readLegacyApiKeysForMigration?(): Promise<string>;
@@ -493,7 +598,7 @@ export interface NapiBackendLike {
     expectedWorkspacePath: string,
   ): Promise<void>;
   listBackups?(): Promise<string>;
-  restoreBackup?(fileName: string): Promise<void>;
+  restoreBackup?(fileName: string): Promise<string>;
   listRecoveryCandidates?(): Promise<string>;
   verifyRecoveryCandidate?(candidateId: string): Promise<string>;
   restoreRecoveryCandidate?(candidateId: string): Promise<void>;
@@ -507,6 +612,44 @@ export interface NapiBackendLike {
     projectId: string,
     sessionId: string,
     events: unknown,
+  ): Promise<string>;
+  /** Optional so a stale native binding reports an explicit version-skew error. */
+  timelapseGenesisBaselinesAppend?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    kind: string,
+    entityIds: string[],
+    anchorTimestamp: number,
+  ): Promise<string>;
+  /** Renderer body rebaseline: identities only; Native reads trusted bodies. */
+  timelapseBodyBaselinesAppend?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    targets: unknown,
+    expectedAnchorSequence: number | null,
+  ): Promise<string>;
+  /**
+   * Logically reset one project: canonical change_events/hash chain remain,
+   * project state_snapshots are deleted, and Native advances the trusted
+   * resetSequence cutoff. The result contains the logical hidden-event count
+   * and deleted-snapshot count.
+   */
+  timelapseHistoryPurge?(
+    expectedWorkspacePath: string,
+    projectId: string,
+  ): Promise<string>;
+  /** Set timelapse.enabled under the exact workspace binding. */
+  timelapseEnabledSet?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    enabled: boolean,
+  ): Promise<string>;
+  /** Fixed layout/workspace/workspace snapshot scope. */
+  timelapseLayoutSnapshotRecord?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    payload: unknown,
+    expectedAnchorSequence: number | null,
   ): Promise<string>;
   aiAuditAppendBatch(
     expectedWorkspacePath: string,
@@ -610,6 +753,46 @@ export interface NapiBackendLike {
     sceneScope?: string | null,
     descriptionMode?: boolean | null,
   ): Promise<string>;
+  relatedScenesBegin?(request: unknown): Promise<string>;
+  relatedScenesContinue?(
+    ownerKey: string,
+    operationTicket: string,
+  ): Promise<string>;
+  relatedScenesRelease?(
+    ownerKey: string,
+    operationTicket: string,
+  ): Promise<string>;
+  nir1EvidenceQualify?(
+    ownerKey: string,
+    navigationIdentity: string,
+  ): Promise<string>;
+  /** Native-only NIR-1 graph scaffold; deliberately absent from renderer IPC. */
+  nir1GraphQuery?(payload: unknown): Promise<string>;
+  /** Native-only atomic Raw/IR/Graph context packing. */
+  nir1PackContext?(payload: unknown): Promise<string>;
+  /** Native-bound typed Entity/Relation Revision proposal writer. */
+  nir1EntityRelationRevisionCreate?(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  /** Native-owned live source resolver plus typed draft writer. */
+  nir1EntityRelationRevisionPrepare?(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  /** Cold reader for an explicitly human-approved typed Revision. */
+  nir1EntityRelationRevisionRead?(payload: unknown): Promise<string>;
+  /** Dedicated typed current-by-review-Run reader for cold reopen. */
+  nir1EntityRelationRevisionReadCurrent?(payload: unknown): Promise<string>;
+  /** Dedicated Native target-aware typed review restore reader. */
+  nir1EntityRelationRevisionRestore?(payload: unknown): Promise<string>;
+  narrativeSceneScopeRead?(payload: unknown): Promise<string>;
+  narrativeSceneScopeUpdate?(payload: unknown): Promise<string>;
+  narrativeSceneScopeRegistryUpdate?(payload: unknown): Promise<string>;
+  /** Main lifecycle only; deliberately absent from the renderer command map. */
+  relatedScenesReleaseOwner?(ownerKey: string): Promise<string>;
+  /** Main observer only; never a renderer command. */
+  relatedScenesReconcile?(): Promise<string>;
   semanticRerankerShadowScore?(request: unknown): Promise<string>;
   codexIndexEntry?(
     expectedWorkspacePath: string,
@@ -860,7 +1043,17 @@ export interface NapiBackendLike {
   getNarrativeMaintenanceWorkspaceBinding?(): string | null;
   // renderer/preload には公開しない serialized system-work seam。入力は
   // Electron main scheduler が coalesce 済みの project-scoped work DTO。
+  beginNarrativeMaintenanceAttempt?(
+    attemptId: string,
+    workspaceBinding: unknown,
+  ): Promise<string>;
+  cancelNarrativeMaintenanceAttempt?(
+    attemptId: string,
+    reason: string,
+  ): Promise<string>;
   runNarrativeMaintenanceCycle?(payload: unknown): Promise<string>;
+  ackNarrativeMaintenanceDelivery?(sequence: number): Promise<string>;
+  resolveNarrativeMaintenanceDelivery?(sequence: number): Promise<string>;
   // post_effect run 系（Phase 3d）。settings は dispatch が1回だけ読んだ
   // AiSettings snapshot。API key は未登録時 null、safeStorage lookup 自体が
   // 失敗した場合は apiKeyError に生メッセージを載せる。native は cache hit なら
@@ -1358,7 +1551,7 @@ function requireVerifyNarrativeDependencyGraphPayload(
 ): CommandArgs {
   const command = "verify_narrative_dependency_graph";
   const payload = requireRecord(args, "payload", command);
-  const allowedKeys = new Set(["projectId"]);
+  const allowedKeys = new Set(["projectId", "attemptId"]);
   for (const key of Object.keys(payload)) {
     if (!allowedKeys.has(key)) {
       throw new Error(
@@ -1367,6 +1560,9 @@ function requireVerifyNarrativeDependencyGraphPayload(
     }
   }
   requireNonEmptyString(payload, "projectId", command);
+  if (payload.attemptId !== undefined) {
+    requireNonEmptyString(payload, "attemptId", command);
+  }
   return payload;
 }
 
@@ -1375,7 +1571,7 @@ function requireRebuildNarrativeDerivedStatePayload(
 ): CommandArgs {
   const command = "rebuild_narrative_derived_state";
   const payload = requireRecord(args, "payload", command);
-  const allowedKeys = new Set(["projectId"]);
+  const allowedKeys = new Set(["projectId", "attemptId"]);
   for (const key of Object.keys(payload)) {
     if (!allowedKeys.has(key)) {
       throw new Error(
@@ -1384,6 +1580,9 @@ function requireRebuildNarrativeDerivedStatePayload(
     }
   }
   requireNonEmptyString(payload, "projectId", command);
+  if (payload.attemptId !== undefined) {
+    requireNonEmptyString(payload, "attemptId", command);
+  }
   return payload;
 }
 
@@ -1872,6 +2071,351 @@ function requireSafeInteger(
     );
   }
   return value;
+}
+
+function requireTimelapseGenesisBaselinesAppendArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+  kind: "scene" | "codex" | "snippet";
+  entityIds: string[];
+  anchorTimestamp: number;
+} {
+  const command = "timelapse_genesis_baselines_append";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "kind",
+    "entityIds",
+    "anchorTimestamp",
+  ]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId, kind, entityIds, anchorTimestamp`,
+    );
+  }
+
+  const exactBoundedString = (key: string, maxLength: number): string => {
+    const value = requireNonEmptyString(args, key, command);
+    if (value !== value.trim() || value.length > maxLength) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact non-empty string of at most ${maxLength} characters`,
+      );
+    }
+    return value;
+  };
+  const expectedWorkspacePath = exactBoundedString(
+    "expectedWorkspacePath",
+    16_384,
+  );
+  const projectId = exactBoundedString("projectId", 512);
+  const kindValue = requireString(args, "kind", command);
+  if (
+    kindValue !== "scene" &&
+    kindValue !== "codex" &&
+    kindValue !== "snippet"
+  ) {
+    throw new Error(
+      `invalid args \`kind\` for command \`${command}\`: expected scene, codex, or snippet`,
+    );
+  }
+  const rawEntityIds = requireArray(args, "entityIds", command);
+  if (rawEntityIds.length < 1 || rawEntityIds.length > 64) {
+    throw new Error(
+      `invalid args \`entityIds\` for command \`${command}\`: expected 1..64 items`,
+    );
+  }
+  const entityIds = rawEntityIds.map((value, index) => {
+    if (
+      typeof value !== "string" ||
+      value.length === 0 ||
+      value !== value.trim() ||
+      value.length > 512
+    ) {
+      throw new Error(
+        `invalid args \`entityIds[${index}]\` for command \`${command}\`: expected an exact non-empty string of at most 512 characters`,
+      );
+    }
+    return value;
+  });
+  if (new Set(entityIds).size !== entityIds.length) {
+    throw new Error(
+      `invalid args \`entityIds\` for command \`${command}\`: duplicate ids are not allowed`,
+    );
+  }
+  const anchorTimestamp = requireSafeInteger(args, "anchorTimestamp", command);
+  if (anchorTimestamp < 0) {
+    throw new Error(
+      `invalid args \`anchorTimestamp\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    kind: kindValue,
+    entityIds,
+    anchorTimestamp,
+  };
+}
+
+function requireTimelapseBodyBaselinesAppendArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+  targets: Array<{ kind: "scene" | "codex" | "snippet"; id: string }>;
+  expectedAnchorSequence: number | null;
+} {
+  const command = "timelapse_body_baselines_append";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "targets",
+    "expectedAnchorSequence",
+  ]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId, targets, expectedAnchorSequence`,
+    );
+  }
+  const exactBoundedString = (key: string, maxLength: number): string => {
+    const value = requireNonEmptyString(args, key, command);
+    if (value !== value.trim() || value.length > maxLength) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact non-empty string of at most ${maxLength} characters`,
+      );
+    }
+    return value;
+  };
+  const expectedWorkspacePath = exactBoundedString(
+    "expectedWorkspacePath",
+    16_384,
+  );
+  const projectId = exactBoundedString("projectId", 512);
+  const rawTargets = requireArray(args, "targets", command);
+  if (rawTargets.length < 1 || rawTargets.length > 64) {
+    throw new Error(
+      `invalid args \`targets\` for command \`${command}\`: expected 1..64 items`,
+    );
+  }
+  const seen = new Set<string>();
+  const targets = rawTargets.map((value, index) => {
+    const key = `targets[${index}]`;
+    const target = requireRecord({ value }, "value", command);
+    const targetKeys = Object.keys(target);
+    if (
+      targetKeys.length !== 2 ||
+      !Object.hasOwn(target, "kind") ||
+      !Object.hasOwn(target, "id")
+    ) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected exactly kind and id`,
+      );
+    }
+    const kind = requireString(target, "kind", command);
+    if (kind !== "scene" && kind !== "codex" && kind !== "snippet") {
+      throw new Error(
+        `invalid args \`${key}.kind\` for command \`${command}\`: expected scene, codex, or snippet`,
+      );
+    }
+    const id = requireNonEmptyString(target, "id", command);
+    if (id !== id.trim() || id.length > 512) {
+      throw new Error(
+        `invalid args \`${key}.id\` for command \`${command}\`: expected an exact non-empty string of at most 512 characters`,
+      );
+    }
+    const identity = `${kind}\u0000${id}`;
+    if (seen.has(identity)) {
+      throw new Error(
+        `invalid args \`targets\` for command \`${command}\`: duplicate identities are not allowed`,
+      );
+    }
+    seen.add(identity);
+    return {
+      kind: kind as "scene" | "codex" | "snippet",
+      id,
+    };
+  });
+  const rawAnchor = requirePresent(args, "expectedAnchorSequence", command);
+  if (
+    rawAnchor !== null &&
+    (typeof rawAnchor !== "number" ||
+      !Number.isSafeInteger(rawAnchor) ||
+      rawAnchor < 0)
+  ) {
+    throw new Error(
+      `invalid args \`expectedAnchorSequence\` for command \`${command}\`: expected a non-negative safe integer or null`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    targets,
+    expectedAnchorSequence: rawAnchor as number | null,
+  };
+}
+
+function requireTimelapseHistoryPurgeArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+} {
+  const command = "timelapse_history_purge";
+  const allowedKeys = new Set(["expectedWorkspacePath", "projectId"]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId`,
+    );
+  }
+  const expectedWorkspacePath = requireNonEmptyString(
+    args,
+    "expectedWorkspacePath",
+    command,
+  );
+  const projectId = requireNonEmptyString(args, "projectId", command);
+  if (
+    expectedWorkspacePath.trim() !== expectedWorkspacePath ||
+    expectedWorkspacePath.length > 16_384 ||
+    projectId.trim() !== projectId ||
+    projectId.length > 512
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: workspacePath and projectId must be exact bounded strings`,
+    );
+  }
+  return { expectedWorkspacePath, projectId };
+}
+
+function requireTimelapseEnabledSetArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+  enabled: boolean;
+} {
+  const command = "timelapse_enabled_set";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "enabled",
+  ]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId, enabled`,
+    );
+  }
+  const expectedWorkspacePath = requireNonEmptyString(
+    args,
+    "expectedWorkspacePath",
+    command,
+  );
+  const projectId = requireNonEmptyString(args, "projectId", command);
+  if (
+    expectedWorkspacePath.trim() !== expectedWorkspacePath ||
+    expectedWorkspacePath.length > 16_384 ||
+    projectId.trim() !== projectId ||
+    projectId.length > 512
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: workspacePath and projectId must be exact bounded strings`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    enabled: requireBoolean(args, "enabled", command),
+  };
+}
+
+function requireTimelapseLayoutSnapshotRecordArgs(args: CommandArgs): {
+  expectedWorkspacePath: string;
+  projectId: string;
+  payload: CommandArgs;
+  expectedAnchorSequence: number | null;
+} {
+  const command = "timelapse_layout_snapshot_record";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "payload",
+    "expectedAnchorSequence",
+  ]);
+  if (
+    Object.keys(args).length !== allowedKeys.size ||
+    Object.keys(args).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: expected exactly expectedWorkspacePath, projectId, payload, expectedAnchorSequence`,
+    );
+  }
+  const expectedWorkspacePath = requireNonEmptyString(
+    args,
+    "expectedWorkspacePath",
+    command,
+  );
+  const projectId = requireNonEmptyString(args, "projectId", command);
+  if (
+    expectedWorkspacePath.trim() !== expectedWorkspacePath ||
+    expectedWorkspacePath.length > 16_384 ||
+    projectId.trim() !== projectId ||
+    projectId.length > 512
+  ) {
+    throw new Error(
+      `invalid args for command \`${command}\`: workspacePath and projectId must be exact bounded strings`,
+    );
+  }
+  const payload = requireRecord(args, "payload", command);
+  const payloadKeys = new Set([
+    "layout",
+    "activePresetId",
+    "hiddenStripePanels",
+  ]);
+  if (
+    !Object.hasOwn(payload, "layout") ||
+    Object.keys(payload).some((key) => !payloadKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args \`payload\` for command \`${command}\`: expected layout plus optional activePresetId/hiddenStripePanels`,
+    );
+  }
+  requireRecord(payload, "layout", command);
+  if (Object.hasOwn(payload, "activePresetId")) {
+    nullableString(payload, "activePresetId", command);
+  }
+  if (Object.hasOwn(payload, "hiddenStripePanels")) {
+    const panels = requireArray(payload, "hiddenStripePanels", command);
+    if (
+      panels.length > 128 ||
+      panels.some((panel) => typeof panel !== "string")
+    ) {
+      throw new Error(
+        `invalid args \`payload.hiddenStripePanels\` for command \`${command}\`: expected at most 128 strings`,
+      );
+    }
+  }
+  const rawAnchor = requirePresent(args, "expectedAnchorSequence", command);
+  if (
+    rawAnchor !== null &&
+    (typeof rawAnchor !== "number" ||
+      !Number.isSafeInteger(rawAnchor) ||
+      rawAnchor < 0)
+  ) {
+    throw new Error(
+      `invalid args \`expectedAnchorSequence\` for command \`${command}\`: expected a non-negative safe integer or null`,
+    );
+  }
+  return {
+    expectedWorkspacePath,
+    projectId,
+    payload,
+    expectedAnchorSequence: rawAnchor as number | null,
+  };
 }
 
 /** OCC トークンや件数など「0 以上の整数」必須フィールド用。 */
@@ -2945,8 +3489,64 @@ function requireSnippetWriterPayload(
     for (const key of fields) {
       if (Object.hasOwn(payload, key)) requireString(payload, key, command);
     }
+    requireTimelapseDocStepCoverage(payload, command);
   }
   return payload;
+}
+
+function requireTimelapseDocStepCoverage(
+  payload: CommandArgs,
+  command:
+    | "codex_update"
+    | "snippet_update"
+    | "save_scene_body_bundle"
+    | "tree_node_patch",
+): void {
+  if (!Object.hasOwn(payload, "timelapseDocStepCoverage")) return;
+  const contentPayload =
+    command === "tree_node_patch"
+      ? requireRecord(payload, "patch", command)
+      : payload;
+  const contentKey =
+    command === "save_scene_body_bundle" ? "contentJson" : "content";
+  if (!Object.hasOwn(contentPayload, contentKey)) {
+    throw new Error(
+      `invalid args \`timelapseDocStepCoverage\` for command \`${command}\`: coverage requires content`,
+    );
+  }
+  requireString(contentPayload, contentKey, command);
+  if (
+    command === "save_scene_body_bundle" &&
+    Object.hasOwn(payload, "timelapseSteps")
+  ) {
+    throw new Error(
+      `invalid args \`timelapseDocStepCoverage\` for command \`${command}\`: coverage cannot be combined with timelapseSteps`,
+    );
+  }
+  const proof = requireRecord(payload, "timelapseDocStepCoverage", command);
+  const expectedKeys = new Set(["eventUid", "sessionId", "contentDigest"]);
+  const proofKeys = Object.keys(proof);
+  if (
+    proofKeys.length !== expectedKeys.size ||
+    proofKeys.some((key) => !expectedKeys.has(key))
+  ) {
+    throw new Error(
+      `invalid args \`timelapseDocStepCoverage\` for command \`${command}\`: expected exactly eventUid, sessionId, and contentDigest`,
+    );
+  }
+  for (const key of ["eventUid", "sessionId"] as const) {
+    if (requireNonEmptyString(proof, key, command).trim().length === 0) {
+      throw new Error(
+        `invalid args \`timelapseDocStepCoverage.${key}\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+  }
+  const contentDigest = requireString(proof, "contentDigest", command);
+  if (!/^sha256:[0-9a-f]{64}$/.test(contentDigest)) {
+    throw new Error(
+      `invalid args \`timelapseDocStepCoverage.contentDigest\` for command \`${command}\`: expected a lowercase sha256 digest`,
+    );
+  }
 }
 
 function requireAuthorshipReplaceLanePayload(args: CommandArgs): CommandArgs {
@@ -3175,6 +3775,21 @@ function requireScanStagingProjectCreatePayload(
   if (language !== "ja" && language !== "en") {
     throw new Error(
       `invalid args \`language\` for command \`${command}\`: expected ja or en`,
+    );
+  }
+  return payload;
+}
+
+function requireScanStagingProjectPublishPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "scan_staging_project_publish";
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "import-apply",
+  ]);
+  if (payload.origin !== "import") {
+    throw new Error(
+      `invalid args \`origin\` for command \`${command}\`: Scan publication is import-only`,
     );
   }
   return payload;
@@ -3474,7 +4089,8 @@ function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "nodeId", command);
   requireNonEmptyString(payload, "updatedAt", command);
-  requireRecord(payload, "patch", command);
+  const patch = requireRecord(payload, "patch", command);
+  requireTimelapseDocStepCoverage(payload, command);
   requireBoolean(payload, "bumpVersion", command);
   if (Object.hasOwn(payload, "baseVersion")) {
     const baseVersion = requireSafeInteger(payload, "baseVersion", command);
@@ -3510,7 +4126,6 @@ function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
         `invalid args \`changeEvent\` for command \`${command}\`: expected versioned OCC`,
       );
     }
-    const patch = requireRecord(payload, "patch", command);
     if (
       !Object.hasOwn(patch, "content") ||
       Object.keys(patch).some((key) => key !== "content" && key !== "charCount")
@@ -4456,6 +5071,35 @@ function requireArray(args: CommandArgs, key: string, cmd: string): unknown[] {
   return value;
 }
 
+/**
+ * `timelapse-internal/doc.step.coverage` is a Native-owned proof row. The
+ * renderer-facing batch command must never be an authority for that row: a
+ * forged proof can otherwise make the body writer skip its full snapshot.
+ * Keep the ordinary batch shape deliberately compatible and only reject the
+ * reserved pair here; the Native/Tauri implementations repeat this guard.
+ */
+function requirePublicTimelapseAppendEvents(
+  args: CommandArgs,
+  command: string,
+): unknown[] {
+  const events = requireArray(args, "events", command);
+  for (const [index, event] of events.entries()) {
+    if (typeof event !== "object" || event === null || Array.isArray(event)) {
+      continue;
+    }
+    const row = event as CommandArgs;
+    if (
+      row.domain === "timelapse-internal" &&
+      row.opType === "doc.step.coverage"
+    ) {
+      throw new Error(
+        `TIMELAPSE_COVERAGE_RESERVED: invalid args \`events[${index}]\` for command \`${command}\`: Native-owned timelapse coverage is not accepted by the public append batch`,
+      );
+    }
+  }
+  return events;
+}
+
 function requireSemanticRerankerShadowRequest(args: CommandArgs): CommandArgs {
   const command = "semantic_reranker_shadow_score";
   const allowedRequestKeys = new Set([
@@ -4664,6 +5308,7 @@ function requireSceneBodyBundlePayload(args: CommandArgs): CommandArgs {
     );
   }
   requireString(payload, "contentJson", command);
+  requireTimelapseDocStepCoverage(payload, command);
   requireString(payload, "unplacedBeatsDoc", command);
   for (const key of ["charCount", "docContentSize"] as const) {
     const value = requireNumber(payload, key, command);
@@ -5767,6 +6412,27 @@ function parseWire(json: string): unknown {
   return JSON.parse(json) as unknown;
 }
 
+/**
+ * `reply_to_annotation` commits a local DB row, but Native's read-back row
+ * contains the reply body and other annotation plaintext.  Keep the local
+ * mutation usable while returning only the opaque generated id over IPC.
+ */
+function parseOpaqueReplyToAnnotation(json: string): unknown {
+  const value = parseWire(json);
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof (value as Record<string, unknown>).id === "string" &&
+    (value as Record<string, string>).id.trim() ===
+      (value as Record<string, string>).id &&
+    (value as Record<string, string>).id.length > 0
+  ) {
+    return { id: (value as Record<string, string>).id };
+  }
+  throw new Error("reply_to_annotation returned no opaque id");
+}
+
 function parseEntitySeedWire(json: string): unknown {
   if (
     json.length > MAX_ENTITY_SEED_RESPONSE_BYTES ||
@@ -5828,25 +6494,610 @@ export interface NapiCommandSpec {
   ): Promise<unknown>;
 }
 
+function requireRelatedScenesBeginRequest(args: CommandArgs) {
+  const command = "related_scenes_begin";
+  const query = requireNonEmptyString(args, "query", command);
+  if (query.trim().length === 0 || query.length > 500) {
+    throw new Error(
+      "IPC_INVALID_REQUEST: related_scenes_begin query exceeds Raw UTF-16 tail",
+    );
+  }
+  return {
+    ownerKey: requireNonEmptyString(args, "ownerKey", command),
+    expectedWorkspacePath: requireNonEmptyString(
+      args,
+      "expectedWorkspacePath",
+      command,
+    ),
+    projectId: requireNonEmptyString(args, "projectId", command),
+    currentSceneId: requireNonEmptyString(args, "currentSceneId", command),
+    query,
+  };
+}
+
+function requireNir1EntityRelationRevisionCreateRequest(
+  args: CommandArgs,
+): readonly [CommandArgs, CommandArgs] {
+  const command = "nir1_entity_relation_revision_create";
+  const [rawPayload, workspaceBinding] =
+    requireNarrativeExtractionBoundMutation(args, command);
+  const payload = requireRecord({ payload: rawPayload }, "payload", command);
+  const allowedKeys = new Set(["runId", "projectId", "proposalKey", "bundle"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of ["runId", "projectId", "proposalKey"] as const) {
+    const value = requireNonEmptyString(payload, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact string`,
+      );
+    }
+  }
+  const bundle = requireRecord(payload, "bundle", command);
+  for (const key of [
+    "projectId",
+    "revisionId",
+    "producer",
+    "entities",
+    "relations",
+  ]) {
+    requirePresent(bundle, key, command);
+  }
+  return [payload, workspaceBinding];
+}
+
+function requireNir1EntityRelationRevisionReadRequest(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "nir1_entity_relation_revision_read";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "revisionId",
+  ]);
+  for (const key of Object.keys(args)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of [
+    "expectedWorkspacePath",
+    "projectId",
+    "revisionId",
+  ] as const) {
+    const value = requireNonEmptyString(args, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact string`,
+      );
+    }
+  }
+  return {
+    expectedWorkspacePath: args.expectedWorkspacePath,
+    projectId: args.projectId,
+    revisionId: args.revisionId,
+  };
+}
+
+function requireNir1EntityRelationRevisionPrepareRequest(
+  args: CommandArgs,
+): readonly [CommandArgs, CommandArgs] {
+  const command = "nir1_entity_relation_revision_prepare";
+  const [rawPayload, workspaceBinding] =
+    requireNarrativeExtractionBoundMutation(args, command);
+  const payload = requireRecord({ payload: rawPayload }, "payload", command);
+  const allowedKeys = new Set([
+    "projectId",
+    "sceneId",
+    "entityIds",
+    "relationIds",
+    "proposalKey",
+  ]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of ["projectId", "sceneId"] as const) {
+    const value = requireNonEmptyString(payload, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact string`,
+      );
+    }
+  }
+  if (Object.hasOwn(payload, "proposalKey") && payload.proposalKey !== null) {
+    const proposalKey = requireNonEmptyString(payload, "proposalKey", command);
+    if (proposalKey.trim() !== proposalKey || proposalKey.length > 256) {
+      throw new Error(
+        `invalid args \`proposalKey\` for command \`${command}\`: expected an exact string of at most 256 characters`,
+      );
+    }
+  }
+  const identityLists = [
+    ["entityIds", requireArray(payload, "entityIds", command)],
+    ["relationIds", requireArray(payload, "relationIds", command)],
+  ] as const;
+  let total = 0;
+  for (const [key, values] of identityLists) {
+    const seen = new Set<string>();
+    for (const [index, value] of values.entries()) {
+      if (
+        typeof value !== "string" ||
+        value.length === 0 ||
+        value.trim() !== value
+      ) {
+        throw new Error(
+          `invalid args \`${key}[${index}]\` for command \`${command}\`: expected an exact non-empty string`,
+        );
+      }
+      if (seen.has(value)) {
+        throw new Error(
+          `invalid args \`${key}[${index}]\` for command \`${command}\`: duplicate identity`,
+        );
+      }
+      seen.add(value);
+      total += 1;
+    }
+  }
+  if (total === 0 || total > 512) {
+    throw new Error(
+      `invalid args \`entityIds/relationIds\` for command \`${command}\`: expected between 1 and 512 identities`,
+    );
+  }
+  return [payload, workspaceBinding];
+}
+
+function requireNir1EntityRelationRevisionCurrentReadRequest(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "nir1_entity_relation_revision_read_current";
+  const allowedKeys = new Set(["expectedWorkspacePath", "projectId", "runId"]);
+  for (const key of Object.keys(args)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of ["expectedWorkspacePath", "projectId", "runId"] as const) {
+    const value = requireNonEmptyString(args, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact string`,
+      );
+    }
+  }
+  return {
+    expectedWorkspacePath: args.expectedWorkspacePath,
+    projectId: args.projectId,
+    runId: args.runId,
+  };
+}
+
+function requireNir1EntityRelationRevisionRestoreRequest(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "nir1_entity_relation_revision_restore";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "entityId",
+    "relationId",
+  ]);
+  for (const key of Object.keys(args)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of [
+    "expectedWorkspacePath",
+    "projectId",
+    "entityId",
+  ] as const) {
+    const value = requireNonEmptyString(args, key, command);
+    if (value.trim() !== value) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected an exact string`,
+      );
+    }
+  }
+  if (Object.hasOwn(args, "relationId") && args.relationId !== null) {
+    const relationId = requireNonEmptyString(args, "relationId", command);
+    if (relationId.trim() !== relationId) {
+      throw new Error(
+        `invalid args \`relationId\` for command \`${command}\`: expected an exact string`,
+      );
+    }
+  }
+  return {
+    expectedWorkspacePath: args.expectedWorkspacePath,
+    projectId: args.projectId,
+    entityId: args.entityId,
+    relationId: args.relationId ?? null,
+  };
+}
+
+function requireNir1PackingRequest(args: CommandArgs): CommandArgs {
+  const command = "nir1_pack_context";
+  const payload = requireRecord(args, "payload", command);
+  const budgetTokens = requireUnsignedInteger(payload, "budgetTokens", command);
+  if (budgetTokens === 0) {
+    throw new Error(
+      `invalid args \`payload.budgetTokens\` for command \`${command}\`: expected a positive integer`,
+    );
+  }
+  const rawItems = requirePresent(payload, "items", command);
+  if (!Array.isArray(rawItems) || rawItems.length > 512) {
+    throw new Error(
+      `invalid args \`payload.items\` for command \`${command}\`: expected at most 512 items`,
+    );
+  }
+  const items = rawItems.map((value, index) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new Error(
+        `invalid args \`payload.items[${index}]\` for command \`${command}\`: expected an object`,
+      );
+    }
+    const item = value as CommandArgs;
+    const allowedItemKeys = new Set(["kind", "id", "text", "tokens"]);
+    for (const key of Object.keys(item)) {
+      if (!allowedItemKeys.has(key)) {
+        throw new Error(
+          `invalid args \`payload.items[${index}].${key}\` for command \`${command}\`: unknown field`,
+        );
+      }
+    }
+    const kind = requireNonEmptyString(item, "kind", command);
+    if (kind !== "raw") {
+      throw new Error(
+        `invalid args \`payload.items[${index}].kind\` for command \`${command}\`: unsupported context kind`,
+      );
+    }
+    const base = {
+      kind,
+      id: requireNonEmptyString(item, "id", command),
+      text: requireNonEmptyString(item, "text", command),
+      tokens: requireUnsignedInteger(item, "tokens", command),
+    };
+    if (base.tokens === 0) {
+      throw new Error(
+        `invalid args \`payload.items[${index}].tokens\` for command \`${command}\`: expected a positive integer`,
+      );
+    }
+    return base;
+  });
+  return { budgetTokens, items };
+}
+
+function requireSceneScopeReadRequest(args: CommandArgs): CommandArgs {
+  const command = "narrative_scene_scope_read";
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "projectId",
+    "sceneId",
+    // Main-only D2a identity is checked by electron/main/profileEgress.ts;
+    // this Native A1 reader does not need it and must not forward it into its
+    // deny-unknown-fields request.
+    "callerIdentity",
+  ]);
+  for (const key of Object.keys(args)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  return {
+    expectedWorkspacePath: requireNonEmptyString(
+      args,
+      "expectedWorkspacePath",
+      command,
+    ),
+    projectId: requireNonEmptyString(args, "projectId", command),
+    sceneId: requireNonEmptyString(args, "sceneId", command),
+  };
+}
+
+function requireSceneScopeMutationRequest(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const allowedKeys = new Set([
+    "expectedWorkspacePath",
+    "payload",
+    // Main-only D2a identity is checked by electron/main/profileEgress.ts;
+    // A1 writers remain Native-authority-bound without forwarding it into the
+    // deny-unknown-fields request.
+    "callerIdentity",
+  ]);
+  for (const key of Object.keys(args)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const payload = requireRecord(args, "payload", command);
+  const requiredKeys =
+    command === "narrative_scene_scope_update"
+      ? [
+          "projectId",
+          "sceneId",
+          "requestId",
+          "sessionId",
+          "eventUid",
+          "baseVersion",
+          "updatedAt",
+          "scope",
+        ]
+      : [
+          "projectId",
+          "requestId",
+          "sessionId",
+          "eventUid",
+          "baseVersion",
+          "updatedAt",
+          "registry",
+        ];
+  for (const key of requiredKeys) {
+    requirePresent(payload, key, command);
+  }
+  if (
+    typeof payload.baseVersion !== "number" ||
+    !Number.isSafeInteger(payload.baseVersion) ||
+    payload.baseVersion < 1
+  ) {
+    throw new Error(
+      `invalid args \`payload.baseVersion\` for command \`${command}\`: expected a positive safe integer`,
+    );
+  }
+  return {
+    expectedWorkspacePath: requireNonEmptyString(
+      args,
+      "expectedWorkspacePath",
+      command,
+    ),
+    payload,
+  };
+}
+
+function callerIdentityWire(args: CommandArgs): string | undefined {
+  if (args.callerIdentity === undefined) return undefined;
+  try {
+    const serialized = JSON.stringify(args.callerIdentity);
+    if (serialized === undefined) {
+      throw new Error("caller identity is not JSON-serializable");
+    }
+    return serialized;
+  } catch (error) {
+    throw new Error(
+      `invalid args \`callerIdentity\` for database command: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+function requireExactKeys(
+  args: CommandArgs,
+  allowedKeys: readonly string[],
+  command: string,
+): void {
+  const allowed = new Set(allowedKeys);
+  for (const key of Object.keys(args)) {
+    if (!allowed.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+}
+
+function requireRetireCurrentChatInputRequest(
+  args: CommandArgs,
+): RetireCurrentChatInputRequest {
+  const command = "retire_current_chat_input";
+  const chatSessionId = requireNonEmptyString(args, "chatSessionId", command);
+  if (chatSessionId.trim() !== chatSessionId || chatSessionId.length > 256) {
+    throw new Error(
+      `invalid args \`chatSessionId\` for command \`${command}\`: expected a trimmed value of at most 256 characters`,
+    );
+  }
+  return { chatSessionId };
+}
+
+function parseRetireCurrentChatInputReceipt(
+  value: unknown,
+  request: RetireCurrentChatInputRequest,
+): RetireCurrentChatInputResult {
+  const command = "retire_current_chat_input";
+  const result = requireRecord({ value }, "value", command);
+  if (result.status === "unrestricted") {
+    requireExactKeys(result, ["status"], command);
+    return { status: "legacy-only" };
+  }
+  requireExactKeys(result, ["status", "chatSessionId"], command);
+  if (result.status !== "retired" && result.status !== "not-current") {
+    throw new Error(`invalid result for command \`${command}\`: status`);
+  }
+  const receipt = {
+    status: result.status,
+    chatSessionId: requireNonEmptyString(result, "chatSessionId", command),
+  } as const;
+  if (receipt.chatSessionId !== request.chatSessionId) {
+    throw new Error(`IPC_CHAT_CAPTURE_RETIRE_RESULT_BINDING_MISMATCH`);
+  }
+  return receipt;
+}
+
+function requireCaptureCurrentChatInputSubmission(
+  args: CommandArgs,
+): CaptureCurrentChatInputSubmission {
+  const command = "capture_current_chat_input";
+  const submission = requireRecord(args, "submission", command);
+  const keys = [
+    "submissionId",
+    "messageId",
+    "chatSessionId",
+    "sceneId",
+    "content",
+    "createdAt",
+  ] as const;
+  requireExactKeys(submission, keys, command);
+  const boundedIdentity = (key: (typeof keys)[number]): string => {
+    const value = requireNonEmptyString(submission, key, command);
+    if (value.trim() !== value || value.length > 256) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a trimmed value of at most 256 characters`,
+      );
+    }
+    return value;
+  };
+  const content = requireNonEmptyString(submission, "content", command);
+  if (!content.trim() || content.length > 2 * 1024 * 1024) {
+    throw new Error(
+      `invalid args \`content\` for command \`${command}\`: expected non-empty bounded text`,
+    );
+  }
+  return {
+    submissionId: boundedIdentity("submissionId"),
+    messageId: boundedIdentity("messageId"),
+    chatSessionId: boundedIdentity("chatSessionId"),
+    sceneId: boundedIdentity("sceneId"),
+    content,
+    createdAt: boundedIdentity("createdAt"),
+  };
+}
+
+function requireCancelCurrentChatInputSubmission(
+  args: CommandArgs,
+): CancelCurrentChatInputSubmission {
+  const command = "cancel_current_chat_input";
+  const submission = requireRecord(args, "submission", command);
+  const keys = [
+    "submissionId",
+    "messageId",
+    "chatSessionId",
+    "sceneId",
+  ] as const;
+  requireExactKeys(submission, keys, command);
+  const boundedIdentity = (key: (typeof keys)[number]): string => {
+    const value = requireNonEmptyString(submission, key, command);
+    if (value.trim() !== value || value.length > 256) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a trimmed value of at most 256 characters`,
+      );
+    }
+    return value;
+  };
+  return {
+    submissionId: boundedIdentity("submissionId"),
+    messageId: boundedIdentity("messageId"),
+    chatSessionId: boundedIdentity("chatSessionId"),
+    sceneId: boundedIdentity("sceneId"),
+  };
+}
+
+function parseCaptureCurrentChatInputReceipt(
+  value: unknown,
+  submission: CaptureCurrentChatInputSubmission,
+): CaptureCurrentChatInputResult {
+  const command = "capture_current_chat_input";
+  const result = requireRecord({ value }, "value", command);
+  if (result.status === "unrestricted") {
+    requireExactKeys(result, ["status"], command);
+    return { status: "legacy-only" };
+  }
+  requireExactKeys(
+    result,
+    ["status", "projectId", "chatSessionId", "sceneId", "messageId"],
+    command,
+  );
+  if (result.status !== "accepted") {
+    throw new Error(`invalid result for command \`${command}\`: status`);
+  }
+  const receipt = {
+    status: "accepted" as const,
+    projectId: requireNonEmptyString(result, "projectId", command),
+    chatSessionId: requireNonEmptyString(result, "chatSessionId", command),
+    sceneId: requireNonEmptyString(result, "sceneId", command),
+    messageId: requireNonEmptyString(result, "messageId", command),
+  };
+  if (
+    receipt.chatSessionId !== submission.chatSessionId ||
+    receipt.sceneId !== submission.sceneId ||
+    receipt.messageId !== submission.messageId
+  ) {
+    throw new Error(`IPC_CAPTURE_RESULT_BINDING_MISMATCH: ${command}`);
+  }
+  return receipt;
+}
+
+function parseCancelCurrentChatInputReceipt(
+  value: unknown,
+  submission: CancelCurrentChatInputSubmission,
+): CancelCurrentChatInputReceipt {
+  const command = "cancel_current_chat_input";
+  const result = requireRecord({ value }, "value", command);
+  requireExactKeys(result, ["status", "submissionId", "messageId"], command);
+  if (
+    result.status !== "cancelled" &&
+    result.status !== "not-current" &&
+    result.status !== "not-found"
+  ) {
+    throw new Error(`invalid result for command \`${command}\`: status`);
+  }
+  const receipt = {
+    status: result.status,
+    submissionId: requireNonEmptyString(result, "submissionId", command),
+    messageId: requireNonEmptyString(result, "messageId", command),
+  } as const;
+  if (
+    receipt.submissionId !== submission.submissionId ||
+    receipt.messageId !== submission.messageId
+  ) {
+    throw new Error(`IPC_CAPTURE_CANCEL_RESULT_BINDING_MISMATCH: ${command}`);
+  }
+  return receipt;
+}
+
 /** napi 実装済みコマンドの明示写像（Phase 3 の各バッチで追加）。 */
 export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   db_execute: {
-    run: async (b, a) =>
-      parseWire(
-        await b.dbExecute(
-          requireString(a, "sql", "db_execute"),
-          requirePresent(a, "params", "db_execute"),
-          requireString(a, "method", "db_execute"),
-        ),
-      ),
+    run: async (b, a) => {
+      const sql = requireString(a, "sql", "db_execute");
+      const params = requirePresent(a, "params", "db_execute");
+      const method = requireString(a, "method", "db_execute");
+      const callerIdentity = callerIdentityWire(a);
+      const raw =
+        callerIdentity === undefined
+          ? await b.dbExecute(sql, params, method)
+          : await b.dbExecute(sql, params, method, callerIdentity);
+      return parseWire(raw);
+    },
   },
   db_execute_batch: {
-    run: async (b, a) =>
-      parseWire(
-        await b.dbExecuteBatch(
-          requirePresent(a, "statements", "db_execute_batch"),
-        ),
-      ),
+    run: async (b, a) => {
+      const statements = requirePresent(a, "statements", "db_execute_batch");
+      const callerIdentity = callerIdentityWire(a);
+      const raw =
+        callerIdentity === undefined
+          ? await b.dbExecuteBatch(statements)
+          : await b.dbExecuteBatch(statements, callerIdentity);
+      return parseWire(raw);
+    },
   },
   narrative_runtime_policy_get: {
     run: async (b) =>
@@ -6126,6 +7377,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
+  scan_staging_project_publish: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.scanStagingProjectPublish,
+          "scanStagingProjectPublish",
+        )(requireScanStagingProjectPublishPayload(a)),
+      ),
+  },
   project_create: {
     run: async (b, a) =>
       parseWire(
@@ -6330,12 +7591,12 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   },
   restore_backup: {
     run: async (b, a) => {
-      await requireNapiMethod(
+      const wire = await requireNapiMethod(
         b,
         b.restoreBackup,
         "restoreBackup",
       )(requireBackupFileName(a));
-      return null;
+      return parseWorkspaceRestoreOutcome(wire);
     },
   },
   list_recovery_candidates: {
@@ -6429,9 +7690,85 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         await b.timelapseAppendBatch(
           requireString(a, "projectId", "timelapse_append_batch"),
           requireString(a, "sessionId", "timelapse_append_batch"),
-          requirePresent(a, "events", "timelapse_append_batch"),
+          requirePublicTimelapseAppendEvents(a, "timelapse_append_batch"),
         ),
       ),
+  },
+  timelapse_genesis_baselines_append: {
+    run: async (b, a) => {
+      const input = requireTimelapseGenesisBaselinesAppendArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseGenesisBaselinesAppend,
+          "timelapseGenesisBaselinesAppend",
+        )(
+          input.expectedWorkspacePath,
+          input.projectId,
+          input.kind,
+          input.entityIds,
+          input.anchorTimestamp,
+        ),
+      );
+    },
+  },
+  timelapse_body_baselines_append: {
+    run: async (b, a) => {
+      const input = requireTimelapseBodyBaselinesAppendArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseBodyBaselinesAppend,
+          "timelapseBodyBaselinesAppend",
+        )(
+          input.expectedWorkspacePath,
+          input.projectId,
+          input.targets,
+          input.expectedAnchorSequence,
+        ),
+      );
+    },
+  },
+  timelapse_history_purge: {
+    run: async (b, a) => {
+      const input = requireTimelapseHistoryPurgeArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseHistoryPurge,
+          "timelapseHistoryPurge",
+        )(input.expectedWorkspacePath, input.projectId),
+      );
+    },
+  },
+  timelapse_enabled_set: {
+    run: async (b, a) => {
+      const input = requireTimelapseEnabledSetArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseEnabledSet,
+          "timelapseEnabledSet",
+        )(input.expectedWorkspacePath, input.projectId, input.enabled),
+      );
+    },
+  },
+  timelapse_layout_snapshot_record: {
+    run: async (b, a) => {
+      const input = requireTimelapseLayoutSnapshotRecordArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.timelapseLayoutSnapshotRecord,
+          "timelapseLayoutSnapshotRecord",
+        )(
+          input.expectedWorkspacePath,
+          input.projectId,
+          input.payload,
+          input.expectedAnchorSequence,
+        ),
+      );
+    },
   },
   ai_audit_append_batch: {
     run: async (b, a) =>
@@ -6774,6 +8111,164 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requireUnsignedInteger(a, "limit", "semantic_search"),
           optionalString(a, "sceneScope", "semantic_search"),
           optionalBoolean(a, "descriptionMode", "semantic_search"),
+        ),
+      ),
+  },
+  related_scenes_begin: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.relatedScenesBegin,
+          "relatedScenesBegin",
+        )(requireRelatedScenesBeginRequest(a)),
+      ),
+  },
+  related_scenes_continue: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.relatedScenesContinue,
+          "relatedScenesContinue",
+        )(
+          requireNonEmptyString(a, "ownerKey", "related_scenes_continue"),
+          requireNonEmptyString(
+            a,
+            "operationTicket",
+            "related_scenes_continue",
+          ),
+        ),
+      ),
+  },
+  related_scenes_release: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.relatedScenesRelease,
+          "relatedScenesRelease",
+        )(
+          requireNonEmptyString(a, "ownerKey", "related_scenes_release"),
+          requireNonEmptyString(a, "operationTicket", "related_scenes_release"),
+        ),
+      ),
+  },
+  nir1_evidence_qualify: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EvidenceQualify,
+          "nir1EvidenceQualify",
+        )(
+          requireNonEmptyString(a, "ownerKey", "nir1_evidence_qualify"),
+          requireNonEmptyString(
+            a,
+            "navigationIdentity",
+            "nir1_evidence_qualify",
+          ),
+        ),
+      ),
+  },
+  nir1_pack_context: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1PackContext,
+          "nir1PackContext",
+        )(requireNir1PackingRequest(a)),
+      ),
+  },
+  nir1_entity_relation_revision_create: {
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNir1EntityRelationRevisionCreateRequest(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EntityRelationRevisionCreate,
+          "nir1EntityRelationRevisionCreate",
+        )(payload, workspaceBinding),
+      );
+    },
+  },
+  nir1_entity_relation_revision_prepare: {
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireNir1EntityRelationRevisionPrepareRequest(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EntityRelationRevisionPrepare,
+          "nir1EntityRelationRevisionPrepare",
+        )(payload, workspaceBinding),
+      );
+    },
+  },
+  nir1_entity_relation_revision_read: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EntityRelationRevisionRead,
+          "nir1EntityRelationRevisionRead",
+        )(requireNir1EntityRelationRevisionReadRequest(a)),
+      ),
+  },
+  nir1_entity_relation_revision_read_current: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EntityRelationRevisionReadCurrent,
+          "nir1EntityRelationRevisionReadCurrent",
+        )(requireNir1EntityRelationRevisionCurrentReadRequest(a)),
+      ),
+  },
+  nir1_entity_relation_revision_restore: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.nir1EntityRelationRevisionRestore,
+          "nir1EntityRelationRevisionRestore",
+        )(requireNir1EntityRelationRevisionRestoreRequest(a)),
+      ),
+  },
+  narrative_scene_scope_read: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeSceneScopeRead,
+          "narrativeSceneScopeRead",
+        )(requireSceneScopeReadRequest(a)),
+      ),
+  },
+  narrative_scene_scope_update: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeSceneScopeUpdate,
+          "narrativeSceneScopeUpdate",
+        )(requireSceneScopeMutationRequest(a, "narrative_scene_scope_update")),
+      ),
+  },
+  narrative_scene_scope_registry_update: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeSceneScopeRegistryUpdate,
+          "narrativeSceneScopeRegistryUpdate",
+        )(
+          requireSceneScopeMutationRequest(
+            a,
+            "narrative_scene_scope_registry_update",
+          ),
         ),
       ),
   },
@@ -7384,21 +8879,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   codex_update: {
-    run: async (b, a) =>
-      parseWire(
-        await requireNapiMethod(
-          b,
-          b.codexUpdate,
-          "codexUpdate",
-        )(
-          requireCanonicalWriterIdentity(a, "codex_update", [
-            "human-direct",
-            "import-apply",
-            "history-replay",
-            "restore-or-migration",
-          ]),
-        ),
-      ),
+    run: async (b, a) => {
+      const payload = requireCanonicalWriterIdentity(a, "codex_update", [
+        "human-direct",
+        "import-apply",
+        "history-replay",
+        "restore-or-migration",
+      ]);
+      requireTimelapseDocStepCoverage(payload, "codex_update");
+      return parseWire(
+        await requireNapiMethod(b, b.codexUpdate, "codexUpdate")(payload),
+      );
+    },
   },
   codex_delete: {
     run: async (b, a) =>
@@ -8162,9 +9654,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   },
   reply_to_annotation: {
     // FE は snake_case キーを `args` にネストして送る（ReplyToAnnotationArgs は
-    // rename_all 無し）。オブジェクトをそのまま渡す。
+    // rename_all 無し）。Nativeのread-back rowは本文を含むため、返り値は
+    // opaqueな生成済みIDだけに絞る。
     run: async (b, a) =>
-      parseWire(
+      parseOpaqueReplyToAnnotation(
         await b.replyToAnnotation(
           requirePresent(a, "args", "reply_to_annotation"),
         ),
@@ -8252,9 +9745,12 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       );
       const { settings, apiKey, apiKeyError } =
         await resolvePostEffectAiSnapshot(b, args, d, "start_post_effect_run");
+      const callerIdentity = a.callerIdentity;
       return parseWire(
         await startPostEffectRun(
-          { ...args, expectedWorkspacePath },
+          callerIdentity === undefined
+            ? { ...args, expectedWorkspacePath }
+            : { ...args, expectedWorkspacePath, callerIdentity },
           settings,
           apiKey,
           apiKeyError,
@@ -8283,9 +9779,12 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           d,
           "start_post_effect_run_multi",
         );
+      const callerIdentity = a.callerIdentity;
       return parseWire(
         await startPostEffectRunMulti(
-          { ...args, expectedWorkspacePath },
+          callerIdentity === undefined
+            ? { ...args, expectedWorkspacePath }
+            : { ...args, expectedWorkspacePath, callerIdentity },
           settings,
           apiKey,
           apiKeyError,
@@ -8303,6 +9802,61 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         "abortPostEffectRun",
       )(runId, projectId);
       return null;
+    },
+  },
+  retire_current_chat_input: {
+    run: async (b, a) => {
+      requireExactKeys(a, ["chatSessionId"], "retire_current_chat_input");
+      const request = requireRetireCurrentChatInputRequest(a);
+      const callerIdentity = callerIdentityWire(a);
+      if (!callerIdentity) {
+        throw new Error(
+          "IPC_CAPTURE_CALLER_IDENTITY_REQUIRED: main-issued caller identity is missing",
+        );
+      }
+      const raw = await requireNapiMethod(
+        b,
+        b.retireCurrentChatInput,
+        "retireCurrentChatInput",
+      )(request, callerIdentity);
+      return parseRetireCurrentChatInputReceipt(parseWire(raw), request);
+    },
+  },
+  capture_current_chat_input: {
+    run: async (b, a) => {
+      const allowedKeys = ["submission"];
+      requireExactKeys(a, allowedKeys, "capture_current_chat_input");
+      const submission = requireCaptureCurrentChatInputSubmission(a);
+      const callerIdentity = callerIdentityWire(a);
+      if (!callerIdentity) {
+        throw new Error(
+          "IPC_CAPTURE_CALLER_IDENTITY_REQUIRED: main-issued caller identity is missing",
+        );
+      }
+      const raw = await requireNapiMethod(
+        b,
+        b.captureCurrentChatInput,
+        "captureCurrentChatInput",
+      )(submission, callerIdentity);
+      return parseCaptureCurrentChatInputReceipt(parseWire(raw), submission);
+    },
+  },
+  cancel_current_chat_input: {
+    run: async (b, a) => {
+      requireExactKeys(a, ["submission"], "cancel_current_chat_input");
+      const submission = requireCancelCurrentChatInputSubmission(a);
+      const callerIdentity = callerIdentityWire(a);
+      if (!callerIdentity) {
+        throw new Error(
+          "IPC_CAPTURE_CALLER_IDENTITY_REQUIRED: main-issued caller identity is missing",
+        );
+      }
+      const raw = await requireNapiMethod(
+        b,
+        b.cancelCurrentChatInput,
+        "cancelCurrentChatInput",
+      )(submission, callerIdentity);
+      return parseCancelCurrentChatInputReceipt(parseWire(raw), submission);
     },
   },
   // AI チャット（Phase 3 バッチ3a）。send 系は napi に api キーを持たせない設計:

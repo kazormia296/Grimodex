@@ -1,8 +1,8 @@
 use grimodex_core::narrative_ir::{
     canonical_narrative_scope_v2, classify_chronicle_scene_event_changes,
-    derive_chronicle_scene_event_scope, validate_chronicle_scene_event_v2,
-    validate_narrative_revision_envelope_v2, validate_narrative_scope_v2,
-    ChronicleChangeDisposition, ChronicleScopeDerivation,
+    derive_chronicle_scene_event_scope, validate_chronicle_scene_event_proposal_payload,
+    validate_chronicle_scene_event_v2, validate_narrative_revision_envelope_v2,
+    validate_narrative_scope_v2, ChronicleChangeDisposition, ChronicleScopeDerivation,
 };
 use serde_json::{json, Value};
 
@@ -669,6 +669,38 @@ fn accepts_empty_chronicle_proposal_note_as_a_string() {
         object(input, "revealBasis"),
     )
     .is_ok());
+}
+
+#[test]
+fn rumored_stage_vocabulary_does_not_expand_writable_chronicle_actualities() {
+    let corpus = fixture();
+    let case = case_by_id(&corpus, "non-secret-event");
+    let original = object(object(case, "input"), "proposalPayload");
+    for actuality in ["actual", "attempted", "prevented", "rumored"] {
+        let mut proposal = original.clone();
+        proposal["actuality"] = json!(actuality);
+        let mut envelope = valid_envelope();
+        envelope["assertion"]["payload"]["actuality"] = json!(actuality);
+        if actuality == "rumored" {
+            assert!(
+                validate_chronicle_scene_event_proposal_payload(&proposal).is_err(),
+                "rumored must not become writable Proposal actuality"
+            );
+            assert!(
+                validate_chronicle_scene_event_v2(&envelope).is_err(),
+                "rumored must not become writable V2 Assertion actuality"
+            );
+        } else {
+            assert!(
+                validate_chronicle_scene_event_proposal_payload(&proposal).is_ok(),
+                "valid {actuality} Proposal control"
+            );
+            assert!(
+                validate_chronicle_scene_event_v2(&envelope).is_ok(),
+                "valid {actuality} Assertion control"
+            );
+        }
+    }
 }
 
 #[test]

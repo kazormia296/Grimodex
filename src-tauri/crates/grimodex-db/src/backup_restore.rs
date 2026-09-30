@@ -17,6 +17,9 @@ use crate::state::{ActiveWorkspace, PinnedWorkspaceDb, WorkspaceAuthority, Works
 use crate::workspace_lease;
 use crate::Database;
 
+const C2ZC_CONTENT_ADDRESSED_BACKUP_PREFIX: &str = "grimodex-c2zc-restore-fixture--sha256-";
+const C2ZC_CONTENT_ADDRESSED_BACKUP_SUFFIX: &str = ".backup.db";
+
 /// One restore candidate under `<workspace>/backups`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +59,8 @@ pub enum RestoreFailpoint {
     LiveVerifyFailure,
     BeforeRestoreEpochMint,
     AfterRestoreEpochMint,
+    /// Simulate restore-session marker finalization failure after publication.
+    FailFinalizeMarker,
 }
 
 #[cfg(feature = "test-failpoints")]
@@ -70,6 +75,7 @@ impl RestoreFailpoint {
             Self::LiveVerifyFailure => "restore.live_verify_failure",
             Self::BeforeRestoreEpochMint => "restore.before_epoch_mint",
             Self::AfterRestoreEpochMint => "restore.after_epoch_mint",
+            Self::FailFinalizeMarker => "restore.fail_finalize_marker",
         }
     }
 }
@@ -154,16 +160,10 @@ pub fn list_backups_in(dir: &Path) -> Vec<BackupInfo> {
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("grimodex-") {
-            continue;
-        }
-        let format = if name.ends_with(".db.gz") {
-            "db.gz"
-        } else if name.ends_with(".db") {
-            "db"
-        } else {
+        let Some((is_gz, _expected_digest)) = parse_backup_file_name(&name) else {
             continue;
         };
+        let format = if is_gz { "db.gz" } else { "db" };
         let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
             continue;
         };
@@ -195,18 +195,34 @@ pub fn list_backups_in(dir: &Path) -> Vec<BackupInfo> {
 /// Replace the active workspace DB with a selected backup.
 ///
 /// `on_reopened` runs after the restored database has opened successfully and
-/// before it becomes active. Each shell injects invalidation for its DB-derived
-/// in-memory caches here.
+/// its authority has become active. Each shell injects invalidation for its
+/// DB-derived in-memory caches here.
 pub fn restore_backup_core(
     ws_state: &WorkspaceState,
     file_name: &str,
     on_reopened: impl FnOnce(),
 ) -> AppResult<()> {
     // Serialize against open_workspace and concurrent restores.
-    let _open_guard = ws_state
+    let open_guard = ws_state
         .open_lock
         .lock()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    restore_backup_core_with_open_lock(ws_state, &open_guard, file_name, on_reopened)
+}
+
+/// Restore while the caller already owns `WorkspaceState::open_lock`.
+///
+/// The Electron maintenance owner must close admission before it begins the
+/// restore, but it must also acquire the shared open lock before doing so. A
+/// separate entry point lets that owner keep the same guard through the
+/// replacement without recursively locking `restore_backup_core`.
+pub fn restore_backup_core_with_open_lock(
+    ws_state: &WorkspaceState,
+    _open_guard: &std::sync::MutexGuard<'_, ()>,
+    file_name: &str,
+    on_reopened: impl FnOnce(),
+) -> AppResult<()> {
 
     let ws_path = {
         let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -216,7 +232,7 @@ pub fn restore_backup_core(
             .path()
             .to_path_buf()
     };
-    let (source, is_gz) = open_backup_source(&ws_path, file_name)?;
+    let (source, is_gz, expected_source_digest) = open_backup_source(&ws_path, file_name)?;
 
     let db_path = ws_path.join("grimodex.db");
     // Remove the legacy fixed-name staging file without following symlinks.
@@ -236,6 +252,14 @@ pub fn restore_backup_core(
     drop(staged_output);
     let restore_source_digest = crate::migration_supervisor::digest_sha256_file(&staged_plain)
         .map_err(|error| anyhow::anyhow!("RESTORE_CANDIDATE_DIGEST_FAILED: {error}"))?;
+    if let Some(expected) = expected_source_digest.as_deref() {
+        if restore_source_digest != expected {
+            return Err(anyhow::anyhow!(
+                "C2ZC_RESTORE_SOURCE_DIGEST_MISMATCH: expected={expected} actual={restore_source_digest}"
+            )
+            .into());
+        }
+    }
     verify_sqlite_ok(&staged_plain)?;
 
     // `quick_check` alone accepts valid SQLite files from a schema version this
@@ -535,22 +559,25 @@ pub fn install_staged_workspace_db(
     // Consumer Freshness as current on the next normal open. The pre-Epoch
     // digest is the stable input to a domain-separated identity; retrying the
     // same backup then observes the same identity and does not rotate twice.
-    let materialized_candidate_digest =
-        crate::migration_supervisor::digest_sha256_file(staged_plain)
-            .map_err(|error| anyhow::anyhow!("RESTORE_CANDIDATE_DIGEST_FAILED: {error}"))?;
+    // Safe Mode passes the digest captured from the materialized image before
+    // its mutating preflight. Direct callers retain the historical fallback
+    // of hashing the staged image at this boundary.
+    let restore_seed = match options.restore_source_digest.as_deref() {
+        Some(digest) => digest.to_string(),
+        None => crate::migration_supervisor::digest_sha256_file(staged_plain)
+            .map_err(|error| anyhow::anyhow!("RESTORE_CANDIDATE_DIGEST_FAILED: {error}"))?,
+    };
     if let Err(error) = crate::migration_supervisor::seal_sqlite_image(staged_plain) {
         return Err(anyhow::anyhow!(
             "復元候補の seal に失敗したため中止しました（live未置換）: {error}"
         )
         .into());
     }
-    let restore_seed = options
-        .restore_source_digest
-        .as_deref()
-        .unwrap_or(materialized_candidate_digest.as_str());
     let restore_identity = format!(
         "restore-image-sha256:{}",
-        restore_seed.strip_prefix("sha256:").unwrap_or(restore_seed)
+        restore_seed
+            .strip_prefix("sha256:")
+            .unwrap_or(restore_seed.as_str())
     );
     #[cfg(feature = "test-failpoints")]
     hit_restore_failpoint(options.failpoint, RestoreFailpoint::BeforeRestoreEpochMint)
@@ -967,7 +994,9 @@ pub fn install_staged_workspace_db(
         || options.failpoint == Some(RestoreFailpoint::BeforeLiveVerify)
         || options.failpoint == Some(RestoreFailpoint::LiveVerifyFailure)
     {
-        let code = options.failpoint.expect("failpoint set").as_str();
+        let point = options.failpoint.expect("failpoint set");
+        park_restore_failpoint_if_requested(point)?;
+        let code = point.as_str();
         let primary = format!("RESTORE_FAILPOINT: {code}");
         drop(exclusive_lease);
         return restore_rollback_error(RestoreRollbackArgs {
@@ -1026,14 +1055,17 @@ pub fn install_staged_workspace_db(
 
     match publish_active_workspace(ws_state, ws_path.to_path_buf(), exclusive_lease) {
         Ok(_) => {
-            // The authority is live and the restored data is intact, but a
-            // finalize failure means the next open would still enter Safe
-            // Mode: that is not a clean success and must not be reported as
-            // one.
-            finalize_restore_session_marker(ws_path)?;
+            // Publication makes the restored authority live before marker
+            // finalization. Invalidate shell caches immediately so a marker
+            // cleanup failure cannot leave the live authority with stale
+            // in-memory state.
             if let Some(on_reopened) = options.on_reopened.take() {
                 on_reopened();
             }
+            #[cfg(feature = "test-failpoints")]
+            hit_restore_failpoint(options.failpoint, RestoreFailpoint::FailFinalizeMarker)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            finalize_restore_session_marker(ws_path)?;
             Ok(())
         }
         Err(restore_error) => {
@@ -1153,27 +1185,57 @@ fn read_live_c2zc_marker_for_restore(
             .into())
         }
     }
-    let conn =
-        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|error| {
-                anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}")
-            })?;
-    let marker_table_exists: bool = conn
-        .query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM sqlite_master
-                  WHERE type = 'table' AND name = 'schema_data_migrations'
-             )",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}"))?;
+    let conn = match rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(conn) => conn,
+        Err(error) if is_corrupt_sqlite_error(&error) => {
+            tracing::warn!(
+                "restore: Safe Mode live DB is corrupt while reading C2-ZC marker; treating it as having no prior authority: {error}"
+            );
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into())
+        }
+    };
+    let marker_table_exists: bool = match conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master
+              WHERE type = 'table' AND name = 'schema_data_migrations'
+         )",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(exists) => exists,
+        Err(error) if is_corrupt_sqlite_error(&error) => {
+            tracing::warn!(
+                "restore: Safe Mode live DB is corrupt while reading sqlite_master; treating it as having no prior C2-ZC authority: {error}"
+            );
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into())
+        }
+    };
     if !marker_table_exists {
-        let schema_version: i32 = conn
+        let schema_version: i32 = match conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
-            .map_err(|error| {
-                anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}")
-            })?;
+        {
+            Ok(version) => version,
+            Err(error) if is_corrupt_sqlite_error(&error) => {
+                tracing::warn!(
+                    "restore: Safe Mode live DB is corrupt while reading user_version; treating it as having no prior C2-ZC authority: {error}"
+                );
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(
+                    anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into(),
+                )
+            }
+        };
         if (0..Database::SCHEMA_DATA_MIGRATIONS_INTRODUCED_SCHEMA_VERSION).contains(&schema_version)
         {
             // SCHEMA 0-22 predate both the marker table and the C2-ZC
@@ -1188,8 +1250,36 @@ fn read_live_c2zc_marker_for_restore(
         )
         .into());
     }
-    Database::read_c2zc_cutover_marker(&conn).map_err(|error| {
-        anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into()
+    match Database::read_c2zc_cutover_marker(&conn) {
+        Ok(marker) => Ok(marker),
+        Err(error) if is_corrupt_sqlite_anyhow_error(&error) => {
+            tracing::warn!(
+                "restore: Safe Mode live DB is corrupt while reading C2-ZC marker row; treating it as having no prior authority: {error}"
+            );
+            Ok(None)
+        }
+        Err(error) => {
+            Err(anyhow::anyhow!("NEX_C2ZC_RESTORE_LIVE_MARKER_READ_FAILED: {error}").into())
+        }
+    }
+}
+
+fn is_corrupt_sqlite_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if matches!(
+                failure.code,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+            )
+    )
+}
+
+fn is_corrupt_sqlite_anyhow_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(is_corrupt_sqlite_error)
     })
 }
 
@@ -1532,7 +1622,52 @@ pub(crate) fn materialize_candidate_to_plain(
         cleanup_path_best_effort(dest);
         return Err(anyhow::anyhow!("復元DBの同期に失敗しました: {error}").into());
     }
+    drop(output);
+    verify_materialized_backup_digest(relative_key, dest)?;
     Ok(())
+}
+
+/// Validate the optional content-addressed token after a candidate has been
+/// copied from its already-open source handle.  Legacy backup names have no
+/// token and retain their historical behavior.
+pub(crate) fn verify_materialized_backup_digest(
+    relative_key: &str,
+    materialized_path: &Path,
+) -> AppResult<String> {
+    let parsed = parse_backup_file_name(relative_key);
+    if parsed.is_none()
+        && Path::new(relative_key)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(C2ZC_CONTENT_ADDRESSED_BACKUP_PREFIX))
+    {
+        cleanup_path_best_effort(materialized_path);
+        return Err(anyhow::anyhow!(
+            "C2ZC_RESTORE_SOURCE_DIGEST_INVALID: malformed content-addressed backup name: {relative_key}"
+        )
+        .into());
+    }
+    let actual = match crate::migration_supervisor::digest_sha256_file(materialized_path) {
+        Ok(actual) => actual,
+        Err(error) => {
+            cleanup_path_best_effort(materialized_path);
+            return Err(anyhow::anyhow!("RESTORE_CANDIDATE_DIGEST_FAILED: {error}").into());
+        }
+    };
+    let Some((_is_gz, expected)) = parsed else {
+        return Ok(actual);
+    };
+    let Some(expected) = expected else {
+        return Ok(actual);
+    };
+    if actual != expected {
+        cleanup_path_best_effort(materialized_path);
+        return Err(anyhow::anyhow!(
+            "C2ZC_RESTORE_SOURCE_DIGEST_MISMATCH: expected={expected} actual={actual}"
+        )
+        .into());
+    }
+    Ok(actual)
 }
 
 fn copy_path_into(src: &Path, output: &mut File) -> io::Result<()> {
@@ -1568,13 +1703,15 @@ pub(crate) fn remove_db_sidecars(db_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Replace `destination` with a same-directory staged file using the
+/// platform's atomic replacement primitive.
 #[cfg(not(windows))]
-pub(crate) fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
+pub fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
     std::fs::rename(staged, destination)
 }
 
 #[cfg(windows)]
-pub(crate) fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
+pub fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
 
@@ -1611,7 +1748,7 @@ pub(crate) fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()
     }
 }
 
-fn open_backup_source(ws_path: &Path, file_name: &str) -> AppResult<(File, bool)> {
+fn open_backup_source(ws_path: &Path, file_name: &str) -> AppResult<(File, bool, Option<String>)> {
     if file_name.is_empty()
         || file_name.contains('/')
         || file_name.contains('\\')
@@ -1620,12 +1757,11 @@ fn open_backup_source(ws_path: &Path, file_name: &str) -> AppResult<(File, bool)
     {
         return Err(anyhow::anyhow!("不正なバックアップ名です: {file_name}").into());
     }
-    let is_gz = file_name.ends_with(".db.gz");
-    if !(is_gz || file_name.ends_with(".db")) {
+    let Some((is_gz, expected_source_digest)) = parse_backup_file_name(file_name) else {
         return Err(
             anyhow::anyhow!("この形式のバックアップは復元に対応していません: {file_name}").into(),
         );
-    }
+    };
     let path = ws_path.join("backups").join(file_name);
     let initial_metadata = std::fs::symlink_metadata(&path)
         .map_err(|_| anyhow::anyhow!("バックアップが見つかりません: {file_name}"))?;
@@ -1657,7 +1793,44 @@ fn open_backup_source(ws_path: &Path, file_name: &str) -> AppResult<(File, bool)
         }
     }
 
-    Ok((file, is_gz))
+    Ok((file, is_gz, expected_source_digest))
+}
+
+/// Parse a user-visible backup basename once for listing, normal restore, and
+/// Safe Mode recovery.  The optional C2-ZC token is deliberately narrow:
+/// `grimodex-c2zc-restore-fixture--sha256-<64 lowercase hex>.backup.db`.
+/// A token on `.db.gz` is rejected instead of being ambiguously interpreted
+/// as the digest of compressed or materialized bytes.  Legacy names remain
+/// accepted unchanged.
+pub(crate) fn parse_backup_file_name(name: &str) -> Option<(bool, Option<String>)> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || !name.starts_with("grimodex-")
+    {
+        return None;
+    }
+    let is_gz = name.ends_with(".db.gz");
+    if !is_gz && !name.ends_with(".db") {
+        return None;
+    }
+    if !name.starts_with(C2ZC_CONTENT_ADDRESSED_BACKUP_PREFIX) {
+        return Some((is_gz, None));
+    }
+    if is_gz {
+        return None;
+    }
+    let token = name
+        .strip_prefix(C2ZC_CONTENT_ADDRESSED_BACKUP_PREFIX)?
+        .strip_suffix(C2ZC_CONTENT_ADDRESSED_BACKUP_SUFFIX)?;
+    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    if token.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return None;
+    }
+    Some((false, Some(token.to_string())))
 }
 
 pub(crate) fn verify_sqlite_ok(path: &Path) -> AppResult<()> {
@@ -1698,6 +1871,8 @@ mod tests {
         workspace_maintenance_exclusive_waiters,
     };
     use crate::with_db_state;
+    #[cfg(feature = "test-failpoints")]
+    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
@@ -1714,7 +1889,7 @@ mod tests {
         let state = WorkspaceState {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: AtomicBool::new(false),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: std::sync::Mutex::new(()),
         };
         (dir, state)
@@ -1762,7 +1937,7 @@ mod tests {
         WorkspaceState {
             inner: std::sync::Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: AtomicBool::new(false),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: std::sync::Mutex::new(()),
         }
     }
@@ -1832,18 +2007,39 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("mkdir");
         std::fs::write(dir.join("grimodex-a.db"), b"db").expect("write db");
         std::fs::write(dir.join("grimodex-b.db.gz"), b"gzip").expect("write gz");
+        std::fs::write(
+            dir.join(format!(
+                "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
+                "a".repeat(64)
+            )),
+            b"content-addressed",
+        )
+        .expect("write content-addressed db");
+        std::fs::write(
+            dir.join("grimodex-c2zc-restore-fixture--sha256-ABC.backup.db"),
+            b"malformed",
+        )
+        .expect("write malformed content-addressed db");
         std::fs::write(dir.join("grimodex-c.db.tmp"), b"tmp").expect("write tmp");
         std::fs::write(dir.join("other.db"), b"other").expect("write other");
         std::fs::create_dir(dir.join("grimodex-directory.db")).expect("mkdir candidate");
 
         let listed = list_backups_in(&dir);
-        assert_eq!(listed.len(), 2);
+        assert_eq!(listed.len(), 3);
         assert!(listed
             .iter()
             .any(|item| item.file_name == "grimodex-a.db" && item.format == "db"));
         assert!(listed
             .iter()
             .any(|item| item.file_name == "grimodex-b.db.gz" && item.format == "db.gz"));
+        assert!(listed.iter().any(|item| {
+            item.file_name
+                == format!(
+                    "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
+                    "a".repeat(64)
+                )
+                && item.format == "db"
+        }));
         for item in &listed {
             let json = serde_json::to_value(item).expect("serialize BackupInfo");
             assert!(json.get("fileName").is_some());
@@ -1859,7 +2055,7 @@ mod tests {
         let state = WorkspaceState {
             inner: std::sync::Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
-            switching: AtomicBool::new(false),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: std::sync::Mutex::new(()),
         };
         assert!(list_backups(&state)
@@ -1883,9 +2079,103 @@ mod tests {
             "grimodex\\x.db",
             "evil.db",
             "grimodex-x.db.tmp",
+            "grimodex-c2zc-restore-fixture--sha256-ABC.db",
+            "grimodex-c2zc-restore-fixture--sha256-{}.backup.db.gz",
+            "grimodex-c2zc-restore-fixture--sha256-{}.backup.db",
         ] {
             assert!(open_backup_source(ws, bad).is_err(), "accepts {bad:?}");
         }
+    }
+
+    #[test]
+    fn malformed_content_addressed_materialization_is_rejected_and_cleaned() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-backup-restore-content-addressed-malformed-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("create malformed digest fixture");
+        let materialized = dir.join("materialized.db");
+        std::fs::write(&materialized, b"malformed candidate").expect("write materialized db");
+        let error = verify_materialized_backup_digest(
+            "grimodex-c2zc-restore-fixture--sha256-ABC.backup.db",
+            &materialized,
+        )
+        .expect_err("malformed content-addressed name must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("C2ZC_RESTORE_SOURCE_DIGEST_INVALID"),
+            "unexpected malformed name error: {error}"
+        );
+        assert!(
+            !materialized.exists(),
+            "rejected materialization must be cleaned"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn content_addressed_restore_accepts_matching_bytes_and_rejects_materialized_digest_corruption()
+    {
+        let (dir, state) = fixture("content-addressed");
+        set_marker(&state, "before-restore");
+        let legacy_path = dir.join("backups/grimodex-c2zc-source.db");
+        backup_active(&state, &legacy_path);
+        let digest = crate::migration_supervisor::digest_sha256_file(&legacy_path)
+            .expect("digest fixture backup");
+        let matching_name = format!("grimodex-c2zc-restore-fixture--sha256-{digest}.backup.db");
+        let matching_path = dir.join("backups").join(&matching_name);
+        std::fs::rename(&legacy_path, &matching_path).expect("publish digest-bound backup");
+        set_marker(&state, "after-backup");
+
+        restore_backup_core(&state, &matching_name, || {}).expect("matching digest restores");
+        assert_eq!(marker(&state), "before-restore");
+        assert_no_internal_restore_files(&dir);
+
+        let mismatch_dir = std::env::temp_dir().join(format!(
+            "grimodex-backup-restore-content-addressed-mismatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(mismatch_dir.join("backups")).expect("create mismatch fixture");
+        let mismatch_db =
+            Database::new(&mismatch_dir.join("grimodex.db")).expect("open mismatch fixture db");
+        mismatch_db.migrate().expect("migrate mismatch fixture db");
+        let mismatch_authority =
+            WorkspaceAuthority::from_database_for_test(mismatch_db, mismatch_dir.clone())
+                .expect("mismatch fixture authority");
+        let mismatch_state = WorkspaceState {
+            inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(mismatch_authority))),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
+            open_lock: std::sync::Mutex::new(()),
+        };
+        set_marker(&mismatch_state, "mismatch-live");
+        let mismatch_source = mismatch_dir.join("backups/mismatch-source.db");
+        backup_active(&mismatch_state, &mismatch_source);
+        let mismatch_digest = crate::migration_supervisor::digest_sha256_file(&mismatch_source)
+            .expect("digest mismatch fixture backup");
+        let mismatch_name =
+            format!("grimodex-c2zc-restore-fixture--sha256-{mismatch_digest}.backup.db");
+        let mismatch_path = mismatch_dir.join("backups").join(&mismatch_name);
+        std::fs::rename(&mismatch_source, &mismatch_path)
+            .expect("publish digest-bound backup before materialized corruption");
+        // A candidate with valid content-addressed naming but corrupted bytes
+        // must fail before the native restore can replace the live DB.
+        std::fs::write(&mismatch_path, b"corrupted-materialized-candidate")
+            .expect("corrupt published digest-bound candidate bytes");
+        let error = restore_backup_core(&mismatch_state, &mismatch_name, || {})
+            .expect_err("mismatched digest must reject before live replacement");
+        assert!(
+            error
+                .to_string()
+                .contains("C2ZC_RESTORE_SOURCE_DIGEST_MISMATCH"),
+            "unexpected mismatch error: {error}"
+        );
+        assert_eq!(marker(&mismatch_state), "mismatch-live");
+        assert_no_internal_restore_files(&mismatch_dir);
+
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(mismatch_dir);
     }
 
     #[test]
@@ -1908,6 +2198,50 @@ mod tests {
         assert!(list_backups(&state).expect("list safety copies").len() >= 2);
         assert!(!dir.join("grimodex.db.restore-tmp").exists());
         assert_no_internal_restore_files(&dir);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    #[test]
+    fn finalize_marker_failpoint_keeps_restored_authority_and_runs_hook_once() {
+        let (dir, state) = fixture("finalize-marker-failpoint");
+        set_marker(&state, "before-restore");
+        let staged = dir.join("staged-fail-finalize.db");
+        backup_active(&state, &staged);
+        set_marker(&state, "live-after-backup");
+
+        let hook_calls = AtomicUsize::new(0);
+        let error = install_staged_workspace_db(
+            &state,
+            &dir,
+            &staged,
+            InstallStagedOptions::normal_restore_with_failpoint(
+                || {
+                    hook_calls.fetch_add(1, Ordering::SeqCst);
+                },
+                RestoreFailpoint::FailFinalizeMarker,
+            ),
+        )
+        .expect_err("finalize marker failpoint must report an error");
+        assert!(
+            error.to_string().contains("restore.fail_finalize_marker"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(marker(&state), "before-restore");
+        assert!(
+            state.inner.lock().expect("workspace state lock").is_some(),
+            "published restored authority must remain live"
+        );
+        assert!(
+            !state.switching.load(Ordering::SeqCst),
+            "switching guard must be released after failpoint"
+        );
+        let session = read_incomplete_restore_session(&dir)
+            .expect("read restore session marker")
+            .expect("restore session marker remains for recovery");
+        assert_eq!(session.phase, "epoch-minted");
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2510,6 +2844,151 @@ mod tests {
         assert_no_internal_restore_files(&dir);
 
         drop(source);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restore_of_schema_35_pre_a1_backup_backfills_existing_scenes_as_legacy_absent() {
+        let (dir, state) = fixture("schema-35-pre-a1");
+        let backup_name = "grimodex-20200101-000000.db";
+        let backup_path = dir.join("backups").join(backup_name);
+
+        with_db_state(&state, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('restore-legacy', 'Legacy scope')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO tree_nodes
+                        (id, project_id, node_type, title, sort_order)
+                     VALUES ('restore-legacy-scene', 'restore-legacy', 'scene', 'Scene', 'a0')",
+                    [],
+                )?;
+                Ok(())
+            })
+        })
+        .expect("seed a pre-A1 scene without a scope binding");
+        backup_active(&state, &backup_path);
+
+        // Model a historical schema-35 backup: the scene exists,
+        // but A1's scope tables have not been introduced yet.
+        let candidate = Database::new(&backup_path).expect("open backup candidate");
+        candidate
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "DROP TABLE narrative_scene_scope_bindings;
+                     DROP TABLE narrative_scope_registries;",
+                )?;
+                // This is specifically pre-A1, not the moving previous schema.
+                conn.pragma_update(None, "user_version", 35)?;
+                let version: i32 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                assert_eq!(version, 35, "restore fixture must remain pre-A1");
+                Ok(())
+            })
+            .expect("stamp schema-35 pre-A1 candidate");
+        drop(candidate);
+
+        restore_backup_core(&state, backup_name, || {})
+            .expect("schema-35 restore must run the A1 compatibility backfill");
+
+        with_db_state(&state, |db| {
+            db.with_read_transaction(|conn| {
+                let marker: String = conn.query_row(
+                    "SELECT compatibility_marker
+                       FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'restore-legacy'
+                        AND scene_id = 'restore-legacy-scene'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let version: i32 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                assert_eq!(marker, "legacy-absent");
+                assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+                Ok(())
+            })
+        })
+        .expect("inspect restored legacy scope");
+
+        assert_no_internal_restore_files(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restore_of_current_a1_backup_with_missing_binding_remains_fail_closed() {
+        let (dir, state) = fixture("missing-a1-binding");
+        let backup_name = "grimodex-20200101-000000.db";
+        let backup_path = dir.join("backups").join(backup_name);
+
+        with_db_state(&state, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('restore-scope', 'Restore scope')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO tree_nodes
+                        (id, project_id, node_type, title, sort_order)
+                     VALUES ('restore-scope-scene', 'restore-scope', 'scene', 'Scene', 'a0')",
+                    [],
+                )?;
+                crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                    conn,
+                    "restore-scope",
+                    "restore-scope-scene",
+                    "2026-09-14T00:00:00.000Z",
+                )?;
+                Ok(())
+            })
+        })
+        .expect("seed current A1 scope binding");
+        backup_active(&state, &backup_path);
+
+        // Make the candidate look like a current A1 backup with a damaged
+        // binding row. The restore preflight must not reinterpret that damage
+        // as the pre-A1 legacy state.
+        let candidate = Database::new(&backup_path).expect("open backup candidate");
+        candidate
+            .with_conn(|conn| {
+                conn.execute(
+                    "DELETE FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'restore-scope' AND scene_id = 'restore-scope-scene'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("remove candidate binding");
+        drop(candidate);
+
+        restore_backup_core(&state, backup_name, || {})
+            .expect("current A1 restore must preserve the missing binding");
+
+        with_db_state(&state, |db| {
+            db.with_read_transaction(|conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'restore-scope' AND scene_id = 'restore-scope-scene'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0, "restore must not synthesize a legacy binding");
+                let error = crate::narrative_extraction::read_narrative_scene_scope(
+                    conn,
+                    "restore-scope",
+                    "restore-scope-scene",
+                )
+                .expect_err("restored missing binding must remain unavailable");
+                assert!(error
+                    .to_string()
+                    .contains("NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE"));
+                Ok(())
+            })
+        })
+        .expect("inspect restored fail-closed scope");
+
+        assert_no_internal_restore_files(&dir);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

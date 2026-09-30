@@ -181,8 +181,8 @@ export async function replyToAnnotation(params: {
   content: string;
   authorRole?: "user" | "ai" | "system";
   projectId: string;
-}): Promise<PostEffectAnnotation> {
-  const result = await invoke<PostEffectAnnotation>("reply_to_annotation", {
+}): Promise<{ id: string }> {
+  const result = await invoke<{ id: string }>("reply_to_annotation", {
     args: {
       parent_id: params.parentId,
       content: params.content,

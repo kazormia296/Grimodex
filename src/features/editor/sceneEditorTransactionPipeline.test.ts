@@ -6,6 +6,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { SceneBeatNode } from "./SceneBeatNode";
 import {
+  createLoadedTimelapseDescriptor,
   handleSceneEditorTransaction,
   type SceneBeatIndexRef,
   type SceneEditorTransactionPorts,
@@ -88,11 +89,14 @@ function sceneInput(
 ) {
   return {
     transaction,
-    id: "scene-1",
-    isEntryMode: false,
-    isCodexMode: false,
-    isSnippetMode: false,
-    isChronicleEventMode: false,
+    timelapseDescriptor: createLoadedTimelapseDescriptor("project-1", {
+      kind: "tree",
+      id: "scene-1",
+      nodeType: "scene",
+      storage: "database",
+      loadedVersion: 1,
+    }),
+    beatSceneId: "scene-1",
     isApplyingExternalUpdate,
     beatIndexRef,
   };
@@ -205,11 +209,13 @@ describe("handleSceneEditorTransaction", () => {
     handleSceneEditorTransaction(
       {
         transaction,
-        id: "codex-1",
-        isEntryMode: true,
-        isCodexMode: true,
-        isSnippetMode: false,
-        isChronicleEventMode: false,
+        timelapseDescriptor: createLoadedTimelapseDescriptor("project-1", {
+          kind: "codex",
+          id: "codex-1",
+          phaseId: null,
+          loadedVersion: 1,
+        }),
+        beatSceneId: null,
         isApplyingExternalUpdate: false,
         beatIndexRef,
       },
@@ -224,6 +230,91 @@ describe("handleSceneEditorTransaction", () => {
     );
     expect(beatIndexRef.current).toBeNull();
     expect(setPreview).not.toHaveBeenCalled();
+  });
+
+  it("does not capture phase body steps against the base Codex baseline", () => {
+    const editor = createEditor();
+    const transaction = editor.state.tr.insertText("!", 1);
+    const beatIndexRef: SceneBeatIndexRef = { current: null };
+    const { ports, record } = createPorts();
+
+    handleSceneEditorTransaction(
+      {
+        transaction,
+        timelapseDescriptor: createLoadedTimelapseDescriptor("project-1", {
+          kind: "codex",
+          id: "codex-1",
+          phaseId: "phase-1",
+          loadedVersion: 1,
+        }),
+        beatSceneId: null,
+        isApplyingExternalUpdate: false,
+        beatIndexRef,
+      },
+      ports,
+    );
+
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it("captures old, no, then new authority exactly across a reused editor load gap", () => {
+    const editor = createEditor();
+    const transaction = editor.state.tr.insertText("!", 1);
+    const beatIndexRef: SceneBeatIndexRef = { current: null };
+    const { ports, record } = createPorts();
+
+    handleSceneEditorTransaction(
+      {
+        transaction,
+        timelapseDescriptor: createLoadedTimelapseDescriptor("project-old", {
+          kind: "codex",
+          id: "codex-old",
+          phaseId: null,
+          loadedVersion: 1,
+        }),
+        beatSceneId: null,
+        isApplyingExternalUpdate: false,
+        beatIndexRef,
+      },
+      ports,
+    );
+    handleSceneEditorTransaction(
+      {
+        transaction,
+        timelapseDescriptor: null,
+        beatSceneId: null,
+        isApplyingExternalUpdate: false,
+        beatIndexRef,
+      },
+      ports,
+    );
+    handleSceneEditorTransaction(
+      {
+        transaction,
+        timelapseDescriptor: createLoadedTimelapseDescriptor("project-new", {
+          kind: "codex",
+          id: "codex-new",
+          phaseId: "__base__",
+          loadedVersion: 1,
+        }),
+        beatSceneId: null,
+        isApplyingExternalUpdate: false,
+        beatIndexRef,
+      },
+      ports,
+    );
+
+    expect(record).toHaveBeenCalledTimes(2);
+    expect(record.mock.calls.map(([input]) => input)).toEqual([
+      expect.objectContaining({
+        projectId: "project-old",
+        entityId: "codex-old",
+      }),
+      expect.objectContaining({
+        projectId: "project-new",
+        entityId: "codex-new",
+      }),
+    ]);
   });
 
   it("keeps both EditorPane and LinearSceneBlock wired to the canonical pipeline", async () => {

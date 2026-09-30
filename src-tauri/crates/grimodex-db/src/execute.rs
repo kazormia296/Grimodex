@@ -30,6 +30,15 @@ const SLOW_DB_CALL_MS: u128 = 50;
 /// renderer-origin SQL attempts to cross the workspace/file/schema boundary.
 pub const RENDERER_SQL_SECURITY_ERROR: &str = "RENDERER_SQL_SECURITY";
 
+/// Stored typed NIR-1 Evidence shares the legacy proposal payload columns.
+/// Renderer SQL has no row-safe publication predicate, so these columns stay
+/// Native-only until the explicit D2a plaintext publication gate exists.
+pub const RENDERER_TYPED_PAYLOAD_ERROR: &str = "RENDERER_SQL_TYPED_PAYLOAD";
+
+/// Stable marker returned when D2a's Native SQL publication guard rejects a
+/// protected read or a statement that would return DML result plaintext.
+pub const RENDERER_PROFILE_EGRESS_ERROR: &str = "D2A_EGRESS_DENIED";
+
 /// SQL caller classification shared by Electron, Tauri, and MCP.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SqlOrigin {
@@ -43,6 +52,16 @@ pub enum SqlOrigin {
     TrustedMigration,
 }
 
+/// Result metadata used by the Native profile-egress adapter.  SQLite's
+/// prepared statement is the authority for whether the executed statement can
+/// mutate the database; callers must not infer this from the SQL spelling or
+/// the Drizzle method name.
+#[derive(Debug)]
+pub struct SqlExecutionResult {
+    pub rows: Vec<serde_json::Map<String, Value>>,
+    pub statement_may_mutate: bool,
+}
+
 impl SqlOrigin {
     pub fn is_untrusted(self) -> bool {
         matches!(self, Self::Renderer | Self::McpGeneric)
@@ -52,6 +71,14 @@ impl SqlOrigin {
 thread_local! {
     static UNTRUSTED_SQL_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static PENDING_INSERT_COLUMNS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    /// Set only while the Electron Native D2a generic-DB adapter is running.
+    /// The ordinary renderer policy remains backwards-compatible; D2a adds a
+    /// publication guard on top of the same SQLite authorizer.
+    static PROFILE_EGRESS_SQL_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    /// Only the batch runner may issue transaction controls. Payload SQL is
+    /// always evaluated with this disabled, even while the runner-owned
+    /// BEGIN/COMMIT/ROLLBACK is executing under the same authorizer.
+    static RUNNER_TRANSACTION_CONTROL_ALLOWED: Cell<bool> = const { Cell::new(false) };
 }
 
 const RENDERER_SQL_RESOURCE_ERROR: &str = "RENDERER_SQL_RESOURCE_LIMIT";
@@ -59,6 +86,63 @@ const RENDERER_SQL_LENGTH_LIMIT: i32 = 1_048_576;
 const RENDERER_VDBE_OP_LIMIT: i32 = 250_000;
 const RENDERER_PROGRESS_INTERVAL: i32 = 10_000;
 const RENDERER_MAX_PROGRESS_CALLBACKS: usize = 5_000;
+
+const RESERVED_PROJECT_SETTING_INSERT_TRIGGER: &str =
+    "grimodex_guard_reserved_project_setting_insert";
+const RESERVED_PROJECT_SETTING_UPDATE_TRIGGER: &str =
+    "grimodex_guard_reserved_project_setting_update";
+const RESERVED_PROJECT_SETTING_DELETE_TRIGGER: &str =
+    "grimodex_guard_reserved_project_setting_delete";
+
+const RESERVED_PROJECT_SETTING_GUARD_SQL: &str = r#"
+CREATE TEMP TRIGGER grimodex_guard_reserved_project_setting_insert
+BEFORE INSERT ON main.project_settings
+WHEN NEW.key IN ('scan.import.state', 'timelapse.enabled', 'timelapse.resetSequence')
+BEGIN
+  SELECT RAISE(ABORT, 'PROTECTED_WRITER_SQL: denied mutation of reserved project setting');
+END;
+CREATE TEMP TRIGGER grimodex_guard_reserved_project_setting_update
+BEFORE UPDATE ON main.project_settings
+WHEN OLD.key IN ('scan.import.state', 'timelapse.enabled', 'timelapse.resetSequence')
+  OR NEW.key IN ('scan.import.state', 'timelapse.enabled', 'timelapse.resetSequence')
+BEGIN
+  SELECT RAISE(ABORT, 'PROTECTED_WRITER_SQL: denied mutation of reserved project setting');
+END;
+CREATE TEMP TRIGGER grimodex_guard_reserved_project_setting_delete
+BEFORE DELETE ON main.project_settings
+WHEN OLD.key IN ('scan.import.state', 'timelapse.enabled', 'timelapse.resetSequence')
+BEGIN
+  SELECT RAISE(ABORT, 'PROTECTED_WRITER_SQL: denied mutation of reserved project setting');
+END;
+"#;
+
+fn drop_reserved_project_setting_guard(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(&format!(
+        "DROP TRIGGER IF EXISTS temp.{RESERVED_PROJECT_SETTING_INSERT_TRIGGER};
+         DROP TRIGGER IF EXISTS temp.{RESERVED_PROJECT_SETTING_UPDATE_TRIGGER};
+         DROP TRIGGER IF EXISTS temp.{RESERVED_PROJECT_SETTING_DELETE_TRIGGER};"
+    ))
+}
+
+fn install_reserved_project_setting_guard(conn: &Connection) -> rusqlite::Result<()> {
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM main.sqlite_master
+             WHERE type = 'table' AND name = 'project_settings'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(());
+    }
+
+    // Clear any partial installation before creating the complete set. The
+    // policy cleanup repeats this after removing the authorizer, so a setup
+    // error cannot strand a trigger on the shared connection.
+    drop_reserved_project_setting_guard(conn)?;
+    conn.execute_batch(RESERVED_PROJECT_SETTING_GUARD_SQL)
+}
 
 fn log_prefix(sql: &str) -> String {
     let trimmed = sql.trim_start();
@@ -119,6 +203,55 @@ fn renderer_function_denied(name: &str) -> bool {
 }
 
 fn protected_writer_rejection(ctx: &AuthContext<'_>) -> Option<String> {
+    // Only canonical Native lifecycle triggers may remove a capture as its
+    // parent row is deleted. Renderer DDL cannot forge these accessors.
+    if matches!(ctx.action, AuthAction::Delete { table_name }
+        if table_name == "nir1_chat_input_captures")
+        && matches!(
+            ctx.accessor,
+            Some(
+                "nir1_chat_input_capture_project_delete"
+                    | "nir1_chat_input_capture_session_delete"
+                    | "nir1_chat_input_capture_message_delete"
+            )
+        )
+    {
+        return None;
+    }
+    // Parent deletion keeps the pre-existing source-nullification semantics
+    // for Codex and Snippet rows through one canonical Native trigger. Their
+    // direct source/provenance updates remain protected.
+    if matches!(ctx.action, AuthAction::Update { table_name, column_name }
+        if matches!(table_name, "codex_entries" | "snippets")
+            && column_name == "source_chat_message_id")
+        && ctx.accessor == Some("chat_message_source_provenance_delete")
+    {
+        return None;
+    }
+    // Canonical message mutation triggers can only revoke Native versions and
+    // current Human captures. Renderer DDL is denied, so it cannot forge an accessor.
+    // These exceptions grant no direct table writes or positive qualification.
+    if matches!(ctx.action, AuthAction::Update { table_name, column_name }
+        if table_name == "nir1_generation_message_versions" && column_name == "invalidated")
+        && matches!(
+            ctx.accessor,
+            Some(
+                "nir1_generation_invalidate_message_update"
+                    | "nir1_generation_invalidate_message_delete"
+                    | "nir1_generation_invalidate_message_insert"
+            )
+        )
+    {
+        return None;
+    }
+    // The canonical v40 trigger may only revoke an old capture after a new
+    // Human row is inserted; it cannot grant or change any capture identity.
+    if matches!(ctx.action, AuthAction::Update { table_name, column_name }
+        if table_name == "nir1_chat_input_captures" && column_name == "state")
+        && ctx.accessor == Some("nir1_chat_input_capture_new_human_invalidate")
+    {
+        return None;
+    }
     let registry = bundled_protected_writer_registry();
     match &ctx.action {
         AuthAction::Delete { table_name } => {
@@ -150,6 +283,26 @@ fn protected_writer_rejection(ctx: &AuthContext<'_>) -> Option<String> {
     }
 }
 
+fn renderer_typed_payload_read_rejection(ctx: &AuthContext<'_>) -> Option<String> {
+    let AuthAction::Read {
+        table_name,
+        column_name,
+    } = &ctx.action
+    else {
+        return None;
+    };
+
+    let protected_table = table_name.eq_ignore_ascii_case("narrative_proposals")
+        || table_name.eq_ignore_ascii_case("narrative_proposal_revisions");
+    if protected_table && column_name.eq_ignore_ascii_case("payload_json") {
+        Some(format!(
+            "{RENDERER_TYPED_PAYLOAD_ERROR}: {table_name}.{column_name} contains Native-only typed payload"
+        ))
+    } else {
+        None
+    }
+}
+
 fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
     if !matches!(ctx.database_name, None | Some("main") | Some("temp")) {
         return Some("access to an attached database".to_string());
@@ -165,6 +318,10 @@ fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
     };
     if mutates_ai_audit {
         return Some("mutation of ai_audit_events".to_string());
+    }
+
+    if let Some(reason) = renderer_typed_payload_read_rejection(&ctx) {
+        return Some(reason);
     }
 
     if let Some(reason) = protected_writer_rejection(&ctx) {
@@ -205,6 +362,11 @@ fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
         AuthAction::Function { function_name } if renderer_function_denied(function_name) => {
             Some(format!("function {function_name}"))
         }
+        AuthAction::Transaction { .. } | AuthAction::Savepoint { .. }
+            if !RUNNER_TRANSACTION_CONTROL_ALLOWED.with(Cell::get) =>
+        {
+            Some("transaction control".to_string())
+        }
         AuthAction::Delete { .. }
         | AuthAction::Insert { .. }
         | AuthAction::Pragma { .. }
@@ -232,6 +394,120 @@ fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
     }
 }
 
+fn d2a_table_name(table_name: &str) -> &str {
+    let normalized = table_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(table_name)
+        .trim_matches(|character| matches!(character, '`' | '"' | '[' | ']'));
+    normalized
+}
+
+// The table inventory is Native-owned in profile_egress_policy and is also
+// published to Electron main. SQLite authorizer callbacks are the authority;
+// main's SQL classification is only an early, fail-closed advisory.
+fn renderer_profile_egress_sql_rejection(ctx: &AuthContext<'_>) -> Option<String> {
+    if !PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get) {
+        return None;
+    }
+    if !matches!(ctx.database_name, None | Some("main")) {
+        return Some(format!(
+            "{RENDERER_PROFILE_EGRESS_ERROR}: restricted or unknown database {:?}",
+            ctx.database_name
+        ));
+    }
+    match &ctx.action {
+        AuthAction::Read {
+            table_name,
+            column_name,
+        } if crate::profile_egress_policy::is_protected_table(d2a_table_name(table_name)) =>
+        {
+            Some(format!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: protected plaintext read from {table_name}.{column_name}"
+            ))
+        }
+        AuthAction::Read {
+            table_name,
+            column_name,
+        } if crate::profile_egress_policy::is_protected_column(
+            d2a_table_name(table_name),
+            column_name,
+        ) =>
+        {
+            Some(format!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: {table_name}.{column_name} is not published through generic SQL"
+            ))
+        }
+        AuthAction::Delete { table_name }
+        | AuthAction::Insert { table_name }
+        | AuthAction::Update { table_name, .. }
+            if crate::profile_egress_policy::is_protected_table(d2a_table_name(table_name))
+                || d2a_table_name(table_name).eq_ignore_ascii_case("change_events")
+                || d2a_table_name(table_name).eq_ignore_ascii_case("state_snapshots") =>
+        {
+            Some(format!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: protected DML target {table_name}"
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn with_profile_egress_sql<T>(operation: impl FnOnce() -> T) -> T {
+    let previous = PROFILE_EGRESS_SQL_ACTIVE.with(|active| {
+        let previous = active.get();
+        active.set(true);
+        previous
+    });
+    let result = operation();
+    PROFILE_EGRESS_SQL_ACTIVE.with(|active| active.set(previous));
+    result
+}
+
+fn with_runner_transaction_controls<T>(operation: impl FnOnce() -> T) -> T {
+    let previous = RUNNER_TRANSACTION_CONTROL_ALLOWED.with(|allowed| {
+        let previous = allowed.get();
+        allowed.set(true);
+        previous
+    });
+    let result = operation();
+    RUNNER_TRANSACTION_CONTROL_ALLOWED.with(|allowed| allowed.set(previous));
+    result
+}
+
+fn reject_stale_untrusted_transaction(conn: &Connection) -> anyhow::Result<()> {
+    if conn.is_autocommit() {
+        return Ok(());
+    }
+    let rollback = conn.execute_batch("ROLLBACK");
+    match rollback {
+        Ok(()) => anyhow::bail!(
+            "{RENDERER_SQL_SECURITY_ERROR}: untrusted SQL connection had an open transaction; it was rolled back"
+        ),
+        Err(error) => anyhow::bail!(
+            "{RENDERER_SQL_SECURITY_ERROR}: untrusted SQL connection had an open transaction and rollback failed: {error}"
+        ),
+    }
+}
+
+fn reject_untrusted_transaction_after<T>(
+    conn: &Connection,
+    result: anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    if conn.is_autocommit() {
+        return result;
+    }
+    let rollback = conn.execute_batch("ROLLBACK");
+    match rollback {
+        Ok(()) => anyhow::bail!(
+            "{RENDERER_SQL_SECURITY_ERROR}: untrusted SQL left a transaction open; it was rolled back"
+        ),
+        Err(error) => anyhow::bail!(
+            "{RENDERER_SQL_SECURITY_ERROR}: untrusted SQL left a transaction open and rollback failed: {error}"
+        ),
+    }
+}
+
 struct RendererSqlPolicyState {
     sql_length_limit: i32,
     vdbe_op_limit: i32,
@@ -254,16 +530,20 @@ fn keep_first_cleanup_error<T>(
 fn restore_renderer_sql_policy(
     conn: &Connection,
     state: &RendererSqlPolicyState,
+    reserved_project_setting_guard_requested: bool,
 ) -> anyhow::Result<()> {
     let mut first_error = None;
     keep_first_cleanup_error(
         &mut first_error,
-        conn.progress_handler(0, None::<fn() -> bool>),
+        crate::set_sqlite_progress_handler(conn, 0, None::<fn() -> bool>),
     );
     keep_first_cleanup_error(
         &mut first_error,
         conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>),
     );
+    if reserved_project_setting_guard_requested {
+        keep_first_cleanup_error(&mut first_error, drop_reserved_project_setting_guard(conn));
+    }
     keep_first_cleanup_error(
         &mut first_error,
         conn.set_db_config(
@@ -296,7 +576,32 @@ fn restore_renderer_sql_policy(
     }
 }
 
-fn with_untrusted_sql_policy<T, F>(conn: &Connection, operation: F) -> anyhow::Result<T>
+fn sql_starts_with_keyword(sql: &str, keyword: &str) -> bool {
+    let trimmed = sql.trim_start();
+    let Some(prefix) = trimmed.get(..keyword.len()) else {
+        return false;
+    };
+    prefix.eq_ignore_ascii_case(keyword)
+        && trimmed[keyword.len()..]
+            .chars()
+            .next()
+            .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_')
+}
+
+fn untrusted_sql_needs_reserved_project_setting_guard(sql: &str) -> bool {
+    // Only an explicitly read-only first keyword skips the marker guard. A
+    // leading comment, WITH clause, PRAGMA, malformed statement, or future
+    // syntax stays fail-closed and receives the full untrusted policy.
+    !["select", "values", "explain"]
+        .iter()
+        .any(|keyword| sql_starts_with_keyword(sql, keyword))
+}
+
+fn with_untrusted_sql_policy<T, F>(
+    conn: &Connection,
+    reserved_project_setting_guard_requested: bool,
+    operation: F,
+) -> anyhow::Result<T>
 where
     F: FnOnce(&Connection) -> anyhow::Result<T>,
 {
@@ -313,13 +618,17 @@ where
     let denied_for_hook = Arc::clone(&denied_reason);
     let budget_for_hook = Arc::clone(&budget_exhausted);
     let setup_result = (|| -> rusqlite::Result<()> {
+        if reserved_project_setting_guard_requested {
+            install_reserved_project_setting_guard(conn)?;
+        }
         conn.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, RENDERER_SQL_LENGTH_LIMIT)?;
         conn.set_limit(Limit::SQLITE_LIMIT_VDBE_OP, RENDERER_VDBE_OP_LIMIT)?;
         conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_CREATE, false)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE, false)?;
         conn.authorizer(Some(move |ctx: AuthContext<'_>| {
-            if let Some(reason) = renderer_sql_rejection(ctx) {
+            let profile_reason = renderer_profile_egress_sql_rejection(&ctx);
+            if let Some(reason) = profile_reason.or_else(|| renderer_sql_rejection(ctx)) {
                 if let Ok(mut denied) = denied_for_hook.lock() {
                     // A direct mutation of a protected parent may also trigger
                     // an indirect legacy `ai_audit_events` cascade.  Preserve
@@ -340,7 +649,8 @@ where
             }
         }))?;
         let mut callbacks = 0usize;
-        conn.progress_handler(
+        crate::set_sqlite_progress_handler(
+            conn,
             RENDERER_PROGRESS_INTERVAL,
             Some(move || {
                 callbacks += 1;
@@ -355,7 +665,7 @@ where
         Ok(())
     })();
     if let Err(error) = setup_result {
-        let _ = restore_renderer_sql_policy(conn, &state);
+        let _ = restore_renderer_sql_policy(conn, &state, reserved_project_setting_guard_requested);
         return Err(error.into());
     }
 
@@ -366,7 +676,8 @@ where
         *columns.borrow_mut() = None;
     });
 
-    let cleanup_result = restore_renderer_sql_policy(conn, &state);
+    let cleanup_result =
+        restore_renderer_sql_policy(conn, &state, reserved_project_setting_guard_requested);
     if let Err(error) = cleanup_result {
         return Err(anyhow::anyhow!(
             "failed to restore SQLite policy after renderer SQL: {error}"
@@ -375,7 +686,11 @@ where
 
     let denied = denied_reason.lock().ok().and_then(|reason| reason.clone());
     if let Some(reason) = denied {
-        let code = if reason.contains("protected") {
+        let code = if reason.starts_with(RENDERER_PROFILE_EGRESS_ERROR) {
+            RENDERER_PROFILE_EGRESS_ERROR
+        } else if reason.starts_with(RENDERER_TYPED_PAYLOAD_ERROR) {
+            RENDERER_TYPED_PAYLOAD_ERROR
+        } else if reason.contains("protected") {
             PROTECTED_WRITER_SQL_ERROR
         } else {
             RENDERER_SQL_SECURITY_ERROR
@@ -389,6 +704,11 @@ where
     }
 
     if let Err(error) = &result {
+        if error.to_string().contains(PROTECTED_WRITER_SQL_ERROR) {
+            return Err(anyhow::anyhow!(
+                "{PROTECTED_WRITER_SQL_ERROR}: denied mutation of reserved project setting"
+            ));
+        }
         if matches!(
             error.downcast_ref::<rusqlite::Error>(),
             Some(rusqlite::Error::SqliteFailure(failure, _))
@@ -484,33 +804,39 @@ impl Database {
     fn execute_batch_tx_with_conn(
         conn: &Connection,
         statements: &[BatchStatement],
-    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+    ) -> anyhow::Result<SqlExecutionResult> {
         // BEGIN IMMEDIATE acquires the write lock up front. A plain (deferred)
         // BEGIN only takes it on the first write, so a writer on the same DB
         // file (e.g. the MCP process) could slip in between and turn a later
         // statement into SQLITE_BUSY_SNAPSHOT — which busy_timeout cannot retry.
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let mut last_rows = Vec::new();
+        with_runner_transaction_controls(|| conn.execute_batch("BEGIN IMMEDIATE"))?;
+        let mut last_result = SqlExecutionResult {
+            rows: Vec::new(),
+            statement_may_mutate: false,
+        };
         let result = (|| -> anyhow::Result<_> {
             for stmt in statements {
-                last_rows = Self::execute_with_conn(conn, &stmt.sql, &stmt.params, &stmt.method)?;
+                let execution =
+                    Self::execute_with_conn_result(conn, &stmt.sql, &stmt.params, &stmt.method)?;
+                last_result.statement_may_mutate |= execution.statement_may_mutate;
+                last_result.rows = execution.rows;
             }
-            Ok(last_rows)
+            Ok(last_result)
         })();
         match result {
-            Ok(rows) => match conn.execute_batch("COMMIT") {
+            Ok(rows) => match with_runner_transaction_controls(|| conn.execute_batch("COMMIT")) {
                 Ok(()) => Ok(rows),
                 // A failed COMMIT (deferred FK check, busy, disk-full, ...) leaves
                 // the transaction open on this shared single connection. Without
                 // an explicit ROLLBACK the next caller inherits a zombie tx and
                 // its writes silently ride on / get rolled back with it.
                 Err(error) => {
-                    let _ = conn.execute_batch("ROLLBACK");
+                    let _ = with_runner_transaction_controls(|| conn.execute_batch("ROLLBACK"));
                     Err(error.into())
                 }
             },
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                let _ = with_runner_transaction_controls(|| conn.execute_batch("ROLLBACK"));
                 Err(error)
             }
         }
@@ -520,16 +846,28 @@ impl Database {
         &self,
         statements: &[BatchStatement],
         origin: SqlOrigin,
-    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+    ) -> anyhow::Result<SqlExecutionResult> {
         let lock_started = Instant::now();
         let conn = self.lock_conn()?;
         let lock_wait_ms = lock_started.elapsed().as_millis();
 
         let sql_started = Instant::now();
         let result = if origin.is_untrusted() {
-            with_untrusted_sql_policy(&conn, |conn| {
-                Self::execute_batch_tx_with_conn(conn, statements)
-            })
+            match reject_stale_untrusted_transaction(&conn) {
+                Ok(()) => {
+                    let reserved_project_setting_guard_requested =
+                        statements.iter().any(|statement| {
+                            untrusted_sql_needs_reserved_project_setting_guard(&statement.sql)
+                        });
+                    let result = with_untrusted_sql_policy(
+                        &conn,
+                        reserved_project_setting_guard_requested,
+                        |conn| Self::execute_batch_tx_with_conn(conn, statements),
+                    );
+                    reject_untrusted_transaction_after(&conn, result)
+                }
+                Err(error) => Err(error),
+            }
         } else {
             Self::execute_batch_tx_with_conn(&conn, statements)
         };
@@ -559,7 +897,9 @@ impl Database {
         &self,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_batch_tx_impl(statements, SqlOrigin::TrustedDomainWriter)
+        Ok(self
+            .execute_batch_tx_impl(statements, SqlOrigin::TrustedDomainWriter)?
+            .rows)
     }
 
     pub fn execute_batch_tx_with_origin(
@@ -567,7 +907,7 @@ impl Database {
         origin: SqlOrigin,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_batch_tx_impl(statements, origin)
+        Ok(self.execute_batch_tx_impl(statements, origin)?.rows)
     }
 
     /// Execute renderer-origin statements under the connection-local
@@ -576,7 +916,32 @@ impl Database {
         &self,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(self.execute_batch_tx_renderer_with_result(statements)?.rows)
+    }
+
+    pub fn execute_batch_tx_renderer_with_result(
+        &self,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<SqlExecutionResult> {
         self.execute_batch_tx_impl(statements, SqlOrigin::Renderer)
+    }
+
+    /// Execute renderer-origin statements with the Native D2a plaintext
+    /// publication guard layered onto the shared SQLite authorizer.
+    pub fn execute_batch_tx_renderer_profile_egress(
+        &self,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(self
+            .execute_batch_tx_renderer_profile_egress_with_result(statements)?
+            .rows)
+    }
+
+    pub fn execute_batch_tx_renderer_profile_egress_with_result(
+        &self,
+        statements: &[BatchStatement],
+    ) -> anyhow::Result<SqlExecutionResult> {
+        with_profile_egress_sql(|| self.execute_batch_tx_impl(statements, SqlOrigin::Renderer))
     }
 
     pub fn execute_batch_tx_untrusted(
@@ -588,7 +953,7 @@ impl Database {
             origin.is_untrusted(),
             "execute_batch_tx_untrusted requires an untrusted SqlOrigin"
         );
-        self.execute_batch_tx_impl(statements, origin)
+        Ok(self.execute_batch_tx_impl(statements, origin)?.rows)
     }
 
     pub fn execute_with_conn(
@@ -597,11 +962,31 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(Self::execute_with_conn_result(conn, sql, params, method)?.rows)
+    }
+
+    fn execute_with_conn_result(
+        conn: &Connection,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<SqlExecutionResult> {
         prepare_untrusted_statement_context(sql);
         if renderer_indirect_ai_audit_cascade(conn, sql)? {
             return Err(anyhow::anyhow!(
                 "{RENDERER_SQL_SECURITY_ERROR}: denied mutation of ai_audit_events"
             ));
+        }
+        let mut stmt = conn.prepare(sql)?;
+        let statement_may_mutate = !stmt.readonly();
+        // SQLite itself is the parser for DML result shape. Checking
+        // `readonly` plus `column_count` rejects every DML `RETURNING` form
+        // (including CTE variants) before execution without a pseudo parser.
+        if PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get)
+            && statement_may_mutate
+            && stmt.column_count() > 0
+        {
+            anyhow::bail!("{RENDERER_PROFILE_EGRESS_ERROR}: DML result plaintext is not published");
         }
         let native_params: Vec<Box<dyn rusqlite::types::ToSql>> = params
             .iter()
@@ -625,11 +1010,13 @@ impl Database {
             native_params.iter().map(|p| p.as_ref()).collect();
 
         if method == "run" {
-            conn.execute(sql, params_from_iter(param_refs.iter()))?;
-            return Ok(vec![]);
+            stmt.execute(params_from_iter(param_refs.iter()))?;
+            return Ok(SqlExecutionResult {
+                rows: vec![],
+                statement_may_mutate,
+            });
         }
 
-        let mut stmt = conn.prepare(sql)?;
         let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
         let rows = stmt.query_map(params_from_iter(param_refs.iter()), |row| {
             let mut map = serde_json::Map::new();
@@ -669,9 +1056,15 @@ impl Database {
             result.push(row?);
         }
         if method == "get" {
-            return Ok(result.into_iter().take(1).collect());
+            return Ok(SqlExecutionResult {
+                rows: result.into_iter().take(1).collect(),
+                statement_may_mutate,
+            });
         }
-        Ok(result)
+        Ok(SqlExecutionResult {
+            rows: result,
+            statement_may_mutate,
+        })
     }
 
     pub fn execute(
@@ -680,7 +1073,9 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_impl(sql, params, method, SqlOrigin::TrustedDomainWriter)
+        Ok(self
+            .execute_impl(sql, params, method, SqlOrigin::TrustedDomainWriter)?
+            .rows)
     }
 
     /// Execute one renderer-origin statement under the restricted policy.
@@ -690,7 +1085,38 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(self.execute_renderer_with_result(sql, params, method)?.rows)
+    }
+
+    pub fn execute_renderer_with_result(
+        &self,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<SqlExecutionResult> {
         self.execute_impl(sql, params, method, SqlOrigin::Renderer)
+    }
+
+    /// Execute one renderer-origin statement with the Native D2a plaintext
+    /// publication guard layered onto the shared SQLite authorizer.
+    pub fn execute_renderer_profile_egress(
+        &self,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+        Ok(self
+            .execute_renderer_profile_egress_with_result(sql, params, method)?
+            .rows)
+    }
+
+    pub fn execute_renderer_profile_egress_with_result(
+        &self,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+    ) -> anyhow::Result<SqlExecutionResult> {
+        with_profile_egress_sql(|| self.execute_impl(sql, params, method, SqlOrigin::Renderer))
     }
 
     pub fn execute_with_origin(
@@ -700,7 +1126,7 @@ impl Database {
         params: &[Value],
         method: &str,
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        self.execute_impl(sql, params, method, origin)
+        Ok(self.execute_impl(sql, params, method, origin)?.rows)
     }
 
     pub fn execute_untrusted(
@@ -714,7 +1140,7 @@ impl Database {
             origin.is_untrusted(),
             "execute_untrusted requires an untrusted SqlOrigin"
         );
-        self.execute_impl(sql, params, method, origin)
+        Ok(self.execute_impl(sql, params, method, origin)?.rows)
     }
 
     fn execute_impl(
@@ -723,18 +1149,28 @@ impl Database {
         params: &[Value],
         method: &str,
         origin: SqlOrigin,
-    ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
+    ) -> anyhow::Result<SqlExecutionResult> {
         let lock_started = Instant::now();
         let conn = self.lock_conn()?;
         let lock_wait_ms = lock_started.elapsed().as_millis();
 
         let sql_started = Instant::now();
         let result = if origin.is_untrusted() {
-            with_untrusted_sql_policy(&conn, |conn| {
-                Self::execute_with_conn(conn, sql, params, method)
-            })
+            match reject_stale_untrusted_transaction(&conn) {
+                Ok(()) => {
+                    let reserved_project_setting_guard_requested =
+                        untrusted_sql_needs_reserved_project_setting_guard(sql);
+                    let result = with_untrusted_sql_policy(
+                        &conn,
+                        reserved_project_setting_guard_requested,
+                        |conn| Self::execute_with_conn_result(conn, sql, params, method),
+                    );
+                    reject_untrusted_transaction_after(&conn, result)
+                }
+                Err(error) => Err(error),
+            }
         } else {
-            Self::execute_with_conn(&conn, sql, params, method)
+            Self::execute_with_conn_result(&conn, sql, params, method)
         };
         let sql_ms = sql_started.elapsed().as_millis();
         if lock_wait_ms + sql_ms >= SLOW_DB_CALL_MS {
@@ -753,7 +1189,10 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use super::super::foreshadow;
+    use super::super::narrative_extraction::maintenance_runtime::SCAN_IMPORT_STATE_KEY;
     use super::*;
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
 
     fn test_db() -> Database {
@@ -765,6 +1204,99 @@ mod tests {
             "grimodex-renderer-sql-{label}-{}.db",
             uuid::Uuid::new_v4()
         ))
+    }
+
+    fn seed_renderer_chat_message(db: &Database, suffix: &str) -> (String, String) {
+        let session_id = format!("renderer-cascade-session-{suffix}");
+        let message_id = format!("renderer-cascade-message-{suffix}");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chat_sessions(id,project_id) VALUES (?1,'default-project')",
+                [&session_id],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES (?1,?2,'user','captured body','2026-09-29T08:00:00.000Z')",
+                rusqlite::params![message_id, session_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed renderer-delete chat row");
+        (session_id, message_id)
+    }
+
+    fn seed_renderer_current_capture(db: &Database, suffix: &str) -> (String, String, String) {
+        let (session_id, message_id) = seed_renderer_chat_message(db, suffix);
+        let capture_id = format!("renderer-cascade-capture-{suffix}");
+        let submission_id = format!("renderer-cascade-submission-{suffix}");
+        let version = crate::nir1_generation::bind_human_message(
+            db,
+            "default-project",
+            &session_id,
+            &message_id,
+            1_790_000_000_000,
+        )
+        .expect("bind captured Human version");
+        let digest = format!("sha256:{}", "a".repeat(64));
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO nir1_chat_input_captures
+                    (capture_id,project_id,chat_session_id,scene_id,submission_id,
+                     submission_digest,message_id,message_version_id,owner_json,state,created_at_ms)
+                 VALUES (?1,'default-project',?2,'renderer-cascade-scene',?3,?4,?5,?6,'{}','current',?7)",
+                rusqlite::params![
+                    capture_id,
+                    session_id,
+                    submission_id,
+                    digest,
+                    message_id,
+                    version.id,
+                    version.created_at_ms,
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO nir1_chat_input_submission_keys
+                    (submission_id,capture_id,submission_digest,created_at_ms)
+                 VALUES (?1,?2,?3,?4)",
+                rusqlite::params![submission_id, capture_id, digest, version.created_at_ms],
+            )?;
+            Ok(())
+        })
+        .expect("seed current Human capture and durable tombstone");
+        (session_id, message_id, capture_id)
+    }
+
+    fn observe_capture_delete_accessors(
+        db: &Database,
+        sql: &str,
+        key: &str,
+    ) -> Vec<Option<String>> {
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_for_authorizer = std::sync::Arc::clone(&observed);
+        db.with_conn(|conn| {
+            conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+                if matches!(&ctx.action, AuthAction::Delete { table_name }
+                    if *table_name == "nir1_chat_input_captures")
+                {
+                    observed_for_authorizer
+                        .lock()
+                        .expect("capture DELETE observation lock")
+                        .push(ctx.accessor.map(str::to_owned));
+                }
+                Authorization::Allow
+            }))?;
+            let deletion = conn.execute(sql, [key]);
+            let reset = conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+            deletion?;
+            reset?;
+            Ok(())
+        })
+        .expect("observe SQLite foreign-key/delete authorizer actions");
+        let accessors = observed
+            .lock()
+            .expect("capture DELETE observation lock")
+            .clone();
+        accessors
     }
 
     #[test]
@@ -815,6 +1347,1092 @@ mod tests {
         );
         db.execute("CREATE TABLE trusted (id INTEGER)", &[], "run")
             .expect("trusted backend schema operation remains available");
+    }
+
+    #[test]
+    fn renderer_parent_deletes_cleanup_captures_through_native_triggers() -> anyhow::Result<()> {
+        let db = test_db();
+        db.migrate().expect("migrate real SQLite schema to v41");
+        let schema_version: i32 = db
+            .with_conn(|conn| Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?))
+            .expect("read migrated version");
+        assert_eq!(schema_version, 41);
+
+        let (_, empty_message) = seed_renderer_chat_message(&db, "empty");
+        let codex_id = "renderer-cascade-codex-empty";
+        let snippet_id = "renderer-cascade-snippet-empty";
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_entries(id,project_id,type,name,source_chat_message_id)
+                 VALUES (?1,'default-project','character','Source fixture',?2)",
+                rusqlite::params![codex_id, empty_message],
+            )?;
+            conn.execute(
+                "INSERT INTO snippets(id,project_id,title,content,source_chat_message_id)
+                 VALUES (?1,'default-project','Source fixture','{}',?2)",
+                rusqlite::params![snippet_id, empty_message],
+            )?;
+            Ok(())
+        })?;
+        for (sql, id) in [
+            (
+                "UPDATE codex_entries SET source_chat_message_id=NULL WHERE id=?1",
+                codex_id,
+            ),
+            (
+                "UPDATE snippets SET source_chat_message_id=NULL WHERE id=?1",
+                snippet_id,
+            ),
+        ] {
+            let error = db
+                .execute_renderer(sql, &[Value::from(id)], "run")
+                .expect_err("direct protected provenance update remains denied");
+            assert!(error.to_string().contains(PROTECTED_WRITER_SQL_ERROR));
+        }
+        db.execute_renderer(
+            "DELETE FROM chat_messages WHERE id=?1",
+            &[Value::from(empty_message.as_str())],
+            "run",
+        )
+        .expect("ordinary message DELETE without a capture remains allowed");
+        let empty_message_count: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT count(*) FROM chat_messages WHERE id=?1",
+                    [&empty_message],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read deleted message");
+        assert_eq!(empty_message_count, 0);
+        let nulled_sources: (Option<String>, Option<String>) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT source_chat_message_id FROM codex_entries WHERE id=?1",
+                        [codex_id],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT source_chat_message_id FROM snippets WHERE id=?1",
+                        [snippet_id],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("read nulled provenance references");
+        assert_eq!(nulled_sources, (None, None));
+
+        let (_, message_id, message_capture) = seed_renderer_current_capture(&db, "message");
+        let direct_capture_error = db
+            .execute_renderer(
+                "DELETE FROM nir1_chat_input_captures WHERE capture_id=?1",
+                &[Value::from(message_capture.as_str())],
+                "run",
+            )
+            .expect_err("direct protected capture DELETE remains denied with a live row");
+        assert!(direct_capture_error
+            .to_string()
+            .contains(PROTECTED_WRITER_SQL_ERROR));
+        let message_version: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT message_version_id FROM nir1_chat_input_captures WHERE capture_id=?1",
+                    [&message_capture],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read version before parent delete");
+        db.execute_renderer(
+            "DELETE FROM chat_messages WHERE id=?1",
+            &[Value::from(message_id.as_str())],
+            "run",
+        )
+        .expect("renderer message DELETE cleans its capture");
+        let message_cleanup: (i64, i64, i64, i64) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT count(*) FROM chat_messages WHERE id=?1",
+                        [&message_id],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?1",
+                        [&message_capture],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT count(*) FROM nir1_chat_input_submission_keys WHERE capture_id=?1",
+                        [&message_capture],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT invalidated FROM nir1_generation_message_versions WHERE id=?1",
+                        [&message_version],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("verify message/capture cleanup and tombstone");
+        assert_eq!(message_cleanup, (0, 0, 1, 1));
+
+        let (session_id, session_message, session_capture) =
+            seed_renderer_current_capture(&db, "session");
+        db.execute_renderer(
+            "DELETE FROM chat_sessions WHERE id=?1",
+            &[Value::from(session_id.as_str())],
+            "run",
+        )
+        .expect("renderer session DELETE cleans captures before message cascade");
+        let session_cleanup: (i64, i64, i64) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT count(*) FROM chat_sessions WHERE id=?1",
+                        [&session_id],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT count(*) FROM chat_messages WHERE id=?1",
+                        [&session_message],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?1",
+                        [&session_capture],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("verify session cleanup");
+        assert_eq!(session_cleanup, (0, 0, 0));
+
+        let (history_session, history_message, history_capture) =
+            seed_renderer_current_capture(&db, "history-clear");
+        db.execute_renderer(
+            "DELETE FROM chat_messages WHERE session_id=?1",
+            &[Value::from(history_session.as_str())],
+            "run",
+        )
+        .expect("renderer history-clear DELETE cleans captures");
+        let history_cleanup: (i64, i64, i64) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT count(*) FROM chat_sessions WHERE id=?1",
+                        [&history_session],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT count(*) FROM chat_messages WHERE id=?1",
+                        [&history_message],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?1",
+                        [&history_capture],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("verify history clear cleanup");
+        assert_eq!(history_cleanup, (1, 0, 0));
+
+        let (_, project_session, project_message, project_capture, project_submission) = {
+            let project = "renderer-native-project-delete";
+            let session = "renderer-native-project-session";
+            let message = "renderer-native-project-message";
+            db.with_conn(|conn| {
+                conn.execute("INSERT INTO projects(id,title) VALUES (?1,'Project')", [project])?;
+                conn.execute("INSERT INTO chat_sessions(id,project_id) VALUES (?1,?2)", [session, project])?;
+                conn.execute(
+                    "INSERT INTO chat_messages(id,session_id,role,content,created_at) VALUES (?1,?2,'user','body','2026-09-29T08:00:00.000Z')",
+                    [message, session],
+                )?;
+                Ok(())
+            })?;
+            let version = crate::nir1_generation::bind_human_message(
+                &db,
+                project,
+                session,
+                message,
+                1_790_000_000_001,
+            )?;
+            let capture = "renderer-native-project-capture";
+            let submission = "renderer-native-project-submission";
+            let digest = format!("sha256:{}", "b".repeat(64));
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO nir1_chat_input_captures
+                     (capture_id,project_id,chat_session_id,scene_id,submission_id,submission_digest,
+                      message_id,message_version_id,owner_json,state,created_at_ms)
+                     VALUES (?1,?2,?3,'project-scene',?4,?5,?6,?7,'{}','current',?8)",
+                    rusqlite::params![capture, project, session, submission, digest, message, version.id, version.created_at_ms],
+                )?;
+                conn.execute(
+                    "INSERT INTO nir1_chat_input_submission_keys
+                     (submission_id,capture_id,submission_digest,created_at_ms) VALUES (?1,?2,?3,?4)",
+                    rusqlite::params![submission, capture, digest, version.created_at_ms],
+                )?;
+                Ok(())
+            })?;
+            (
+                project,
+                session.to_owned(),
+                message.to_owned(),
+                capture.to_owned(),
+                submission.to_owned(),
+            )
+        };
+        db.execute(
+            "DELETE FROM projects WHERE id=?1",
+            &[Value::from("renderer-native-project-delete")],
+            "run",
+        )
+        .expect("trusted project lifecycle deletion cleans captures");
+        let project_cleanup: (i64, i64, i64, i64) = db.with_conn(|conn| {
+            Ok((
+                conn.query_row("SELECT count(*) FROM chat_sessions WHERE id=?1", [&project_session], |row| row.get(0))?,
+                conn.query_row("SELECT count(*) FROM chat_messages WHERE id=?1", [&project_message], |row| row.get(0))?,
+                conn.query_row("SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?1", [&project_capture], |row| row.get(0))?,
+                conn.query_row("SELECT count(*) FROM nir1_chat_input_submission_keys WHERE submission_id=?1", [&project_submission], |row| row.get(0))?,
+            ))
+        }).expect("verify trusted project cascade");
+        assert_eq!(project_cleanup, (0, 0, 0, 1));
+        let fk_violations: i64 = db
+            .with_conn(|conn| {
+                Ok(
+                    conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                        row.get(0)
+                    })?,
+                )
+            })
+            .expect("run foreign_key_check after parent cleanup");
+        assert_eq!(fk_violations, 0);
+
+        let observer_db = test_db();
+        observer_db
+            .migrate()
+            .expect("migrate observer SQLite schema");
+        let (_, observed_message, _) =
+            seed_renderer_current_capture(&observer_db, "observer-trigger");
+        let (_, _, direct_capture) = seed_renderer_current_capture(&observer_db, "observer-direct");
+        let accessors = observe_capture_delete_accessors(
+            &observer_db,
+            "DELETE FROM chat_messages WHERE id=?1",
+            &observed_message,
+        );
+        let direct_accessors = observe_capture_delete_accessors(
+            &observer_db,
+            "DELETE FROM nir1_chat_input_captures WHERE capture_id=?1",
+            &direct_capture,
+        );
+        assert_eq!(
+            accessors,
+            vec![Some("nir1_chat_input_capture_message_delete".to_owned())]
+        );
+        assert_eq!(direct_accessors, vec![None]);
+        Ok(())
+    }
+
+    #[test]
+    fn renderer_v40_chat_insert_allows_only_canonical_capture_state_retirement() {
+        let db = test_db();
+        db.migrate().expect("migrate schema v41");
+        let schema_version: i32 = db
+            .with_conn(|conn| Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?))
+            .expect("schema version");
+        assert_eq!(schema_version, grimodex_core::SCHEMA_VERSION);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects(id,title) VALUES ('renderer-v40-project','Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_sessions(id,project_id) VALUES ('renderer-v40-session','renderer-v40-project')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed chat scope");
+
+        // Pin SQLite's actual nested trigger callback instead of assuming the
+        // accessor name from the SQL declaration.
+        let capture_updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture_updates_for_auth = std::sync::Arc::clone(&capture_updates);
+        db.with_conn(|conn| {
+            conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+                if matches!(&ctx.action, AuthAction::Update { table_name, column_name }
+                    if *table_name == "nir1_chat_input_captures" && *column_name == "state")
+                {
+                    capture_updates_for_auth
+                        .lock()
+                        .expect("authorizer observation lock")
+                        .push(ctx.accessor.map(str::to_owned));
+                }
+                Authorization::Allow
+            }))?;
+            let insert = conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES ('renderer-v40-context-probe','renderer-v40-session','user','probe','2026-09-29T08:00:00.000Z')",
+                [],
+            );
+            conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+            insert?;
+            Ok(())
+        })
+        .expect("observe the v40 trigger authorizer action");
+        assert_eq!(
+            *capture_updates.lock().expect("authorizer observation lock"),
+            vec![Some(
+                "nir1_chat_input_capture_new_human_invalidate".to_owned()
+            )]
+        );
+
+        let ordinary_insert = "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+            VALUES (?1,?2,'user',?3,?4)";
+        db.execute_renderer(
+            ordinary_insert,
+            &[
+                Value::from("renderer-v40-legacy-human"),
+                Value::from("renderer-v40-session"),
+                Value::from("ordinary unrestricted chat"),
+                Value::from("2026-09-29T08:01:00.000Z"),
+            ],
+            "run",
+        )
+        .expect("ordinary renderer chat insert without a capture");
+        let persisted: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT count(*) FROM chat_messages WHERE id='renderer-v40-legacy-human'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("verify ordinary chat persistence");
+        assert_eq!(persisted, 1);
+
+        let restricted_error = db
+            .execute_renderer_profile_egress(
+                ordinary_insert,
+                &[
+                    Value::from("renderer-v40-restricted-human"),
+                    Value::from("renderer-v40-session"),
+                    Value::from("still protected from generic SQL"),
+                    Value::from("2026-09-29T08:02:00.000Z"),
+                ],
+                "run",
+            )
+            .expect_err("profile-egress keeps generic chat DML protected");
+        assert!(restricted_error
+            .to_string()
+            .contains(RENDERER_PROFILE_EGRESS_ERROR));
+        let restricted_delete = db
+            .execute_renderer_profile_egress(
+                "DELETE FROM chat_messages WHERE id=?1",
+                &[Value::from("renderer-v40-legacy-human")],
+                "run",
+            )
+            .expect_err("profile-egress keeps generic chat deletes protected");
+        assert!(restricted_delete
+            .to_string()
+            .contains(RENDERER_PROFILE_EGRESS_ERROR));
+
+        let (_, _, _) = seed_renderer_current_capture(&db, "delete-spoof");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE renderer_capture_trigger_probe(id TEXT PRIMARY KEY);
+                 CREATE TABLE renderer_capture_delete_probe(id TEXT PRIMARY KEY);
+                 CREATE TRIGGER nir1_chat_input_capture_new_human_invalidate_spoof
+                 AFTER INSERT ON renderer_capture_trigger_probe BEGIN
+                   UPDATE nir1_chat_input_captures SET state='superseded'
+                    WHERE capture_id='missing';
+                 END;
+                 CREATE TRIGGER renderer_capture_delete_spoof
+                 AFTER INSERT ON renderer_capture_delete_probe BEGIN
+                   DELETE FROM nir1_chat_input_captures
+                    WHERE capture_id='renderer-cascade-capture-delete-spoof';
+                 END;
+                 CREATE VIEW renderer_capture_state AS
+                   SELECT capture_id,state FROM nir1_chat_input_captures;
+                 CREATE TRIGGER renderer_capture_state_update
+                 INSTEAD OF UPDATE ON renderer_capture_state BEGIN
+                   UPDATE nir1_chat_input_captures SET state=NEW.state
+                    WHERE capture_id=OLD.capture_id;
+                 END",
+            )?;
+            Ok(())
+        })
+        .expect("trusted negative-path trigger fixtures");
+
+        for sql in [
+            "UPDATE nir1_chat_input_captures SET state='superseded'",
+            "UPDATE nir1_chat_input_captures SET owner_json='{}'",
+            "UPDATE nir1_chat_input_captures AS c SET state='superseded' WHERE c.capture_id='missing'",
+            "WITH chosen AS (SELECT 'missing' AS capture_id) UPDATE nir1_chat_input_captures SET state='superseded' WHERE capture_id=(SELECT capture_id FROM chosen)",
+            "INSERT INTO nir1_chat_input_captures(capture_id) VALUES ('renderer-forged')",
+            "DELETE FROM nir1_chat_input_captures",
+            "INSERT INTO nir1_chat_input_submission_keys(submission_id) VALUES ('renderer-forged')",
+            "UPDATE nir1_chat_input_submission_keys SET submission_digest='renderer-forged'",
+            "DELETE FROM nir1_chat_input_submission_keys",
+            "UPDATE renderer_capture_state SET state='superseded' WHERE capture_id='missing'",
+            "INSERT INTO renderer_capture_trigger_probe(id) VALUES ('spoof')",
+            "INSERT INTO renderer_capture_delete_probe(id) VALUES ('spoof')",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("noncanonical capture writer must remain denied");
+            assert!(
+                error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                "unexpected error for {sql}: {error}"
+            );
+        }
+        let forged_ddl = db
+            .execute_renderer(
+                "CREATE TRIGGER renderer_forged_capture_trigger AFTER INSERT ON renderer_capture_trigger_probe BEGIN SELECT 1; END",
+                &[],
+                "run",
+            )
+            .expect_err("renderer DDL cannot create an authorized accessor");
+        assert!(forged_ddl.to_string().contains("schema operation"));
+
+        let restricted_row: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT count(*) FROM chat_messages WHERE id='renderer-v40-restricted-human'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("verify restricted insert did not persist");
+        assert_eq!(restricted_row, 0);
+    }
+
+    #[test]
+    fn renderer_sql_cannot_control_the_runner_transaction_or_leave_one_open() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE renderer_transaction_guard (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted schema setup");
+        db.execute(
+            "INSERT INTO renderer_transaction_guard (id, value) VALUES (1, 0)",
+            &[],
+            "run",
+        )
+        .expect("trusted seed");
+
+        for sql in [
+            "BEGIN",
+            "COMMIT",
+            "END",
+            "ROLLBACK",
+            "SAVEPOINT renderer_savepoint",
+            "RELEASE renderer_savepoint",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("renderer transaction control must be rejected");
+            assert!(
+                error.to_string().contains("transaction control"),
+                "unexpected {sql} error: {error}"
+            );
+            db.with_conn(|conn| {
+                anyhow::ensure!(
+                    conn.is_autocommit(),
+                    "renderer control left the shared connection in a transaction: {sql}"
+                );
+                Ok(())
+            })
+            .expect("inspect autocommit state");
+        }
+
+        db.with_conn(|conn| {
+            conn.execute_batch("BEGIN")?;
+            Ok(())
+        })
+        .expect("trusted fixture transaction");
+        let error = db
+            .execute_renderer("SELECT 1", &[], "get")
+            .expect_err("an inherited transaction must not cross the renderer boundary");
+        assert!(error.to_string().contains("open transaction"));
+        db.with_conn(|conn| {
+            anyhow::ensure!(conn.is_autocommit(), "stale transaction was not cleaned up");
+            Ok(())
+        })
+        .expect("stale transaction cleanup");
+
+        let error = db
+            .execute_batch_tx_renderer(&[
+                BatchStatement {
+                    sql: "UPDATE renderer_transaction_guard SET value = 1 WHERE id = 1".into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+                BatchStatement {
+                    sql: "COMMIT".into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+            ])
+            .expect_err("payload COMMIT must not escape the runner rollback");
+        assert!(error.to_string().contains("transaction control"));
+        let rows = db
+            .execute(
+                "SELECT value FROM renderer_transaction_guard WHERE id = 1",
+                &[],
+                "get",
+            )
+            .expect("inspect rolled back value");
+        assert_eq!(rows[0]["value"], Value::from(0));
+        db.with_conn(|conn| {
+            anyhow::ensure!(conn.is_autocommit(), "failed batch left a transaction open");
+            Ok(())
+        })
+        .expect("failed batch cleanup");
+    }
+
+    #[test]
+    fn profile_egress_protects_plaintext_replicas_in_the_idempotency_ledger() {
+        let db = crate::test_support::current_schema_memory().expect("current schema fixture");
+        let project_id = "idempotency-protected-project";
+        let foreshadow_id = "idempotency-protected-foreshadow";
+        db.execute(
+            "INSERT INTO projects (id, title) VALUES (?, ?)",
+            &[
+                Value::String(project_id.to_string()),
+                Value::String("Protected ledger test".to_string()),
+            ],
+            "run",
+        )
+        .expect("seed project");
+        db.execute(
+            "INSERT INTO foreshadows
+                (id, project_id, title, notes, payoff_confirmed, abandoned, secret,
+                 created_at, updated_at)
+             VALUES (?, ?, ?, ?, 0, 0, 1, ?, ?)",
+            &[
+                Value::String(foreshadow_id.to_string()),
+                Value::String(project_id.to_string()),
+                Value::String("SECRET_FORESHADOW_TITLE".to_string()),
+                Value::String("SECRET_FORESHADOW_NOTES".to_string()),
+                Value::Number(1_i64.into()),
+                Value::Number(1_i64.into()),
+            ],
+            "run",
+        )
+        .expect("seed foreshadow");
+
+        // The no-op typed update intentionally stores the complete historical
+        // row in the non-create idempotency receipt, reproducing the legacy
+        // plaintext replica that D2a must cover independently of foreshadows.
+        let patch: foreshadow::ForeshadowPatch = serde_json::from_value(serde_json::json!({
+            "requestId": "idempotency-protected-request",
+            "sessionId": "idempotency-protected-session",
+            "eventUid": "idempotency-protected-event",
+            "origin": "human",
+            "projectId": project_id,
+            "baseVersion": 0
+        }))
+        .expect("typed no-op update payload");
+        let response =
+            foreshadow::update(&db, foreshadow_id.to_string(), patch).expect("typed update");
+        assert_eq!(
+            response["notes"],
+            Value::String("SECRET_FORESHADOW_NOTES".to_string())
+        );
+
+        let ledger = db
+            .execute(
+                "SELECT tombstone_json FROM idempotency_requests
+                  WHERE domain = 'foreshadow_update'
+                    AND request_id = 'idempotency-protected-request'",
+                &[],
+                "get",
+            )
+            .expect("read ledger through trusted Native path");
+        assert!(ledger[0]["tombstone_json"]
+            .as_str()
+            .expect("ledger response")
+            .contains("SECRET_FORESHADOW_NOTES"));
+
+        let error = db
+            .execute_renderer_profile_egress(
+                "SELECT json_extract(tombstone_json, '$.notes')
+                   FROM idempotency_requests
+                  WHERE domain = 'foreshadow_update'",
+                &[],
+                "all",
+            )
+            .expect_err("D2a must deny the replicated plaintext read");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected ledger read error: {error}"
+        );
+
+        for sql in [
+            "UPDATE idempotency_requests SET tombstone_json = '{}'",
+            "DELETE FROM idempotency_requests",
+            "INSERT INTO idempotency_requests
+                (domain, request_id, project_id, payload_hash, tombstone_json)
+             VALUES ('tamper', 'tamper', 'idempotency-protected-project', 'hash', '{}')",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("renderer must not mutate the Native idempotency ledger");
+            assert!(
+                error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                "unexpected ledger mutation error for {sql}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_egress_rejects_restricted_reads_and_dml_result_plaintext() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE projects (id INTEGER PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted local schema setup");
+        db.execute(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted settings schema setup");
+        db.execute("CREATE TABLE messages (content TEXT NOT NULL)", &[], "run")
+            .expect("trusted restricted schema setup");
+        db.execute(
+            "CREATE TABLE chat_summaries (id TEXT PRIMARY KEY, summary TEXT NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted chat summary schema setup");
+        db.execute(
+            "CREATE TABLE chat_message_chunks (message_id TEXT PRIMARY KEY, text TEXT NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted chat chunk schema setup");
+        db.execute(
+            "CREATE TABLE generation_logs (id TEXT PRIMARY KEY, prompt_full TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted generation log schema setup");
+        db.execute(
+            "CREATE TABLE ab_comparisons (id TEXT PRIMARY KEY, response_a TEXT, response_b TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted A/B comparison schema setup");
+        db.execute(
+            "CREATE TABLE ab_comparison_runs (id TEXT PRIMARY KEY, slots TEXT NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted A/B run schema setup");
+        db.execute("CREATE TABLE d2a_unknown (value TEXT)", &[], "run")
+            .expect("trusted unknown schema setup");
+        db.execute(
+            "CREATE TABLE change_events (sequence INTEGER, domain TEXT, payload TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted change event schema setup");
+        db.execute(
+            "CREATE TEMP TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted temporary settings schema setup");
+        db.execute(
+            "INSERT INTO messages (content) VALUES ('private')",
+            &[],
+            "run",
+        )
+        .expect("trusted restricted seed");
+        db.execute(
+            "INSERT INTO change_events (sequence, domain, payload) VALUES (1, 'editor', '{\"text\":\"private\"}')",
+            &[],
+            "run",
+        )
+        .expect("trusted change event seed");
+
+        let rows = db
+            .execute_renderer_profile_egress("SELECT id FROM projects", &[], "all")
+            .expect("ordinary workspace reads remain available");
+        assert!(rows.is_empty());
+        let rows = db
+            .execute_renderer_profile_egress(
+                "SELECT domain, sequence FROM change_events",
+                &[],
+                "all",
+            )
+            .expect("change event metadata read remains available");
+        assert_eq!(rows.len(), 1);
+
+        let error = db
+            .execute_renderer_profile_egress("SELECT content FROM messages", &[], "all")
+            .expect_err("D2a must not publish restricted reads");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected error: {error}"
+        );
+
+        let error = db
+            .execute_renderer_profile_egress("SELECT value FROM temp.app_settings", &[], "all")
+            .expect_err("D2a must not publish temporary or attached database reads");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected error: {error}"
+        );
+
+        for sql in [
+            "SELECT content FROM \"messages\"",
+            "SELECT summary FROM chat_summaries",
+            "SELECT text FROM chat_message_chunks",
+            "SELECT prompt_full FROM generation_logs",
+            "SELECT response_a, response_b FROM ab_comparisons",
+            "SELECT slots FROM ab_comparison_runs",
+            "WITH source AS (SELECT content FROM messages) SELECT content FROM source",
+            "SELECT value FROM (SELECT content AS value FROM messages)",
+            "SELECT value FROM app_settings WHERE value IN (SELECT content FROM messages)",
+            "UPDATE app_settings SET value = (SELECT content FROM messages)",
+            "WITH source AS (SELECT content FROM messages) INSERT INTO app_settings (key, value) SELECT 'leak', value FROM source",
+            "SELECT payload FROM change_events",
+            "SELECT * FROM change_events",
+            "INSERT INTO change_events (sequence, domain, payload) VALUES (2, 'editor', 'private')",
+        ] {
+            let error = db
+                .execute_renderer_profile_egress(sql, &[], "all")
+                .expect_err("D2a must reject protected plaintext access");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected error for {sql}: {error}"
+            );
+        }
+
+        // There is intentionally no workspace-table allowlist here. Main's
+        // issued caller binding and route ledger decide whether a generic
+        // renderer query is trusted; this layer closes known plaintext
+        // surfaces and dangerous SQLite operations.
+        db.execute_renderer_profile_egress(
+            "INSERT INTO d2a_unknown (value) VALUES ('local')",
+            &[],
+            "run",
+        )
+        .expect("ordinary workspace DML remains available");
+
+        let error = db
+            .execute_renderer_profile_egress(
+                "INSERT INTO d2a_unknown (value) VALUES ('local') RETURNING value",
+                &[],
+                "all",
+            )
+            .expect_err("D2a must not publish DML RETURNING rows");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected error: {error}"
+        );
+
+        let error = db
+            .execute_renderer_profile_egress(
+                "INSERT INTO app_settings (key, value) SELECT 'leak', content FROM messages",
+                &[],
+                "run",
+            )
+            .expect_err("D2a must not read restricted sources during DML");
+        assert!(
+            error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn profile_egress_allows_non_plaintext_local_dml() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)",
+            &[],
+            "run",
+        )
+        .expect("trusted local schema setup");
+
+        db.execute_renderer_profile_egress(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            &[Value::from("local"), Value::from("setting")],
+            "run",
+        )
+        .expect("non-model local DML remains available");
+    }
+
+    #[test]
+    fn sqlite_prepared_statement_classifies_comments_and_ctes() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE renderer_statement_kind (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted local schema setup");
+        db.execute(
+            "INSERT INTO renderer_statement_kind (id, value) VALUES (1, 1)",
+            &[],
+            "run",
+        )
+        .expect("trusted local seed");
+
+        for sql in [
+            "SELECT value FROM renderer_statement_kind WHERE id = 1",
+            "/* leading comment */ SELECT value FROM renderer_statement_kind WHERE id = 1",
+            "-- leading comment\nSELECT value FROM renderer_statement_kind WHERE id = 1",
+            "WITH source AS (SELECT value FROM renderer_statement_kind) SELECT value FROM source",
+        ] {
+            let result = db
+                .execute_renderer_profile_egress_with_result(sql, &[], "all")
+                .expect("read-only statement should execute");
+            assert!(
+                !result.statement_may_mutate,
+                "SQLite marked a read-only statement as mutable: {sql}"
+            );
+            assert_eq!(result.rows.len(), 1, "unexpected rows for {sql}");
+        }
+
+        let result = db
+            .execute_renderer_profile_egress_with_result(
+                "WITH next(value) AS (SELECT 2)
+                 UPDATE renderer_statement_kind
+                    SET value = (SELECT value FROM next)
+                  WHERE id = 1",
+                &[],
+                "all",
+            )
+            .expect("CTE update should execute");
+        assert!(result.statement_may_mutate);
+        assert!(result.rows.is_empty());
+
+        let batch = db
+            .execute_batch_tx_renderer_profile_egress_with_result(&[BatchStatement {
+                sql: "WITH source AS (SELECT value FROM renderer_statement_kind)
+                           SELECT value FROM source"
+                    .into(),
+                params: vec![],
+                method: "all".into(),
+            }])
+            .expect("read-only CTE batch should execute");
+        assert!(!batch.statement_may_mutate);
+        assert_eq!(batch.rows.len(), 1);
+    }
+
+    #[test]
+    fn profile_egress_protects_every_native_inventory_table_in_a_real_database() {
+        let db = test_db();
+        for table in crate::profile_egress_policy::PROFILE_EGRESS_PROTECTED_TABLES {
+            db.execute(&format!("CREATE TABLE {table} (value TEXT)"), &[], "run")
+                .unwrap_or_else(|error| panic!("create protected table {table}: {error}"));
+        }
+
+        for table in crate::profile_egress_policy::PROFILE_EGRESS_PROTECTED_TABLES {
+            let error = db
+                .execute_renderer_profile_egress(&format!("SELECT * FROM {table}"), &[], "all")
+                .expect_err("every inventory table must be denied through generic SQL");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected error for protected table {table}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_egress_protects_denied_route_tables_and_fts_shadow_content_in_migrated_db() {
+        let db = test_db();
+        db.migrate().expect("migrate current schema");
+
+        let existing_tables = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT name FROM sqlite_master
+                     WHERE type IN ('table', 'virtual') AND name NOT LIKE 'sqlite_%'",
+                )?;
+                let names = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+                Ok(names)
+            })
+            .expect("read migrated schema");
+
+        let protected_tables = [
+            "project_snapshot_tree_nodes",
+            "project_snapshot_codex_entries",
+            "project_snapshot_snippets",
+            "project_snapshot_aux",
+            "content_versions",
+            "trash_items",
+            "foreshadows",
+            "foreshadow_setups",
+            "foreshadow_payoffs",
+            "foreshadow_setup_payoff_links",
+            "foreshadow_codex_links",
+            "plot_threads",
+            "plot_thread_scene_links",
+            "plot_thread_branches",
+            "lint_ignored_diagnostics",
+            "lint_term_dictionary",
+            "narrative_consumer_freshness",
+            "narrative_maintenance_finding_observations",
+            "narrative_maintenance_finding_lifecycle",
+            "narrative_maintenance_attention",
+            "narrative_proposal_applications",
+            "narrative_extraction_stage_model_bindings",
+            "narrative_extraction_stage_receipts",
+        ];
+        for table in protected_tables {
+            assert!(
+                existing_tables.contains(table),
+                "migrated schema is missing sentinel table {table}"
+            );
+            let error = db
+                .execute_renderer_profile_egress(
+                    &format!("SELECT * FROM \"{table}\" LIMIT 0"),
+                    &[],
+                    "all",
+                )
+                .expect_err("protected route table read must be denied");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected read error for {table}: {error}"
+            );
+
+            let error = db
+                .execute_renderer_profile_egress(
+                    &format!("DELETE FROM \"{table}\" WHERE 0"),
+                    &[],
+                    "run",
+                )
+                .expect_err("protected route table DML must be denied");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected DML error for {table}: {error}"
+            );
+        }
+
+        let fts_shadow_tables = [
+            "chat_messages_fts_config",
+            "chat_messages_fts_data",
+            "chat_messages_fts_docsize",
+            "chat_messages_fts_idx",
+            "chat_messages_fts_en_config",
+            "chat_messages_fts_en_content",
+            "chat_messages_fts_en_data",
+            "chat_messages_fts_en_docsize",
+            "chat_messages_fts_en_idx",
+            "post_effect_annotations_fts_config",
+            "post_effect_annotations_fts_data",
+            "post_effect_annotations_fts_docsize",
+            "post_effect_annotations_fts_idx",
+            "post_effect_annotations_fts_en_config",
+            "post_effect_annotations_fts_en_content",
+            "post_effect_annotations_fts_en_data",
+            "post_effect_annotations_fts_en_docsize",
+            "post_effect_annotations_fts_en_idx",
+        ];
+        for table in fts_shadow_tables {
+            assert!(
+                existing_tables.contains(table),
+                "migrated schema is missing sentinel table {table}"
+            );
+            let error = db
+                .execute_renderer_profile_egress(&format!("SELECT * FROM \"{table}\""), &[], "all")
+                .expect_err("protected route table read must be denied");
+            assert!(
+                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                "unexpected read error for {table}: {error}"
+            );
+        }
+
+        db.execute_renderer_profile_egress(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            &[Value::from("d2a-test"), Value::from("local")],
+            "run",
+        )
+        .expect("ordinary app settings insert remains available");
+        let settings = db
+            .execute_renderer_profile_egress(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                &[Value::from("d2a-test")],
+                "all",
+            )
+            .expect("ordinary app settings read remains available");
+        assert_eq!(settings[0]["value"], Value::from("local"));
+        db.execute_renderer_profile_egress(
+            "UPDATE app_settings SET value = ?1 WHERE key = ?2",
+            &[Value::from("updated"), Value::from("d2a-test")],
+            "run",
+        )
+        .expect("ordinary app settings update remains available");
+        db.execute_renderer_profile_egress(
+            "DELETE FROM app_settings WHERE key = ?1",
+            &[Value::from("d2a-test")],
+            "run",
+        )
+        .expect("ordinary app settings delete remains available");
+        db.execute_renderer_profile_egress(
+            "SELECT id, title FROM projects ORDER BY id",
+            &[],
+            "all",
+        )
+        .expect("ordinary project read remains available");
+    }
+
+    #[test]
+    fn profile_egress_denies_snapshot_payload_but_keeps_metadata_readable() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE state_snapshots (
+                id INTEGER PRIMARY KEY,
+                domain TEXT NOT NULL,
+                anchor_sequence INTEGER NOT NULL,
+                payload TEXT NOT NULL
+            )",
+            &[],
+            "run",
+        )
+        .expect("trusted snapshot schema setup");
+        db.execute(
+            "INSERT INTO state_snapshots (id, domain, anchor_sequence, payload)
+             VALUES (1, 'editor', 1, '{\"text\":\"private\"}')",
+            &[],
+            "run",
+        )
+        .expect("trusted snapshot seed");
+        let rows = db
+            .execute_renderer_profile_egress(
+                "SELECT domain, anchor_sequence FROM state_snapshots",
+                &[],
+                "all",
+            )
+            .expect("snapshot metadata remains readable");
+        assert_eq!(rows.len(), 1);
+        let error = db
+            .execute_renderer_profile_egress("SELECT payload FROM state_snapshots", &[], "all")
+            .expect_err("snapshot payload must not be published");
+        assert!(error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR));
+        let error = db
+            .execute_renderer_profile_egress(
+                "INSERT INTO state_snapshots (id, domain, anchor_sequence, payload)
+                 VALUES (2, 'editor', 2, 'private')",
+                &[],
+                "run",
+            )
+            .expect_err("snapshot payload writes stay Native-owned");
+        assert!(error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR));
     }
 
     #[test]
@@ -1226,6 +2844,11 @@ mod tests {
     #[test]
     fn renderer_sql_only_allows_narrow_read_only_pragmas_and_deferred_fk_batch() {
         let db = test_db();
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "foreign_keys", true)?;
+            Ok(())
+        })
+        .expect("enable foreign key enforcement for pragma guard regression");
         let rows = db
             .execute_renderer("PRAGMA user_version", &[], "get")
             .expect("read-only pragma");
@@ -1239,6 +2862,14 @@ mod tests {
                 .to_string()
                 .contains("RENDERER_SQL_SECURITY: denied PRAGMA foreign_keys"),
             "unexpected error: {error}"
+        );
+
+        let foreign_keys: i64 = db
+            .with_conn(|conn| Ok(conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?))
+            .expect("read foreign key setting after rejected pragma");
+        assert_eq!(
+            foreign_keys, 1,
+            "rejected PRAGMA must not change the connection"
         );
 
         db.execute(
@@ -1674,5 +3305,773 @@ mod tests {
             )
             .expect("read trusted seed");
         assert_eq!(rows[0]["title"], Value::from("Before"));
+    }
+
+    #[test]
+    fn untrusted_read_only_sql_does_not_churn_reserved_project_setting_guard() {
+        let db = test_db();
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TEMP TRIGGER grimodex_guard_reserved_project_setting_insert
+                 AFTER INSERT ON main.project_settings
+                 WHEN 0 BEGIN SELECT 1; END",
+            )?;
+            Ok(())
+        })
+        .expect("create benign temporary trigger sentinel");
+
+        for origin in [SqlOrigin::Renderer, SqlOrigin::McpGeneric] {
+            db.execute_untrusted(origin, "SELECT 1 AS value", &[], "all")
+                .unwrap_or_else(|error| panic!("{origin:?} read-only SQL: {error}"));
+            db.execute_batch_tx_untrusted(
+                origin,
+                &[
+                    BatchStatement {
+                        sql: "SELECT 1 AS value".to_string(),
+                        params: vec![],
+                        method: "all".to_string(),
+                    },
+                    BatchStatement {
+                        sql: "SELECT 2 AS value".to_string(),
+                        params: vec![],
+                        method: "all".to_string(),
+                    },
+                ],
+            )
+            .unwrap_or_else(|error| panic!("{origin:?} read-only batch: {error}"));
+        }
+
+        let sentinel = db
+            .execute(
+                "SELECT count(*) AS count FROM temp.sqlite_master
+                 WHERE type = 'trigger'
+                   AND name = 'grimodex_guard_reserved_project_setting_insert'",
+                &[],
+                "get",
+            )
+            .expect("inspect read-only trigger sentinel");
+        assert_eq!(sentinel[0]["count"], Value::from(1));
+    }
+
+    #[test]
+    fn untrusted_sql_readonly_probe_fails_closed_for_non_readonly_statements() {
+        let cases = [
+            ("SELECT 1", false),
+            ("-- leading comment\nSELECT 1", true),
+            (
+                "WITH values_cte AS (SELECT 1) SELECT * FROM values_cte",
+                true,
+            ),
+            ("EXPLAIN SELECT 1", false),
+            (
+                "INSERT INTO project_settings (project_id, key, value) VALUES (?1, ?2, ?3)",
+                true,
+            ),
+            (
+                "UPDATE project_settings SET value = ?1 WHERE project_id = ?2 AND key = ?3",
+                true,
+            ),
+            (
+                "DELETE FROM project_settings WHERE project_id = ?1 AND key = ?2",
+                true,
+            ),
+            (
+                "WITH values_cte AS (SELECT 1) INSERT INTO project_settings
+                 (project_id, key, value) VALUES (?1, ?2, ?3)",
+                true,
+            ),
+            ("not valid SQLite", true),
+        ];
+        for (sql, expected_guard) in cases {
+            assert_eq!(
+                untrusted_sql_needs_reserved_project_setting_guard(sql),
+                expected_guard,
+                "unexpected readonly probe result for {sql:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn untrusted_sql_cannot_mutate_reserved_scan_marker_but_trusted_can() {
+        let db = test_db();
+        db.migrate().expect("migrate database");
+        for (name, operation) in [
+            (RESERVED_PROJECT_SETTING_INSERT_TRIGGER, "AFTER INSERT"),
+            (RESERVED_PROJECT_SETTING_UPDATE_TRIGGER, "AFTER UPDATE"),
+            (RESERVED_PROJECT_SETTING_DELETE_TRIGGER, "AFTER DELETE"),
+        ] {
+            db.execute(
+                &format!(
+                    "CREATE TRIGGER {name} {operation} ON project_settings
+                     WHEN 0 BEGIN SELECT 1; END"
+                ),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("create persistent trigger {name}: {error}"));
+        }
+        db.execute(
+            "INSERT OR IGNORE INTO projects (id, title, created_at, updated_at)
+             VALUES ('scan-marker-guard', 'Scan marker guard', datetime('now'), datetime('now'))",
+            &[],
+            "run",
+        )
+        .expect("seed project");
+        db.execute(
+            "INSERT INTO project_settings (project_id, key, value)
+             VALUES ('scan-marker-guard', 'ordinary.setting', 'before')",
+            &[],
+            "run",
+        )
+        .expect("trusted ordinary project setting");
+        db.execute(
+            "INSERT INTO project_settings (project_id, key, value)
+             VALUES (?1, ?2, ?3)",
+            &[
+                Value::from("scan-marker-guard"),
+                Value::from(SCAN_IMPORT_STATE_KEY),
+                Value::from("staging"),
+            ],
+            "run",
+        )
+        .expect("trusted Native may create the Scan marker");
+
+        let attempts = [
+            (
+                "insert-literal",
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-marker-guard', 'scan.import.state', 'forged')",
+                vec![],
+            ),
+            (
+                "insert-bound",
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES (?1, ?2, ?3)",
+                vec![
+                    Value::from("scan-marker-guard"),
+                    Value::from(SCAN_IMPORT_STATE_KEY),
+                    Value::from("forged"),
+                ],
+            ),
+            (
+                "update-literal",
+                "UPDATE project_settings SET value = 'forged'
+                 WHERE project_id = 'scan-marker-guard' AND key = 'scan.import.state'",
+                vec![],
+            ),
+            (
+                "update-bound",
+                "UPDATE project_settings SET value = ?1
+                 WHERE project_id = ?2 AND key = ?3",
+                vec![
+                    Value::from("forged"),
+                    Value::from("scan-marker-guard"),
+                    Value::from(SCAN_IMPORT_STATE_KEY),
+                ],
+            ),
+            (
+                "update-expression",
+                "UPDATE project_settings SET value = 'forged'
+                 WHERE project_id = 'scan-marker-guard'
+                   AND key = printf('%s', 'scan.import.state')",
+                vec![],
+            ),
+            (
+                "update-to-reserved-key",
+                "UPDATE project_settings SET key = 'scan.import.state'
+                 WHERE project_id = 'scan-marker-guard' AND key = 'ordinary.setting'",
+                vec![],
+            ),
+            (
+                "update-from-reserved-key",
+                "UPDATE project_settings SET key = 'ordinary.renamed'
+                 WHERE project_id = 'scan-marker-guard' AND key = 'scan.import.state'",
+                vec![],
+            ),
+            (
+                "delete-literal",
+                "DELETE FROM project_settings
+                 WHERE project_id = 'scan-marker-guard' AND key = 'scan.import.state'",
+                vec![],
+            ),
+            (
+                "delete-bound",
+                "DELETE FROM project_settings WHERE project_id = ?1 AND key = ?2",
+                vec![
+                    Value::from("scan-marker-guard"),
+                    Value::from(SCAN_IMPORT_STATE_KEY),
+                ],
+            ),
+            (
+                "replace",
+                "INSERT OR REPLACE INTO project_settings (project_id, key, value)
+                 VALUES ('scan-marker-guard', 'scan.import.state', 'forged')",
+                vec![],
+            ),
+            (
+                "upsert-reserved",
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-marker-guard', 'scan.import.state', 'forged')
+                 ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value",
+                vec![],
+            ),
+        ];
+
+        for origin in [SqlOrigin::Renderer, SqlOrigin::McpGeneric] {
+            for (label, sql, params) in &attempts {
+                let error = db
+                    .execute_untrusted(origin, sql, params, "run")
+                    .expect_err("untrusted SQL must not mutate the Scan marker");
+                assert!(
+                    error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                    "unexpected {origin:?} {label} error: {error}"
+                );
+            }
+
+            db.execute_untrusted(
+                origin,
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-marker-guard', 'ordinary.insert', 'inserted')",
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("{origin:?} ordinary insert: {error}"));
+            db.execute_untrusted(
+                origin,
+                "UPDATE project_settings SET value = 'updated'
+                 WHERE project_id = 'scan-marker-guard' AND key = 'ordinary.setting'",
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("{origin:?} ordinary update: {error}"));
+            db.execute_untrusted(
+                origin,
+                "DELETE FROM project_settings
+                 WHERE project_id = 'scan-marker-guard' AND key = 'ordinary.insert'",
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("{origin:?} ordinary delete: {error}"));
+
+            let batch = vec![
+                BatchStatement {
+                    sql: "INSERT INTO project_settings (project_id, key, value)
+                          VALUES ('scan-marker-guard', 'ordinary.batch', 'inserted')"
+                        .to_string(),
+                    params: vec![],
+                    method: "run".to_string(),
+                },
+                BatchStatement {
+                    sql: "INSERT INTO project_settings (project_id, key, value)
+                          VALUES (?1, ?2, ?3)"
+                        .to_string(),
+                    params: vec![
+                        Value::from("scan-marker-guard"),
+                        Value::from(SCAN_IMPORT_STATE_KEY),
+                        Value::from("forged"),
+                    ],
+                    method: "run".to_string(),
+                },
+            ];
+            let batch_error = db
+                .execute_batch_tx_untrusted(origin, &batch)
+                .expect_err("untrusted batch must roll back before the reserved marker");
+            assert!(
+                batch_error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                "unexpected {origin:?} batch error: {batch_error}"
+            );
+            let batch_rows = db
+                .execute(
+                    "SELECT count(*) AS count FROM project_settings
+                     WHERE project_id = 'scan-marker-guard' AND key = 'ordinary.batch'",
+                    &[],
+                    "get",
+                )
+                .expect("inspect rolled-back ordinary batch row");
+            assert_eq!(batch_rows[0]["count"], Value::from(0));
+            db.execute_untrusted(
+                origin,
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('scan-marker-guard', 'ordinary.after_batch', 'inserted')",
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("{origin:?} policy cleanup: {error}"));
+            db.execute_untrusted(
+                origin,
+                "DELETE FROM project_settings
+                 WHERE project_id = 'scan-marker-guard' AND key = 'ordinary.after_batch'",
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("{origin:?} policy cleanup delete: {error}"));
+        }
+
+        let marker = db
+            .execute(
+                "SELECT value FROM project_settings
+                 WHERE project_id = 'scan-marker-guard' AND key = 'scan.import.state'",
+                &[],
+                "get",
+            )
+            .expect("read preserved Scan marker");
+        assert_eq!(marker[0]["value"], Value::from("staging"));
+
+        db.execute(
+            "UPDATE project_settings SET value = 'published'
+             WHERE project_id = 'scan-marker-guard' AND key = 'scan.import.state'",
+            &[],
+            "run",
+        )
+        .expect("trusted Native may update the Scan marker");
+        db.execute(
+            "DELETE FROM project_settings
+             WHERE project_id = 'scan-marker-guard' AND key = 'scan.import.state'",
+            &[],
+            "run",
+        )
+        .expect("trusted Native may remove the Scan marker");
+
+        let persistent_triggers = db
+            .execute(
+                "SELECT count(*) AS count FROM main.sqlite_master
+                 WHERE type = 'trigger'
+                   AND name LIKE 'grimodex_guard_reserved_project_setting_%'",
+                &[],
+                "get",
+            )
+            .expect("read persistent guard trigger names");
+        assert_eq!(persistent_triggers[0]["count"], Value::from(3));
+    }
+
+    #[test]
+    fn untrusted_sql_cannot_mutate_native_timelapse_settings_in_single_or_batch_dml() {
+        let db = test_db();
+        db.migrate().expect("migrate database");
+        db.execute(
+            "INSERT OR IGNORE INTO projects (id, title, created_at, updated_at)
+             VALUES ('timelapse-setting-guard', 'Timelapse setting guard', datetime('now'), datetime('now'))",
+            &[],
+            "run",
+        )
+        .expect("seed project");
+
+        for (key, initial_value) in [
+            ("timelapse.enabled", "true"),
+            ("timelapse.resetSequence", "42"),
+        ] {
+            db.execute(
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES (?1, ?2, ?3)",
+                &[
+                    Value::from("timelapse-setting-guard"),
+                    Value::from(key),
+                    Value::from(initial_value),
+                ],
+                "run",
+            )
+            .expect("trusted Native may seed the timelapse setting");
+            db.execute(
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('timelapse-setting-guard', 'ordinary.setting', 'before')
+                 ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value",
+                &[],
+                "run",
+            )
+            .expect("seed ordinary setting");
+
+            let attempts = vec![
+                (
+                    "insert-literal".to_string(),
+                    format!(
+                        "INSERT INTO project_settings (project_id, key, value)
+                         VALUES ('timelapse-setting-guard', '{key}', 'forged')"
+                    ),
+                    vec![],
+                ),
+                (
+                    "insert-bound".to_string(),
+                    "INSERT INTO project_settings (project_id, key, value)
+                     VALUES (?1, ?2, ?3)"
+                        .to_string(),
+                    vec![
+                        Value::from("timelapse-setting-guard"),
+                        Value::from(key),
+                        Value::from("forged"),
+                    ],
+                ),
+                (
+                    "update-literal".to_string(),
+                    format!(
+                        "UPDATE project_settings SET value = 'forged'
+                         WHERE project_id = 'timelapse-setting-guard' AND key = '{key}'"
+                    ),
+                    vec![],
+                ),
+                (
+                    "update-bound".to_string(),
+                    "UPDATE project_settings SET value = ?1
+                     WHERE project_id = ?2 AND key = ?3"
+                        .to_string(),
+                    vec![
+                        Value::from("forged"),
+                        Value::from("timelapse-setting-guard"),
+                        Value::from(key),
+                    ],
+                ),
+                (
+                    "update-to-reserved-key".to_string(),
+                    format!(
+                        "UPDATE project_settings SET key = '{key}'
+                         WHERE project_id = 'timelapse-setting-guard' AND key = 'ordinary.setting'"
+                    ),
+                    vec![],
+                ),
+                (
+                    "update-from-reserved-key".to_string(),
+                    format!(
+                        "UPDATE project_settings SET key = 'ordinary.renamed'
+                         WHERE project_id = 'timelapse-setting-guard' AND key = '{key}'"
+                    ),
+                    vec![],
+                ),
+                (
+                    "delete-literal".to_string(),
+                    format!(
+                        "DELETE FROM project_settings
+                         WHERE project_id = 'timelapse-setting-guard' AND key = '{key}'"
+                    ),
+                    vec![],
+                ),
+                (
+                    "delete-bound".to_string(),
+                    "DELETE FROM project_settings WHERE project_id = ?1 AND key = ?2".to_string(),
+                    vec![Value::from("timelapse-setting-guard"), Value::from(key)],
+                ),
+                (
+                    "replace".to_string(),
+                    format!(
+                        "INSERT OR REPLACE INTO project_settings (project_id, key, value)
+                         VALUES ('timelapse-setting-guard', '{key}', 'forged')"
+                    ),
+                    vec![],
+                ),
+                (
+                    "upsert-reserved".to_string(),
+                    format!(
+                        "INSERT INTO project_settings (project_id, key, value)
+                         VALUES ('timelapse-setting-guard', '{key}', 'forged')
+                         ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value"
+                    ),
+                    vec![],
+                ),
+            ];
+
+            for origin in [SqlOrigin::Renderer, SqlOrigin::McpGeneric] {
+                for (label, sql, params) in &attempts {
+                    let error = db
+                        .execute_untrusted(origin, sql, params, "run")
+                        .expect_err("untrusted SQL must not mutate Native timelapse settings");
+                    assert!(
+                        error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                        "unexpected {origin:?} {key} {label} error: {error}"
+                    );
+                }
+
+                let batch = vec![
+                    BatchStatement {
+                        sql: "INSERT INTO project_settings (project_id, key, value)
+                              VALUES ('timelapse-setting-guard', 'ordinary.batch', 'inserted')"
+                            .to_string(),
+                        params: vec![],
+                        method: "run".to_string(),
+                    },
+                    BatchStatement {
+                        sql: format!(
+                            "UPDATE project_settings SET value = 'forged'
+                             WHERE project_id = 'timelapse-setting-guard' AND key = '{key}'"
+                        ),
+                        params: vec![],
+                        method: "run".to_string(),
+                    },
+                ];
+                let batch_error = db
+                    .execute_batch_tx_untrusted(origin, &batch)
+                    .expect_err("untrusted batch must roll back before Native setting mutation");
+                assert!(
+                    batch_error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                    "unexpected {origin:?} {key} batch error: {batch_error}"
+                );
+                let batch_rows = db
+                    .execute(
+                        "SELECT count(*) AS count FROM project_settings
+                         WHERE project_id = 'timelapse-setting-guard' AND key = 'ordinary.batch'",
+                        &[],
+                        "get",
+                    )
+                    .expect("inspect rolled-back Native-setting batch");
+                assert_eq!(batch_rows[0]["count"], Value::from(0));
+            }
+
+            let value = db
+                .execute(
+                    &format!(
+                        "SELECT value FROM project_settings
+                         WHERE project_id = 'timelapse-setting-guard' AND key = '{key}'"
+                    ),
+                    &[],
+                    "get",
+                )
+                .expect("read preserved Native timelapse setting");
+            assert_eq!(value[0]["value"], Value::from(initial_value));
+        }
+
+        // Typed Native code does not use the untrusted authorizer/trigger
+        // path, so it remains able to update both reserved keys.
+        db.execute(
+            "UPDATE project_settings SET value = 'false'
+             WHERE project_id = 'timelapse-setting-guard' AND key = 'timelapse.enabled'",
+            &[],
+            "run",
+        )
+        .expect("trusted Native may update timelapse.enabled");
+        db.execute(
+            "UPDATE project_settings SET value = '43'
+             WHERE project_id = 'timelapse-setting-guard' AND key = 'timelapse.resetSequence'",
+            &[],
+            "run",
+        )
+        .expect("trusted Native may update timelapse.resetSequence");
+    }
+
+    #[test]
+    fn c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes() {
+        let db = test_db();
+        let tables = [
+            "narrative_semantic_epochs",
+            "narrative_extraction_runs",
+            "narrative_dependency_edges",
+            "narrative_dependency_edge_states",
+            "narrative_consumer_freshness",
+            "narrative_semantic_index_metadata",
+            "narrative_nir1_chronicle_vectors",
+            "narrative_maintenance_finding_lifecycle",
+            "narrative_maintenance_finding_observations",
+            "narrative_maintenance_repair_leases",
+            "change_events",
+            "state_snapshots",
+        ];
+
+        for table in tables {
+            db.execute(
+                &format!("CREATE TABLE {table} (id TEXT PRIMARY KEY, value TEXT NOT NULL)"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("create {table}: {error}"));
+            db.execute(
+                &format!("INSERT INTO {table} (id, value) VALUES ('trusted-seed', 'before')"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted insert {table}: {error}"));
+
+            for origin in [SqlOrigin::Renderer, SqlOrigin::McpGeneric] {
+                let rows = db
+                    .execute_untrusted(
+                        origin,
+                        &format!("SELECT value FROM {table} WHERE id = 'trusted-seed'"),
+                        &[],
+                        "get",
+                    )
+                    .unwrap_or_else(|error| panic!("{origin:?} SELECT {table}: {error}"));
+                assert_eq!(
+                    rows[0]["value"],
+                    Value::from("before"),
+                    "{origin:?} {table}"
+                );
+
+                for (operation, sql) in [
+                    (
+                        "insert",
+                        format!(
+                            "INSERT INTO {table} (id, value) VALUES ('untrusted-insert', 'forged')"
+                        ),
+                    ),
+                    (
+                        "update",
+                        format!("UPDATE {table} SET value = 'forged' WHERE id = 'trusted-seed'"),
+                    ),
+                    (
+                        "delete",
+                        format!("DELETE FROM {table} WHERE id = 'trusted-seed'"),
+                    ),
+                    (
+                        "replace",
+                        format!(
+                            "REPLACE INTO {table} (id, value) VALUES ('trusted-seed', 'forged')"
+                        ),
+                    ),
+                ] {
+                    let error = db
+                        .execute_untrusted(origin, &sql, &[], "run")
+                        .expect_err("untrusted C2-ZC DML must be rejected");
+                    assert!(
+                        error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                        "{origin:?} {operation} {table} was not protected: {error}"
+                    );
+                }
+            }
+
+            db.execute(
+                &format!("UPDATE {table} SET value = 'trusted-update' WHERE id = 'trusted-seed'"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted update {table}: {error}"));
+            db.execute(
+                &format!("INSERT INTO {table} (id, value) VALUES ('trusted-insert', 'trusted')"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted second insert {table}: {error}"));
+            db.execute(
+                &format!(
+                    "REPLACE INTO {table} (id, value) VALUES ('trusted-seed', 'trusted-replace')"
+                ),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted replace {table}: {error}"));
+            db.execute(
+                &format!("DELETE FROM {table} WHERE id = 'trusted-insert'"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted delete {table}: {error}"));
+
+            let rows = db
+                .execute(
+                    &format!("SELECT value FROM {table} WHERE id = 'trusted-seed'"),
+                    &[],
+                    "get",
+                )
+                .unwrap_or_else(|error| panic!("trusted SELECT {table}: {error}"));
+            assert_eq!(rows[0]["value"], Value::from("trusted-replace"), "{table}");
+        }
+    }
+
+    #[test]
+    fn timelapse_canonical_tables_reject_renderer_and_mcp_batch_dml_but_allow_reads() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE renderer_batch_guard (id TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            &[],
+            "run",
+        )
+        .expect("trusted batch guard schema");
+
+        for table in ["change_events", "state_snapshots"] {
+            db.execute(
+                &format!("CREATE TABLE {table} (id TEXT PRIMARY KEY, value TEXT NOT NULL)"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("create {table}: {error}"));
+            db.execute(
+                &format!("INSERT INTO {table} (id, value) VALUES ('trusted-seed', 'before')"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted seed {table}: {error}"));
+
+            for origin in [SqlOrigin::Renderer, SqlOrigin::McpGeneric] {
+                let rows = db
+                    .execute_untrusted(
+                        origin,
+                        &format!("SELECT value FROM {table} WHERE id = 'trusted-seed'"),
+                        &[],
+                        "get",
+                    )
+                    .unwrap_or_else(|error| panic!("{origin:?} SELECT {table}: {error}"));
+                assert_eq!(rows[0]["value"], Value::from("before"));
+
+                let single_sql =
+                    format!("UPDATE {table} SET value = 'forged' WHERE id = 'trusted-seed'");
+                let single_error = match origin {
+                    SqlOrigin::Renderer => db
+                        .execute_renderer(&single_sql, &[], "run")
+                        .expect_err("renderer timelapse DML must be rejected"),
+                    SqlOrigin::McpGeneric => db
+                        .execute_untrusted(origin, &single_sql, &[], "run")
+                        .expect_err("MCP timelapse DML must be rejected"),
+                    _ => unreachable!("test only covers untrusted origins"),
+                };
+                assert!(
+                    single_error
+                        .to_string()
+                        .contains(PROTECTED_WRITER_SQL_ERROR),
+                    "{origin:?} single UPDATE {table} was not protected: {single_error}"
+                );
+
+                let batch = [
+                    BatchStatement {
+                        sql: "INSERT INTO renderer_batch_guard (id, value) VALUES ('rolled-back', 'temporary')"
+                            .into(),
+                        params: vec![],
+                        method: "run".into(),
+                    },
+                    BatchStatement {
+                        sql: format!(
+                            "UPDATE {table} SET value = 'forged' WHERE id = 'trusted-seed'"
+                        ),
+                        params: vec![],
+                        method: "run".into(),
+                    },
+                ];
+                let error = match origin {
+                    SqlOrigin::Renderer => db
+                        .execute_batch_tx_renderer(&batch)
+                        .expect_err("renderer timelapse batch DML must be rejected"),
+                    SqlOrigin::McpGeneric => db
+                        .execute_batch_tx_untrusted(origin, &batch)
+                        .expect_err("MCP timelapse batch DML must be rejected"),
+                    _ => unreachable!("test only covers untrusted origins"),
+                };
+                assert!(
+                    error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                    "{origin:?} batch UPDATE {table} was not protected: {error}"
+                );
+
+                let rows = db
+                    .execute(
+                        "SELECT value FROM renderer_batch_guard WHERE id = 'rolled-back'",
+                        &[],
+                        "get",
+                    )
+                    .unwrap_or_else(|error| panic!("inspect {origin:?} rollback {table}: {error}"));
+                assert!(
+                    rows.is_empty(),
+                    "{origin:?} batch must roll back prior writes"
+                );
+
+                let rows = db
+                    .execute_renderer(
+                        &format!("SELECT value FROM {table} WHERE id = 'trusted-seed'"),
+                        &[],
+                        "get",
+                    )
+                    .unwrap_or_else(|error| panic!("renderer SELECT {table}: {error}"));
+                assert_eq!(rows[0]["value"], Value::from("before"));
+            }
+
+            db.execute(
+                &format!("UPDATE {table} SET value = 'trusted-update' WHERE id = 'trusted-seed'"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("trusted update {table}: {error}"));
+        }
     }
 }

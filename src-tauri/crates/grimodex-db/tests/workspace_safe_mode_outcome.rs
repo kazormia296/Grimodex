@@ -58,7 +58,7 @@ fn workspace_state() -> WorkspaceState {
     WorkspaceState {
         inner: Mutex::new(None),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
-        switching: std::sync::atomic::AtomicBool::new(false),
+        switching: grimodex_db::WorkspaceLifecycleCompatibilityView::new(false),
         open_lock: Mutex::new(()),
     }
 }
@@ -424,6 +424,123 @@ fn corrupt_live_db_open_returns_structured_safe_mode_without_authority() {
     assert!(ws_state.safe_mode.is_active());
     let err = with_db_state(&ws_state, |_db| Ok(())).expect_err("no authority");
     assert!(err.to_string().contains("WORKSPACE_SAFE_MODE"), "err={err}");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn corrupt_live_db_safe_mode_restores_backup_by_opaque_id_then_reopens_ready() {
+    let root = temp_dir("corrupt-restore");
+    let ws = root.join("workspace");
+    fs::create_dir_all(ws.join("backups")).expect("dirs");
+
+    // Start with a valid live workspace so the corruption is an ordinary
+    // post-create failure rather than a missing-database path.
+    let live = ws.join("grimodex.db");
+    {
+        let db = Database::new(&live).expect("live db");
+        db.migrate().expect("migrate live db");
+    }
+
+    // Keep a valid current-schema automatic backup with a row that must
+    // survive the Safe Mode restore journey.
+    let backup = ws.join("backups/grimodex-auto.db");
+    {
+        let db = Database::new(&backup).expect("backup db");
+        db.migrate().expect("migrate backup db");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title, language) VALUES (?1, 'Recovered', 'ja')",
+                ["project-corrupt-live-recovered"],
+            )?;
+            Ok(())
+        })
+        .expect("seed backup row");
+    }
+
+    // Make the live main database unreadable while leaving the valid restore
+    // candidate in place.
+    fs::write(&live, b"not a sqlite database at all").expect("corrupt live db");
+
+    let ws_state = workspace_state();
+    let gs_path = GlobalSettingsPath {
+        path: root.join("global-settings.json"),
+        write_lock: Mutex::new(()),
+    };
+    let mut on_swapped = 0u32;
+    let mut hook = || on_swapped += 1;
+    let mut deps = OpenDeps {
+        gs_path: &gs_path,
+        on_swapped: &mut hook,
+    };
+
+    let outcome = open_workspace_sync(&ws_state, &mut deps, &ws.to_string_lossy())
+        .expect("corrupt live db must enter structured Safe Mode");
+    match &outcome {
+        WorkspaceOpenOutcome::SafeMode { reason, candidates } => {
+            assert!(reason.contains("WORKSPACE_SAFE_MODE"), "reason={reason}");
+            assert!(
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.kind == RecoveryCandidateKind::AutomaticBackup),
+                "automatic backup must be exposed in Safe Mode: {candidates:?}"
+            );
+        }
+        other => panic!("expected SafeMode, got {other:?}"),
+    }
+    assert!(outcome.is_restore_only());
+    assert!(!outcome.is_authority_published());
+    assert_eq!(on_swapped, 0, "Safe Mode must not run hydration hooks");
+    assert!(ws_state.safe_mode.is_active());
+    let error = with_db_state(&ws_state, |_db| Ok(())).expect_err("no authority");
+    assert!(error.to_string().contains("WORKSPACE_SAFE_MODE"), "err={error}");
+
+    let candidates = list_safe_mode_candidates(&ws_state).expect("list candidates");
+    let backup_candidate = candidates
+        .iter()
+        .find(|candidate| candidate.kind == RecoveryCandidateKind::AutomaticBackup)
+        .expect("automatic backup candidate");
+    assert!(backup_candidate.id.starts_with("rc_"));
+    let verified = verify_safe_mode_candidate(&ws_state, &backup_candidate.id)
+        .expect("verify backup by opaque id");
+    assert_eq!(verified.id, backup_candidate.id);
+
+    restore_safe_mode_candidate(&ws_state, &backup_candidate.id)
+        .expect("restore backup by opaque id");
+    assert!(
+        ws_state.safe_mode.is_active(),
+        "Safe Mode remains active until a successful retry open"
+    );
+
+    let mut hook2 = || on_swapped += 1;
+    let mut deps2 = OpenDeps {
+        gs_path: &gs_path,
+        on_swapped: &mut hook2,
+    };
+    let reopened = open_workspace_sync(&ws_state, &mut deps2, &ws.to_string_lossy())
+        .expect("reopen restored workspace");
+    assert!(
+        matches!(
+            reopened,
+            WorkspaceOpenOutcome::Ready { .. } | WorkspaceOpenOutcome::Migrated { .. }
+        ),
+        "got {reopened:?}"
+    );
+    assert!(!ws_state.safe_mode.is_active());
+    assert_eq!(on_swapped, 1, "only the successful reopen hydrates authority");
+
+    with_db_state(&ws_state, |db| {
+        let count: i64 = db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM projects WHERE id = 'project-corrupt-live-recovered' AND title = 'Recovered'",
+                [],
+                |row| row.get(0),
+            )?)
+        })?;
+        assert_eq!(count, 1, "expected row from the restored backup");
+        Ok(())
+    })
+    .expect("restored authority published");
 
     let _ = fs::remove_dir_all(&root);
 }

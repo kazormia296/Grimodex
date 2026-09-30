@@ -424,6 +424,25 @@ pub(crate) fn canonical_snapshot_for_object_key(
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("scene object key has no sceneId"))?,
         ),
+        Some("scene-scope") => crate::narrative_extraction::canonical_scene_scope_snapshot(
+            conn,
+            project_id,
+            object_key
+                .get("sceneId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("scene-scope object key has no sceneId"))?,
+        ),
+        Some("scope-registry") => {
+            let object_project_id = object_key
+                .get("projectId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("scope-registry object key has no projectId"))?;
+            anyhow::ensure!(
+                object_project_id == project_id,
+                "scope registry snapshot escaped its project"
+            );
+            crate::narrative_extraction::canonical_scope_registry_snapshot(conn, project_id)
+        }
         Some("foreshadow") => canonical_foreshadow_snapshot(
             conn,
             project_id,

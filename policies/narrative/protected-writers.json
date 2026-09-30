@@ -1,10 +1,59 @@
 [
   {
+    "aggregate": "nir1-generation",
+    "table": "nir1_generation_attempts",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_generation_message_versions",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_generation_input_refs",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_generation_qualification_refs",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_chat_input_captures",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_chat_input_submission_keys",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "foreshadow",
     "table": "foreshadows",
     "protection": "table",
     "versionColumn": "version",
     "writer": "foreshadow.aggregate",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "idempotency",
+    "table": "idempotency_requests",
+    "protection": "table",
+    "writer": "idempotency.receipt",
     "enforcement": "active"
   },
   {
@@ -412,7 +461,105 @@
   },
   {
     "aggregate": "narrative-authority",
+    "table": "narrative_scope_registries",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
+    "table": "narrative_scene_scope_bindings",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
     "table": "narrative_application_contributions",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_semantic_epochs",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_extraction_runs",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_dependency_edges",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_dependency_edge_states",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_consumer_freshness",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_semantic_index_metadata",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-nir1-index",
+    "table": "narrative_nir1_chronicle_vectors",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-finding",
+    "table": "narrative_maintenance_finding_lifecycle",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-finding",
+    "table": "narrative_maintenance_finding_observations",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-repair",
+    "table": "narrative_maintenance_repair_leases",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-timelapse",
+    "table": "change_events",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-timelapse",
+    "table": "state_snapshots",
     "protection": "table",
     "writer": "narrative.authority",
     "enforcement": "active"

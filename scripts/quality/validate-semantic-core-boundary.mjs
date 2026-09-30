@@ -2,6 +2,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 import ts from "typescript";
@@ -31,12 +32,22 @@ const REPO_ROOT = path.resolve(
 // into the ratified Object Addressing vocabulary. It is a data-only migration:
 // no table, column, or authority changes, so the concern matrix below is
 // unchanged.
-// SCHEMA 33 (NIR-0 D1) adds sealed Dependency declaration storage. It is a
-// shadow persistence boundary only; V1 remains the canonical Freshness
-// authority, so the authority matrix is still unchanged.
+// SCHEMA 33 (NIR-0 D1) adds sealed Dependency declaration storage. It remains
+// a shadow persistence boundary; the C2-ZC Generic Consumer Freshness path is
+// a focused-green candidate pending final acceptance, while the V1 graph
+// remains its input.
 // SCHEMA 34 (NIR-0 C2A) adds non-authoritative Chronicle V2 persistence and
-// stage-provenance closure storage; V1 remains the production fallback.
-export const EXPECTED_SCHEMA_VERSION = 34;
+// stage-provenance closure storage; D2 V2 evaluation remains a shadow lane.
+// SCHEMA 36 adds the NIR-1 A1 scene-scope authority storage.
+// SCHEMA 37 adds NIR-1 generation attempt, immutable message-version, and
+// ordered input/qualification reference metadata. These rows record existing
+// body/semantic authority identities for a future history gate; they neither
+// determine Freshness/Decision/Scope nor publish a new search generation.
+// Generic writes are blocked by the protected-writer registry and the Native
+// writer has a separate operation policy. The concern matrix is unchanged.
+// SCHEMA_VERSION 41 moves capture/provenance cleanup behind canonical Native
+// parent-delete triggers and RESTRICT references; semantic authority is unchanged.
+export const EXPECTED_SCHEMA_VERSION = 41;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,
@@ -52,6 +63,162 @@ export const REQUIRED_SEMANTIC_BOUNDARY_SCAN_ROOTS = Object.freeze([
   "src-tauri/crates/grimodex-semantic/src",
   "electron/main",
   "electron/preload",
+]);
+
+const REQUIRED_SEMANTIC_INDEX_FOOTPRINT_SURFACES = Object.freeze([
+  Object.freeze({
+    id: "metadataRows",
+    relation: "narrative_semantic_index_metadata",
+    rowSet: "all-project-rows",
+    predicate: "project_id = ?1",
+  }),
+  Object.freeze({
+    id: "activeD1HeadRows",
+    relation: "narrative_dependency_declaration_heads",
+    rowSet: "active-sealed-D1-heads",
+    predicate: "project_id = ?1 AND consumer_kind = 'semantic-index'",
+  }),
+  Object.freeze({
+    id: "v1EdgeRows",
+    relation: "narrative_dependency_edges",
+    rowSet: "V1-edges",
+    predicate: "project_id = ?1 AND consumer_kind = 'semantic-index'",
+  }),
+  Object.freeze({
+    id: "consumerFreshnessRows",
+    relation: "narrative_consumer_freshness",
+    rowSet: "consumer-freshness",
+    predicate: "project_id = ?1 AND consumer_kind = 'semantic-index'",
+  }),
+]);
+
+const APPROVED_NIR1_CHRONICLE_INDEX_BINDING = Object.freeze({
+  "consumerKey": "nir1-reviewed-chronicle:v1",
+  "producerId": "nir1-reviewed-chronicle-v1",
+  "producerVersion": "nir1-reviewed-chronicle/v1",
+  "registryGeneration": "nir1-reviewed-chronicle/v1",
+  "declarationSetGeneration": "positive-monotonic-per-project",
+  "metadataBinding": {
+    "indexKey": "equals-consumer-key",
+    "producerId": "explicit-exact-producer-id",
+    "producerVersion": "explicit-exact-producer-version",
+    "generation": "equals-active-sealed-D1-head-consumer-scoped-generation",
+    "dependencySetDigest": "equals-active-sealed-D1-set-digest"
+  },
+  "eligibilitySource": {
+    "kind": "nir1-chronicle-eligibility-set",
+    "keyFormat": "project:nir1-chronicle-eligibility:{projectId}",
+    "digestBasis": "sorted-current-revision-envelope-and-own-human-decision-identities",
+    "freshnessInDigest": "forbidden"
+  },
+  "writer": {
+    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+    "symbol": "publish_chronicle_index_build_in_tx"
+  },
+  "recognizedUnavailable": "rebuildable-not-query-usable",
+  "queryUsability": "canonical-fresh-and-clean-current-native-proof",
+  "unknownOrIncoherentBinding": "manual-terminal"
+});
+const APPROVED_NIR1_ENTITY_RELATION_INDEX_BINDING = Object.freeze({
+  "consumerKey": "nir1-reviewed-entity-relation:v1",
+  "producerId": "nir1-reviewed-entity-relation-v1",
+  "producerVersion": "nir1-reviewed-entity-relation/v1",
+  "registryGeneration": "nir1-reviewed-entity-relation/v1",
+  "declarationSetGeneration": "positive-monotonic-per-project",
+  "metadataBinding": {
+    "indexKey": "equals-consumer-key",
+    "producerId": "explicit-exact-producer-id",
+    "producerVersion": "explicit-exact-producer-version",
+    "generation": "equals-active-sealed-D1-head-consumer-scoped-generation",
+    "dependencySetDigest": "equals-active-sealed-D1-set-digest"
+  },
+  "eligibilitySource": {
+    "kind": "nir1-entity-relation-eligibility-set",
+    "keyFormat": "project:nir1-entity-relation-eligibility:{projectId}",
+    "digestBasis": "sorted-qualified-current-revision-object-revision-decision-source-token-roster",
+    "freshnessInDigest": "forbidden"
+  },
+  "writer": {
+    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+    "symbol": "publish_nir1_entity_relation_index_in_tx"
+  },
+  "recognizedUnavailable": "rebuildable-not-query-usable",
+  "queryUsability": "canonical-fresh-and-clean-current-native-proof",
+  "unknownOrIncoherentBinding": "manual-terminal"
+});
+const APPROVED_NIR1_INDEX_BINDINGS = Object.freeze([
+  APPROVED_NIR1_CHRONICLE_INDEX_BINDING,
+  APPROVED_NIR1_ENTITY_RELATION_INDEX_BINDING,
+]);
+const APPROVED_NIR1_CHRONICLE_CONSUMER_BINDING = Object.freeze({
+  "consumerKey": "nir1-reviewed-chronicle:v1",
+  "producerId": "nir1-reviewed-chronicle-v1",
+  "producerVersion": "nir1-reviewed-chronicle/v1",
+  "registryGeneration": "nir1-reviewed-chronicle/v1"
+});
+const APPROVED_NIR1_ENTITY_RELATION_CONSUMER_BINDING = Object.freeze({
+  "consumerKey": "nir1-reviewed-entity-relation:v1",
+  "producerId": "nir1-reviewed-entity-relation-v1",
+  "producerVersion": "nir1-reviewed-entity-relation/v1",
+  "registryGeneration": "nir1-reviewed-entity-relation/v1"
+});
+const APPROVED_NIR1_CONSUMER_BINDINGS = Object.freeze([
+  APPROVED_NIR1_CHRONICLE_CONSUMER_BINDING,
+  APPROVED_NIR1_ENTITY_RELATION_CONSUMER_BINDING,
+]);
+const APPROVED_NIR1_CHRONICLE_PRODUCER = Object.freeze({
+  "id": "nir1-reviewed-chronicle-v1",
+  "writer": {
+    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+    "symbol": "publish_chronicle_index_build_in_tx"
+  },
+  "generation": "nir1-reviewed-chronicle/v1",
+  "consumerKind": "semantic-index",
+  "consumerKey": "nir1-reviewed-chronicle:v1",
+  "producerVersion": "nir1-reviewed-chronicle/v1",
+  "declaration": "NIR-1 reviewed Chronicle current eligibility Source and complete admitted Scene Source dependencies"
+});
+const APPROVED_NIR1_ENTITY_RELATION_PRODUCER = Object.freeze({
+  "id": "nir1-reviewed-entity-relation-v1",
+  "writer": {
+    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+    "symbol": "publish_nir1_entity_relation_index_in_tx"
+  },
+  "generation": "nir1-reviewed-entity-relation/v1",
+  "consumerKind": "semantic-index",
+  "consumerKey": "nir1-reviewed-entity-relation:v1",
+  "producerVersion": "nir1-reviewed-entity-relation/v1",
+  "declaration": "NIR-1 reviewed Entity/Relation qualified current revision roster and object-token dependencies"
+});
+const APPROVED_NIR1_PRODUCERS = Object.freeze([
+  APPROVED_NIR1_CHRONICLE_PRODUCER,
+  APPROVED_NIR1_ENTITY_RELATION_PRODUCER,
+]);
+
+const REQUIRED_SEMANTIC_INDEX_UNAPPROVED_DECISIONS = Object.freeze([
+  "fixed-keys",
+  "producer-registry",
+  "source-identities",
+  "writers",
+  "D1-declarations",
+  "metadata-migration",
+  "restore-invalidation",
+  "reserved-to-declared-activation",
+  "producer-granularity",
+  "metadata-producer-identity-composition",
+  "dirty-pending-semantics",
+  "Codex-source-granularity",
+]);
+const DECLARED_SEMANTIC_INDEX_CANONICAL_AUTHORITY =
+  "nir1-reviewed-chronicle-v1 producer";
+const REQUIRED_RESERVED_SEMANTIC_INDEX_NOTE_FRAGMENTS = Object.freeze([
+  "no Narrative dependency authority claim",
+  "no semantic-index Generic Freshness/metadata rows are permitted",
+  "non-zero footprint is manual-terminal",
+  "never a Rebuild-Derived target",
+  "Only existing Scene/Codex/Event/Chat embedding chunk rows",
+  "rebuildable acceleration",
+  "cannot imply Narrative dependency authority",
 ]);
 
 export const AUTHORITY_ROUTE_IDS = Object.freeze([
@@ -1254,6 +1421,149 @@ function validateContributionAxes(vocabulary, errors) {
   }
 }
 
+export function validateSemanticIndexReservation(matrix, errors) {
+  const reservation = matrix?.semanticIndexReservation;
+  if (!isObject(reservation)) {
+    errors.push(
+      "semantic-index reservation must declare the reserved status and dormant binding",
+    );
+    return;
+  }
+  if (reservation.status !== "reserved") {
+    errors.push("semantic-index reservation status must remain reserved");
+  }
+
+  const footprint = reservation.authorityFootprint;
+  if (!isObject(footprint)) {
+    errors.push(
+      "semantic-index reservation must declare an authority footprint",
+    );
+  } else {
+    if (
+      JSON.stringify(footprint.surfaces) !==
+      JSON.stringify(REQUIRED_SEMANTIC_INDEX_FOOTPRINT_SURFACES)
+    ) {
+      errors.push(
+        "semantic-index reservation must declare the four required authority footprint surfaces",
+      );
+    }
+    if (footprint.passCondition !== "unrecognized-all-zero") {
+      errors.push(
+        "semantic-index authority footprint may pass only when all four unrecognized counts are zero",
+      );
+    }
+    if (footprint.nonZeroDisposition !== "manual-terminal") {
+      errors.push(
+        "non-zero semantic-index authority footprint must remain manual/terminal",
+      );
+    }
+    if (footprint.rebuildTarget !== "forbidden") {
+      errors.push(
+        "semantic-index authority footprint must keep Rebuild-Derived as a forbidden target",
+      );
+    }
+  }
+
+  if (footprint?.classification !== "exclude-only-validated-declared-bindings") {
+    errors.push("semantic-index footprint must exclude only validated declared bindings, never a known key alone");
+  }
+  if (!isDeepStrictEqual(reservation.declaredBindings, APPROVED_NIR1_INDEX_BINDINGS)) {
+    errors.push("semantic-index must retain the exact approved NIR-1 Chronicle and Entity/Relation bindings");
+  }
+
+  const chunkRows = reservation.chunkRows;
+  if (
+    !isObject(chunkRows) ||
+    chunkRows.allowed !== true ||
+    chunkRows.classification !== "rebuildable-acceleration" ||
+    chunkRows.narrativeDependencyAuthorityClaim !== "forbidden"
+  ) {
+    errors.push(
+      "semantic-index chunk rows may exist only as rebuildable acceleration and must not claim Narrative dependency authority",
+    );
+  }
+
+  const binding = reservation.futureBinding;
+  if (!isObject(binding)) {
+    errors.push(
+      "semantic-index future binding must remain dormant until NIR-1",
+    );
+    return;
+  }
+  if (binding.status !== "dormant" || binding.approvalGate !== "NIR-1" || binding.scope !== "all-other-producers") {
+    errors.push(
+      "semantic-index future binding must remain dormant for all other producers pending NIR-1 approval",
+    );
+  }
+  if (binding.firstCandidate !== "one-shared-producer") {
+    errors.push(
+      "NIR-1 must identify one shared producer as the first Semantic Index candidate",
+    );
+  }
+  const mapping = binding.mapping;
+  if (
+    !isObject(mapping) ||
+    mapping["metadata.index_key"] !==
+      "D1.consumer_key=freshness.consumer_key" ||
+    mapping["metadata.generation"] !==
+      "active-sealed-D1-head.consumer-scoped-producer_generation" ||
+    mapping["metadata.dependency_set_digest"] !== "active-sealed-D1-set.digest"
+  ) {
+    errors.push(
+      "semantic-index dormant binding must map index key, generation, and dependency-set digest to the sealed D1 Consumer contract",
+    );
+  }
+  if (
+    JSON.stringify(binding.unapprovedDecisions) !==
+    JSON.stringify(REQUIRED_SEMANTIC_INDEX_UNAPPROVED_DECISIONS)
+  ) {
+    errors.push(
+      "semantic-index dormant binding must retain every unapproved NIR-1 decision",
+    );
+  }
+}
+
+export function validateSemanticIndexDeclaredBindings(matrix, consumerContract, producerRegistry, errors) {
+  if (!isDeepStrictEqual(matrix?.semanticIndexReservation?.declaredBindings, APPROVED_NIR1_INDEX_BINDINGS)) {
+    errors.push("semantic-index must retain the exact approved NIR-1 Chronicle and Entity/Relation bindings");
+  }
+  const consumers = consumerContract?.consumerKinds?.filter((entry) => entry?.kind === "semantic-index") ?? [];
+  if (consumers.length !== 1 || !isDeepStrictEqual(consumers[0]?.declaredBindings, APPROVED_NIR1_CONSUMER_BINDINGS)) {
+    errors.push("semantic-index consumer must declare the exact approved NIR-1 Chronicle and Entity/Relation identity tuples");
+  }
+  const producers = producerRegistry?.entries?.filter((entry) => entry?.consumerKind === "semantic-index") ?? [];
+  if (!isDeepStrictEqual(producers, APPROVED_NIR1_PRODUCERS)) {
+    errors.push("semantic-index producer registry must retain the exact approved NIR-1 Chronicle and Entity/Relation bindings and monotonic D1 generation, never a fixed declarationSetGeneration");
+  }
+}
+
+export function validateSemanticIndexRuntimeQueryAlignment(
+  repoRoot,
+  matrix,
+  errors,
+) {
+  const source = readSourceIfPresent(
+    repoRoot,
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/verify_coverage.rs",
+  );
+  if (!source) return;
+
+  const normalizedSource = source.replace(/\s+/g, " ").trim();
+  const surfaces =
+    matrix?.semanticIndexReservation?.authorityFootprint?.surfaces;
+  if (!Array.isArray(surfaces)) return;
+  for (const surface of REQUIRED_SEMANTIC_INDEX_FOOTPRINT_SURFACES) {
+    const expected = surfaces.find((candidate) => candidate?.id === surface.id);
+    if (!expected) continue;
+    const query = `SELECT COUNT(*) FROM ${expected.relation} WHERE ${expected.predicate}`;
+    if (!normalizedSource.includes(query)) {
+      errors.push(
+        `semantic-index policy surface ${surface.id} does not match the production Verify query: ${query}`,
+      );
+    }
+  }
+}
+
 function validateAuthorityMatrix(matrix, errors) {
   if (!isObject(matrix) || matrix.schemaVersion !== 1) {
     errors.push("semantic authority matrix schemaVersion must be 1");
@@ -1284,14 +1594,27 @@ function validateAuthorityMatrix(matrix, errors) {
           "Semantic Index cannot be the Evidence Freshness authority",
         );
       }
+      if (
+        authority.concern === "search-generation" &&
+        (authority.canonicalAuthority !==
+          DECLARED_SEMANTIC_INDEX_CANONICAL_AUTHORITY ||
+          authority.writePolicy !== "declared-bindings-only")
+      ) {
+        errors.push(
+          `search-generation must declare ${JSON.stringify(DECLARED_SEMANTIC_INDEX_CANONICAL_AUTHORITY)} and declared-bindings-only`,
+        );
+      }
     }
   }
+  validateSemanticIndexReservation(matrix, errors);
   const allowedFields = [
     "generation",
     "builtAt",
     "sourceDigest",
     "dependencySetDigest",
     "dirtyCacheFlag",
+    "producerId",
+    "producerVersion",
   ];
   if (
     JSON.stringify(matrix.semanticIndexAllowedFields) !==
@@ -6947,7 +7270,7 @@ function validateContractFixtures(repoRoot, errors) {
 // which fails if `ConsumerKind` and this registry stop naming the same
 // `declared` kinds. Neither check can see the other's language, so both have
 // to exist.
-function validateConsumerContract(repoRoot, contract, errors) {
+export function validateConsumerContract(repoRoot, contract, errors) {
   if (!isObject(contract)) return;
   const entries = Array.isArray(contract.consumerKinds)
     ? contract.consumerKinds
@@ -6974,6 +7297,43 @@ function validateConsumerContract(repoRoot, contract, errors) {
     errors.push(
       "narrative consumer contract declares no consumer kind, but production Producers write Edges today",
     );
+  }
+
+  const semanticIndexEntries = entries.filter(
+    (entry) => entry?.kind === "semantic-index",
+  );
+  if (semanticIndexEntries.length !== 1) {
+    errors.push(
+      "narrative consumer contract must register exactly one semantic-index consumer",
+    );
+  } else {
+    const [semanticIndex] = semanticIndexEntries;
+    if (!isDeepStrictEqual(semanticIndex.declaredBindings, APPROVED_NIR1_CONSUMER_BINDINGS)) {
+      errors.push("semantic-index consumer must declare exactly the approved NIR-1 identity tuple");
+    }
+    if (semanticIndex.status !== "reserved") {
+      errors.push("semantic-index consumer must remain reserved");
+    }
+    if (
+      semanticIndex.durableIdentitySource !==
+      "narrative_semantic_index_metadata.index_key"
+    ) {
+      errors.push(
+        "semantic-index consumer identity must remain narrative_semantic_index_metadata.index_key",
+      );
+    }
+    if (!/no Narrative dependency authority claim/i.test(semanticIndex.notes)) {
+      errors.push(
+        "semantic-index consumer must state that no Narrative dependency authority claim exists",
+      );
+    }
+    for (const fragment of REQUIRED_RESERVED_SEMANTIC_INDEX_NOTE_FRAGMENTS) {
+      if (!semanticIndex.notes?.includes(fragment)) {
+        errors.push(
+          `semantic-index consumer notes must state '${fragment}' while the consumer is reserved`,
+        );
+      }
+    }
   }
 
   // Every declared/reserved kind names a durable identity source; the schema
@@ -7650,6 +8010,7 @@ export function validateSemanticCoreBoundary({
     "semantic authority matrix",
   );
   validateAuthorityMatrix(authorityMatrix, errors);
+  validateSemanticIndexRuntimeQueryAlignment(repoRoot, authorityMatrix, errors);
   const artifactAuthorityContract = readJson(
     repoRoot,
     artifactAuthorityContractPath,
@@ -7679,6 +8040,8 @@ export function validateSemanticCoreBoundary({
     "narrative consumer contract",
   );
   validateConsumerContract(repoRoot, consumerContract, errors);
+  const producerRegistry = readJson(repoRoot, "policies/narrative/narrative-dependency-producer-registry.json", errors, "narrative dependency producer registry");
+  validateSemanticIndexDeclaredBindings(authorityMatrix, consumerContract, producerRegistry, errors);
   const findingContract = readJson(
     repoRoot,
     findingContractPath,

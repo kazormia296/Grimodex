@@ -168,7 +168,9 @@ fn require_contract_string(
     Ok(())
 }
 
-fn compare_utf16(left: &str, right: &str) -> Ordering {
+/// Compare contract strings in the UTF-16 lexical order used by JavaScript
+/// and by every canonical Project Scope authority digest.
+pub fn compare_utf16(left: &str, right: &str) -> Ordering {
     left.encode_utf16().cmp(right.encode_utf16())
 }
 

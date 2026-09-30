@@ -10,13 +10,18 @@
 //! observation-derived semantic payload.  Every digest below is computed by
 //! the shared Native canonicalizer; there are no placeholder digests.
 
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_core::{canonical_json_digest, canonical_json_string};
+use grimodex_db::domain_writes::{project_create, ProjectCreatePayload};
 use grimodex_db::narrative_extraction::{
     self, AppendRevisionPayload, ArtifactInput, ChronicleStageC1ExecutionBinding,
     ChronicleStageProvenanceClosure, CreateHumanDerivedRevisionRequest, CreateRunPayload,
     CreateTaskSeed, FinishTaskPayload, NarrativeAdapterIdentity, ProposalSeed,
     SaveProposalSetPayload,
 };
+use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::Database;
 use serde_json::{json, Value};
 use sha2::{Digest as Sha2Digest, Sha256};
@@ -62,14 +67,148 @@ fn raw_sha256_digest(bytes: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
 }
 
-fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate");
-    db.with_conn(|conn| {
+#[cfg(feature = "nir1-material-diagnostics")]
+mod material_roster_diagnostics {
+    use super::*;
+    use grimodex_db::narrative_extraction::material_roster::{
+        inspect_material_roster, RosterStatus,
+    };
+    use rusqlite::{Connection, OpenFlags};
+
+    fn persisted_fixture() -> (std::path::PathBuf, String) {
+        let db = migrated_db();
+        let run = "roster-run";
+        let task = "roster-task";
+        create_run(&db, PROJECT_A, run, task);
+        let refs = seal_stage_receipts_for_v2(&db, run, task);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                 (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('roster-epoch', ?1, 0, 'initial', '2026-08-25T00:00:00.000Z')",
+                [PROJECT_A],
+            )?;
+            Ok(())
+        })
+        .expect("epoch");
+        let saved = narrative_extraction::narrative_extraction_save_proposal_set(
+            &db,
+            SaveProposalSetPayload {
+                run_id: run.into(),
+                project_id: PROJECT_A.into(),
+                proposal_set_id: Some("roster-set".into()),
+                set_kind: "chronicle.extract.review@1".into(),
+                summary_json: Some(json!({"chronicleStageReceiptRefs": refs})),
+                proposals: vec![ProposalSeed {
+                    proposal_id: Some("roster-proposal".into()),
+                    proposal_key: "event:roster".into(),
+                    kind: PROPOSAL_KIND.into(),
+                    payload_json: proposal_payload("Arrival", false),
+                    reconciliation_envelope: Some(envelope_v2(
+                        &db, PROJECT_A, run, task, "Arrival",
+                    )),
+                }],
+            },
+        )
+        .expect("save through Native production persistence");
+        let revision = saved["proposals"][0]["revisionId"]
+            .as_str()
+            .expect("revision")
+            .to_owned();
+        let path =
+            std::env::temp_dir().join(format!("nir1-roster-{}.sqlite", uuid::Uuid::new_v4()));
+        db.with_conn(|conn| {
+            conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
+            Ok(())
+        })
+        .expect("isolated durable copy");
+        drop(db);
+        (path, revision)
+    }
+
+    #[test]
+    fn material_roster_reopens_valid_native_rows_without_claiming_membership() {
+        let (path, revision) = persisted_fixture();
+        let before = std::fs::read(&path).expect("before bytes");
+        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("read only");
+        let report = inspect_material_roster(&conn, PROJECT_A, &revision).expect("diagnose");
+        assert_eq!(report.status, RosterStatus::Incomplete);
+        assert!(!report.verified_receipts.is_empty());
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "snapshot-binding-missing"));
+        assert!(
+            report.materials.is_empty(),
+            "partial receipts are not material authority"
+        );
+        drop(conn);
+        assert_eq!(before, std::fs::read(&path).expect("after bytes"));
+        std::fs::remove_file(path).expect("remove isolated fixture");
+    }
+
+    #[test]
+    fn material_roster_missing_required_receipt_is_not_smaller_complete_roster() {
+        let (path, revision) = persisted_fixture();
+        let conn = Connection::open(&path).expect("negative copy");
+        conn.execute("DELETE FROM narrative_extraction_stage_receipts", [])
+            .expect("remove required receipts");
+        let report = inspect_material_roster(&conn, PROJECT_A, &revision).expect("diagnose");
+        assert_eq!(report.status, RosterStatus::Inconsistent);
+        assert!(report.materials.is_empty());
+        drop(conn);
+        std::fs::remove_file(path).expect("remove isolated fixture");
+    }
+
+    #[test]
+    fn material_roster_corrupt_receipt_and_foreign_project_are_distinct() {
+        let (path, revision) = persisted_fixture();
+        let conn = Connection::open(&path).expect("negative copy");
+        let foreign = inspect_material_roster(&conn, PROJECT_B, &revision).expect("foreign");
+        assert_eq!(foreign.status, RosterStatus::Incomplete);
+        assert!(foreign.verified_receipts.is_empty());
+        assert_eq!(foreign.issues[0].code, "revision-not-found");
         conn.execute(
-            "INSERT INTO projects (id, title) VALUES (?1, ?2)",
-            rusqlite::params![PROJECT_A, "Project A"],
-        )?;
+            "UPDATE narrative_extraction_stage_receipts SET receipt_digest = ?1",
+            [FORGED_DIGEST],
+        )
+        .expect("tamper well-formed receipt digest");
+        let corrupt = inspect_material_roster(&conn, PROJECT_A, &revision).expect("corrupt");
+        assert_eq!(corrupt.status, RosterStatus::Inconsistent);
+        assert!(corrupt.materials.is_empty());
+        drop(conn);
+        std::fs::remove_file(path).expect("remove isolated fixture");
+    }
+}
+
+fn migrated_db() -> Database {
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
+    project_create(
+        &db,
+        ProjectCreatePayload {
+            project_id: PROJECT_A.to_owned(),
+            request_id: "fixture-project-a".to_owned(),
+            session_id: "fixture-session".to_owned(),
+            event_uid: "fixture-project-a-event".to_owned(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            title: "Project A".to_owned(),
+            genre: None,
+            pov: None,
+            tense: None,
+            language: None,
+            style_guide: None,
+            ai_instructions: None,
+            outline: None,
+            target_readers: None,
+            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
+        },
+    )
+    .expect("seed project A through production writer");
+    db.with_conn(|conn| {
         conn.execute(
             "INSERT INTO projects (id, title) VALUES (?1, ?2)",
             rusqlite::params![PROJECT_B, "Project B"],
@@ -2031,6 +2170,7 @@ fn finish_bundle_with_artifacts_and_parsed_output_digest(
 
 enum SynthesisCompanionMutation {
     HypothesisField(&'static str, Value),
+    HypothesisAndEventActuality(&'static str),
     EventOutputField(&'static str, Value),
     EventRowField(&'static str, Value),
     DuplicateHypothesisId,
@@ -2096,6 +2236,10 @@ fn finish_bundle_with_companion_mutation(
         })]
     };
     match companion_mutation {
+        Some(SynthesisCompanionMutation::HypothesisAndEventActuality(actuality)) => {
+            event_output["events"][0]["actuality"] = json!(actuality);
+            hypotheses[0]["actuality"] = json!(actuality);
+        }
         Some(SynthesisCompanionMutation::HypothesisField(field, value)) => {
             hypotheses
                 .first_mut()
@@ -3163,6 +3307,171 @@ fn chronicle_synthesis_requires_native_raw_observation_digest() {
     assert_eq!(receipt_count, 0);
 }
 
+fn closure_with_authored_terminal_output(
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    raw: &Value,
+    event_output: &Value,
+) -> Value {
+    let closure = valid_stage_closure(
+        PROJECT_A,
+        run_id,
+        task_id,
+        attempt_id,
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+    );
+    let mut receipts = closure["receipts"]
+        .as_array()
+        .expect("closure receipts")
+        .clone();
+    let synthesis = receipts
+        .iter_mut()
+        .find(|receipt| receipt["stageExecution"]["stageId"] == EVENT_SYNTHESIS_STAGE_ID)
+        .expect("synthesis receipt");
+    bind_terminal_output(synthesis, raw, event_output);
+    closure_for_receipts(
+        PROJECT_A,
+        run_id,
+        task_id,
+        attempt_id,
+        Value::Array(receipts),
+    )
+}
+
+fn assert_chronicle_synthesis_preserves_rumored_raw(event_actuality: &'static str) {
+    let db = migrated_db();
+    let run_id = format!("run-stage-rumored-{event_actuality}");
+    let task_id = format!("task-stage-rumored-{event_actuality}");
+    create_run(&db, PROJECT_A, &run_id, &task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, &run_id);
+    let mut raw = raw_observations(&["observation:arrival"]);
+    raw["observations"][0]["payload"]["actuality"] = json!("rumored");
+    let mut event_output = event_output_for_refs(&raw_observation_refs(&raw));
+    event_output["events"][0]["actuality"] = json!(event_actuality);
+    let closure =
+        closure_with_authored_terminal_output(&run_id, &task_id, &attempt_id, &raw, &event_output);
+    finish_bundle_with_companion_mutation(
+        &db, &run_id, &task_id, &attempt_id, closure, 1,
+        json!(["observation:arrival"]),
+        vec![artifact(&format!("{task_id}-raw-observations"), "chronicle.raw-observations@1", raw.clone())],
+        None, None,
+        Some(SynthesisCompanionMutation::HypothesisAndEventActuality(event_actuality)),
+    ).unwrap_or_else(|error| panic!("rumored raw and {event_actuality} terminal must retain their original modalities: {error:#}"));
+
+    // This fixture terminalizes one stage, not the complete extraction DAG.
+    // Read the Native-persisted rows directly, as the other atomic C2A tests do.
+    let saved = |kind: &str| -> Value {
+        let records: Vec<(String, String)> = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT payload_json, payload_digest FROM narrative_extraction_artifacts
+                 WHERE run_id = ?1 AND task_id = ?2 AND artifact_kind = ?3",
+                )?;
+                let records = statement
+                    .query_map(rusqlite::params![run_id, task_id, kind], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(records)
+            })
+            .expect("read persisted stage artifact");
+        assert_eq!(records.len(), 1, "one saved {kind}");
+        let payload: Value = serde_json::from_str(&records[0].0).expect("saved JSON artifact");
+        assert_eq!(records[0].1, digest(&payload));
+        payload
+    };
+    assert_eq!(saved("chronicle.raw-observations@1"), raw);
+    let companion = saved("chronicle.stage-synthesis-outputs@1");
+    let terminal = &companion["outputs"][0];
+    assert_eq!(terminal["rawObservations"], raw);
+    assert_eq!(terminal["eventOutput"], event_output);
+    assert_eq!(terminal["output"]["rawObservationsDigest"], digest(&raw));
+    assert_eq!(
+        terminal["output"]["eventOutputDigest"],
+        digest(&event_output)
+    );
+    assert_eq!(
+        terminal["output"]["parsedOutputDigest"],
+        parsed_output_digest_for_output(&raw, &event_output)
+    );
+    let hypotheses = saved("chronicle.event-hypotheses@1");
+    let hypothesis = &hypotheses["hypotheses"][0];
+    let mut expected_hypothesis = event_output["events"][0].clone();
+    expected_hypothesis["hypothesisId"] = json!("hypothesis:arrival");
+    expected_hypothesis["clusterRef"] = json!("cluster:arrival");
+    assert_eq!(hypothesis, &expected_hypothesis);
+    let (receipt_json, task_status, proposal_count): (String, String, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT r.receipt_json, t.status,
+                    (SELECT COUNT(*) FROM narrative_proposals p
+                     JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                     WHERE s.run_id = ?1 AND s.project_id = ?4)
+             FROM narrative_extraction_stage_receipts r
+             JOIN narrative_extraction_tasks t ON t.id = r.task_id AND t.run_id = r.run_id
+             WHERE r.run_id = ?1 AND r.task_id = ?2 AND r.attempt_id = ?3 AND r.project_id = ?4
+               AND json_extract(r.receipt_json, '$.stageExecution.stageId') = ?5",
+                rusqlite::params![
+                    run_id,
+                    task_id,
+                    attempt_id,
+                    PROJECT_A,
+                    EVENT_SYNTHESIS_STAGE_ID
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .expect("read persisted receipt and task state");
+    let receipt: Value = serde_json::from_str(&receipt_json).expect("saved receipt JSON");
+    assert_eq!(receipt["rawObservationsDigest"], digest(&raw));
+    assert_eq!(
+        receipt["parsedOutputDigest"],
+        parsed_output_digest_for_output(&raw, &event_output)
+    );
+    assert_eq!(task_status, "completed");
+    assert_eq!(
+        proposal_count, 0,
+        "stage preservation itself must not write a Proposal"
+    );
+}
+
+#[test]
+fn chronicle_synthesis_preserves_rumored_raw_without_correcting_an_actual_hypothesis() {
+    // Provenance retains the model output; the later planner rejects unsupported promotion.
+    assert_chronicle_synthesis_preserves_rumored_raw("actual");
+}
+
+#[test]
+fn chronicle_synthesis_preserves_rumored_raw_hypothesis_and_terminal() {
+    assert_chronicle_synthesis_preserves_rumored_raw("rumored");
+}
+
+#[test]
+fn chronicle_synthesis_rejects_unknown_raw_actuality_atomically() {
+    let db = migrated_db();
+    let run_id = "run-stage-unknown-raw-actuality";
+    let task_id = "task-stage-unknown-raw-actuality";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let mut raw = raw_observations(&["observation:arrival"]);
+    raw["observations"][0]["payload"]["actuality"] = json!("future-actuality");
+    let event_output = event_output_for_refs(&raw_observation_refs(&raw));
+    let closure =
+        closure_with_authored_terminal_output(run_id, task_id, &attempt_id, &raw, &event_output);
+    let error = finish_bundle_with_raw(&db, run_id, task_id, &attempt_id, closure, raw, None, None)
+        .expect_err("unknown raw actuality must remain invalid");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_RAW_OBSERVATIONS_INVALID"),
+        "unexpected invalid-actuality error: {error:#}"
+    );
+    assert_stage_finish_rolled_back(&db, run_id, task_id, &attempt_id, "unknown-raw-actuality");
+}
+
 #[test]
 fn chronicle_synthesis_requires_native_parsed_output_digest() {
     let db = migrated_db();
@@ -3227,6 +3536,7 @@ fn chronicle_synthesis_rejects_hypothesis_semantics_not_bound_to_terminal_output
         ("title", "titleSuggestion", json!("Altered title")),
         ("summary", "summary", json!("Altered summary")),
         ("actuality", "actuality", json!("prevented")),
+        ("rumored-actuality", "actuality", json!("rumored")),
         ("significance", "significance", json!("minor")),
         (
             "semantic-type",
@@ -3353,6 +3663,46 @@ fn chronicle_synthesis_accepts_generated_id_independence_and_empty_semantic_type
 #[test]
 fn chronicle_synthesis_rejects_noncanonical_hypothesis_and_event_shapes_atomically() {
     for (case, mutation, expected_code) in [
+        (
+            "hypothesis-planned-actuality",
+            SynthesisCompanionMutation::HypothesisField("actuality", json!("planned")),
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID",
+        ),
+        (
+            "event-planned-actuality",
+            SynthesisCompanionMutation::EventRowField("actuality", json!("planned")),
+            "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID",
+        ),
+        (
+            "hypothesis-dreamed-actuality",
+            SynthesisCompanionMutation::HypothesisField("actuality", json!("dreamed")),
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID",
+        ),
+        (
+            "event-dreamed-actuality",
+            SynthesisCompanionMutation::EventRowField("actuality", json!("dreamed")),
+            "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID",
+        ),
+        (
+            "hypothesis-unknown-actuality",
+            SynthesisCompanionMutation::HypothesisField("actuality", json!("unknown")),
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID",
+        ),
+        (
+            "event-unknown-actuality",
+            SynthesisCompanionMutation::EventRowField("actuality", json!("unknown")),
+            "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID",
+        ),
+        (
+            "hypothesis-future-actuality-actuality",
+            SynthesisCompanionMutation::HypothesisField("actuality", json!("future-actuality")),
+            "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID",
+        ),
+        (
+            "event-future-actuality-actuality",
+            SynthesisCompanionMutation::EventRowField("actuality", json!("future-actuality")),
+            "NEX_CHRONICLE_SYNTHESIS_OUTPUT_INVALID",
+        ),
         (
             "blank-hypothesis-id",
             SynthesisCompanionMutation::HypothesisField("hypothesisId", json!(" ")),

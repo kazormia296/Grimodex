@@ -1,18 +1,25 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-const freezeEntries = (entries) =>
-  Object.freeze(
-    entries.map((entry) =>
-      Object.freeze(
-        Object.fromEntries(
-          Object.entries(entry).map(([key, value]) => [
-            key,
-            Array.isArray(value) ? Object.freeze([...value]) : value,
-          ]),
-        ),
+const cloneAndFreeze = (value) => {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map(cloneAndFreeze));
+  }
+  if (value && typeof value === "object") {
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(value).map(([key, nestedValue]) => [
+          key,
+          cloneAndFreeze(nestedValue),
+        ]),
       ),
-    ),
-  );
+    );
+  }
+  return value;
+};
+
+const freezeEntries = (entries) =>
+  Object.freeze(entries.map((entry) => cloneAndFreeze(entry)));
 
 export const PRODUCT_JOURNEY_CAPABILITY_ORDER = Object.freeze([
   "electron",
@@ -84,6 +91,54 @@ export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG = freezeEntries(
     description,
   })),
 );
+
+/**
+ * C2-ZC is a separate acceptance boundary from the C2-5B maintenance
+ * journeys. Keep its production reachability journey explicit so the
+ * canonical-authority cutover cannot disappear behind the broader catalog.
+ */
+export const NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG = freezeEntries([
+  {
+    id: "c2-zc-canonical-authority-cutover",
+    required: true,
+    acceptanceRole: "required",
+    domains: ["narrative-maintenance"],
+    interactions: ["narrative-maintenance->sqlite"],
+    contracts: ["c2-zc:canonical-authority-cutover"],
+    capabilities: ["electron", "napi"],
+    description:
+      "offline restore fixture -> production Settings UI restore -> durable Verify/conditional Rebuild/confirmation Verify/Freshness -> marker -> typed Generic write -> restart persistence",
+    phases: [
+      "c2-zc-canonical-authority-cutover/restore-fixture",
+      "c2-zc-canonical-authority-cutover/restore",
+      "c2-zc-canonical-authority-cutover/open",
+      "c2-zc-canonical-authority-cutover/restart",
+      "c2-zc-canonical-authority-cutover/typed-write",
+      "c2-zc-canonical-authority-cutover/restart-persistence",
+    ],
+  },
+  {
+    id: "c2-zc-renderer-mcp-dml-denial",
+    required: true,
+    acceptanceRole: "auxiliary",
+    domains: ["narrative-maintenance", "sqlite"],
+    interactions: ["narrative-maintenance->sqlite"],
+    contracts: ["c2-zc:boundary-dml-denial"],
+    capabilities: ["electron", "napi"],
+    description:
+      "one-launch, one representative real renderer IPC db_execute DML denial with an unchanged row; all-table, MCP, typed-positive, and direct-corruption proofs are bound to Rust acceptance gates",
+    phases: ["c2-zc-renderer-mcp-dml-denial/representative"],
+    mcpGeneric: {
+      productionToolName: null,
+      productionRoute: null,
+      status: "not-exposed",
+      canonicalRustSource: "src-tauri/crates/grimodex-db/src/execute.rs",
+      canonicalRustTest:
+        "c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes",
+      origin: "SqlOrigin::McpGeneric",
+    },
+  },
+]);
 
 /**
  * Dependency-free product journey catalog.
@@ -178,10 +233,13 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
   },
   {
     id: "mcp-external-write-conflict",
-    domains: ["mcp", "external-write-feed", "editor", "scene-persistence"],
-    interactions: ["mcp->sqlite", "sqlite->external-write-feed"],
-    contracts: ["external-write:mcp:clean", "external-write:mcp:dirty"],
+    name: "MCP D2a egress denial",
+    domains: ["mcp"],
+    interactions: ["mcp->sqlite"],
+    contracts: ["d2a:mcp:pre-dispatch-denial"],
     capabilities: ["electron", "napi", "mcp"],
+    description:
+      "standalone MCP propose_scene_body is denied before handler dispatch, DB mutation, or external-write feed",
   },
   {
     id: "chronicle-native-roundtrip",
@@ -214,8 +272,62 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     contracts: ["native-command-roundtrip:project-snapshot"],
     capabilities: ["electron", "napi"],
   },
+  {
+    id: "chronicle-extract-review-apply-reopen",
+    domains: ["chronicle-extraction"],
+    interactions: [
+      "chronicle-extraction->sqlite",
+      "sqlite->chronicle-extraction",
+    ],
+    contracts: ["chronicle:extract-review-apply-reopen"],
+    capabilities: ["electron", "napi"],
+    description:
+      "fixed provider response -> production extraction and quote display -> human review -> Native V2 Prepare/Apply -> restart without duplicate Events",
+  },
+  {
+    id: "codex-entity-relation-review-apply-reopen",
+    domains: ["codex", "scene-persistence", "workspace-lifecycle"],
+    interactions: ["codex->sqlite", "sqlite->codex"],
+    contracts: ["codex:entity-relation-review-apply-reopen"],
+    capabilities: ["electron", "napi"],
+    description:
+      "normal Codex entry creation -> typed Entity/Relation relation selection -> direct scope/material -> Native evidence review -> explicit approval -> target-bound cold reopen",
+  },
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+  ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
 ]);
+
+/**
+ * The A2 Entity/Relation journey is also runnable as an isolated Heavy
+ * evaluation. Keep the subset catalog explicit so its required IDs and
+ * catalog digest describe the one journey that actually ran.
+ */
+export const NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG = freezeEntries(
+  PRODUCT_JOURNEY_CATALOG.filter(
+    ({ id }) => id === "codex-entity-relation-review-apply-reopen",
+  ),
+);
+
+/**
+ * Bind acceptance evidence to the exact catalog that selected and executed
+ * the journeys. JSON.stringify is deterministic here because the catalog is
+ * source-defined and freezeEntries preserves entry and field order.
+ */
+export function digestProductJourneyCatalog(catalog) {
+  if (!Array.isArray(catalog) || catalog.length === 0) {
+    throw new Error("product journey catalog must be a non-empty array");
+  }
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(catalog))
+    .digest("hex")}`;
+}
+
+export const PRODUCT_JOURNEY_CATALOG_DIGEST = digestProductJourneyCatalog(
+  PRODUCT_JOURNEY_CATALOG,
+);
+
+export const NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG_DIGEST =
+  digestProductJourneyCatalog(NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG);
 
 /**
  * Known coverage gaps remain explicit. Entries move into
@@ -285,9 +397,12 @@ export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
   "electron/main/index.ts",
   "electron/main/foregroundBarrierRelease.test.ts",
   "electron/main/narrativeMaintenance.ts",
+  "electron/main/narrativeMaintenanceAttempt.ts",
+  "electron/main/narrativeMaintenanceAttempt.test.ts",
   "electron/main/narrativeMaintenance.test.ts",
   "electron/main/narrativeMaintenance.phase1.test.ts",
   "electron/main/narrativeMaintenance.followup.test.ts",
+  "electron/main/narrativeMaintenance.review-fixes.test.ts",
   "electron/main/narrativeMaintenance.reacceptance.test.ts",
   "electron/main/narrativeMaintenance.reacceptance.wire.test.ts",
   "electron/main/narrativeMaintenance.wiring.test.ts",
@@ -296,6 +411,10 @@ export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
   "electron/main/narrativeMaintenanceBootstrap.test.ts",
   "electron/main/narrativeMaintenanceCiSeam.ts",
   "electron/main/narrativeMaintenanceCiSeam.test.ts",
+  "electron/main/narrativeMaintenanceShutdown.ts",
+  "electron/main/narrativeMaintenanceShutdown.test.ts",
+  "electron/main/narrativeMaintenanceDelivery.ts",
+  "electron/main/narrativeMaintenanceDelivery.test.ts",
   "electron/main/narrativeMaintenanceTriggers.ts",
   "electron/main/narrativeMaintenanceTriggers.test.ts",
 ]);
@@ -317,6 +436,10 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
       "electron/scripts/product-journeys.mjs",
       "electron/main/productJourneyAi.ts",
       "electron/main/productJourneyAi.test.ts",
+      "electron/main/productJourneyChronicleAi*.ts",
+      "electron/shared/productJourneyChronicleFixture.json",
+      "electron/scripts/chronicle-extraction-product-journey.mjs",
+      "scripts/chronicle-extraction-product-journey.test.mjs",
       "scripts/product-journey-*.test.mjs",
       "scripts/electron-product-journey-*.test.mjs",
       "scripts/electron-product-journeys.test.mjs",
@@ -346,8 +469,12 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
     domains: ["narrative-maintenance"],
     paths: [
       "electron/scripts/narrative-maintenance-product-journeys.mjs",
+      "electron/scripts/c2zc-canonical-product-journey.mjs",
+      "electron/scripts/c2zc-renderer-mcp-dml-denial-product-journey.mjs",
       "electron/scripts/product-journeys.mjs",
       "scripts/c2-5b-product-journeys.test.mjs",
+      "scripts/c2zc-product-journeys.test.mjs",
+      "scripts/c2zc-renderer-mcp-dml-denial.test.mjs",
       "scripts/product-journey-phase1.test.mjs",
       "electron/main/narrativeFreshness.ts",
       "electron/main/narrativeFreshness.test.ts",
@@ -355,6 +482,7 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
       NARRATIVE_MAINTENANCE_FOREGROUND_OWNER_GLOB,
       ...NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
       "electron/native/grimodex-node/**",
+      "src-tauri/crates/grimodex-db/src/execute.rs",
       "src-tauri/crates/grimodex-db/src/migrate.rs",
       "src-tauri/crates/grimodex-db/src/backup_restore.rs",
       "src-tauri/crates/grimodex-core/src/workspace_schema.rs",
@@ -445,6 +573,23 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
     paths: ["src/features/chronicle/**"],
   },
   {
+    id: "chronicle-extraction",
+    domains: ["chronicle-extraction"],
+    contracts: ["chronicle:extract-review-apply-reopen"],
+    paths: [
+      "src/features/chronicle/ChronicleExtractDialog.*",
+      "src/features/chronicle/ChronicleEvidencePane.*",
+      "src/features/chronicle/ChronicleProposalReview.*",
+      "src/features/chronicle/ChronicleProposalCard.*",
+      "src/features/chronicle/chronicleExtraction*",
+      "src/features/chronicle/extraction/**",
+      "src/application/narrative-extraction/extractionCoordinator.*",
+      "src/application/narrative-extraction/chronicleV2Production.*",
+      "src/application/narrative-extraction/aiTasks/runObservationExtractionTask.*",
+      "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.*",
+    ],
+  },
+  {
     id: "lint-ui",
     domains: ["lint-ui"],
     paths: ["src/features/lint/**"],
@@ -524,6 +669,14 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
 
 export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
   {
+    id: "chronicle:extract-review-apply-reopen",
+    domains: ["chronicle-extraction"],
+  },
+  {
+    id: "codex:entity-relation-review-apply-reopen",
+    domains: ["codex", "sqlite", "scene-persistence", "workspace-lifecycle"],
+  },
+  {
     id: "roundtrip:editor",
     domains: ["editor", "scene-persistence"],
   },
@@ -579,12 +732,8 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
     domains: ["editor", "project-lifecycle"],
   },
   {
-    id: "external-write:mcp:clean",
-    domains: ["mcp", "external-write-feed", "editor", "scene-persistence"],
-  },
-  {
-    id: "external-write:mcp:dirty",
-    domains: ["mcp", "external-write-feed", "editor", "scene-persistence"],
+    id: "d2a:mcp:pre-dispatch-denial",
+    domains: ["mcp", "sqlite"],
   },
   {
     id: "native-command-roundtrip:chronicle-bulk",
@@ -606,6 +755,12 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
     id: journey.contracts[0],
     domains: ["narrative-maintenance"],
   })),
+  ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.flatMap((journey) =>
+    journey.contracts.map((id) => ({
+      id,
+      domains: ["narrative-maintenance"],
+    })),
+  ),
 ]);
 
 export const PRODUCT_SCOPE_TRANSITIONS = freezeEntries([
@@ -679,6 +834,14 @@ export const PRODUCT_NATIVE_PERSISTENCE_DOMAINS = freezeEntries([
 ]);
 
 export const PRODUCT_INTERACTION_REQUIREMENTS = freezeEntries([
+  {
+    id: "chronicle-extraction->sqlite",
+    domains: ["chronicle-extraction", "sqlite"],
+  },
+  {
+    id: "sqlite->chronicle-extraction",
+    domains: ["sqlite", "chronicle-extraction"],
+  },
   { id: "editor->sqlite", domains: ["editor", "sqlite"] },
   { id: "sqlite->editor", domains: ["sqlite", "editor"] },
   { id: "scene-scope->chat", domains: ["scene-scope", "chat"] },
@@ -700,6 +863,8 @@ export const PRODUCT_INTERACTION_REQUIREMENTS = freezeEntries([
     domains: ["external-write-feed", "history"],
   },
   { id: "codex->chat", domains: ["codex", "chat"] },
+  { id: "codex->sqlite", domains: ["codex", "sqlite"] },
+  { id: "sqlite->codex", domains: ["sqlite", "codex"] },
   { id: "chat->editor", domains: ["chat", "editor"] },
   { id: "editor->history", domains: ["editor", "history"] },
   {

@@ -70,6 +70,34 @@ use std::hash::{Hash, Hasher};
 #[cfg(feature = "semantic-embedding")]
 use std::sync::Condvar;
 
+#[cfg(feature = "semantic-embedding")]
+#[path = "runtime_embedder_admission.rs"]
+mod embedder_admission;
+#[cfg(feature = "semantic-embedding")]
+use embedder_admission::EmbedderAdmission;
+
+#[cfg(feature = "semantic-embedding")]
+#[path = "runtime_audited_query.rs"]
+mod audited_query;
+#[cfg(feature = "semantic-embedding")]
+pub use audited_query::{
+    AuditedSemanticQuery, SemanticEmbeddingAuditBinding, SemanticEmbeddingIdentity,
+};
+
+#[cfg(feature = "semantic-embedding")]
+#[path = "runtime_nir1_documents.rs"]
+mod nir1_documents;
+#[cfg(feature = "semantic-embedding")]
+pub use nir1_documents::{Nir1DocumentEmbeddingOutcome, Nir1EmbeddingDocument};
+
+#[cfg(all(test, feature = "semantic-embedding"))]
+#[path = "runtime_audited_query_tests.rs"]
+mod audited_query_tests;
+
+#[cfg(all(test, feature = "semantic-embedding"))]
+#[path = "runtime_nir1_document_tests.rs"]
+mod nir1_document_tests;
+
 pub const REINDEX_PROGRESS_EVENT: &str = "semantic:reindex_progress";
 pub const MODEL_DOWNLOAD_PROGRESS_EVENT: &str = "semantic:model_download_progress";
 const BACKGROUND_CANCELLED_MESSAGE: &str =
@@ -298,6 +326,8 @@ pub struct SemanticRuntime {
     #[cfg(feature = "semantic-embedding")]
     embedders: Mutex<HashMap<&'static str, Embedder>>,
     #[cfg(feature = "semantic-embedding")]
+    embedder_admission: EmbedderAdmission,
+    #[cfg(feature = "semantic-embedding")]
     downloads_inflight: Mutex<HashSet<&'static str>>,
 }
 
@@ -314,6 +344,8 @@ impl SemanticRuntime {
             reindex_flights: Mutex::new(HashMap::new()),
             #[cfg(feature = "semantic-embedding")]
             embedders: Mutex::new(HashMap::new()),
+            #[cfg(feature = "semantic-embedding")]
+            embedder_admission: EmbedderAdmission::default(),
             #[cfg(feature = "semantic-embedding")]
             downloads_inflight: Mutex::new(HashSet::new()),
         }
@@ -827,9 +859,22 @@ fn audited_embedding(
     input: AuditedEmbeddingInput<'_>,
     inference: impl FnOnce() -> Result<Vec<f32>>,
 ) -> Result<Vec<f32>> {
+    let mut audit = start_embedding_audit(request, project_id, input, true, false)?;
+    audit.dispatch_and_run(inference, |embedding| {
+        crate::audit::embedding_output_payload(embedding)
+    })
+}
+
+#[cfg(feature = "semantic-embedding")]
+fn start_embedding_audit(
+    request: &SemanticRequest,
+    project_id: &str,
+    input: AuditedEmbeddingInput<'_>,
+    tokenizer_may_truncate: bool,
+    preflight_before_dispatch: bool,
+) -> Result<crate::audit::SemanticAuditSession> {
     use crate::audit::{
-        embedding_output_payload, sha256_hex, SemanticAuditAppender, SemanticAuditContext,
-        SemanticAuditSession,
+        sha256_hex, SemanticAuditAppender, SemanticAuditContext, SemanticAuditSession,
     };
 
     let AuditedEmbeddingInput {
@@ -844,43 +889,44 @@ fn audited_embedding(
     } = input;
     let model_text = format!("{model_prefix}{raw_text}");
     let appender: Arc<dyn SemanticAuditAppender> = request.database();
-    let mut audit = SemanticAuditSession::start(
-        appender,
-        SemanticAuditContext {
-            project_id: Some(project_id.to_string()),
-            operation_id: request.operation_id().to_string(),
-            parent_execution_id: None,
-            path_id: path_id.to_string(),
-            inference_kind: inference_kind.to_string(),
-            model: json!({
-                "engine": "onnx-runtime",
-                "executionProvider": "cpu",
-                "modelId": spec.full_model_id(),
-                "artifactSha256": model_artifact_identity.sha256.clone(),
-                "artifactIdentity": model_artifact_identity,
-                "embeddingDim": spec.embedding_dim,
-                "chunkerVersion": spec.chunker_version,
-                "maxSequenceTokens": spec.max_seq_len,
-                "pooling": format!("{:?}", spec.pooling),
-                "needsTokenTypeIds": spec.needs_token_type_ids,
-                "tokenizerIdentity": tokenizer_identity,
-            }),
-            input: json!({
-                "rawText": raw_text,
-                "rawTextSha256": sha256_hex(raw_text.as_bytes()),
-                "rawTextByteLength": raw_text.len(),
-                "rawTextCharLength": raw_text.chars().count(),
-                "modelPrefix": model_prefix,
-                "modelText": model_text,
-                "modelTextSha256": sha256_hex(model_text.as_bytes()),
-                "modelTextByteLength": model_text.len(),
-                "tokenizerAddsSpecialTokens": true,
-                "tokenizerMayTruncateAt": spec.max_seq_len,
-            }),
-            metadata,
-        },
-    )?;
-    audit.dispatch_and_run(inference, |embedding| embedding_output_payload(embedding))
+    let context = SemanticAuditContext {
+        project_id: Some(project_id.to_string()),
+        operation_id: request.operation_id().to_string(),
+        parent_execution_id: None,
+        path_id: path_id.to_string(),
+        inference_kind: inference_kind.to_string(),
+        model: json!({
+            "engine": "onnx-runtime",
+            "executionProvider": "cpu",
+            "modelId": spec.full_model_id(),
+            "artifactSha256": model_artifact_identity.sha256.clone(),
+            "artifactIdentity": model_artifact_identity,
+            "embeddingDim": spec.embedding_dim,
+            "chunkerVersion": spec.chunker_version,
+            "maxSequenceTokens": spec.max_seq_len,
+            "pooling": format!("{:?}", spec.pooling),
+            "needsTokenTypeIds": spec.needs_token_type_ids,
+            "tokenizerIdentity": tokenizer_identity,
+        }),
+        input: json!({
+            "rawText": raw_text,
+            "rawTextSha256": sha256_hex(raw_text.as_bytes()),
+            "rawTextByteLength": raw_text.len(),
+            "rawTextCharLength": raw_text.chars().count(),
+            "modelPrefix": model_prefix,
+            "modelText": model_text,
+            "modelTextSha256": sha256_hex(model_text.as_bytes()),
+            "modelTextByteLength": model_text.len(),
+            "tokenizerAddsSpecialTokens": true,
+            "tokenizerMayTruncateAt": tokenizer_may_truncate.then_some(spec.max_seq_len),
+        }),
+        metadata,
+    };
+    if preflight_before_dispatch {
+        SemanticAuditSession::prepare(appender, context)
+    } else {
+        SemanticAuditSession::start(appender, context)
+    }
 }
 
 #[cfg(feature = "semantic-embedding")]
@@ -973,6 +1019,16 @@ impl SemanticRuntime {
     }
 
     fn with_embedder<T>(
+        &self,
+        spec: &'static EmbeddingModelSpec,
+        operation: impl FnOnce(&mut Embedder) -> Result<T>,
+    ) -> Result<T> {
+        self.embedder_admission
+            .foreground(|| self.with_admitted_embedder(spec, operation))
+    }
+
+    /// Caller holds an admission permit for the complete operation.
+    fn with_admitted_embedder<T>(
         &self,
         spec: &'static EmbeddingModelSpec,
         operation: impl FnOnce(&mut Embedder) -> Result<T>,

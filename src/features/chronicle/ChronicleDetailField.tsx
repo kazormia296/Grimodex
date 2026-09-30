@@ -34,6 +34,7 @@ import { getCurrentProjectId } from "@/features/project/projectStore";
 import { getEvent } from "./api";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { toast } from "sonner";
+import type { ChronicleWriteOptions } from "@/application/chronicle/chronicleCommands";
 
 interface ChronicleDetailFieldProps {
   event: EventRow;
@@ -41,6 +42,7 @@ interface ChronicleDetailFieldProps {
   onPatchDetail: (
     detail: string,
     baseVersion: number,
+    options?: ChronicleWriteOptions,
   ) => Promise<{ version: number }>;
   /** Seed the owning Event aggregate queue before paused peer drafts resume. */
   onResolveExternalVersion?: (version: number) => void;
@@ -173,25 +175,32 @@ export function ChronicleDetailField({
     };
   }, [applyPersistedReload, documentKey, event.id, externalReloadNonce, t]);
 
-  const save = useCallback(async () => {
-    const saveGeneration = editGenerationRef.current;
-    const result = await onPatchDetail(
-      contentRef.current,
-      loadedVersionRef.current,
-    );
-    loadedVersionRef.current = result.version;
-    announcePersistedBinding(documentKey, editorInstanceIdRef.current, {
-      kind: "chronicle-event",
-      id: event.id,
-      loadedVersion: result.version,
-    });
-    if (editGenerationRef.current === saveGeneration) {
-      detailDirtyRef.current = false;
-      useEditorSessionStore
-        .getState()
-        .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
-    }
-  }, [documentKey, event.id, onPatchDetail]);
+  const save = useCallback(
+    async (options?: ChronicleWriteOptions) => {
+      const saveGeneration = editGenerationRef.current;
+      const detail = contentRef.current;
+      const baseVersion = loadedVersionRef.current;
+      const result =
+        options?.preexistingDraft === true
+          ? await onPatchDetail(detail, baseVersion, {
+              preexistingDraft: true,
+            })
+          : await onPatchDetail(detail, baseVersion);
+      loadedVersionRef.current = result.version;
+      announcePersistedBinding(documentKey, editorInstanceIdRef.current, {
+        kind: "chronicle-event",
+        id: event.id,
+        loadedVersion: result.version,
+      });
+      if (editGenerationRef.current === saveGeneration) {
+        detailDirtyRef.current = false;
+        useEditorSessionStore
+          .getState()
+          .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
+      }
+    },
+    [documentKey, event.id, onPatchDetail],
+  );
 
   const { schedule, cancel, pause, resume, flush } = useAutoSave(save, 2000);
 

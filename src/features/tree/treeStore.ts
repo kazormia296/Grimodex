@@ -170,6 +170,11 @@ export type ChronicleDatePatch = Partial<
   >
 >;
 
+/** Permit carried by a draft queued before lifecycle quiescence. */
+export interface TreeNodeMutationOptions {
+  preexistingDraft?: boolean;
+}
+
 const CHRONICLE_DATE_KEYS = [
   "chronicleStartTime",
   "chronicleStartMinute",
@@ -767,9 +772,17 @@ interface TreeState {
   // New tree operations
   createNode: (opts: CreateNodeOpts) => Promise<TreeNodeData | null>;
   patchNode: (id: string, patch: TreeNodePatch) => Promise<void>;
-  updateNodeTitle: (id: string, title: string) => Promise<void>;
+  updateNodeTitle: (
+    id: string,
+    title: string,
+    options?: TreeNodeMutationOptions,
+  ) => Promise<void>;
   deleteNode: (id: string) => Promise<void>;
-  updateSynopsis: (id: string, synopsis: string) => Promise<void>;
+  updateSynopsis: (
+    id: string,
+    synopsis: string,
+    options?: TreeNodeMutationOptions,
+  ) => Promise<void>;
   updateIntent: (id: string, intent: string) => Promise<void>;
   setStatus: (id: string, status: SceneStatus) => Promise<void>;
   moveNode: (
@@ -787,10 +800,19 @@ interface TreeState {
   updatePovCharacter: (
     id: string,
     codexEntryId: string | null,
+    options?: TreeNodeMutationOptions,
   ) => Promise<void>;
-  updateLocation: (id: string, codexEntryId: string | null) => Promise<void>;
+  updateLocation: (
+    id: string,
+    codexEntryId: string | null,
+    options?: TreeNodeMutationOptions,
+  ) => Promise<void>;
   /** シーンの作中暦日付（chronicle*）を永続化＋store 楽観更新する。 */
-  updateChronicleDate: (id: string, patch: ChronicleDatePatch) => Promise<void>;
+  updateChronicleDate: (
+    id: string,
+    patch: ChronicleDatePatch,
+    options?: TreeNodeMutationOptions,
+  ) => Promise<void>;
   /**
    * Chronicle の原子的な複数更新結果を、同じ baseUpdatedAt のシーンだけへ反映する。
    * Tree feature が自身の projection 更新を所有し、遅延応答で新しい編集を潰さない。
@@ -909,10 +931,21 @@ function nextSortOrder(
 
 /** Sort nodes so parents appear before their children (for restore operations). */
 
+function updateNodeWithMutationOptions(
+  id: string,
+  patch: Parameters<typeof api.updateNode>[1],
+  options?: TreeNodeMutationOptions,
+): ReturnType<typeof api.updateNode> {
+  return options?.preexistingDraft === true
+    ? api.updateNode(id, patch, { preexistingDraft: true })
+    : api.updateNode(id, patch);
+}
+
 async function persistChronicleDate(
   id: string,
   requestedPatch: ChronicleDatePatch,
   recordHistory: boolean,
+  options?: TreeNodeMutationOptions,
 ): Promise<void> {
   const scopedNode = useTreeStore
     .getState()
@@ -976,7 +1009,11 @@ async function persistChronicleDate(
       // This outer, project-qualified chain serializes partial-date merge and
       // validation. api.updateNode routes protected temporal fields through
       // the typed Native writer while retaining the existing store contract.
-      const persisted = await api.updateNode(id, persistedPatch);
+      const persisted = await updateNodeWithMutationOptions(
+        id,
+        persistedPatch,
+        options,
+      );
       const updatedAt = persisted?.updatedAt ?? node.updatedAt;
       useTreeStore.setState((state) => ({
         nodes: state.nodes.map((candidate) =>
@@ -1418,9 +1455,13 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     );
   },
 
-  async updateNodeTitle(id, title) {
+  async updateNodeTitle(id, title, options) {
     const oldTitle = get().nodes.find((n) => n.id === id)?.title ?? "";
-    const persisted = await api.updateNode(id, { title });
+    const persisted = await updateNodeWithMutationOptions(
+      id,
+      { title },
+      options,
+    );
     const forwardReceipt = api.treeWriteReceipt(persisted);
     set((state) => {
       const nodes = state.nodes.map((n) =>
@@ -1537,9 +1578,13 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     });
   },
 
-  async updateSynopsis(id, synopsis) {
+  async updateSynopsis(id, synopsis, options) {
     const oldSynopsis = get().nodes.find((n) => n.id === id)?.synopsis ?? null;
-    const persisted = await api.updateNode(id, { synopsis });
+    const persisted = await updateNodeWithMutationOptions(
+      id,
+      { synopsis },
+      options,
+    );
     const forwardReceipt = api.treeWriteReceipt(persisted);
     set((state) => ({
       nodes: state.nodes.map((n) =>
@@ -1799,14 +1844,16 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }
   },
 
-  async updatePovCharacter(id, codexEntryId) {
+  async updatePovCharacter(id, codexEntryId, options) {
     const node = get().nodes.find((n) => n.id === id);
     if (!node) return;
     const old = node.povCharacterId ?? null;
     if (old === codexEntryId) return; // 同値は書込み・履歴とも no-op（ドラッグ等の空振り対策）
-    const persisted = await api.updateNode(id, {
-      povCharacterId: codexEntryId,
-    });
+    const persisted = await updateNodeWithMutationOptions(
+      id,
+      { povCharacterId: codexEntryId },
+      options,
+    );
     const forwardReceipt = api.treeWriteReceipt(persisted);
     set((state) => ({
       nodes: state.nodes.map((n) =>
@@ -1864,12 +1911,16 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }
   },
 
-  async updateLocation(id, codexEntryId) {
+  async updateLocation(id, codexEntryId, options) {
     const node = get().nodes.find((n) => n.id === id);
     if (!node) return;
     const old = node.locationId ?? null;
     if (old === codexEntryId) return; // 同値は no-op
-    const persisted = await api.updateNode(id, { locationId: codexEntryId });
+    const persisted = await updateNodeWithMutationOptions(
+      id,
+      { locationId: codexEntryId },
+      options,
+    );
     const forwardReceipt = api.treeWriteReceipt(persisted);
     set((state) => ({
       nodes: state.nodes.map((n) =>
@@ -1927,8 +1978,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }
   },
 
-  async updateChronicleDate(id, patch) {
-    await persistChronicleDate(id, patch, true);
+  async updateChronicleDate(id, patch, options) {
+    await persistChronicleDate(id, patch, true, options);
   },
 
   // --- UI state ---

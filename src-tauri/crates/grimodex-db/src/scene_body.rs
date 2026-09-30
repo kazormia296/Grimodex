@@ -154,6 +154,11 @@ pub struct SaveSceneBodyBundlePayload {
     /// Replayable ProseMirror steps for a headless scene-body mutation. When
     /// present this writer owns the canonical `doc.step` event atomically.
     pub timelapse_steps: Option<Vec<Value>>,
+    /// Renderer-recorder evidence that the complete body written by this save
+    /// is already represented by durable `doc.step` events. Missing or invalid
+    /// evidence falls back to an atomic full-body snapshot.
+    #[serde(default)]
+    pub timelapse_doc_step_coverage: Option<crate::timelapse::TimelapseDocStepCoverageProof>,
     pub include_sidecars: bool,
     pub base_version: Option<i64>,
     pub updated_at: String,
@@ -249,6 +254,10 @@ fn validate_payload(payload: &SaveSceneBodyBundlePayload) -> anyhow::Result<()> 
         anyhow::bail!("timelapseSteps must be a non-empty array of step objects");
     }
     anyhow::ensure!(
+        payload.timelapse_steps.is_none() || payload.timelapse_doc_step_coverage.is_none(),
+        "timelapseSteps and timelapseDocStepCoverage are mutually exclusive"
+    );
+    anyhow::ensure!(
         matches!(
             payload.origin,
             NarrativeChangeOrigin::Human | NarrativeChangeOrigin::AiApply
@@ -342,6 +351,7 @@ pub fn save_scene_body_bundle(
     let mut fingerprint_payload = payload.clone();
     fingerprint_payload.session_id.clear();
     fingerprint_payload.event_uid.clear();
+    fingerprint_payload.timelapse_doc_step_coverage = None;
     let request_hash = payload_fingerprint(IDEMPOTENCY_DOMAIN, &fingerprint_payload)?;
     let idempotency_request = IdempotencyRequest {
         domain: IDEMPOTENCY_DOMAIN,
@@ -362,6 +372,16 @@ pub fn save_scene_body_bundle(
                 );
             }
             let before_scene = scene_feed_snapshot(conn, &payload.project_id, &payload.scene_id)?;
+            let existing_scene_updated_at = before_scene
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .unwrap_or(payload.updated_at.as_str());
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.scene_id,
+                existing_scene_updated_at,
+            )?;
             let mut before_foreshadows = BTreeMap::new();
             if payload.include_sidecars {
                 for foreshadow_id in payload.foreshadow_base_versions.keys() {
@@ -410,6 +430,15 @@ pub fn save_scene_body_bundle(
                         payload.scene_id
                     )
                 })?;
+
+            // A renderer-supplied proof or replay-step list is not a sealed
+            // Native authority. Until the recorder can pass a capability that
+            // Native itself minted and validated, every body bundle takes the
+            // conservative full-snapshot path. This also covers arbitrary or
+            // mismatched `timelapseSteps`: they remain useful audit metadata,
+            // but can never suppress the snapshot that represents the body
+            // actually committed by this transaction.
+            let append_body_snapshot = true;
 
             if payload.include_sidecars {
                 conn.execute(
@@ -769,6 +798,13 @@ pub fn save_scene_body_bundle(
             )?;
             let source_key = format!("project:scene:{}", payload.scene_id);
             let source_token = format!("v{}@{}", updated.0, updated.1);
+            let scene_scope_refresh_event =
+                crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &payload.scene_id,
+                    &updated.1,
+                )?;
             crate::narrative_extraction::propagate_source_change_freshness_in_tx(
                 conn,
                 &payload.project_id,
@@ -809,6 +845,7 @@ pub fn save_scene_body_bundle(
                 Some(&after_scene),
                 scene_paths,
             )?];
+            narrative_events.push(scene_scope_refresh_event);
             for foreshadow_id in &changed_roots {
                 let after = foreshadow_feed_snapshot(
                     conn,
@@ -840,7 +877,7 @@ pub fn save_scene_body_bundle(
                     }),
                 ),
             };
-            append_canonical_and_narrative_change_in_tx(
+            let append = append_canonical_and_narrative_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
@@ -870,6 +907,17 @@ pub fn save_scene_body_bundle(
                     events: narrative_events,
                 },
             )?;
+            if append_body_snapshot {
+                crate::timelapse::append_timelapse_body_snapshots_in_tx(
+                    conn,
+                    &payload.project_id,
+                    append.canonical.tail_sequence,
+                    timestamp,
+                    &[crate::timelapse::TimelapseBodySnapshotTarget::scene(
+                        payload.scene_id.clone(),
+                    )],
+                )?;
+            }
 
             let response = SaveSceneBodyBundleResult {
                 placed_beat_preview: payload.placed_beat_preview.clone(),
@@ -915,11 +963,9 @@ pub fn save_scene_body_bundle(
 mod tests {
     use super::*;
     use serde_json::Value;
-    use std::path::Path;
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open test db");
-        db.migrate().expect("migrate");
+        let db = crate::test_support::current_schema_memory().expect("current schema fixture");
         db.execute(
             "INSERT INTO projects (id, title) VALUES (?, 'Project')",
             &[Value::String("p1".into())],
@@ -937,6 +983,15 @@ mod tests {
             "run",
         )
         .expect("insert scene");
+        db.with_conn(|conn| {
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                "p1",
+                "s1",
+                "fixture",
+            )
+        })
+        .expect("seed scene scope binding");
         db.execute(
             "INSERT INTO codex_entries (id, project_id, type, name)
              VALUES ('c1', 'p1', 'character', 'Character'),
@@ -990,6 +1045,7 @@ mod tests {
             session_id: "scene-test-session".into(),
             origin: NarrativeChangeOrigin::Human,
             timelapse_steps: None,
+            timelapse_doc_step_coverage: None,
             include_sidecars: true,
             base_version: None,
             updated_at: "2026-07-28T00:00:00.000Z".into(),
@@ -1190,7 +1246,7 @@ mod tests {
                     ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            assert_eq!(events.len(), 3);
+            assert_eq!(events.len(), 4);
             assert_eq!(
                 events[0].0,
                 serde_json::json!({ "kind": "scene", "sceneId": "s1" })
@@ -1207,13 +1263,28 @@ mod tests {
             assert_eq!(text_impact["mapping"]["kind"], "whole-document");
             assert_eq!(
                 events[1].0,
-                serde_json::json!({ "kind": "foreshadow", "foreshadowId": "f1" })
+                serde_json::json!({ "kind": "scene-scope", "sceneId": "s1" })
+            );
+            assert_eq!(events[1].1, "metadata");
+            assert_eq!(events[1].2, "update");
+            assert_eq!((events[1].3, events[1].4), (Some(1), Some(2)));
+            assert_eq!(
+                events[1].5,
+                serde_json::json!([
+                    "/binding/sourceToken",
+                    "/binding/updatedAt",
+                    "/binding/version"
+                ])
             );
             assert_eq!(
                 events[2].0,
+                serde_json::json!({ "kind": "foreshadow", "foreshadowId": "f1" })
+            );
+            assert_eq!(
+                events[3].0,
                 serde_json::json!({ "kind": "foreshadow", "foreshadowId": "f2" })
             );
-            assert!(events[1..].iter().all(|event| event.1 == "association"
+            assert!(events[2..].iter().all(|event| event.1 == "association"
                 && event.2 == "update"
                 && event.5 == serde_json::json!(["/payoffs", "/setups"])));
             Ok(())
@@ -1283,6 +1354,37 @@ mod tests {
             Ok(())
         })
         .expect("inspect atomic headless event");
+    }
+
+    #[test]
+    fn renderer_replay_steps_cannot_suppress_the_authoritative_body_snapshot() {
+        let db = test_db();
+        let mut input = payload();
+        input.timelapse_steps = Some(vec![serde_json::json!({
+            "stepType": "replace",
+            "from": 999,
+            "to": 999,
+            "slice": { "content": [] }
+        })]);
+        input.content_json =
+            "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"native body\"}]}]}"
+                .to_string();
+
+        save_scene_body_bundle(&db, input).expect("save mismatched replay steps");
+
+        db.with_conn(|conn| {
+            let (count, payload): (i64, String) = conn.query_row(
+                "SELECT COUNT(*), payload
+                   FROM state_snapshots
+                  WHERE project_id = 'p1' AND entity_id = 's1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(count, 1, "mismatched steps must still retain a snapshot");
+            assert!(payload.contains("native body"));
+            Ok(())
+        })
+        .expect("inspect authoritative body snapshot");
     }
 
     #[test]
@@ -1390,7 +1492,7 @@ mod tests {
                     ))
                 },
             )?;
-            assert_eq!(counts, (1, 1, 1, 3, 1));
+            assert_eq!(counts, (1, 1, 1, 4, 1));
             Ok(())
         })
         .expect("inspect retry ledgers");

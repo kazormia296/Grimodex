@@ -11,11 +11,15 @@
 //! function boundary; actor is fixed to the Native Human writer; all
 //! derivation metadata and child declarations are Native-owned.
 
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use anyhow::Result;
 use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use grimodex_core::narrative_ir::derive_chronicle_scene_event_scope;
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::human_material_basis::HumanMaterialDerivationKind;
+use grimodex_db::domain_writes::{project_create, tree_node_create, ProjectCreatePayload, TreeNodeCreatePayload};
 use grimodex_db::narrative_extraction::{
     narrative_extraction_create_human_derived_revision,
     narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization,
@@ -26,6 +30,7 @@ use grimodex_db::narrative_extraction::{
     NarrativeAdapterIdentity, TrustedHumanDerivationScope, TrustedRevealBasis,
     TrustedScopeBoundary, TrustedScopeInterval, TrustedUnresolvedConstraint,
 };
+use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::Database;
 use rusqlite::types::ValueRef;
 use serde_json::{json, Value};
@@ -345,27 +350,60 @@ fn fixture_db_for_payload_kind_with_source_token(
     // base, so this setup is reached only after D1 publishes the contract.
     // Keeping the fixture executable (rather than ignored) makes that missing
     // seam a direct compile RED while still seeding a real parent on landing.
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open fixture database");
-    db.migrate().expect("migrate fixture database");
-    db.with_conn(|conn| {
-        conn.execute(
-            "INSERT INTO projects (id, title) VALUES (?1, ?2)",
-            rusqlite::params![PROJECT_A, "Project A"],
-        )?;
-        conn.execute(
-            "INSERT INTO projects (id, title) VALUES (?1, ?2)",
-            rusqlite::params![PROJECT_B, "Project B"],
-        )?;
-        conn.execute(
-            "INSERT INTO tree_nodes
-                (id, project_id, node_type, title, content, version, updated_at)
-             VALUES (?1, ?2, 'scene', 'Arrival', '{\"body\":\"Arrival.\"}', 0,
-                     '2026-01-01T00:00:00.000Z')",
-            rusqlite::params![SCENE_ID, PROJECT_A],
-        )?;
-        Ok(())
-    })
-    .expect("seed fixture projects");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
+    for (project_id, suffix, title) in [
+        (PROJECT_A, "a", "Project A"),
+        (PROJECT_B, "b", "Project B"),
+    ] {
+        project_create(
+            &db,
+            ProjectCreatePayload {
+                project_id: project_id.to_owned(),
+                request_id: format!("fixture-project-{suffix}"),
+                session_id: "fixture-session".to_owned(),
+                event_uid: format!("fixture-project-{suffix}-event"),
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                title: title.to_owned(),
+                genre: None,
+                pov: None,
+                tense: None,
+                language: None,
+                style_guide: None,
+                ai_instructions: None,
+                outline: None,
+                target_readers: None,
+                created_at: DECLARATION_CREATED_AT.to_owned(),
+                updated_at: DECLARATION_CREATED_AT.to_owned(),
+            },
+        )
+        .expect("seed fixture project through production writer");
+    }
+    tree_node_create(
+        &db,
+        TreeNodeCreatePayload {
+            id: SCENE_ID.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            request_id: "fixture-scene".to_owned(),
+            session_id: "fixture-session".to_owned(),
+            event_uid: "fixture-scene-event".to_owned(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            parent_id: None,
+            node_type: "scene".to_owned(),
+            title: "Arrival".to_owned(),
+            sort_order: "a0".to_owned(),
+            synopsis: None,
+            status: None,
+            source_uri: None,
+            source_mtime: None,
+            content: Some("{\"body\":\"Arrival.\"}".to_owned()),
+            canonical_payload: None,
+        },
+    )
+    .expect("seed fixture scene through production writer");
 
     narrative_extraction_create_run(
         &db,
@@ -2443,14 +2481,14 @@ mod c2b_atomic_materialization_red {
                 .iter()
                 .filter_map(|source| source["sourceKind"].as_str())
                 .collect::<Vec<_>>(),
-            vec!["scene-body", "project-scope-authority"]
+            vec!["scene-body", "scope-dependency-projection-v1"]
         );
         assert_eq!(source_rows.len(), 2);
-        assert_eq!(source_rows[1].0, "project-scope-authority");
-        assert_eq!(
-            source_rows[1].1,
-            format!("project:scope-authority:{PROJECT_A}")
-        );
+        assert_eq!(source_rows[1].0, "scope-dependency-projection-v1");
+        let identity = grimodex_core::narrative_scope_dependency_projection::ScopeDependencyIdentity::from_source_key(&source_rows[1].1).expect("new Native identity");
+        assert_eq!(identity.project_id, PROJECT_A);
+        assert_eq!(identity.anchor_scene_ref, format!("scene:{SCENE_ID}"));
+        assert!(identity.secret);
         assert_eq!(edge_count, 2, "V1 must include the live authority Source");
         assert_eq!(
             scope_declaration_count, 1,
@@ -2597,7 +2635,7 @@ mod c2b_atomic_materialization_red {
                 let authority_token: String = conn.query_row(
                     "SELECT revision_token
                        FROM narrative_revision_source_basis
-                      WHERE revision_id = ?1 AND source_kind = 'project-scope-authority'",
+                      WHERE revision_id = ?1 AND source_kind = 'scope-dependency-projection-v1'",
                     [child_revision_id],
                     |row| row.get(0),
                 )?;

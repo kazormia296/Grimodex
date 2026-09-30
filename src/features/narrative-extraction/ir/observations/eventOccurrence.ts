@@ -9,6 +9,8 @@ export type EventObservationActuality =
   | "hypothetical"
   | "counterfactual"
   | "dreamed"
+  /** Reported hearsay; the source does not establish truth in the story world. */
+  | "rumored"
   | "unknown";
 
 export type EventDurationKind =

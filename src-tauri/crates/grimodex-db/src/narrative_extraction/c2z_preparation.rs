@@ -19,16 +19,19 @@ use super::dependency_edges::{
     canonical_source_object_identity, parse_snapshot_run_id_from_source_identity,
     run_id_belongs_to_another_project, validate_stored_source_object_identity, RUN_CONSUMER_KIND,
 };
+use super::incremental_freshness::MAX_ATTEMPTS_PER_BATCH;
 use super::legacy_backfill::{is_valid_completed_backfill_marker, CompletedBackfillMarker};
 use super::maintenance_lifecycle::load_completed_maintenance_run_in_tx;
 use super::maintenance_runtime::{
-    load_durable_maintenance_runs, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+    is_scan_staging_project_in_tx, load_durable_maintenance_runs, REBUILD_DERIVED_WORK_KEY,
+    VERIFY_WORK_KEY_PREFIX,
 };
 use super::maintenance_runtime::{
     select_latest_relevant_run_for_readiness, validate_phase_success_outcome,
 };
 use super::restore_rebuild::{
-    validate_graph_state_digest, DependencyGraphVerifyReport, REBUILD_CONTRACT_VERSION,
+    validate_canonical_verify_outcome_digest, validate_graph_state_digest,
+    validate_verify_check_coverage, DependencyGraphVerifyReport, REBUILD_CONTRACT_VERSION,
     VERIFY_CONTRACT_VERSION,
 };
 use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
@@ -212,6 +215,13 @@ struct IncrementalReadinessRun {
     started_at: Option<String>,
     completed_at: Option<String>,
     work_key: Option<String>,
+    spec_json: String,
+    spec_digest: String,
+    task_input_json: Option<String>,
+    task_count: i64,
+    completed_task_count: i64,
+    completed_attempt_count: i64,
+    running_attempt_count: i64,
     outcome_summary_json: Option<String>,
 }
 
@@ -745,6 +755,20 @@ pub fn inspect_workspace_cutover_readiness(conn: &Connection) -> Result<Workspac
     let project_ids = statement
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+    let project_ids = project_ids
+        .into_iter()
+        .map(|project_id| -> Result<Option<String>> {
+            if is_scan_staging_project_in_tx(conn, &project_id)? {
+                Ok(None)
+            } else {
+                Ok(Some(project_id))
+            }
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     if project_ids.is_empty() {
         return Ok(WorkspaceCutoverReadiness {
             state: ReadinessState::Incomplete,
@@ -1157,6 +1181,72 @@ fn find_existing_application_edge(
     .map_err(Into::into)
 }
 
+/// A completed Backfill from a superseded Epoch can be the Legacy boundary
+/// for the current Epoch, but only when the evidence is unambiguously older
+/// than the current restore boundary. The maintenance planner already owns
+/// the historical fallback selection; this helper only proves that the
+/// selected marker names an earlier Epoch and completed before the current
+/// Epoch was minted. In particular, a future/imported Epoch or a marker that
+/// completed after the restore is never treated as historical evidence.
+fn historical_backfill_precedes_current_epoch(
+    conn: &Connection,
+    project_id: &str,
+    backfill_epoch_id: &str,
+    current_epoch_id: &str,
+    backfill_completed_at: &str,
+) -> Result<bool> {
+    if backfill_epoch_id == current_epoch_id {
+        return Ok(false);
+    }
+    let historical_epoch: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT epoch_number, created_at
+               FROM narrative_semantic_epochs
+              WHERE project_id = ?1 AND id = ?2",
+            params![project_id, backfill_epoch_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let current_epoch: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT epoch_number, created_at
+               FROM narrative_semantic_epochs
+              WHERE project_id = ?1 AND id = ?2",
+            params![project_id, current_epoch_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (
+        Some((historical_number, historical_created_at)),
+        Some((current_number, current_created_at)),
+    ) = (historical_epoch, current_epoch)
+    else {
+        return Ok(false);
+    };
+    let Ok(backfill_completed_at) =
+        super::legacy_backfill::parse_maintenance_instant(backfill_completed_at)
+    else {
+        return Ok(false);
+    };
+    let Ok(historical_created_at) =
+        super::legacy_backfill::parse_maintenance_instant(&historical_created_at)
+    else {
+        return Ok(false);
+    };
+    let Ok(current_created_at) =
+        super::legacy_backfill::parse_maintenance_instant(&current_created_at)
+    else {
+        return Ok(false);
+    };
+    // `epoch_number` is the durable monotonic boundary; the timestamp checks
+    // close both imported/future-evidence holes without changing planner
+    // selection semantics. A marker cannot complete before its own Epoch was
+    // minted, nor after the current restore Epoch was minted.
+    Ok(historical_number < current_number
+        && historical_created_at <= backfill_completed_at
+        && backfill_completed_at < current_created_at)
+}
+
 fn inspect_backfill_gate(
     conn: &Connection,
     project_id: &str,
@@ -1179,9 +1269,6 @@ fn inspect_backfill_gate(
             ReadinessGate::blocked("legacy-backfill-not-completed")
         });
     }
-    if run.semantic_epoch_id.as_deref() != Some(epoch_id) {
-        return Ok(ReadinessGate::blocked("legacy-backfill-epoch-mismatch"));
-    }
     if load_completed_maintenance_run_in_tx(conn, &run.run_id).is_err() {
         return Ok(ReadinessGate::blocked("legacy-backfill-lifecycle-invalid"));
     }
@@ -1200,6 +1287,23 @@ fn inspect_backfill_gate(
     )?;
     if !marker_valid {
         return Ok(ReadinessGate::blocked("legacy-backfill-marker-invalid"));
+    }
+    if run.semantic_epoch_id.as_deref() != Some(epoch_id) {
+        let Some(backfill_epoch_id) = run.semantic_epoch_id.as_deref() else {
+            return Ok(ReadinessGate::blocked("legacy-backfill-epoch-mismatch"));
+        };
+        let Some(backfill_completed_at) = run.completed_at.as_deref() else {
+            return Ok(ReadinessGate::blocked("legacy-backfill-epoch-mismatch"));
+        };
+        if !historical_backfill_precedes_current_epoch(
+            conn,
+            project_id,
+            backfill_epoch_id,
+            epoch_id,
+            backfill_completed_at,
+        )? {
+            return Ok(ReadinessGate::blocked("legacy-backfill-epoch-mismatch"));
+        }
     }
     Ok(ReadinessGate::passed())
 }
@@ -1298,6 +1402,19 @@ fn inspect_verify_gate(
         result.reasons = vec!["verify-report-digest-mismatch".to_string()];
         return Ok(result);
     }
+    if validate_canonical_verify_outcome_digest(&outcome).is_err() {
+        result.state = ReadinessState::Blocked;
+        result.reasons = vec!["verify-outcome-digest-mismatch".to_string()];
+        return Ok(result);
+    }
+    result.check_coverage_complete = match validate_verify_check_coverage(&outcome) {
+        Ok(complete) => complete,
+        Err(_) => {
+            result.state = ReadinessState::Incomplete;
+            result.reasons = vec!["verify-check-coverage-invalid".to_string()];
+            return Ok(result);
+        }
+    };
     if load_completed_maintenance_run_in_tx(conn, &run.run_id).is_err() {
         result.state = ReadinessState::Blocked;
         result.reasons = vec!["verify-lifecycle-invalid".to_string()];
@@ -1329,7 +1446,6 @@ fn inspect_verify_gate(
         return Ok(result);
     }
     result.report_clean = report.is_clean();
-    result.check_coverage_complete = has_full_verify_coverage(&outcome);
     if !result.report_clean {
         result.state = ReadinessState::Blocked;
         result.reasons = vec!["verify-report-not-clean".to_string()];
@@ -1342,36 +1458,6 @@ fn inspect_verify_gate(
         result.reasons.clear();
     }
     Ok(result)
-}
-
-fn has_full_verify_coverage(outcome: &Value) -> bool {
-    let Some(coverage) = outcome.get("checkCoverage").and_then(Value::as_object) else {
-        return false;
-    };
-    if coverage.get("complete").and_then(Value::as_bool) != Some(true) {
-        return false;
-    }
-    let Some(required) = coverage.get("required").and_then(Value::as_array) else {
-        return false;
-    };
-    let Some(covered) = coverage.get("covered").and_then(Value::as_array) else {
-        return false;
-    };
-    let required_set = required
-        .iter()
-        .filter_map(Value::as_str)
-        .collect::<BTreeSet<_>>();
-    let covered_set = covered
-        .iter()
-        .filter_map(Value::as_str)
-        .collect::<BTreeSet<_>>();
-    let expected_set = REQUIRED_VERIFY_CHECKS.into_iter().collect::<BTreeSet<_>>();
-    required_set == expected_set
-        && expected_set.iter().all(|check| covered_set.contains(check))
-        && coverage
-            .get("missing")
-            .and_then(Value::as_array)
-            .is_some_and(Vec::is_empty)
 }
 
 fn inspect_rebuild_gate(
@@ -1541,6 +1627,28 @@ fn inspect_phase_lifecycle_gate(
     let Some(epoch_id) = epoch_id else {
         return Ok(ReadinessGate::incomplete("current-semantic-epoch-missing"));
     };
+    let current_epoch_created_at: String = match conn
+        .query_row(
+            "SELECT created_at
+               FROM narrative_semantic_epochs
+              WHERE project_id = ?1 AND id = ?2",
+            params![project_id, epoch_id],
+            |row| row.get(0),
+        )
+        .optional()?
+    {
+        Some(created_at) => created_at,
+        None => return Ok(ReadinessGate::blocked("current-semantic-epoch-missing")),
+    };
+    let current_epoch_created_at =
+        match super::legacy_backfill::parse_maintenance_instant(&current_epoch_created_at) {
+            Ok(created_at) => created_at,
+            Err(_) => {
+                return Ok(ReadinessGate::blocked(
+                    "current-semantic-epoch-created-at-invalid",
+                ))
+            }
+        };
 
     // Each individual readiness gate already resolves its phase through the
     // lifecycle-aware `select_latest_relevant_run_for_readiness` helper. Do
@@ -1618,12 +1726,57 @@ fn inspect_phase_lifecycle_gate(
             "NEX_C2ZC_PHASE_LIFECYCLE_NOT_COMPLETED: {phase} Run '{}' is not completed",
             run.run_id
         );
-        anyhow::ensure!(
-            run.semantic_epoch_id.as_deref() == Some(epoch_id),
-            "NEX_C2ZC_PHASE_LIFECYCLE_EPOCH_MISMATCH: {phase} Run '{}' is not current",
-            run.run_id
-        );
+        if run.semantic_epoch_id.as_deref() != Some(epoch_id) {
+            anyhow::ensure!(
+                phase == "backfill",
+                "NEX_C2ZC_PHASE_LIFECYCLE_EPOCH_MISMATCH: {phase} Run '{}' is not current",
+                run.run_id
+            );
+            let backfill_epoch_id = run.semantic_epoch_id.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_C2ZC_PHASE_LIFECYCLE_EPOCH_MISMATCH: backfill Run '{}' has no Epoch",
+                    run.run_id
+                )
+            })?;
+            let backfill_completed_at = run.completed_at.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_C2ZC_PHASE_LIFECYCLE_EPOCH_MISMATCH: backfill Run '{}' has no completion instant",
+                    run.run_id
+                )
+            })?;
+            anyhow::ensure!(
+                historical_backfill_precedes_current_epoch(
+                    conn,
+                    project_id,
+                    backfill_epoch_id,
+                    epoch_id,
+                    backfill_completed_at,
+                )?,
+                "NEX_C2ZC_PHASE_LIFECYCLE_EPOCH_MISMATCH: backfill Run '{}' is not a historical boundary before the current Epoch",
+                run.run_id
+            );
+        }
         let handle = load_completed_maintenance_run_in_tx(conn, &run.run_id)?;
+        if phase == "backfill" {
+            let marker_valid = is_valid_completed_backfill_marker(
+                conn,
+                project_id,
+                &CompletedBackfillMarker {
+                    run_kind: &run.run_kind,
+                    status: &run.status,
+                    spec_json: run.spec_json.as_deref(),
+                    semantic_epoch_id: run.semantic_epoch_id.as_deref(),
+                    work_key: run.work_key.as_deref(),
+                    completed_at: run.completed_at.as_deref(),
+                    outcome_summary_json: run.outcome_summary_json.as_deref(),
+                },
+            )?;
+            anyhow::ensure!(
+                marker_valid,
+                "NEX_C2ZC_PHASE_LIFECYCLE_BACKFILL_MARKER_INVALID: Run '{}' is not a canonical completed Backfill marker",
+                run.run_id
+            );
+        }
         let (task_started_at, completed_at): (String, String) = conn.query_row(
             "SELECT t.started_at, r.completed_at
                FROM narrative_extraction_runs r
@@ -1667,7 +1820,9 @@ fn inspect_phase_lifecycle_gate(
     // phase could observe its predecessor. `created_at` only allocates a Run
     // and says nothing about the order in which work executed. Equality is
     // deliberately rejected: it cannot establish a causal boundary.
-    if !(backfill.completed_at < rebuild.task_started_at
+    if !(current_epoch_created_at <= rebuild.task_started_at
+        && current_epoch_created_at <= verify.task_started_at
+        && backfill.completed_at < rebuild.task_started_at
         && rebuild.completed_at < verify.task_started_at)
     {
         return Ok(ReadinessGate::blocked("phase-causality-unproven"));
@@ -1812,6 +1967,45 @@ fn inspect_incremental_runtime_gate(
             ))
         }
     };
+    let epoch_created_at: chrono::DateTime<chrono::Utc> = match conn
+        .query_row(
+            "SELECT created_at
+               FROM narrative_semantic_epochs
+              WHERE project_id = ?1 AND id = ?2",
+            params![project_id, epoch_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        Some(created_at) => {
+            match parse_incremental_readiness_instant(&created_at, "epochCreatedAt") {
+                Ok(created_at) => created_at,
+                Err(_) => {
+                    return Ok(ReadinessGate::blocked(
+                        "current-semantic-epoch-created-at-invalid",
+                    ))
+                }
+            }
+        }
+        None => {
+            return Ok(ReadinessGate::blocked("current-semantic-epoch-missing"));
+        }
+    };
+    for run in &runs {
+        match incremental_run_lifecycle_predates_epoch(run, epoch_created_at) {
+            Ok(true) => {
+                return Ok(ReadinessGate::blocked(
+                    "incremental-freshness-run-predates-current-epoch",
+                ))
+            }
+            Ok(false) => {}
+            Err(_) => {
+                return Ok(ReadinessGate::blocked(
+                    "incremental-freshness-run-lifecycle-invalid",
+                ))
+            }
+        }
+    }
     let active_runs = runs
         .iter()
         .filter(|run| matches!(run.status.as_str(), "pending" | "running"))
@@ -1870,8 +2064,16 @@ fn inspect_incremental_runtime_gate(
         project_id: run_project_id,
         semantic_epoch_id: run_epoch,
         status,
-        completed_at,
+        started_at: run_started_at,
+        completed_at: run_completed_at,
         work_key,
+        spec_json,
+        spec_digest,
+        task_input_json,
+        task_count,
+        completed_task_count,
+        completed_attempt_count,
+        running_attempt_count,
         outcome_summary_json: outcome_json,
         ..
     } = latest;
@@ -1885,7 +2087,9 @@ fn inspect_incremental_runtime_gate(
             "incremental-freshness-latest-run-not-completed",
         ));
     }
-    if !completed_at.as_deref().is_some_and(is_canonical_instant)
+    if !run_completed_at
+        .as_deref()
+        .is_some_and(is_canonical_instant)
         || work_key
             .as_deref()
             .is_none_or(|key| incremental_work_key_range(key, epoch_id).is_none())
@@ -1943,6 +2147,43 @@ fn inspect_incremental_runtime_gate(
             "incremental-freshness-completed-outcome-not-at-feed-head",
         ));
     }
+    if work_key_from == work_key_through {
+        if let Err(reason) = validate_idle_checkpoint_readiness_lifecycle(
+            task_count,
+            completed_task_count,
+            completed_attempt_count,
+            running_attempt_count,
+        ) {
+            return Ok(ReadinessGate::blocked(reason));
+        }
+        if let Err(reason) = validate_idle_checkpoint_readiness_attempt_topology_in_db(
+            conn,
+            &run_id,
+            run_started_at.as_deref(),
+            run_completed_at.as_deref(),
+        ) {
+            return Ok(ReadinessGate::blocked(reason));
+        }
+        let Some(work_key_value) = work_key.as_deref() else {
+            return Ok(ReadinessGate::blocked(
+                "incremental-freshness-completed-work-key-invalid",
+            ));
+        };
+        if let Err(reason) = validate_idle_checkpoint_readiness_outcome(&outcome) {
+            return Ok(ReadinessGate::blocked(reason));
+        }
+        if let Err(reason) = validate_idle_checkpoint_readiness_metadata(
+            project_id,
+            epoch_id,
+            from_sequence,
+            work_key_value,
+            &spec_json,
+            &spec_digest,
+            task_input_json.as_deref(),
+        ) {
+            return Ok(ReadinessGate::blocked(reason));
+        }
+    }
     // The database can prove that the last observed run reached the Feed
     // head, but it cannot prove that a scheduler is still alive and able to
     // process the next event.  Keep this gate incomplete until a real
@@ -1963,7 +2204,31 @@ fn load_incremental_readiness_runs(
 ) -> Result<Vec<IncrementalReadinessRun>> {
     let mut statement = conn.prepare(
         "SELECT id, project_id, semantic_epoch_id, status, created_at, started_at,
-                completed_at, work_key, outcome_summary_json
+                completed_at, work_key, spec_json, spec_digest,
+                (SELECT input_json
+                   FROM narrative_extraction_tasks task
+                  WHERE task.run_id = narrative_extraction_runs.id
+                    AND task.task_kind = 'incremental-freshness-batch'
+                  ORDER BY task.id
+                  LIMIT 1),
+                (SELECT COUNT(*)
+                   FROM narrative_extraction_tasks task
+                  WHERE task.run_id = narrative_extraction_runs.id),
+                (SELECT COUNT(*)
+                   FROM narrative_extraction_tasks task
+                  WHERE task.run_id = narrative_extraction_runs.id
+                    AND task.status = 'completed'),
+                (SELECT COUNT(*)
+                   FROM narrative_extraction_attempts attempt
+                   JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+                  WHERE task.run_id = narrative_extraction_runs.id
+                    AND attempt.status = 'completed'),
+                (SELECT COUNT(*)
+                   FROM narrative_extraction_attempts attempt
+                   JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+                  WHERE task.run_id = narrative_extraction_runs.id
+                    AND attempt.status = 'running'),
+                outcome_summary_json
            FROM narrative_extraction_runs
           WHERE project_id = ?1
             AND run_kind = 'freshness-evaluation'
@@ -1986,7 +2251,14 @@ fn load_incremental_readiness_runs(
                 started_at: row.get(5)?,
                 completed_at: row.get(6)?,
                 work_key: row.get(7)?,
-                outcome_summary_json: row.get(8)?,
+                spec_json: row.get(8)?,
+                spec_digest: row.get(9)?,
+                task_input_json: row.get(10)?,
+                task_count: row.get(11)?,
+                completed_task_count: row.get(12)?,
+                completed_attempt_count: row.get(13)?,
+                running_attempt_count: row.get(14)?,
+                outcome_summary_json: row.get(15)?,
             })
         },
     )?;
@@ -2105,6 +2377,387 @@ fn parse_incremental_readiness_instant(
         .map_err(Into::into)
 }
 
+fn validate_idle_checkpoint_readiness_metadata(
+    project_id: &str,
+    epoch_id: &str,
+    feed_head: i64,
+    work_key: &str,
+    spec_json: &str,
+    spec_digest: &str,
+    task_input_json: Option<&str>,
+) -> Result<(), String> {
+    let spec: Value = serde_json::from_str(spec_json)
+        .map_err(|_| "incremental-freshness-idle-checkpoint-spec-invalid".to_owned())?;
+    let Some(spec_object) = spec.as_object() else {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    };
+    const SPEC_KEYS: [&str; 2] = ["kind", "inputDigest"];
+    if spec_object.len() != SPEC_KEYS.len()
+        || spec_object
+            .keys()
+            .any(|key| !SPEC_KEYS.contains(&key.as_str()))
+    {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    }
+    if spec.get("kind").and_then(Value::as_str) != Some("incremental-freshness-idle-checkpoint@1") {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    }
+    let Some(input_digest) = spec.get("inputDigest").and_then(Value::as_str) else {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    };
+    if input_digest.len() != "sha256:".len() + 64
+        || !input_digest.starts_with("sha256:")
+        || !input_digest["sha256:".len()..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    }
+    let expected_spec_digest = format!("sha256:{}", digest_plan(&spec));
+    if spec_digest != expected_spec_digest {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    }
+    let Some(input_json) = task_input_json else {
+        return Err("incremental-freshness-idle-checkpoint-task-invalid".to_owned());
+    };
+    let input: Value = serde_json::from_str(input_json)
+        .map_err(|_| "incremental-freshness-idle-checkpoint-task-invalid".to_owned())?;
+    let Some(input_object) = input.as_object() else {
+        return Err("incremental-freshness-idle-checkpoint-task-invalid".to_owned());
+    };
+    const INPUT_KEYS: [&str; 8] = [
+        "kind",
+        "version",
+        "projectId",
+        "semanticEpochId",
+        "fromSequenceExclusive",
+        "throughSequenceInclusive",
+        "feedHead",
+        "inputDigest",
+    ];
+    if input_object.len() != INPUT_KEYS.len()
+        || input_object
+            .keys()
+            .any(|key| !INPUT_KEYS.contains(&key.as_str()))
+        || input.get("kind").and_then(Value::as_str) != Some("current-epoch-idle-checkpoint")
+        || input.get("version").and_then(Value::as_i64) != Some(1)
+        || input.get("projectId").and_then(Value::as_str) != Some(project_id)
+        || input.get("semanticEpochId").and_then(Value::as_str) != Some(epoch_id)
+        || input.get("fromSequenceExclusive").and_then(Value::as_i64) != Some(feed_head)
+        || input
+            .get("throughSequenceInclusive")
+            .and_then(Value::as_i64)
+            != Some(feed_head)
+        || input.get("feedHead").and_then(Value::as_i64) != Some(feed_head)
+        || input.get("inputDigest").and_then(Value::as_str) != Some(input_digest)
+    {
+        return Err("incremental-freshness-idle-checkpoint-task-invalid".to_owned());
+    }
+    let mut input_payload = input_object.clone();
+    input_payload.remove("inputDigest");
+    if format!("sha256:{}", digest_plan(&Value::Object(input_payload))) != input_digest {
+        return Err("incremental-freshness-idle-checkpoint-task-invalid".to_owned());
+    }
+    let Some(digest_hex) = input_digest.strip_prefix("sha256:") else {
+        return Err("incremental-freshness-idle-checkpoint-spec-invalid".to_owned());
+    };
+    let expected_work_key =
+        format!("incremental-freshness:{epoch_id}:{feed_head}:{feed_head}:{digest_hex}");
+    if work_key != expected_work_key {
+        return Err("incremental-freshness-idle-checkpoint-work-key-invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_idle_checkpoint_readiness_outcome(outcome: &Value) -> Result<(), &'static str> {
+    if outcome.get("kind").and_then(Value::as_str) != Some("current-epoch-idle-checkpoint")
+        || outcome.get("version").and_then(Value::as_i64) != Some(1)
+        || outcome.get("affectedEdgeCount").and_then(Value::as_i64) != Some(0)
+        || outcome.get("affectedConsumerCount").and_then(Value::as_i64) != Some(0)
+    {
+        return Err("incremental-freshness-idle-checkpoint-outcome-invalid");
+    }
+    Ok(())
+}
+
+fn validate_idle_checkpoint_readiness_lifecycle(
+    task_count: i64,
+    completed_task_count: i64,
+    completed_attempt_count: i64,
+    running_attempt_count: i64,
+) -> Result<(), &'static str> {
+    if task_count != 1
+        || completed_task_count != 1
+        || completed_attempt_count != 1
+        || running_attempt_count != 0
+    {
+        return Err("incremental-freshness-idle-checkpoint-lifecycle-invalid");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct IdleCheckpointAttemptSnapshot {
+    attempt_number: i64,
+    status: String,
+    started_at: String,
+    completed_at: Option<String>,
+    failure_code: Option<String>,
+    retry_disposition: Option<String>,
+    policy_version: Option<String>,
+    next_attempt_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct IdleCheckpointTaskSnapshot {
+    task_kind: String,
+    status: String,
+    attempt_count: i64,
+    created_at: String,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+}
+
+struct IdleCheckpointAttemptTopologyInput<'a> {
+    task_attempt_count: i64,
+    task_status: &'a str,
+    task_created_at: &'a str,
+    task_started_at: Option<&'a str>,
+    task_completed_at: Option<&'a str>,
+    attempts: &'a [IdleCheckpointAttemptSnapshot],
+    run_started_at: Option<&'a str>,
+    run_completed_at: Option<&'a str>,
+}
+
+const IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID: &str =
+    "incremental-freshness-idle-checkpoint-attempt-topology-invalid";
+
+fn validate_idle_checkpoint_attempt_topology(
+    input: IdleCheckpointAttemptTopologyInput<'_>,
+) -> Result<(), &'static str> {
+    let IdleCheckpointAttemptTopologyInput {
+        task_attempt_count,
+        task_status,
+        task_created_at,
+        task_started_at,
+        task_completed_at,
+        attempts,
+        run_started_at,
+        run_completed_at,
+    } = input;
+    if task_status != "completed"
+        || !(1..=MAX_ATTEMPTS_PER_BATCH).contains(&task_attempt_count)
+        || task_attempt_count != attempts.len() as i64
+    {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    }
+    let task_created_at = parse_incremental_readiness_instant(task_created_at, "taskCreatedAt")
+        .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?;
+    let task_started_at = task_started_at
+        .ok_or(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        .and_then(|value| {
+            parse_incremental_readiness_instant(value, "taskStartedAt")
+                .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        })?;
+    let task_completed_at = task_completed_at
+        .ok_or(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        .and_then(|value| {
+            parse_incremental_readiness_instant(value, "taskCompletedAt")
+                .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        })?;
+    if task_started_at < task_created_at || task_completed_at < task_started_at {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    }
+    let run_started_at = run_started_at
+        .ok_or(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        .and_then(|value| {
+            parse_incremental_readiness_instant(value, "runStartedAt")
+                .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        })?;
+    let run_completed_at = run_completed_at
+        .ok_or(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        .and_then(|value| {
+            parse_incremental_readiness_instant(value, "runCompletedAt")
+                .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+        })?;
+    if run_completed_at < run_started_at
+        || run_started_at > task_started_at
+        || run_completed_at < task_completed_at
+    {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    }
+
+    let mut completed_attempt_index = None;
+    let mut previous_started_at = Some(task_started_at);
+    let mut previous_completed_at = None;
+    for (index, attempt) in attempts.iter().enumerate() {
+        if attempt.attempt_number != index as i64 + 1 {
+            return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+        }
+        if !matches!(attempt.status.as_str(), "failed" | "completed") {
+            return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+        }
+        let started_at =
+            parse_incremental_readiness_instant(&attempt.started_at, "attemptStartedAt")
+                .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?;
+        let completed_at = attempt
+            .completed_at
+            .as_deref()
+            .ok_or(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+            .and_then(|value| {
+                parse_incremental_readiness_instant(value, "attemptCompletedAt")
+                    .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)
+            })?;
+        let retry_ready_at = if attempt.status == "failed" {
+            let value = attempt
+                .next_attempt_at
+                .as_deref()
+                .ok_or(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?;
+            Some(
+                parse_incremental_readiness_instant(value, "nextAttemptAt")
+                    .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?,
+            )
+        } else {
+            None
+        };
+        if attempt.status == "failed" {
+            if attempt
+                .failure_code
+                .as_deref()
+                .is_none_or(|value| !value.starts_with("NEX_"))
+                || attempt.retry_disposition.as_deref() != Some("retryable")
+                || attempt.policy_version.as_deref() != Some("v1")
+                || retry_ready_at.is_none_or(|next_attempt_at| next_attempt_at < completed_at)
+            {
+                return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+            }
+        } else if attempt.failure_code.is_some()
+            || attempt.retry_disposition.is_some()
+            || attempt.policy_version.is_some()
+            || attempt.next_attempt_at.is_some()
+        {
+            return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+        }
+        if completed_at < started_at
+            || previous_started_at.is_some_and(|previous| started_at < previous)
+            || previous_completed_at.is_some_and(|previous| started_at < previous)
+        {
+            return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+        }
+        if attempt.status == "completed" {
+            if completed_attempt_index.replace(index).is_some() {
+                return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+            }
+        } else if completed_attempt_index.is_some() {
+            // A retry after a successful Attempt has no causal meaning and
+            // could hide a forged terminal result.
+            return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+        }
+        previous_started_at = Some(started_at);
+        previous_completed_at = Some(completed_at);
+    }
+    let Some(completed_attempt_index) = completed_attempt_index else {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    };
+    if completed_attempt_index != attempts.len() - 1
+        || previous_completed_at.is_none_or(|completed_at| task_completed_at < completed_at)
+    {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    }
+    Ok(())
+}
+
+fn validate_idle_checkpoint_readiness_attempt_topology_in_db(
+    conn: &Connection,
+    run_id: &str,
+    run_started_at: Option<&str>,
+    run_completed_at: Option<&str>,
+) -> Result<(), &'static str> {
+    let tasks = conn
+        .prepare(
+            "SELECT task_kind, status, attempt_count, created_at, started_at, completed_at
+               FROM narrative_extraction_tasks
+              WHERE run_id = ?1
+              ORDER BY id",
+        )
+        .and_then(|mut statement| {
+            let rows = statement.query_map([run_id], |row| {
+                Ok(IdleCheckpointTaskSnapshot {
+                    task_kind: row.get(0)?,
+                    status: row.get(1)?,
+                    attempt_count: row.get(2)?,
+                    created_at: row.get(3)?,
+                    started_at: row.get(4)?,
+                    completed_at: row.get(5)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?;
+    let Some(task) = tasks.first() else {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    };
+    if tasks.len() != 1 || task.task_kind != "incremental-freshness-batch" {
+        return Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID);
+    }
+
+    let attempts = conn
+        .prepare(
+            "SELECT attempt_number, status, started_at, completed_at,
+                    failure_code, retry_disposition, policy_version, next_attempt_at
+               FROM narrative_extraction_attempts
+              WHERE task_id = (SELECT id FROM narrative_extraction_tasks WHERE run_id = ?1)
+              ORDER BY attempt_number, id",
+        )
+        .and_then(|mut statement| {
+            let rows = statement.query_map([run_id], |row| {
+                Ok(IdleCheckpointAttemptSnapshot {
+                    attempt_number: row.get(0)?,
+                    status: row.get(1)?,
+                    started_at: row.get(2)?,
+                    completed_at: row.get(3)?,
+                    failure_code: row.get(4)?,
+                    retry_disposition: row.get(5)?,
+                    policy_version: row.get(6)?,
+                    next_attempt_at: row.get(7)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|_| IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID)?;
+    validate_idle_checkpoint_attempt_topology(IdleCheckpointAttemptTopologyInput {
+        task_attempt_count: task.attempt_count,
+        task_status: &task.status,
+        task_created_at: &task.created_at,
+        task_started_at: task.started_at.as_deref(),
+        task_completed_at: task.completed_at.as_deref(),
+        attempts: &attempts,
+        run_started_at,
+        run_completed_at,
+    })
+}
+
+fn incremental_run_lifecycle_predates_epoch(
+    run: &IncrementalReadinessRun,
+    epoch_created_at: chrono::DateTime<chrono::Utc>,
+) -> Result<bool> {
+    let created_at = parse_incremental_readiness_instant(&run.created_at, "createdAt")?;
+    if created_at < epoch_created_at {
+        return Ok(true);
+    }
+    if let Some(started_at) = run.started_at.as_deref() {
+        if parse_incremental_readiness_instant(started_at, "startedAt")? < epoch_created_at {
+            return Ok(true);
+        }
+    }
+    if let Some(completed_at) = run.completed_at.as_deref() {
+        if parse_incremental_readiness_instant(completed_at, "completedAt")? < epoch_created_at {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn is_canonical_instant(value: &str) -> bool {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|parsed| parsed.to_rfc3339_opts(chrono::SecondsFormat::Millis, true) == value)
@@ -2131,9 +2784,12 @@ mod tests {
     use super::*;
     use crate::Database;
     use rusqlite::{params, Connection};
+    use serde_json::json;
     use std::path::Path;
 
-    use super::super::restore_rebuild::rebuild_narrative_derived_state_for_project;
+    use super::super::restore_rebuild::{
+        durable_graph_state_digest, rebuild_narrative_derived_state_for_project,
+    };
 
     const PROJECT_ID: &str = "project-c2z";
     const EPOCH_ID: &str = "epoch-c2z";
@@ -2141,6 +2797,22 @@ mod tests {
     const COMMIT_ID: &str = "commit-c2z";
     const RUN_ID: &str = "run-c2z";
     const SOURCE_IDENTITY: &str = "project:scene:scene-c2z";
+
+    type ReadinessOutcomeMutation = (&'static str, fn(&mut Value));
+    type ReadinessMetadataMutation = (
+        &'static str,
+        Box<dyn Fn(&mut Value, &mut String, &mut Value)>,
+    );
+    type RetryTopologyCase = (
+        &'static str,
+        i64,
+        &'static str,
+        &'static str,
+        Option<&'static str>,
+        Option<&'static str>,
+        Vec<IdleCheckpointAttemptSnapshot>,
+        bool,
+    );
 
     fn test_db() -> Database {
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
@@ -2166,8 +2838,53 @@ mod tests {
             started_at: started_at.map(ToString::to_string),
             completed_at: completed_at.map(ToString::to_string),
             work_key: Some(format!("incremental-freshness:{EPOCH_ID}:0:0:fixture")),
+            spec_json: "{}".to_owned(),
+            spec_digest: "fixture".to_owned(),
+            task_input_json: None,
+            task_count: 1,
+            completed_task_count: 1,
+            completed_attempt_count: 1,
+            running_attempt_count: 0,
             outcome_summary_json: None,
         }
+    }
+
+    fn idle_checkpoint_readiness_metadata() -> (String, String, String, String) {
+        let payload = json!({
+            "kind": "current-epoch-idle-checkpoint",
+            "version": 1,
+            "projectId": PROJECT_ID,
+            "semanticEpochId": EPOCH_ID,
+            "fromSequenceExclusive": 0,
+            "throughSequenceInclusive": 0,
+            "feedHead": 0,
+        });
+        let input_digest = format!("sha256:{}", digest_plan(&payload));
+        let task_input = json!({
+            "kind": "current-epoch-idle-checkpoint",
+            "version": 1,
+            "projectId": PROJECT_ID,
+            "semanticEpochId": EPOCH_ID,
+            "fromSequenceExclusive": 0,
+            "throughSequenceInclusive": 0,
+            "feedHead": 0,
+            "inputDigest": input_digest,
+        });
+        let spec = json!({
+            "kind": "incremental-freshness-idle-checkpoint@1",
+            "inputDigest": input_digest,
+        });
+        let spec_digest = format!("sha256:{}", digest_plan(&spec));
+        let work_key = format!(
+            "incremental-freshness:{EPOCH_ID}:0:0:{}",
+            input_digest.trim_start_matches("sha256:")
+        );
+        (
+            spec.to_string(),
+            spec_digest,
+            task_input.to_string(),
+            work_key,
+        )
     }
 
     #[test]
@@ -2248,6 +2965,551 @@ mod tests {
         );
     }
 
+    #[test]
+    fn incremental_readiness_blocks_each_lifecycle_instant_before_epoch() {
+        let epoch_created_at = chrono::DateTime::parse_from_rfc3339("2026-08-20T00:00:10.000Z")
+            .expect("valid epoch instant")
+            .with_timezone(&chrono::Utc);
+        for (label, created_at, started_at, completed_at) in [
+            (
+                "created",
+                "2026-08-20T00:00:09.000Z",
+                "2026-08-20T00:00:11.000Z",
+                "2026-08-20T00:00:12.000Z",
+            ),
+            (
+                "started",
+                "2026-08-20T00:00:11.000Z",
+                "2026-08-20T00:00:09.000Z",
+                "2026-08-20T00:00:12.000Z",
+            ),
+            (
+                "completed",
+                "2026-08-20T00:00:11.000Z",
+                "2026-08-20T00:00:12.000Z",
+                "2026-08-20T00:00:09.000Z",
+            ),
+        ] {
+            let run = incremental_readiness_run(
+                &format!("pre-epoch-{label}"),
+                "completed",
+                created_at,
+                Some(started_at),
+                Some(completed_at),
+            );
+            assert!(
+                incremental_run_lifecycle_predates_epoch(&run, epoch_created_at)
+                    .expect("canonical lifecycle instants"),
+                "{label} before the current Epoch must block readiness"
+            );
+        }
+    }
+
+    #[test]
+    fn incremental_readiness_blocks_malformed_lifecycle_instant_before_selection() {
+        let epoch_created_at = chrono::DateTime::parse_from_rfc3339("2026-08-20T00:00:10.000Z")
+            .expect("valid epoch instant")
+            .with_timezone(&chrono::Utc);
+        for (label, created_at, started_at, completed_at) in [
+            (
+                "created",
+                "not-an-instant",
+                "2026-08-20T00:00:11.000Z",
+                "2026-08-20T00:00:12.000Z",
+            ),
+            (
+                "started",
+                "2026-08-20T00:00:11.000Z",
+                "not-an-instant",
+                "2026-08-20T00:00:12.000Z",
+            ),
+            (
+                "completed",
+                "2026-08-20T00:00:11.000Z",
+                "2026-08-20T00:00:12.000Z",
+                "not-an-instant",
+            ),
+        ] {
+            let run = incremental_readiness_run(
+                &format!("malformed-{label}"),
+                "completed",
+                created_at,
+                Some(started_at),
+                Some(completed_at),
+            );
+            assert!(
+                incremental_run_lifecycle_predates_epoch(&run, epoch_created_at).is_err(),
+                "malformed {label} instant must block readiness"
+            );
+        }
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_requires_tagged_zero_width_outcome() {
+        let valid = json!({
+            "kind": "current-epoch-idle-checkpoint",
+            "version": 1,
+            "affectedEdgeCount": 0,
+            "affectedConsumerCount": 0,
+        });
+        assert_eq!(
+            validate_idle_checkpoint_readiness_outcome(&valid),
+            Ok(()),
+            "the producer's zero-width outcome shape must be accepted"
+        );
+
+        let mutations: [ReadinessOutcomeMutation; 4] = [
+            ("kind", |outcome: &mut Value| {
+                outcome["kind"] = json!("incremental-freshness")
+            }),
+            ("version", |outcome: &mut Value| {
+                outcome["version"] = json!(2)
+            }),
+            ("affectedEdgeCount", |outcome: &mut Value| {
+                outcome["affectedEdgeCount"] = json!(1)
+            }),
+            ("affectedConsumerCount", |outcome: &mut Value| {
+                outcome["affectedConsumerCount"] = json!(1)
+            }),
+        ];
+        for (label, mutator) in mutations {
+            let mut mutated = valid.clone();
+            mutator(&mut mutated);
+            assert_eq!(
+                validate_idle_checkpoint_readiness_outcome(&mutated),
+                Err("incremental-freshness-idle-checkpoint-outcome-invalid"),
+                "zero-width outcome mutation {label} must block readiness"
+            );
+        }
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_requires_exact_task_attempt_lifecycle() {
+        let cases = [
+            ("task missing", 0, 0, 0, 0, false),
+            ("task pending", 1, 0, 1, 0, false),
+            ("completed Attempt missing", 1, 1, 0, 0, false),
+            ("completed Attempt duplicated", 1, 1, 2, 0, false),
+            ("running Attempt remains", 1, 1, 1, 1, false),
+            // A retry may leave failed Attempts behind.  Exactly one
+            // completed Attempt and no live Attempt is the valid terminal
+            // shape after the final retry succeeds.
+            ("failed retry plus completed Attempt", 1, 1, 1, 0, true),
+        ];
+        for (
+            label,
+            task_count,
+            completed_task_count,
+            completed_attempt_count,
+            running_attempt_count,
+            expected_valid,
+        ) in cases
+        {
+            let result = validate_idle_checkpoint_readiness_lifecycle(
+                task_count,
+                completed_task_count,
+                completed_attempt_count,
+                running_attempt_count,
+            );
+            assert_eq!(
+                result.is_ok(),
+                expected_valid,
+                "unexpected idle lifecycle validation for {label}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_rejects_forged_retry_topologies() {
+        let attempt = |number: i64, status: &str, started_at: &str, completed_at: Option<&str>| {
+            IdleCheckpointAttemptSnapshot {
+                attempt_number: number,
+                status: status.to_owned(),
+                started_at: started_at.to_owned(),
+                completed_at: completed_at.map(str::to_owned),
+                failure_code: (status == "failed").then(|| "NEX_TEST_RETRY".to_owned()),
+                retry_disposition: (status == "failed").then(|| "retryable".to_owned()),
+                policy_version: (status == "failed").then(|| "v1".to_owned()),
+                next_attempt_at: (status == "failed")
+                    .then(|| "2026-08-20T00:00:02.500Z".to_owned()),
+            }
+        };
+        let valid_failed_then_completed = vec![
+            attempt(
+                1,
+                "failed",
+                "2026-08-20T00:00:01.000Z",
+                Some("2026-08-20T00:00:02.000Z"),
+            ),
+            attempt(
+                2,
+                "completed",
+                "2026-08-20T00:00:03.000Z",
+                Some("2026-08-20T00:00:04.000Z"),
+            ),
+        ];
+        let mut missing_failure_code = valid_failed_then_completed.clone();
+        missing_failure_code[0].failure_code = None;
+        let mut wrong_retry_disposition = valid_failed_then_completed.clone();
+        wrong_retry_disposition[0].retry_disposition = Some("terminal".to_owned());
+        let mut missing_next_attempt_at = valid_failed_then_completed.clone();
+        missing_next_attempt_at[0].next_attempt_at = None;
+        let mut completed_with_failure_metadata = valid_failed_then_completed.clone();
+        completed_with_failure_metadata[1].failure_code = Some("NEX_FORGED".to_owned());
+        let cases: Vec<RetryTopologyCase> = vec![
+            (
+                "valid failed retry plus completed attempt",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                valid_failed_then_completed.clone(),
+                true,
+            ),
+            (
+                "task attempt count differs",
+                1,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                valid_failed_then_completed.clone(),
+                false,
+            ),
+            (
+                "attempt numbers have a gap",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                vec![
+                    attempt(
+                        1,
+                        "failed",
+                        "2026-08-20T00:00:01.000Z",
+                        Some("2026-08-20T00:00:02.000Z"),
+                    ),
+                    attempt(
+                        3,
+                        "completed",
+                        "2026-08-20T00:00:03.000Z",
+                        Some("2026-08-20T00:00:04.000Z"),
+                    ),
+                ],
+                false,
+            ),
+            (
+                "completed attempt missing",
+                1,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                vec![attempt(
+                    1,
+                    "failed",
+                    "2026-08-20T00:00:01.000Z",
+                    Some("2026-08-20T00:00:02.000Z"),
+                )],
+                false,
+            ),
+            (
+                "running attempt remains",
+                1,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                vec![attempt(1, "running", "2026-08-20T00:00:01.000Z", None)],
+                false,
+            ),
+            (
+                "failed retry follows completion",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                vec![
+                    attempt(
+                        1,
+                        "completed",
+                        "2026-08-20T00:00:01.000Z",
+                        Some("2026-08-20T00:00:02.000Z"),
+                    ),
+                    attempt(
+                        2,
+                        "failed",
+                        "2026-08-20T00:00:03.000Z",
+                        Some("2026-08-20T00:00:04.000Z"),
+                    ),
+                ],
+                false,
+            ),
+            (
+                "attempt timestamp is not monotonic",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                vec![
+                    attempt(
+                        1,
+                        "failed",
+                        "2026-08-20T00:00:03.000Z",
+                        Some("2026-08-20T00:00:04.000Z"),
+                    ),
+                    attempt(
+                        2,
+                        "completed",
+                        "2026-08-20T00:00:02.000Z",
+                        Some("2026-08-20T00:00:05.000Z"),
+                    ),
+                ],
+                false,
+            ),
+            (
+                "task completes before completed attempt",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:03.000Z"),
+                valid_failed_then_completed.clone(),
+                false,
+            ),
+            (
+                "failed attempt missing failure code",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                missing_failure_code,
+                false,
+            ),
+            (
+                "failed attempt has terminal disposition",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                wrong_retry_disposition,
+                false,
+            ),
+            (
+                "failed attempt missing retry deadline",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                missing_next_attempt_at,
+                false,
+            ),
+            (
+                "completed attempt carries retry metadata",
+                2,
+                "completed",
+                "2026-08-20T00:00:00.000Z",
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+                completed_with_failure_metadata,
+                false,
+            ),
+        ];
+        for (
+            label,
+            task_attempt_count,
+            task_status,
+            task_created_at,
+            task_started_at,
+            task_completed_at,
+            attempts,
+            expected_valid,
+        ) in cases
+        {
+            let result =
+                validate_idle_checkpoint_attempt_topology(IdleCheckpointAttemptTopologyInput {
+                    task_attempt_count,
+                    task_status,
+                    task_created_at,
+                    task_started_at,
+                    task_completed_at,
+                    attempts: &attempts,
+                    run_started_at: Some("2026-08-20T00:00:00.000Z"),
+                    run_completed_at: Some("2026-08-20T00:00:06.000Z"),
+                });
+            assert_eq!(
+                result.is_ok(),
+                expected_valid,
+                "unexpected retry topology validation for {label}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_requires_run_task_attempt_temporal_envelope() {
+        let attempt = |number: i64, status: &str, started_at: &str, completed_at: &str| {
+            IdleCheckpointAttemptSnapshot {
+                attempt_number: number,
+                status: status.to_owned(),
+                started_at: started_at.to_owned(),
+                completed_at: Some(completed_at.to_owned()),
+                failure_code: (status == "failed").then(|| "NEX_TEST_RETRY".to_owned()),
+                retry_disposition: (status == "failed").then(|| "retryable".to_owned()),
+                policy_version: (status == "failed").then(|| "v1".to_owned()),
+                next_attempt_at: (status == "failed")
+                    .then(|| "2026-08-20T00:00:02.500Z".to_owned()),
+            }
+        };
+        let attempts = vec![
+            attempt(
+                1,
+                "failed",
+                "2026-08-20T00:00:01.000Z",
+                "2026-08-20T00:00:02.000Z",
+            ),
+            attempt(
+                2,
+                "completed",
+                "2026-08-20T00:00:03.000Z",
+                "2026-08-20T00:00:04.000Z",
+            ),
+        ];
+        let validate = |run_started_at: Option<&str>,
+                        run_completed_at: Option<&str>,
+                        task_started_at: Option<&str>,
+                        task_completed_at: Option<&str>| {
+            validate_idle_checkpoint_attempt_topology(IdleCheckpointAttemptTopologyInput {
+                task_attempt_count: 2,
+                task_status: "completed",
+                task_created_at: "2026-08-20T00:00:00.000Z",
+                task_started_at,
+                task_completed_at,
+                attempts: &attempts,
+                run_started_at,
+                run_completed_at,
+            })
+        };
+
+        assert_eq!(
+            validate(
+                Some("2026-08-20T00:00:00.000Z"),
+                Some("2026-08-20T00:00:06.000Z"),
+                Some("2026-08-20T00:00:02.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+            ),
+            Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID),
+            "Attempt 1 before Task.started_at must block readiness"
+        );
+        assert_eq!(
+            validate(
+                Some("2026-08-20T00:00:03.000Z"),
+                Some("2026-08-20T00:00:06.000Z"),
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+            ),
+            Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID),
+            "Run.started_at after Task.started_at must block readiness"
+        );
+        assert_eq!(
+            validate(
+                Some("2026-08-20T00:00:00.000Z"),
+                Some("2026-08-20T00:00:04.000Z"),
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+            ),
+            Err(IDLE_CHECKPOINT_ATTEMPT_TOPOLOGY_INVALID),
+            "Run.completed_at before Task.completed_at must block readiness"
+        );
+        assert_eq!(
+            validate(
+                Some("2026-08-20T00:00:00.000Z"),
+                Some("2026-08-20T00:00:06.000Z"),
+                Some("2026-08-20T00:00:01.000Z"),
+                Some("2026-08-20T00:00:05.000Z"),
+            ),
+            Ok(()),
+            "a monotonic Run/Task/Attempt envelope must be accepted"
+        );
+    }
+
+    #[test]
+    fn idle_checkpoint_readiness_metadata_is_exactly_bound_to_all_descriptors() {
+        let (spec_json, spec_digest, task_input_json, work_key) =
+            idle_checkpoint_readiness_metadata();
+        assert_eq!(
+            validate_idle_checkpoint_readiness_metadata(
+                PROJECT_ID,
+                EPOCH_ID,
+                0,
+                &work_key,
+                &spec_json,
+                &spec_digest,
+                Some(&task_input_json),
+            ),
+            Ok(()),
+            "the producer's exact spec/task/work-key shape must be accepted"
+        );
+
+        let mutations: [ReadinessMetadataMutation; 5] = [
+            (
+                "spec unknown field",
+                Box::new(|spec, spec_digest, _task| {
+                    spec["extra"] = json!("forbidden");
+                    *spec_digest = format!("sha256:{}", digest_plan(spec));
+                }),
+            ),
+            (
+                "spec digest",
+                Box::new(|_spec, spec_digest, _task| *spec_digest = "sha256:bad".to_owned()),
+            ),
+            (
+                "task tag",
+                Box::new(|_spec, _spec_digest, task| {
+                    task["kind"] = json!("incremental-freshness");
+                }),
+            ),
+            (
+                "task digest",
+                Box::new(|_spec, _spec_digest, task| {
+                    task["inputDigest"] = json!("sha256:bad");
+                }),
+            ),
+            ("work key", Box::new(|_spec, _spec_digest, _task| {})),
+        ];
+        for (label, mutate) in mutations {
+            let mut spec = serde_json::from_str::<Value>(&spec_json).expect("valid spec fixture");
+            let mut mutated_spec_digest = spec_digest.clone();
+            let mut task =
+                serde_json::from_str::<Value>(&task_input_json).expect("valid task input fixture");
+            let mut mutated_work_key = work_key.clone();
+            mutate(&mut spec, &mut mutated_spec_digest, &mut task);
+            if label == "work key" {
+                mutated_work_key.push_str(":tampered");
+            }
+            let error = validate_idle_checkpoint_readiness_metadata(
+                PROJECT_ID,
+                EPOCH_ID,
+                0,
+                &mutated_work_key,
+                &spec.to_string(),
+                &mutated_spec_digest,
+                Some(&task.to_string()),
+            )
+            .expect_err("descriptor mutation must block readiness");
+            assert!(
+                error.starts_with("incremental-freshness-idle-checkpoint-"),
+                "unexpected {label} rejection: {error}"
+            );
+        }
+    }
+
     fn seed_project(conn: &Connection, project_id: &str) -> anyhow::Result<()> {
         conn.execute(
             "INSERT INTO projects (id, title) VALUES (?1, 'C2-Z project')",
@@ -2286,6 +3548,232 @@ mod tests {
             params![APPLICATION_ID, COMMIT_ID],
         )?;
         Ok(())
+    }
+
+    #[test]
+    fn historical_v3_backfill_is_a_valid_boundary_for_current_epoch_readiness() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let backfill_spec_digest = format!(
+                "sha256:{}",
+                digest_plan(&serde_json::json!({
+                    "backfillAlgorithmVersion": "3"
+                }))
+            );
+            let rebuild_spec_digest = format!("sha256:{}", digest_plan(&serde_json::json!({})));
+            let verify_spec_digest = format!(
+                "sha256:{}",
+                digest_plan(&serde_json::json!({
+                    "verifyContractVersion": VERIFY_CONTRACT_VERSION
+                }))
+            );
+            conn.execute(
+                "UPDATE narrative_semantic_epochs
+                    SET epoch_number = 1, reason = 'restore',
+                        created_at = '2026-08-20T00:00:02.000Z'
+                  WHERE id = ?1",
+                params![EPOCH_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-c2z-old', ?1, 0, 'initial',
+                         '2026-08-19T00:00:00.000Z')",
+                params![PROJECT_ID],
+            )?;
+
+            let backfill_outcome = serde_json::json!({
+                "maintenancePhase": "backfill-complete",
+                "backfillAlgorithmVersion": "3",
+                "semanticEpochId": "epoch-c2z-old",
+                "summary": {
+                    "epoch_created": false,
+                    "contributions_created": 0,
+                    "edges_created": 0,
+                    "applications_without_run_id": 0
+                }
+            });
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET spec_json = '{\"backfillAlgorithmVersion\":\"3\"}',
+                        spec_digest = ?1,
+                        status = 'completed',
+                        created_at = '2026-08-19T00:00:00.000Z',
+                        started_at = '2026-08-19T00:00:00.001Z',
+                        completed_at = '2026-08-19T00:00:00.002Z',
+                        outcome_summary_json = ?2,
+                        semantic_epoch_id = 'epoch-c2z-old',
+                        work_key = 'legacy-dependency-backfill:v3'
+                  WHERE id = ?3",
+                params![backfill_spec_digest, backfill_outcome.to_string(), RUN_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_extraction_tasks
+                    (id, run_id, task_kind, status, input_json, attempt_count,
+                     created_at, started_at, completed_at)
+                 VALUES ('historical-backfill-task', ?1, 'maintenance-backfill',
+                         'completed', '{\"backfillAlgorithmVersion\":\"3\"}', 1,
+                         '2026-08-19T00:00:00.000Z',
+                         '2026-08-19T00:00:00.001Z',
+                         '2026-08-19T00:00:00.002Z')",
+                params![RUN_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_extraction_attempts
+                    (id, task_id, attempt_number, status, started_at, completed_at)
+                 VALUES ('historical-backfill-attempt', 'historical-backfill-task',
+                         1, 'completed', '2026-08-19T00:00:00.001Z',
+                         '2026-08-19T00:00:00.002Z')",
+                [],
+            )?;
+
+            for (run_id, run_kind, work_key, created_at, started_at, completed_at, task_kind) in [
+                (
+                    "current-rebuild",
+                    "semantic-index-rebuild",
+                    "dependency-rebuild-derived",
+                    "2026-08-20T00:00:03.000Z",
+                    "2026-08-20T00:00:04.000Z",
+                    "2026-08-20T00:00:05.000Z",
+                    "maintenance-semantic-index-rebuild",
+                ),
+                (
+                    "current-verify",
+                    "dependency-verify",
+                    "dependency-verify:epoch-c2z",
+                    "2026-08-20T00:00:06.000Z",
+                    "2026-08-20T00:00:07.000Z",
+                    "2026-08-20T00:00:08.000Z",
+                    "maintenance-dependency-verify",
+                ),
+            ] {
+                let phase_spec = if run_kind == "semantic-index-rebuild" {
+                    "{}".to_string()
+                } else {
+                    format!(r#"{{"verifyContractVersion":"{VERIFY_CONTRACT_VERSION}"}}"#)
+                };
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json,
+                         spec_digest, status, coverage_json, created_at, started_at,
+                         completed_at, run_kind, semantic_epoch_id, work_key)
+                     VALUES (?1, ?2, 'maintenance', '{}', ?3, ?4,
+                             'completed', '{}', ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        run_id,
+                        PROJECT_ID,
+                        phase_spec.as_str(),
+                        if run_kind == "semantic-index-rebuild" {
+                            rebuild_spec_digest.as_str()
+                        } else {
+                            verify_spec_digest.as_str()
+                        },
+                        created_at,
+                        started_at,
+                        completed_at,
+                        run_kind,
+                        EPOCH_ID,
+                        work_key,
+                    ],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_extraction_tasks
+                        (id, run_id, task_kind, status, input_json, attempt_count,
+                         created_at, started_at, completed_at)
+                     VALUES (?1, ?2, ?3, 'completed', ?4, 1, ?5, ?6, ?7)",
+                    params![
+                        format!("{run_id}-task"),
+                        run_id,
+                        task_kind,
+                        phase_spec.as_str(),
+                        created_at,
+                        started_at,
+                        completed_at,
+                    ],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_extraction_attempts
+                        (id, task_id, attempt_number, status, started_at, completed_at)
+                     VALUES (?1, ?2, 1, 'completed', ?3, ?4)",
+                    params![
+                        format!("{run_id}-attempt"),
+                        format!("{run_id}-task"),
+                        started_at,
+                        completed_at,
+                    ],
+                )?;
+            }
+
+            let backfill = inspect_backfill_gate(conn, PROJECT_ID, Some(EPOCH_ID))?;
+            assert_eq!(
+                backfill.state,
+                ReadinessState::Passed,
+                "a valid historical Backfill is the completed Legacy boundary"
+            );
+            let lifecycle = inspect_phase_lifecycle_gate(conn, PROJECT_ID, Some(EPOCH_ID))?;
+            assert_eq!(
+                lifecycle.state,
+                ReadinessState::Passed,
+                "Backfill -> current Rebuild -> current confirmation Verify is valid"
+            );
+
+            // A current-Epoch Rebuild and confirmation Verify cannot establish
+            // readiness if their lifecycle starts before the current Epoch was
+            // minted, even when their Run IDs and phase ordering look valid.
+            conn.execute(
+                "UPDATE narrative_semantic_epochs
+                    SET created_at = '2026-08-20T00:00:09.000Z'
+                  WHERE id = ?1",
+                params![EPOCH_ID],
+            )?;
+            assert_eq!(
+                inspect_phase_lifecycle_gate(conn, PROJECT_ID, Some(EPOCH_ID))?.state,
+                ReadinessState::Blocked,
+                "current Rebuild/Verify task starts before the current Epoch must block phase lifecycle"
+            );
+            let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
+            assert_eq!(
+                readiness.phase_lifecycle.state,
+                ReadinessState::Blocked,
+                "current Rebuild/Verify task starts before the current Epoch must block readiness lifecycle"
+            );
+            assert_eq!(
+                readiness.state,
+                ReadinessState::Blocked,
+                "current Rebuild/Verify task starts before the current Epoch must block readiness"
+            );
+
+            // Restore the valid current-Epoch boundary before checking the
+            // independent historical Backfill causality rule below.
+            conn.execute(
+                "UPDATE narrative_semantic_epochs
+                    SET created_at = '2026-08-20T00:00:02.000Z'
+                  WHERE id = ?1",
+                params![EPOCH_ID],
+            )?;
+
+            // The historical marker must also be causally after the Epoch it
+            // names. Moving that Epoch past the marker is fail-closed even
+            // though the marker and lifecycle rows remain otherwise valid.
+            conn.execute(
+                "UPDATE narrative_semantic_epochs
+                    SET created_at = '2026-08-19T00:00:00.003Z'
+                  WHERE id = 'epoch-c2z-old'",
+                [],
+            )?;
+            assert_eq!(
+                inspect_backfill_gate(conn, PROJECT_ID, Some(EPOCH_ID))?.state,
+                ReadinessState::Blocked,
+                "a Backfill completed before its historical Epoch was minted must block"
+            );
+            assert_eq!(
+                inspect_phase_lifecycle_gate(conn, PROJECT_ID, Some(EPOCH_ID))?.state,
+                ReadinessState::Blocked,
+                "phase lifecycle must reject the same causal inversion"
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("historical Backfill must satisfy current-epoch readiness");
     }
 
     fn seed_legacy_freshness_and_dependency(conn: &Connection, status: &str) {
@@ -2543,6 +4031,59 @@ mod tests {
             Ok(())
         })
         .expect("readiness report");
+    }
+
+    #[test]
+    fn incremental_runtime_blocks_cursor_error_without_binding_it_to_graph_cas() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_change_cursors
+                    (project_id, consumer_id, acknowledged_through_sequence,
+                     last_error, updated_at)
+                 VALUES (?1, ?2, 0, NULL, '2026-08-20T00:00:00.000Z')",
+                params![PROJECT_ID, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+            )?;
+            Ok(())
+        })
+        .expect("seed clean incremental cursor");
+
+        let baseline_digest = db
+            .with_conn(|conn| durable_graph_state_digest(conn, PROJECT_ID))
+            .expect("digest before cursor error");
+        let baseline_gate = db
+            .with_conn(|conn| inspect_incremental_runtime_gate(conn, PROJECT_ID, Some(EPOCH_ID)))
+            .expect("inspect clean incremental runtime gate");
+        assert_ne!(baseline_gate.state, ReadinessState::Blocked);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_change_cursors
+                    SET last_error = 'transient cursor failure',
+                        updated_at = '2026-08-20T00:00:01.000Z'
+                  WHERE project_id = ?1
+                    AND consumer_id = ?2",
+                params![PROJECT_ID, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+            )?;
+            Ok(())
+        })
+        .expect("seed cursor error");
+
+        let after_error_digest = db
+            .with_conn(|conn| durable_graph_state_digest(conn, PROJECT_ID))
+            .expect("digest after cursor error");
+        assert_eq!(
+            baseline_digest, after_error_digest,
+            "cursor error and timestamp are readiness/bookkeeping inputs, not Verify graph inputs"
+        );
+        let blocked_gate = db
+            .with_conn(|conn| inspect_incremental_runtime_gate(conn, PROJECT_ID, Some(EPOCH_ID)))
+            .expect("inspect cursor-error incremental runtime gate");
+        assert_eq!(blocked_gate.state, ReadinessState::Blocked);
+        assert_eq!(
+            blocked_gate.reasons,
+            vec!["incremental-freshness-cursor-error".to_string()]
+        );
     }
 
     #[test]

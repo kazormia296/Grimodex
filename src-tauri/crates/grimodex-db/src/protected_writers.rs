@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 pub const PROTECTED_WRITER_SQL_ERROR: &str = "PROTECTED_WRITER_SQL";
+pub const C2ZC_NATIVE_OWNED_AGGREGATE_PREFIX: &str = "narrative-c2zc-";
 
 const REGISTRY_JSON: &str = include_str!("../../../../policies/narrative/protected-writers.json");
 
@@ -75,6 +76,50 @@ impl ProtectedWriterRegistry {
         self.by_table
             .values()
             .filter(|entry| entry.enforcement == WriterEnforcement::Active)
+    }
+
+    /// Native-owned C2-ZC tables, including timelapse state.
+    ///
+    /// Keep this selection table-driven from the protected-writer policy so
+    /// every consumer shares the same ownership boundary as untrusted SQL.
+    pub fn c2zc_native_owned_entries(&self) -> impl Iterator<Item = &ProtectedWriterEntry> {
+        let mut entries = self
+            .by_table
+            .values()
+            .filter(|entry| {
+                entry
+                    .aggregate
+                    .starts_with(C2ZC_NATIVE_OWNED_AGGREGATE_PREFIX)
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by(|left, right| left.table.cmp(&right.table));
+        entries.into_iter()
+    }
+
+    /// C2-ZC authority, finding, and repair rows that a Web Editor handoff
+    /// must never carry across the native boundary.
+    ///
+    /// Timelapse's append-only event log and snapshot anchors are also
+    /// Native-owned, but they are part of the lossless browser export and are
+    /// therefore intentionally excluded from this rejection set.
+    pub fn c2zc_web_editor_handoff_rejected_entries(
+        &self,
+    ) -> impl Iterator<Item = &ProtectedWriterEntry> {
+        let mut entries = self
+            .by_table
+            .values()
+            .filter(|entry| {
+                entry.enforcement == WriterEnforcement::Active
+                    && matches!(
+                        entry.aggregate.as_str(),
+                        "narrative-c2zc-authority"
+                            | "narrative-c2zc-finding"
+                            | "narrative-c2zc-repair"
+                    )
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by(|left, right| left.table.cmp(&right.table));
+        entries.into_iter()
     }
 }
 
@@ -205,11 +250,30 @@ pub fn classify_insert_columns(sql: &str) -> Option<Vec<String>> {
 mod tests {
     use super::*;
 
+    const C2ZC_NATIVE_OWNED_TABLES: [&str; 11] = [
+        "narrative_semantic_epochs",
+        "narrative_extraction_runs",
+        "narrative_dependency_edges",
+        "narrative_dependency_edge_states",
+        "narrative_consumer_freshness",
+        "narrative_semantic_index_metadata",
+        "narrative_maintenance_finding_lifecycle",
+        "narrative_maintenance_finding_observations",
+        "narrative_maintenance_repair_leases",
+        "change_events",
+        "state_snapshots",
+    ];
+
     #[test]
     fn bundled_registry_includes_active_domain_and_active_fixtures() {
         let registry = bundled_protected_writer_registry();
         let foreshadow = registry.get("foreshadows").expect("foreshadows");
         assert_eq!(foreshadow.enforcement, WriterEnforcement::Active);
+        let idempotency = registry
+            .get("idempotency_requests")
+            .expect("idempotency_requests");
+        assert_eq!(idempotency.enforcement, WriterEnforcement::Active);
+        assert_eq!(idempotency.protection, WriterProtection::Table);
         let events = registry.get("events").expect("events");
         assert_eq!(events.enforcement, WriterEnforcement::Active);
         let tree_nodes = registry.get("tree_nodes").expect("tree_nodes");
@@ -218,6 +282,32 @@ mod tests {
             .get("narrative_protected_fixture")
             .expect("fixture");
         assert_eq!(fixture.enforcement, WriterEnforcement::Active);
+    }
+
+    #[test]
+    fn bundled_registry_covers_c2zc_native_owned_authority_finding_and_repair_tables() {
+        let registry = bundled_protected_writer_registry();
+        for table in C2ZC_NATIVE_OWNED_TABLES {
+            let entry = registry
+                .get(table)
+                .unwrap_or_else(|| panic!("missing C2-ZC protected writer: {table}"));
+            assert_eq!(entry.enforcement, WriterEnforcement::Active, "{table}");
+            assert_eq!(entry.protection, WriterProtection::Table, "{table}");
+        }
+    }
+
+    #[test]
+    fn web_editor_handoff_selector_excludes_lossless_timelapse_tables() {
+        let registry = bundled_protected_writer_registry();
+        let handoff_tables = registry
+            .c2zc_web_editor_handoff_rejected_entries()
+            .map(|entry| entry.table.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(handoff_tables.len(), 9);
+        assert!(!handoff_tables.contains(&"change_events"));
+        assert!(!handoff_tables.contains(&"state_snapshots"));
+        assert_eq!(registry.c2zc_native_owned_entries().count(), 11);
     }
 
     #[test]
@@ -280,6 +370,90 @@ mod tests {
             None,
         );
         assert!(rejection.unwrap().contains("protected narrative table"));
+    }
+
+    #[test]
+    fn current_chat_capture_is_native_owned_and_blocks_all_untrusted_mutations() {
+        let registry = bundled_protected_writer_registry();
+        let entry = registry
+            .get("nir1_chat_input_captures")
+            .expect("current chat capture writer");
+        assert_eq!(entry.aggregate, "nir1-generation");
+        assert_eq!(entry.writer, "nir1_generation.storage");
+        assert_eq!(entry.enforcement, WriterEnforcement::Active);
+        assert_eq!(entry.protection, WriterProtection::Table);
+        for rejection in [
+            untrusted_mutation_rejection(
+                registry,
+                "nir1_chat_input_captures",
+                None,
+                true,
+                false,
+                Some(&["capture_id".into()]),
+            ),
+            untrusted_mutation_rejection(
+                registry,
+                "nir1_chat_input_captures",
+                Some("state"),
+                false,
+                false,
+                None,
+            ),
+            untrusted_mutation_rejection(
+                registry,
+                "nir1_chat_input_captures",
+                None,
+                false,
+                true,
+                None,
+            ),
+        ] {
+            assert!(rejection
+                .as_deref()
+                .is_some_and(|reason| reason.contains("nir1_generation.storage")));
+        }
+    }
+
+    #[test]
+    fn current_chat_submission_keys_are_native_owned_and_block_all_untrusted_mutations() {
+        let registry = bundled_protected_writer_registry();
+        let entry = registry
+            .get("nir1_chat_input_submission_keys")
+            .expect("durable chat submission-key writer");
+        assert_eq!(entry.aggregate, "nir1-generation");
+        assert_eq!(entry.writer, "nir1_generation.storage");
+        assert_eq!(entry.enforcement, WriterEnforcement::Active);
+        assert_eq!(entry.protection, WriterProtection::Table);
+        for rejection in [
+            untrusted_mutation_rejection(
+                registry,
+                "nir1_chat_input_submission_keys",
+                None,
+                true,
+                false,
+                Some(&["submission_id".into()]),
+            ),
+            untrusted_mutation_rejection(
+                registry,
+                "nir1_chat_input_submission_keys",
+                Some("submission_digest"),
+                false,
+                false,
+                None,
+            ),
+            untrusted_mutation_rejection(
+                registry,
+                "nir1_chat_input_submission_keys",
+                None,
+                false,
+                true,
+                None,
+            ),
+        ] {
+            assert!(rejection
+                .as_deref()
+                .is_some_and(|reason| reason.contains("nir1_generation.storage")));
+        }
     }
 
     #[test]

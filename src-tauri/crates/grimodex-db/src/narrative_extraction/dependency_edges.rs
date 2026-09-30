@@ -101,7 +101,12 @@ pub(crate) fn source_identity_prefix_for(source_kind: &str) -> anyhow::Result<&'
     // and `evidence-anchor | evidence`, so both spellings must resolve here
     // too or a legitimate envelope would fail canonicalization.
     Ok(match source_kind {
+        "nir1-chronicle-eligibility-set" => "project:nir1-chronicle-eligibility:",
+        "nir1-entity-relation-eligibility-set" => "project:nir1-entity-relation-eligibility:",
         "project-scope-authority" => "project:scope-authority:",
+        "codex-entry" => "codex:",
+        "codex-relation" => "codex-relation:",
+        "scope-dependency-projection-v1" => "scope-dependency:v1:",
         "scene-body" => "project:scene:",
         "snapshot-document" => "snapshot:",
         "codex-catalog" => "project:codex-catalog:",
@@ -135,7 +140,12 @@ const LEGACY_SOURCE_IDENTITY_PREFIXES: &[&str] = &[
 /// could shadow it. This is a registry for current Source dispatch and
 /// maintenance diagnostics, not a retroactive validation grammar.
 pub(crate) const SOURCE_IDENTITY_PREFIXES: &[&str] = &[
+    "scope-dependency:v1:",
+    "project:nir1-chronicle-eligibility:",
+    "project:nir1-entity-relation-eligibility:",
     "project:scope-authority:",
+    "codex-relation:",
+    "codex:",
     "project:codex-catalog:",
     "project:scene:",
     "projection:",
@@ -261,6 +271,9 @@ pub(crate) fn canonical_source_object_identity(
                 "NEX_SOURCE_KEY_INVALID: {source_kind} sourceKey '{source_key}' is already prefixed twice"
             );
         }
+        if source_kind == "scope-dependency-projection-v1" {
+            grimodex_core::narrative_scope_dependency_projection::ScopeDependencyIdentity::from_source_key(source_key)?;
+        }
         if source_kind == "snapshot-document" {
             // Keep the writer-facing Snapshot parser and the general
             // canonicalizer on one exact grammar.
@@ -292,7 +305,17 @@ pub(crate) fn canonical_source_object_identity(
 pub(crate) fn validate_stored_source_object_identity(
     source_object_identity: &str,
 ) -> anyhow::Result<()> {
-    let source_kind = if source_object_identity.starts_with("project:scope-authority:") {
+    let source_kind = if source_object_identity.starts_with("project:nir1-chronicle-eligibility:") {
+        "nir1-chronicle-eligibility-set"
+    } else if source_object_identity.starts_with("project:nir1-entity-relation-eligibility:") {
+        "nir1-entity-relation-eligibility-set"
+    } else if source_object_identity.starts_with("codex-relation:") {
+        "codex-relation"
+    } else if source_object_identity.starts_with("codex:") {
+        "codex-entry"
+    } else if source_object_identity.starts_with("scope-dependency:v1:") {
+        "scope-dependency-projection-v1"
+    } else if source_object_identity.starts_with("project:scope-authority:") {
         "project-scope-authority"
     } else if source_object_identity.starts_with("project:codex-catalog:") {
         "codex-catalog"
@@ -414,6 +437,16 @@ pub(crate) fn record_dependency_edge_in_tx(
         )
     })?;
 
+    super::nir1_chronicle_index::invalidate::before_edge_input_write(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        source_object_identity,
+        read_set_json,
+        owning_run_id,
+        generated_by_transaction_id,
+    )?;
     let candidate_id = uuid::Uuid::new_v4().to_string();
     let id: String = conn.query_row(
         "INSERT INTO narrative_dependency_edges (
@@ -594,6 +627,8 @@ pub(crate) fn find_edges_by_consumer(
     consumer_kind: &str,
     consumer_key: &str,
 ) -> anyhow::Result<Vec<DependencyEdge>> {
+    #[cfg(test)]
+    super::nir1_capacity::materialization_probe::record(conn, false, consumer_kind, consumer_key);
     let mut statement = conn.prepare(
         "SELECT id, project_id, consumer_kind, consumer_key, source_object_identity,
                 read_set_json, generated_by_transaction_id, created_at, owning_run_id
@@ -623,6 +658,18 @@ pub(crate) fn delete_edges_for_consumer_in_tx(
     consumer_kind: &str,
     consumer_key: &str,
 ) -> anyhow::Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM narrative_dependency_edges WHERE project_id=?1 AND consumer_kind=?2 AND consumer_key=?3)",
+        params![project_id, consumer_kind, consumer_key], |row| row.get(0),
+    )?;
+    if exists {
+        super::nir1_chronicle_index::invalidate::suspend_current_revision_in_tx(
+            conn,
+            project_id,
+            consumer_kind,
+            consumer_key,
+        )?;
+    }
     conn.execute(
         "DELETE FROM narrative_dependency_edges
           WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
@@ -636,11 +683,9 @@ pub(crate) fn delete_edges_for_consumer_in_tx(
 mod tests {
     use super::*;
     use crate::Database;
-    use std::path::Path;
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
-        db.migrate().expect("migrate");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",

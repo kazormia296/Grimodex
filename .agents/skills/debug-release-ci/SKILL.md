@@ -1,10 +1,8 @@
 ---
 name: debug-release-ci
 description: >
-  Grimodex の Electron release workflow、tag build、署名、公証、
-  installer migration、artifact 集約、publish の失敗を、version と tag を増やさず診断・修正する。
-  「release CI失敗」「release workflow失敗」「tag build失敗」「署名／公証エラー」
-  「packaging失敗」「publish失敗」「成功済みplatformを再buildしたくない」で使用する。
+  Grimodex の Electron release workflow、tag build、署名、公証、installer migration、
+  artifact publish の失敗を、version と tag を増やさず診断・修正する。
 ---
 
 # Debug Release CI

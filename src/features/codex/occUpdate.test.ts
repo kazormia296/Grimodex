@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 const invokeMock = vi.fn();
 const scheduleImeExportRefreshMock = vi.fn();
@@ -66,6 +67,7 @@ const currentEntry = {
 };
 
 beforeEach(() => {
+  publishCurrentProjectId("p");
   invokeMock.mockReset();
   invokeMock.mockResolvedValue({
     entityId: "e1",

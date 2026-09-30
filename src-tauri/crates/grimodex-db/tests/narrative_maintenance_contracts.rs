@@ -48,7 +48,15 @@ fn bundled_producer_registry_is_traceable_to_current_writer_paths() {
         vec![
             (
                 "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
-                "record_legacy_dependency_edges_in_tx"
+                "record_legacy_dependency_edges_in_tx_with_control"
+            ),
+            (
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+                "publish_chronicle_index_build_in_tx"
+            ),
+            (
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+                "publish_nir1_entity_relation_index_in_tx"
             ),
             (
                 "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs",

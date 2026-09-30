@@ -46,7 +46,7 @@ const EXPECTED_PRODUCER_WRITERS: &[(&str, &str, &str, &str, &str, Option<i64>)] 
     (
         "legacy-application-projection-dependency",
         "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
-        "record_legacy_dependency_edges_in_tx",
+        "record_legacy_dependency_edges_in_tx_with_control",
         LEGACY_DEPENDENCY_PRODUCER_GENERATION,
         APPLICATION_CONSUMER_KIND,
         None,
@@ -57,6 +57,22 @@ const EXPECTED_PRODUCER_WRITERS: &[(&str, &str, &str, &str, &str, Option<i64>)] 
         "write_application_dependencies_in_tx",
         super::c2zc_canonical_cutover::C2ZC_APPLICATION_DEPENDENCY_GENERATION,
         APPLICATION_CONSUMER_KIND,
+        None,
+    ),
+    (
+        super::nir1_chronicle_index::PRODUCER_ID,
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+        "publish_chronicle_index_build_in_tx",
+        super::nir1_chronicle_index::PRODUCER_VERSION,
+        "semantic-index",
+        None,
+    ),
+    (
+        super::nir1_entity_relation_index::PRODUCER_ID,
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+        "publish_nir1_entity_relation_index_in_tx",
+        super::nir1_entity_relation_index::PRODUCER_VERSION,
+        "semantic-index",
         None,
     ),
 ];
@@ -75,6 +91,10 @@ const C2ZC_CANONICAL_CUTOVER_SOURCE: &str = include_str!(concat!(
 ));
 
 const PRODUCER_MARKER_PREFIX: &str = "// NARRATIVE_DEPENDENCY_PRODUCER: ";
+const NIR1_INDEX_SOURCE: &str = include_str!("nir1_chronicle_index/publish.rs");
+const NIR1_ENTITY_RELATION_INDEX_SOURCE: &str = include_str!("nir1_entity_relation_index.rs");
+const GRAPH_PUBLIC_WRITER_SYMBOL: &str = "publish_nir1_entity_relation_index_in_tx";
+const GRAPH_INTERNAL_WRITER_SYMBOL: &str = "publish_nir1_entity_relation_index_in_tx_inner";
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,6 +118,8 @@ pub struct DependencyProducerEntry {
     pub generation: String,
     #[serde(default)]
     pub declaration_set_generation: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_declaration_set_generations: Vec<i64>,
     pub consumer_kind: String,
     pub declaration: String,
 }
@@ -209,6 +231,16 @@ fn parse_dependency_producer_registry(registry_json: &str) -> Result<DependencyP
             entry.declaration_set_generation == *declaration_set_generation,
             "NEX_PRODUCER_REGISTRY_INVALID: writer '{id}' declarationSetGeneration does not match its Rust source contract"
         );
+        let expected_supported: &[i64] = if *id == "proposal-revision-source-basis" {
+            &[
+                PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
+                super::human_material_basis::SCOPE_DEPENDENCY_D1_GENERATION,
+            ]
+        } else {
+            &[]
+        };
+        ensure!(entry.supported_declaration_set_generations == expected_supported,
+            "NEX_PRODUCER_REGISTRY_INVALID: writer '{id}' supported D1 generations differ from implementation");
         let source = match *module {
             "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs" => {
                 REPOSITORY_SOURCE
@@ -219,6 +251,8 @@ fn parse_dependency_producer_registry(registry_json: &str) -> Result<DependencyP
             "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs" => {
                 C2ZC_CANONICAL_CUTOVER_SOURCE
             }
+            "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs" => NIR1_INDEX_SOURCE,
+            "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs" => NIR1_ENTITY_RELATION_INDEX_SOURCE,
             _ => "",
         };
         ensure!(
@@ -244,7 +278,7 @@ fn parse_dependency_producer_registry(registry_json: &str) -> Result<DependencyP
 /// renaming a producer function without changing the registry must fail
 /// closed. Other direct calls to the low-level helper (fixtures, Repair, and
 /// Derived-State rebuild code) are not declaration producers and are kept out
-/// of the two modules scanned here.
+/// of the producer modules scanned here.
 fn validate_dependency_producer_traceability(entries: &[DependencyProducerEntry]) -> Result<()> {
     let sources = [
         (
@@ -259,10 +293,22 @@ fn validate_dependency_producer_traceability(entries: &[DependencyProducerEntry]
             "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs",
             C2ZC_CANONICAL_CUTOVER_SOURCE,
         ),
+        (
+            "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+            NIR1_INDEX_SOURCE,
+        ),
+        (
+            "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+            NIR1_ENTITY_RELATION_INDEX_SOURCE,
+        ),
     ];
     let mut discovered = Vec::new();
     for (module, source) in sources {
-        for (symbol, id) in source_dependency_producer_writers(source)? {
+        let graph_module = module
+            == "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs";
+        for (symbol, id) in
+            source_dependency_producer_writers_with_graph_delegate(source, graph_module)?
+        {
             discovered.push((module, symbol, id));
         }
     }
@@ -296,7 +342,10 @@ fn validate_dependency_producer_traceability(entries: &[DependencyProducerEntry]
 /// Discover declaration producers from source text. This intentionally uses
 /// a small Rust-aware brace walk rather than a substring-only symbol check so
 /// a documentation mention or a test fixture cannot satisfy traceability.
-fn source_dependency_producer_writers(source: &str) -> Result<Vec<(String, String)>> {
+fn source_dependency_producer_writers_with_graph_delegate(
+    source: &str,
+    allow_graph_delegate: bool,
+) -> Result<Vec<(String, String)>> {
     let lines: Vec<&str> = source.lines().collect();
     let mut marked = Vec::new();
     for (index, line) in lines.iter().enumerate() {
@@ -319,7 +368,7 @@ fn source_dependency_producer_writers(source: &str) -> Result<Vec<(String, Strin
                 )
             })?;
         ensure!(
-            function_contains_edge_writer_call(&lines, next_index),
+            function_contains_edge_writer_call(&lines, next_index, allow_graph_delegate),
             "NEX_PRODUCER_REGISTRY_INVALID: producer marker '{id}' does not guard a typed Edge writer"
         );
         marked.push((symbol.to_string(), id.trim().to_string()));
@@ -330,7 +379,10 @@ fn source_dependency_producer_writers(source: &str) -> Result<Vec<(String, Strin
         let Some(symbol) = rust_function_name(line) else {
             continue;
         };
-        if !function_contains_edge_writer_call(&lines, index) {
+        if allow_graph_delegate && symbol == GRAPH_INTERNAL_WRITER_SYMBOL {
+            continue;
+        }
+        if !function_contains_edge_writer_call(&lines, index, allow_graph_delegate) {
             continue;
         }
         let marker = index
@@ -375,7 +427,37 @@ fn rust_function_name(line: &str) -> Option<&str> {
     (!name.is_empty()).then_some(name)
 }
 
-fn function_contains_edge_writer_call(lines: &[&str], start: usize) -> bool {
+fn function_contains_edge_writer_call(
+    lines: &[&str],
+    start: usize,
+    allow_graph_delegate: bool,
+) -> bool {
+    let Some(body) = function_body(lines, start) else {
+        return false;
+    };
+    if body.contains("record_dependency_edge_in_tx(") {
+        return true;
+    }
+    if !allow_graph_delegate
+        || rust_function_name(lines[start]) != Some(GRAPH_PUBLIC_WRITER_SYMBOL)
+        || !body.contains(&format!("{GRAPH_INTERNAL_WRITER_SYMBOL}("))
+    {
+        return false;
+    }
+    lines
+        .iter()
+        .enumerate()
+        .find_map(|(index, line)| {
+            (rust_function_name(line) == Some(GRAPH_INTERNAL_WRITER_SYMBOL)).then_some(index)
+        })
+        .is_some_and(|index| function_contains_direct_edge_writer_call(lines, index))
+}
+
+fn function_contains_direct_edge_writer_call(lines: &[&str], start: usize) -> bool {
+    function_body(lines, start).is_some_and(|body| body.contains("record_dependency_edge_in_tx("))
+}
+
+fn function_body(lines: &[&str], start: usize) -> Option<String> {
     let mut depth = 0usize;
     let mut opened = false;
     let mut body = String::new();
@@ -396,11 +478,11 @@ fn function_contains_edge_writer_call(lines: &[&str], start: usize) -> bool {
             body.push_str(line);
             body.push('\n');
             if depth == 0 {
-                return body.contains("record_dependency_edge_in_tx(");
+                return Some(body);
             }
         }
     }
-    false
+    None
 }
 
 /// Compute all current coordinates in one call so a caller cannot mix values
@@ -538,7 +620,8 @@ mod tests {
             + "    record_dependency_edge_in_tx(conn);\n"
             + "}";
         assert_eq!(
-            source_dependency_producer_writers(&source).expect("restricted visibility writer"),
+            source_dependency_producer_writers_with_graph_delegate(&source, false)
+                .expect("restricted visibility writer"),
             vec![("example".to_string(), "example".to_string())]
         );
     }

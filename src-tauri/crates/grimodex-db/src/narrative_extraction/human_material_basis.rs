@@ -28,6 +28,23 @@ use super::repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 
 pub(crate) const D1_PRODUCER_ID: &str = "proposal-revision-source-basis";
 const PROPOSAL_REVISION_CONSUMER_KIND: &str = "proposal-revision";
+pub(crate) const SCOPE_DEPENDENCY_D1_GENERATION: i64 = 2;
+
+pub(crate) fn material_d1_producer(material: &MaterialBasis) -> (&'static str, i64) {
+    source_basis_d1_producer(&material.source_basis)
+}
+
+pub(crate) fn source_basis_d1_producer(
+    sources: &[MaterialSourceBasisEntry],
+) -> (&'static str, i64) {
+    if sources.iter().any(|source| {
+        source.source_kind == grimodex_core::narrative_scope_dependency_projection::SOURCE_KIND
+    }) {
+        (D1_PRODUCER_ID, SCOPE_DEPENDENCY_D1_GENERATION)
+    } else {
+        (D1_PRODUCER_ID, PROPOSAL_REVISION_D1_PRODUCER_GENERATION)
+    }
+}
 
 /// The exact material carried by a validated parent or derived child.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -665,11 +682,11 @@ fn validate_active_parent_d1(parent: &HumanMaterialParentBundle) -> anyhow::Resu
         "NEX_C2B_MATERIAL_D1_CONSUMER_KIND_INVALID: active declaration set Consumer kind is unsupported"
     );
     anyhow::ensure!(
-        active.producer_id == D1_PRODUCER_ID,
+        active.producer_id == material_d1_producer(&parent.material_basis).0,
         "NEX_C2B_MATERIAL_D1_PRODUCER_INVALID: active declaration set producer is not Native-pinned"
     );
     anyhow::ensure!(
-        active.producer_generation == PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
+        active.producer_generation == material_d1_producer(&parent.material_basis).1,
         "NEX_C2B_MATERIAL_D1_GENERATION_INVALID: active declaration set generation is not Native-pinned"
     );
 
@@ -880,14 +897,14 @@ pub fn project_d1_declaration_set(
     );
     ensure_non_empty(&authority.consumer_key, "consumerKey")?;
     anyhow::ensure!(
-        authority.producer_id == D1_PRODUCER_ID,
+        authority.producer_id == material_d1_producer(material).0,
         "NEX_C2B_MATERIAL_D1_PRODUCER_INVALID: producerId must be '{}'",
-        D1_PRODUCER_ID
+        material_d1_producer(material).0
     );
     anyhow::ensure!(
-        authority.producer_generation == PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
+        authority.producer_generation == material_d1_producer(material).1,
         "NEX_C2B_MATERIAL_D1_GENERATION_INVALID: producerGeneration must be {}",
-        PROPOSAL_REVISION_D1_PRODUCER_GENERATION
+        material_d1_producer(material).1
     );
 
     let declarations = material
@@ -912,8 +929,8 @@ pub fn project_d1_declaration_set(
         project_id: authority.project_id.clone(),
         consumer_kind: authority.consumer_kind.clone(),
         consumer_key: authority.consumer_key.clone(),
-        producer_id: D1_PRODUCER_ID.to_owned(),
-        producer_generation: PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
+        producer_id: material_d1_producer(material).0.to_owned(),
+        producer_generation: material_d1_producer(material).1,
         declarations,
     })
 }

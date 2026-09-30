@@ -44,7 +44,10 @@
         },
         "writer": {
           "type": "object",
-          "required": ["module", "symbol"],
+          "required": [
+            "module",
+            "symbol"
+          ],
           "properties": {
             "module": {
               "type": "string",
@@ -72,6 +75,22 @@
         "declaration": {
           "type": "string",
           "minLength": 1
+        },
+        "consumerKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producerVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "supportedDeclarationSetGenerations": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "uniqueItems": true
         }
       },
       "additionalProperties": false,
@@ -79,18 +98,114 @@
         {
           "if": {
             "properties": {
-              "id": { "const": "proposal-revision-source-basis" }
+              "id": {
+                "const": "proposal-revision-source-basis"
+              }
             },
-            "required": ["id"]
+            "required": [
+              "id"
+            ]
           },
           "then": {
-            "required": ["declarationSetGeneration"],
+            "required": [
+              "declarationSetGeneration",
+              "supportedDeclarationSetGenerations"
+            ],
             "properties": {
-              "declarationSetGeneration": { "const": 1 }
+              "declarationSetGeneration": {
+                "const": 1
+              },
+              "supportedDeclarationSetGenerations": {
+                "const": [
+                  1,
+                  2
+                ]
+              }
             }
           },
           "else": {
-            "not": { "required": ["declarationSetGeneration"] }
+            "not": {
+              "required": [
+                "declarationSetGeneration"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": {
+                  "id": {
+                    "enum": [
+                      "nir1-reviewed-chronicle-v1",
+                      "nir1-reviewed-entity-relation-v1"
+                    ]
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              {
+                "properties": {
+                  "consumerKind": {
+                    "const": "semantic-index"
+                  }
+                },
+                "required": [
+                  "consumerKind"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "oneOf": [
+              {
+                "const": {
+                  "id": "nir1-reviewed-chronicle-v1",
+                  "writer": {
+                    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+                    "symbol": "publish_chronicle_index_build_in_tx"
+                  },
+                  "generation": "nir1-reviewed-chronicle/v1",
+                  "consumerKind": "semantic-index",
+                  "consumerKey": "nir1-reviewed-chronicle:v1",
+                  "producerVersion": "nir1-reviewed-chronicle/v1",
+                  "declaration": "NIR-1 reviewed Chronicle current eligibility Source and complete admitted Scene Source dependencies"
+                }
+              },
+              {
+                "const": {
+                  "id": "nir1-reviewed-entity-relation-v1",
+                  "writer": {
+                    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+                    "symbol": "publish_nir1_entity_relation_index_in_tx"
+                  },
+                  "generation": "nir1-reviewed-entity-relation/v1",
+                  "consumerKind": "semantic-index",
+                  "consumerKey": "nir1-reviewed-entity-relation:v1",
+                  "producerVersion": "nir1-reviewed-entity-relation/v1",
+                  "declaration": "NIR-1 reviewed Entity/Relation qualified current revision roster and object-token dependencies"
+                }
+              }
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "consumerKey"
+                  ]
+                },
+                {
+                  "required": [
+                    "producerVersion"
+                  ]
+                }
+              ]
+            }
           }
         }
       ]

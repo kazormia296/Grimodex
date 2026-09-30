@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "grimodex-narrative-current-protocol",
+  "evidenceMode": "citation-id-v2",
+  "receiptMode": "citation-id-v2",
+  "versions": {
+    "prompt": "narrative-observation-extract/citation-id-v3+narrative-event-synthesize/2",
+    "responseSchema": "chronicle-raw-observation-evidence-refs/2+event-hypothesis/1",
+    "extractor": "chronicle-production-full-pipeline/citation-id-v2",
+    "parser": "citation-id-observation-materializer/2+event-synthesis-normalizer/1"
+  }
+}

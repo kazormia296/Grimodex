@@ -1,19 +1,41 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { constants, createReadStream, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { access, mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
 
 import { rootDir } from "./build.mjs";
-import { PRODUCT_JOURNEY_CATALOG } from "./product-journey-catalog.mjs";
+import {
+  digestProductJourneyCatalog,
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+  NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG,
+  PRODUCT_JOURNEY_CATALOG,
+  PRODUCT_JOURNEY_CATALOG_DIGEST,
+} from "./product-journey-catalog.mjs";
 import { createProductJourneyHarness } from "./product-journey-harness.mjs";
 import { launchProductJourneyMcpClient } from "./product-journey-mcp-client.mjs";
 import { createNativeRoundTripJourneys } from "./product-journey-native-roundtrips.mjs";
+import { createChronicleExtractionJourney } from "./chronicle-extraction-product-journey.mjs";
+import { createCodexEntityRelationReviewJourney } from "./codex-entity-relation-product-journey.mjs";
 import { createNarrativeMaintenanceProductJourneys } from "./narrative-maintenance-product-journeys.mjs";
+import {
+  C2ZC_RESTORE_FIXTURE_ENV,
+  C2ZC_PRODUCT_JOURNEY_ID,
+  assertC2ZcFixtureCandidateBinding,
+  loadC2ZcRestoreFixtureInput,
+  runC2ZcCanonicalAuthorityJourney,
+} from "./c2zc-canonical-product-journey.mjs";
+import { runC2ZcRendererMcpDmlDenialJourney } from "./c2zc-renderer-mcp-dml-denial-product-journey.mjs";
+import {
+  C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
+  C2ZC_RUST_ACCEPTANCE_RECEIPT_PATH,
+  resolveC2ZcRustAcceptanceCandidate,
+  verifyC2ZcRustAcceptanceReceipt,
+} from "../../scripts/c2zc-rust-acceptance-receipt.mjs";
 
-const mainCjs = path.join(rootDir, "dist-electron", "main.cjs");
 const DEFAULT_SCENE_TITLE = "シーン 1";
 const SCENES_PANEL_TITLE = "シーン";
 const CREATE_BUTTON_TITLE = "新規作成";
@@ -33,15 +55,51 @@ const WORKSPACE_CHAT_AUTHORITY_TITLE = WORKSPACE_CHAT_AUTHORITY_PROMPT.slice(
   0,
   30,
 );
-const MCP_CLEAN_EXTERNAL_TEXT = `MCP-CLEAN-EXTERNAL-JOURNEY-${Date.now()}`;
-const MCP_DIRTY_LOCAL_TEXT = `MCP-DIRTY-LOCAL-JOURNEY-${Date.now()}`;
-const MCP_DIRTY_EXTERNAL_TEXT = `MCP-DIRTY-EXTERNAL-JOURNEY-${Date.now()}`;
 const CODEX_CONTEXT_MARKER = "CODEX-CONTEXT-JOURNEY";
 const AUTHORING_PROMPT = `AUTHORING-JOURNEY-${Date.now()}`;
 const AUTHORING_OUTPUT = "AUTHORING-AI-OUTPUT";
 const PRODUCT_JOURNEY_MODEL = "product-journey-model";
 const PENDING_SAVE_AUTOSAVE_DELAY_MS = 60_000;
-const PRODUCT_JOURNEY_RESULTS_VERSION = 3;
+const PRODUCT_JOURNEY_RESULTS_VERSION = 5;
+const PRODUCT_JOURNEY_LANE_WATCHDOG_TIMEOUT_MS = 10 * 60 * 1000;
+const PRODUCT_JOURNEY_AUDIT_MANIFEST_VERSION = 1;
+const C2ZC_RUST_RECEIPT_PATH_ENV = "GRIMODEX_C2ZC_RUST_RECEIPT_PATH";
+const C2ZC_RUST_RECEIPT_SHA256_ENV = "GRIMODEX_C2ZC_RUST_RECEIPT_SHA256";
+const C2ZC_RUST_BASE_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_BASE";
+const C2ZC_RUST_HEAD_ENV = "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD";
+const PRODUCT_JOURNEY_BUILD_RECEIPT_ENV =
+  "GRIMODEX_PRODUCT_JOURNEY_BUILD_RECEIPT";
+const PRODUCT_JOURNEY_BUILD_RECEIPT_KEYS = [
+  "version",
+  "verified",
+  "source",
+  "candidate",
+  "artifacts",
+];
+const PRODUCT_JOURNEY_ARTIFACT_KEYS = [
+  "name",
+  "path",
+  "requestedPath",
+  "realPath",
+  "size",
+  "sha256",
+];
+const PRODUCT_JOURNEY_CANDIDATE_KEYS = [
+  "requestedBase",
+  "requestedHead",
+  "resolvedBaseSha",
+  "resolvedHeadSha",
+  "resolvedHeadTreeSha",
+  "currentHeadSha",
+  "worktreeClean",
+  "worktreeFingerprint",
+  "worktreeStatusHash",
+];
+const PRODUCT_JOURNEY_GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/u;
+const PRODUCT_JOURNEY_SHA256_HEX = /^[0-9a-f]{64}$/u;
+const C2ZC_PRODUCT_JOURNEY_IDS = Object.freeze(
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
+);
 const REQUIRED_LIFECYCLE_TRANSITION_PHASES = [
   "switch-requested",
   "quiescence-started",
@@ -50,18 +108,10 @@ const REQUIRED_LIFECYCLE_TRANSITION_PHASES = [
   "authority-commit",
   "new-scope-hydrated",
 ];
-const DEFAULT_PRODUCT_JOURNEY_ARTIFACT_DIR = path.join(
-  rootDir,
-  ".artifacts",
-  "product-journeys",
-);
-const mcpBinary = path.join(
-  rootDir,
-  "src-tauri",
-  "target",
-  "debug",
-  process.platform === "win32" ? "grimodex-mcp.exe" : "grimodex-mcp",
-);
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
 function log(message) {
   console.log(`[electron:product] ${message}`);
@@ -82,32 +132,218 @@ function appVersion() {
     .version;
 }
 
-function assertBuildArtifacts(journeys) {
-  const selectedIds = new Set(journeys.map((journey) => journey.id));
-  const requiresMcp = PRODUCT_JOURNEY_CATALOG.some(
-    (journey) =>
-      selectedIds.has(journey.id) && journey.capabilities.includes("mcp"),
+function hashFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const digest = createHash("sha256");
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => digest.update(chunk));
+    stream.once("error", reject);
+    stream.once("end", () => resolve(`sha256:${digest.digest("hex")}`));
+  });
+}
+
+function resolveConfiguredPath(
+  value,
+  { root = rootDir, label, pathApi = path },
+) {
+  if (value === undefined || value === "") return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a string`);
+  }
+  if (value.includes("\0")) {
+    throw new Error(`${label} must not contain NUL bytes`);
+  }
+  return pathApi.isAbsolute(value) ? value : pathApi.resolve(root, value);
+}
+
+export function resolveMcpArtifactPath({
+  root = rootDir,
+  overridePath,
+  cargoTargetDir,
+  platform = process.platform,
+  env = process.env,
+} = {}) {
+  const pathApi = platform === "win32" ? path.win32 : path;
+  const executableName =
+    platform === "win32" ? "grimodex-mcp.exe" : "grimodex-mcp";
+  const configuredOverridePath =
+    overridePath === undefined ? env.GRIMODEX_MCP_PATH : overridePath;
+  const configuredCargoTargetDir =
+    cargoTargetDir === undefined ? env.CARGO_TARGET_DIR : cargoTargetDir;
+  const override = resolveConfiguredPath(configuredOverridePath, {
+    root,
+    label: "GRIMODEX_MCP_PATH",
+    pathApi,
+  });
+  if (override !== undefined) {
+    if (!pathApi.isAbsolute(configuredOverridePath)) {
+      throw new Error("GRIMODEX_MCP_PATH must be an absolute path");
+    }
+    return override;
+  }
+  const configuredTarget = resolveConfiguredPath(configuredCargoTargetDir, {
+    root,
+    label: "CARGO_TARGET_DIR",
+    pathApi,
+  });
+  const targetDir =
+    configuredTarget ?? pathApi.join(root, "src-tauri", "target");
+  return pathApi.join(targetDir, "debug", executableName);
+}
+
+export async function resolveProductJourneyArtifact(
+  requestedPath,
+  { executable = false, root = rootDir, platform = process.platform } = {},
+) {
+  if (
+    typeof requestedPath !== "string" ||
+    requestedPath.length === 0 ||
+    requestedPath.includes("\0")
+  ) {
+    throw new Error(
+      "artifact path must be a non-empty string without NUL bytes",
+    );
+  }
+  const absoluteRequestedPath = path.resolve(root, requestedPath);
+  const canonicalPath = await realpath(absoluteRequestedPath);
+  const metadata = await stat(canonicalPath);
+  if (!metadata.isFile()) {
+    throw new Error(`artifact is not a regular file: ${absoluteRequestedPath}`);
+  }
+  if (executable && platform !== "win32") {
+    await access(canonicalPath, constants.X_OK);
+  }
+  return {
+    path: absoluteRequestedPath,
+    requestedPath: absoluteRequestedPath,
+    realPath: canonicalPath,
+    size: metadata.size,
+    sha256: await hashFile(canonicalPath),
+  };
+}
+
+export async function resolveMcpArtifact(options = {}) {
+  const requestedPath = resolveMcpArtifactPath(options);
+  try {
+    return await resolveProductJourneyArtifact(requestedPath, {
+      executable: true,
+      root: options.root ?? rootDir,
+      platform: options.platform ?? process.platform,
+    });
+  } catch (error) {
+    throw new Error(`missing MCP product journey artifact: ${requestedPath}`, {
+      cause: error,
+    });
+  }
+}
+
+const PRODUCT_JOURNEY_ARTIFACT_NAMES = Object.freeze({
+  electronMain: "Electron main",
+  renderer: "renderer",
+  native: "N-API native module",
+  mcp: "MCP sidecar",
+});
+
+/**
+ * Resolve the exact executable artifact set for a catalog selection.  The
+ * catalog, rather than the runner implementation, is the authority for
+ * capability requirements; this keeps a focused C2-ZC run free of an
+ * accidental MCP dependency.
+ */
+export function resolveProductJourneyArtifactRequests(
+  journeys,
+  {
+    catalog = PRODUCT_JOURNEY_CATALOG,
+    root = rootDir,
+    env = process.env,
+    platform = process.platform,
+  } = {},
+) {
+  const selectedIds = new Set(
+    (Array.isArray(journeys) ? journeys : []).map((journey) => journey?.id),
   );
-  const artifacts = [
-    mainCjs,
-    path.join(rootDir, "dist", "index.html"),
-    process.env.GRIMODEX_NODE_PATH ??
-      path.join(
-        rootDir,
-        "electron",
-        "native",
-        "grimodex-node",
-        "grimodex-node.node",
-      ),
-  ];
-  if (requiresMcp) artifacts.push(mcpBinary);
-  for (const artifact of artifacts) {
-    if (!existsSync(artifact)) {
+  const selectedCatalog = catalog.filter((journey) =>
+    selectedIds.has(journey?.id),
+  );
+  const capabilities = new Set(
+    selectedCatalog.flatMap((journey) =>
+      Array.isArray(journey?.capabilities) ? journey.capabilities : [],
+    ),
+  );
+  const requests = [];
+  if (capabilities.has("electron")) {
+    requests.push(
+      {
+        name: PRODUCT_JOURNEY_ARTIFACT_NAMES.electronMain,
+        path: path.join(root, "dist-electron", "main.cjs"),
+      },
+      {
+        name: PRODUCT_JOURNEY_ARTIFACT_NAMES.renderer,
+        path: path.join(root, "dist", "index.html"),
+      },
+    );
+  }
+  if (capabilities.has("napi")) {
+    requests.push({
+      name: PRODUCT_JOURNEY_ARTIFACT_NAMES.native,
+      path:
+        resolveConfiguredPath(env.GRIMODEX_NODE_PATH, {
+          root,
+          label: "GRIMODEX_NODE_PATH",
+        }) ??
+        path.join(
+          root,
+          "electron",
+          "native",
+          "grimodex-node",
+          "grimodex-node.node",
+        ),
+    });
+  }
+  if (capabilities.has("mcp")) {
+    requests.push({
+      name: PRODUCT_JOURNEY_ARTIFACT_NAMES.mcp,
+      path: resolveMcpArtifactPath({ root, env, platform }),
+      executable: true,
+    });
+  }
+  return requests;
+}
+
+export async function assertBuildArtifacts(
+  journeys,
+  {
+    catalog = PRODUCT_JOURNEY_CATALOG,
+    root = rootDir,
+    env = process.env,
+    platform = process.platform,
+  } = {},
+) {
+  const requests = resolveProductJourneyArtifactRequests(journeys, {
+    catalog,
+    root,
+    env,
+    platform,
+  });
+  const artifacts = [];
+  for (const request of requests) {
+    try {
+      artifacts.push({
+        name: request.name,
+        ...(await resolveProductJourneyArtifact(request.path, {
+          executable: request.executable === true,
+          root,
+          platform,
+        })),
+      });
+    } catch (error) {
       throw new Error(
-        `missing Electron product journey artifact: ${artifact}\nRun the builds required by the selected journey capabilities first.`,
+        `missing Electron product journey artifact: ${request.path}\nRun the builds required by the selected journey capabilities first.`,
+        { cause: error },
       );
     }
   }
+  return { artifacts };
 }
 
 function scenesPanelHeader(page) {
@@ -201,17 +437,17 @@ export async function configureWorkspace(
     ),
   );
   const launched = await harness.launch("configure");
+  let closed = false;
   try {
+    // The bridge is ready before cold workspace initialization settles.
+    // Wait for its empty-recents welcome screen (behind the EULA modal) before
+    // Native Open changes settings startup could migrate from a stale snapshot.
+    await launched.page
+      .getByRole("button", { name: /日本語/, includeHidden: true })
+      .waitFor({ state: "attached" });
     await harness.invokeOk(launched.page, "open_workspace", {
       path: workspace,
     });
-    for (const [key, value] of Object.entries(appSettings)) {
-      await harness.invokeOk(launched.page, "db_execute", {
-        sql: "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
-        params: [key, String(value)],
-        method: "run",
-      });
-    }
     if (deterministicAi) {
       const aiSettings = await harness.invokeOk(
         launched.page,
@@ -226,9 +462,9 @@ export async function configureWorkspace(
         },
       });
     }
-    // Create every secondary DB before global settings enable startup
-    // auto-open. Launching another renderer between these native swaps can
-    // race its startup hydration against the test-only DB preparation.
+    // Create every secondary DB in the same initialized renderer. Launching
+    // another renderer between these Native swaps would start auto-open
+    // hydration alongside the test-only DB preparation again.
     for (const additionalWorkspace of configuredWorkspaces.slice(1)) {
       await harness.invokeOk(launched.page, "open_workspace", {
         path: additionalWorkspace,
@@ -254,26 +490,77 @@ export async function configureWorkspace(
         lastSeenReleaseNotesVersion: appVersion(),
       },
     });
-  } finally {
     await harness.close(launched.app, launched.page, "configure");
+    closed = true;
+    if (Object.keys(appSettings).length > 0) {
+      await harness.executeFixtureOperations(
+        workspace,
+        Object.entries(appSettings).map(([key, value]) => ({
+          kind: "app-settings-upsert",
+          key,
+          value: String(value),
+        })),
+      );
+    }
+  } finally {
+    if (!closed) await harness.close(launched.app, launched.page, "configure");
   }
 }
 
 /**
  * C2-5B's durable maintenance acceptance lane is canonical in the runner.
  * The `c2-5b` selector is retained for focused acceptance and reporting; the
- * default canonical run includes these IDs and remains red until the main /
- * N-API trigger owners are integrated.
+ * default canonical run includes these IDs. C2-ZC has its own focused selector
+ * because its one-way Generic-authority transition is a distinct boundary.
  */
 export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS =
   createNarrativeMaintenanceProductJourneys({ configureWorkspace });
+
+/** C2-ZC production reachability is a distinct acceptance journey. */
+export const NARRATIVE_C2ZC_PRODUCT_JOURNEYS = [
+  {
+    id: C2ZC_PRODUCT_JOURNEY_ID,
+    required: true,
+    acceptanceRole: "required",
+    run: (harness) =>
+      runC2ZcCanonicalAuthorityJourney(harness, configureWorkspace),
+  },
+  {
+    id: "c2-zc-renderer-mcp-dml-denial",
+    required: true,
+    acceptanceRole: "auxiliary",
+    run: runC2ZcRendererMcpDmlDenialJourney,
+  },
+];
 
 export function resolveProductJourneySet(
   name = process.env.GRIMODEX_PRODUCT_JOURNEY_SET,
 ) {
   if (name === undefined || name === "") return PRODUCT_JOURNEYS;
   if (name === "c2-5b") return NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS;
+  if (name === "c2-zc") return NARRATIVE_C2ZC_PRODUCT_JOURNEYS;
+  if (name === "nir1-entity-relation-review") {
+    const ids = new Set(
+      NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG.map(
+        ({ id }) => id,
+      ),
+    );
+    return PRODUCT_JOURNEYS.filter((journey) => ids.has(journey.id));
+  }
   throw new Error(`unknown GRIMODEX_PRODUCT_JOURNEY_SET: ${name}`);
+}
+
+export function resolveProductJourneyCatalog(
+  name = process.env.GRIMODEX_PRODUCT_JOURNEY_SET,
+) {
+  if (name === undefined || name === "") return PRODUCT_JOURNEY_CATALOG;
+  // Preserve the existing focused C2-5B selection's full-catalog binding.
+  if (name === "c2-5b") return PRODUCT_JOURNEY_CATALOG;
+  if (name === "c2-zc") return NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG;
+  if (name === "nir1-entity-relation-review") {
+    return NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG;
+  }
+  throw new Error(`unknown product journey catalog set: ${name}`);
 }
 
 async function queryRows(harness, page, sql, params = []) {
@@ -303,9 +590,10 @@ async function currentProjectRow(harness, page) {
 
 async function prepareSecondProject(
   harness,
-  { phase, id, title, projectSettings = {} },
+  { phase, id, title, workspace, projectSettings = {} },
 ) {
   const prepared = await harness.launch(`${phase}/prepare-projects`);
+  let closed = false;
   try {
     await prepared.page
       .getByTestId("project-menu-trigger")
@@ -342,57 +630,80 @@ async function prepareSecondProject(
         },
       });
     }
-    for (const [key, value] of Object.entries(projectSettings)) {
-      await harness.invokeOk(prepared.page, "db_execute", {
-        sql: `INSERT OR REPLACE INTO project_settings
-          (project_id, key, value)
-          VALUES (?, ?, ?)`,
-        params: [projectA.id, key, String(value)],
-        method: "run",
-      });
-    }
-    return {
+    const result = {
       projectA: {
         id: String(projectA.id),
         title: String(projectA.title),
       },
       projectB: { id, title },
     };
-  } finally {
     await harness.close(
       prepared.app,
       prepared.page,
       `${phase}/prepare-projects`,
     );
+    closed = true;
+    if (Object.keys(projectSettings).length > 0) {
+      await harness.executeFixtureOperations(
+        workspace,
+        Object.entries(projectSettings).map(([key, value]) => ({
+          kind: "project-settings-upsert",
+          projectId: projectA.id,
+          key,
+          value: String(value),
+        })),
+      );
+    }
+    return result;
+  } finally {
+    if (!closed) {
+      await harness.close(
+        prepared.app,
+        prepared.page,
+        `${phase}/prepare-projects`,
+      );
+    }
   }
 }
 
-async function prepareProjectSettings(harness, phase, settings) {
+async function prepareProjectSettings(harness, phase, workspace, settings) {
   const prepared = await harness.launch(`${phase}/prepare-settings`);
+  let closed = false;
   try {
     await prepared.page
       .getByTestId("project-menu-trigger")
       .waitFor({ state: "visible", timeout: 30_000 });
     const project = await currentProjectRow(harness, prepared.page);
-    for (const [key, value] of Object.entries(settings)) {
-      await harness.invokeOk(prepared.page, "db_execute", {
-        sql: `INSERT OR REPLACE INTO project_settings
-          (project_id, key, value)
-          VALUES (?, ?, ?)`,
-        params: [project.id, key, String(value)],
-        method: "run",
-      });
-    }
-    return {
+    const result = {
       id: String(project.id),
       title: String(project.title),
     };
-  } finally {
     await harness.close(
       prepared.app,
       prepared.page,
       `${phase}/prepare-settings`,
     );
+    closed = true;
+    if (Object.keys(settings).length > 0) {
+      await harness.executeFixtureOperations(
+        workspace,
+        Object.entries(settings).map(([key, value]) => ({
+          kind: "project-settings-upsert",
+          projectId: project.id,
+          key,
+          value: String(value),
+        })),
+      );
+    }
+    return result;
+  } finally {
+    if (!closed) {
+      await harness.close(
+        prepared.app,
+        prepared.page,
+        `${phase}/prepare-settings`,
+      );
+    }
   }
 }
 
@@ -671,37 +982,6 @@ async function commitExternalSceneWrite(
     },
   });
   return content;
-}
-
-function parseMcpTextResult(result, label) {
-  const textBlock = result?.content?.find(
-    (item) => item?.type === "text" && typeof item.text === "string",
-  );
-  if (!textBlock) {
-    throw new Error(`${label} did not return a text content block`);
-  }
-  try {
-    return JSON.parse(textBlock.text);
-  } catch (error) {
-    throw new Error(`${label} returned invalid JSON: ${textBlock.text}`, {
-      cause: error,
-    });
-  }
-}
-
-async function findProseStage(harness, page, stagingId) {
-  const rows = await queryRows(
-    harness,
-    page,
-    `SELECT id, project_id AS projectId, scene_id AS sceneId,
-      proposed_content AS proposedContent, base_version AS baseVersion,
-      status, source_surface AS sourceSurface,
-      source_session_id AS sourceSessionId
-     FROM prose_staging
-     WHERE id = ?`,
-    [stagingId],
-  );
-  return rows[0] ?? null;
 }
 
 async function findSceneWithText(harness, page, text) {
@@ -1053,6 +1333,7 @@ async function runChatStreamProjectSwitchJourney(harness) {
   });
   const projects = await prepareSecondProject(harness, {
     phase: "chat-stream-project-switch",
+    workspace,
     id: `product-chat-project-b-${Date.now()}`,
     title: "Product Chat Project B",
   });
@@ -1292,6 +1573,7 @@ async function runEditorPendingProjectSwitchJourney(harness) {
   });
   const projects = await prepareSecondProject(harness, {
     phase: "editor-pending-project-switch",
+    workspace,
     id: `product-editor-project-b-${Date.now()}`,
     title: "Product Editor Project B",
   });
@@ -1520,38 +1802,44 @@ async function runExternalWriteConflictJourney(harness) {
   }
 }
 
-async function runMcpExternalWriteConflictJourney(harness) {
-  const workspace = harness.workspacePath("mcp-external-write-conflict");
-  await configureWorkspace(harness, workspace, {
-    appSettings: {
-      "editor.autoSaveDelay": PENDING_SAVE_AUTOSAVE_DELAY_MS,
-    },
-  });
-  const preparedProject = await prepareProjectSettings(
-    harness,
-    "mcp-external-write-conflict",
-    {
-      "ai.autoAcceptBodyProposals": true,
-    },
-  );
+async function runMcpD2aEgressDenialJourney(harness) {
+  const journeyId = "mcp-external-write-conflict";
+  const workspace = harness.workspacePath(journeyId);
+  await configureWorkspace(harness, workspace);
 
-  const external = await harness.launch("mcp-external-write-conflict");
+  const external = await harness.launch(journeyId);
   let mcpClient = null;
-  let dirtyStagingId = null;
   let journeyFailure = null;
   try {
-    const clean = await createSceneThroughUi(harness, external.page);
-    if (clean.projectId !== preparedProject.id) {
-      throw new Error("MCP journey started under the wrong project");
+    const scene = await createSceneThroughUi(harness, external.page);
+    const beforeRows = await queryRows(
+      harness,
+      external.page,
+      `SELECT id, project_id AS projectId, version, content
+       FROM tree_nodes
+       WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+      [scene.sceneId, scene.projectId],
+    );
+    if (beforeRows.length !== 1) {
+      throw new Error("MCP D2a journey could not read its scene snapshot");
     }
+    const beforeEvents = await queryRows(
+      harness,
+      external.page,
+      `SELECT domain, op_type AS opType, entity_id AS entityId, sequence
+       FROM change_events
+       WHERE project_id = ? AND domain = 'prose'
+       ORDER BY sequence`,
+      [scene.projectId],
+    );
+
+    const mcpArtifact = await resolveMcpArtifact();
     mcpClient = await launchProductJourneyMcpClient({
-      binaryPath: mcpBinary,
+      binaryPath: mcpArtifact.path,
       workspacePath: workspace,
-      projectId: clean.projectId,
+      projectId: scene.projectId,
       onStderr: (chunk) =>
-        process.stderr.write(
-          `  [product:mcp-external-write-conflict:mcp] ${String(chunk)}`,
-        ),
+        process.stderr.write(`  [product:${journeyId}:mcp] ${String(chunk)}`),
     });
     const tools = await mcpClient.listTools();
     if (
@@ -1561,192 +1849,103 @@ async function runMcpExternalWriteConflictJourney(harness) {
       throw new Error("MCP server did not advertise propose_scene_body");
     }
 
-    const cleanResult = parseMcpTextResult(
+    const sentinel = `D2A-MCP-DENIAL-${Date.now()}`;
+    const denialMarker = "D2A_EGRESS_DENIED:";
+    const expectedRpcPrefix = `MCP JSON-RPC error (-32602): ${denialMarker}`;
+    try {
       await mcpClient.callTool("propose_scene_body", {
-        scene_id: clean.sceneId,
-        text: MCP_CLEAN_EXTERNAL_TEXT,
+        scene_id: scene.sceneId,
+        text: sentinel,
         mode: "append",
-      }),
-      "clean propose_scene_body",
-    );
-    if (
-      cleanResult.scene_id !== clean.sceneId ||
-      cleanResult.status !== "proposed" ||
-      typeof cleanResult.staging_id !== "string"
-    ) {
-      throw new Error(
-        `clean MCP proposal returned an invalid authority result: ${JSON.stringify(cleanResult)}`,
-      );
+      });
+      throw new Error("MCP propose_scene_body unexpectedly succeeded");
+    } catch (error) {
+      const message = String(error?.message ?? error);
+      if (!message.startsWith(expectedRpcPrefix)) {
+        throw new Error(`MCP D2a denial had an unexpected cause: ${message}`, {
+          cause: error,
+        });
+      }
+      if (message.includes(sentinel)) {
+        throw new Error("MCP D2a denial leaked the proposed sentinel");
+      }
     }
-    const cleanEvidence = await harness.waitUntil(async () => {
-      const [stage, scene] = await Promise.all([
-        findProseStage(harness, external.page, cleanResult.staging_id),
-        findSceneById(harness, external.page, clean.sceneId),
-      ]);
-      return stage?.status === "accepted" &&
-        stage.sourceSurface === "mcp" &&
-        String(scene?.content ?? "").includes(MCP_CLEAN_EXTERNAL_TEXT)
-        ? { stage, scene }
-        : null;
-    }, "MCP clean auto-apply");
-    await clean.editor
-      .locator(`text=${MCP_CLEAN_EXTERNAL_TEXT}`)
-      .waitFor({ state: "visible", timeout: 30_000 });
-    if (
-      await clean.editorSurface.getByTestId("external-edit-conflict").count()
-    ) {
-      throw new Error("clean MCP external write incorrectly opened a conflict");
-    }
-    const cleanEvents = await queryRows(
+
+    const afterRows = await queryRows(
       harness,
       external.page,
-      `SELECT session_id AS sessionId, domain, op_type AS opType,
-        entity_id AS entityId
+      `SELECT id, project_id AS projectId, version, content
+       FROM tree_nodes
+       WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+      [scene.sceneId, scene.projectId],
+    );
+    const afterEvents = await queryRows(
+      harness,
+      external.page,
+      `SELECT domain, op_type AS opType, entity_id AS entityId, sequence
        FROM change_events
-       WHERE entity_id = ? AND domain = 'prose' AND op_type = 'prose.propose'`,
-      [cleanResult.staging_id],
+       WHERE project_id = ? AND domain = 'prose'
+       ORDER BY sequence`,
+      [scene.projectId],
     );
+    const beforeScene = beforeRows[0];
+    const afterScene = afterRows[0];
+    const sceneContentUnchanged = beforeScene?.content === afterScene?.content;
     if (
-      cleanEvents.length !== 1 ||
-      cleanEvents[0].sessionId !== cleanEvidence.stage.sourceSessionId
+      afterRows.length !== 1 ||
+      String(afterScene?.id) !== String(beforeScene?.id) ||
+      String(afterScene?.projectId) !== String(beforeScene?.projectId) ||
+      Number(afterScene?.version) !== Number(beforeScene?.version) ||
+      !sceneContentUnchanged
     ) {
-      throw new Error(
-        "clean MCP proposal did not retain its external writer session",
-      );
+      throw new Error("MCP D2a denial changed the scene row");
     }
-    harness.recordTimeline("mcp-clean-external-write-reloaded", {
+    const changeEventsUnchanged =
+      JSON.stringify(beforeEvents) === JSON.stringify(afterEvents);
+    if (!changeEventsUnchanged) {
+      throw new Error("MCP D2a denial changed prose change-event metadata");
+    }
+    if (
+      (await scene.editorSurface
+        .getByTestId("external-edit-conflict")
+        .count()) !== 0
+    ) {
+      throw new Error("MCP D2a denial opened an editor conflict");
+    }
+
+    harness.recordTimeline("mcp-d2a-pre-dispatch-denial", {
       workspace,
-      projectId: clean.projectId,
-      sceneId: clean.sceneId,
-      stagingId: cleanResult.staging_id,
-      sourceSurface: cleanEvidence.stage.sourceSurface,
-      status: cleanEvidence.stage.status,
-      conflict: false,
+      projectId: scene.projectId,
+      sceneId: scene.sceneId,
+      tool: "propose_scene_body",
+      denial: { code: -32602, marker: denialMarker },
+      handlerDispatch: false,
+      sceneVersionBefore: beforeScene.version,
+      sceneVersionAfter: afterScene.version,
+      sceneContentUnchanged,
+      changeEventsBefore: beforeEvents.length,
+      changeEventsAfter: afterEvents.length,
+      changeEventsUnchanged,
+      editorConflict: false,
     });
-
-    const dirty = await createSceneThroughUi(harness, external.page);
-    await dirty.editor.click();
-    await external.page.keyboard.type(MCP_DIRTY_LOCAL_TEXT);
-    if (
-      await findSceneWithTextForProject(
-        harness,
-        external.page,
-        dirty.projectId,
-        MCP_DIRTY_LOCAL_TEXT,
-      )
-    ) {
-      throw new Error("dirty MCP setup autosaved before the proposal");
-    }
-    const dirtyResult = parseMcpTextResult(
-      await mcpClient.callTool("propose_scene_body", {
-        scene_id: dirty.sceneId,
-        text: MCP_DIRTY_EXTERNAL_TEXT,
-        mode: "append",
-      }),
-      "dirty propose_scene_body",
-    );
-    dirtyStagingId = String(dirtyResult.staging_id ?? "");
-    if (
-      dirtyResult.scene_id !== dirty.sceneId ||
-      dirtyResult.status !== "proposed" ||
-      !dirtyStagingId
-    ) {
-      throw new Error(
-        `dirty MCP proposal returned an invalid authority result: ${JSON.stringify(dirtyResult)}`,
-      );
-    }
-
-    const conflict = dirty.editorSurface.getByTestId("external-edit-conflict");
-    await conflict.waitFor({ state: "visible", timeout: 30_000 });
-    const dirtyEvidence = await harness.waitUntil(async () => {
-      const [stage, scene] = await Promise.all([
-        findProseStage(harness, external.page, dirtyStagingId),
-        findSceneById(harness, external.page, dirty.sceneId),
-      ]);
-      return stage?.status === "proposed" &&
-        stage.sourceSurface === "mcp" &&
-        String(stage.proposedContent ?? "").includes(MCP_DIRTY_EXTERNAL_TEXT) &&
-        String(scene?.content ?? "").includes(MCP_DIRTY_LOCAL_TEXT) &&
-        !String(scene?.content ?? "").includes(MCP_DIRTY_EXTERNAL_TEXT)
-        ? { stage, scene }
-        : null;
-    }, "MCP dirty stale conflict");
-    if (!(await dirty.editor.textContent())?.includes(MCP_DIRTY_LOCAL_TEXT)) {
-      throw new Error("dirty MCP conflict overwrote the local editor draft");
-    }
-    harness.recordTimeline("mcp-dirty-external-write-conflict", {
-      workspace,
-      projectId: dirty.projectId,
-      sceneId: dirty.sceneId,
-      stagingId: dirtyStagingId,
-      sourceSurface: dirtyEvidence.stage.sourceSurface,
-      status: dirtyEvidence.stage.status,
-      localDraftPersisted: true,
-      externalProposalApplied: false,
-      conflict: true,
-    });
-
-    const reject = external.page.getByRole("button", {
-      name: /Reject/,
-    });
-    await reject.waitFor({ state: "visible", timeout: 30_000 });
-    await external.page.keyboard.press("Escape");
-    await harness.waitUntil(async () => {
-      const stage = await findProseStage(
-        harness,
-        external.page,
-        dirtyStagingId,
-      );
-      return stage?.status === "discarded" ? stage : null;
-    }, "MCP stale proposal discard");
-    await conflict.getByTestId("external-edit-keep").click();
-    await conflict.waitFor({ state: "detached", timeout: 30_000 });
     log(
-      "MCP external write: clean auto-apply and dirty stale conflict both passed",
+      "MCP D2a egress denial: pre-dispatch, no DB or external-write-feed mutation",
     );
+    return {
+      id: journeyId,
+      workspace,
+      projectId: scene.projectId,
+      sceneId: scene.sceneId,
+      d2aDenial: { code: -32602, marker: denialMarker },
+      handlerDispatch: false,
+      sceneContentUnchanged,
+      changeEventsUnchanged,
+      editorConflict: false,
+    };
   } catch (error) {
     journeyFailure = error;
     throw error;
   } finally {
-    if (!external.page.isClosed()) {
-      if (dirtyStagingId) {
-        const stage = await findProseStage(
-          harness,
-          external.page,
-          dirtyStagingId,
-        ).catch(() => null);
-        if (stage?.status === "proposed") {
-          await external.page.keyboard.press("Escape").catch(() => undefined);
-          const afterEscape = await findProseStage(
-            harness,
-            external.page,
-            dirtyStagingId,
-          ).catch(() => null);
-          if (afterEscape?.status === "proposed") {
-            await harness
-              .invokeOk(external.page, "agent_discard_prose_stage", {
-                payload: {
-                  projectId: preparedProject.id,
-                  sessionId: "product-journey-cleanup",
-                  stagingId: dirtyStagingId,
-                },
-              })
-              .catch(() => undefined);
-          }
-        }
-      }
-      const visibleKeep = external.page.locator(
-        '[data-testid="external-edit-conflict"]:visible [data-testid="external-edit-keep"]',
-      );
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        if ((await visibleKeep.count()) === 0) break;
-        await visibleKeep
-          .first()
-          .click()
-          .then(() => external.page.waitForTimeout(250))
-          .catch(() => undefined);
-      }
-    }
     await mcpClient?.close().catch((error) => {
       if (!journeyFailure) throw error;
       console.error(
@@ -1756,11 +1955,7 @@ async function runMcpExternalWriteConflictJourney(harness) {
       );
     });
     try {
-      await harness.close(
-        external.app,
-        external.page,
-        "mcp-external-write-conflict",
-      );
+      await harness.close(external.app, external.page, journeyId);
     } catch (closeError) {
       if (!journeyFailure) throw closeError;
       console.error(
@@ -1990,14 +2185,29 @@ export const PRODUCT_JOURNEYS = [
   },
   {
     id: "mcp-external-write-conflict",
-    run: runMcpExternalWriteConflictJourney,
+    run: runMcpD2aEgressDenialJourney,
   },
   ...NATIVE_ROUND_TRIP_JOURNEYS,
+  createChronicleExtractionJourney({
+    configureWorkspace,
+    evidenceDirectory: path.dirname(resolveResultsPath()),
+  }),
+  createCodexEntityRelationReviewJourney({ configureWorkspace }),
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS,
+  ...NARRATIVE_C2ZC_PRODUCT_JOURNEYS,
 ];
 
-export function resolveSelectedProductJourneys(journeys, serializedIds) {
-  if (serializedIds === undefined) return journeys;
+export function resolveSelectedProductJourneys(
+  journeys,
+  serializedIds,
+  { requireAll = false } = {},
+) {
+  if (requireAll && serializedIds !== undefined && serializedIds !== "") {
+    throw new Error(
+      "GRIMODEX_PRODUCT_JOURNEY_IDS must not be set for Full product journey execution; subset execution is rejected",
+    );
+  }
+  if (serializedIds === undefined || serializedIds === "") return journeys;
 
   let requested;
   try {
@@ -2036,6 +2246,78 @@ export function resolveSelectedProductJourneys(journeys, serializedIds) {
   return journeys.filter((journey) => requestedIds.has(journey.id));
 }
 
+/**
+ * Bind the executable selection to the immutable catalog before any artifact
+ * preflight.  A fail-fast subset must never be reported as if another lane
+ * ran, and duplicate/unknown IDs must not disappear in a filtered result.
+ */
+export function assertProductJourneySelectionBinding({
+  catalog,
+  journeys,
+  requireAll = false,
+  selectionName = "",
+}) {
+  if (!Array.isArray(catalog) || !Array.isArray(journeys)) {
+    throw new Error("product journey catalog and selection must be arrays");
+  }
+  const catalogJourneyIds = catalog.map((journey) => journey?.id);
+  const journeyIds = journeys.map((journey) => journey?.id);
+  if (
+    catalogJourneyIds.some((id) => typeof id !== "string" || id.length === 0) ||
+    new Set(catalogJourneyIds).size !== catalogJourneyIds.length
+  ) {
+    throw new Error(
+      "product journey catalog contains invalid or duplicate IDs",
+    );
+  }
+  if (
+    journeyIds.some((id) => typeof id !== "string" || id.length === 0) ||
+    new Set(journeyIds).size !== journeyIds.length
+  ) {
+    throw new Error(
+      "product journey selection contains invalid or duplicate IDs",
+    );
+  }
+  const catalogIds = new Set(catalogJourneyIds);
+  if (journeyIds.some((id) => !catalogIds.has(id))) {
+    throw new Error(
+      "product journey selection contains an ID absent from catalog",
+    );
+  }
+  if (
+    requireAll &&
+    JSON.stringify(journeyIds) !== JSON.stringify(catalogJourneyIds)
+  ) {
+    throw new Error(
+      "Full product journey execution requires all canonical product journey IDs in catalog order",
+    );
+  }
+  if (selectionName === "c2-zc") {
+    if (
+      JSON.stringify(catalogJourneyIds) !==
+      JSON.stringify(C2ZC_PRODUCT_JOURNEY_IDS)
+    ) {
+      throw new Error(
+        "c2-zc selection must use the exact canonical-plus-auxiliary C2-ZC catalog",
+      );
+    }
+    if (
+      JSON.stringify(journeyIds) !== JSON.stringify(C2ZC_PRODUCT_JOURNEY_IDS)
+    ) {
+      throw new Error(
+        "c2-zc selection requires all atomic lanes in catalog order",
+      );
+    }
+  }
+  return {
+    catalogJourneyIds: [...catalogJourneyIds],
+    journeyIds: [...journeyIds],
+    requireAll,
+    selectionName,
+    complete: journeyIds.length === catalogJourneyIds.length,
+  };
+}
+
 function serializeError(error) {
   return {
     name: error instanceof Error ? error.name : "Error",
@@ -2063,17 +2345,610 @@ function normalizeProductJourneyDiagnostics(diagnostics) {
   };
 }
 
-function resolveResultsPath(resultsPath) {
-  if (resultsPath) return path.resolve(rootDir, resultsPath);
+function resolveResultsPath(
+  resultsPath,
+  { root = rootDir, environment = process.env } = {},
+) {
+  if (resultsPath) return path.resolve(root, resultsPath);
   const artifactDir =
-    process.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ??
-    DEFAULT_PRODUCT_JOURNEY_ARTIFACT_DIR;
-  return path.resolve(rootDir, artifactDir, "results.json");
+    environment.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ??
+    path.join(root, ".artifacts", "product-journeys");
+  return path.resolve(root, artifactDir, "results.json");
 }
 
 async function writeResults(resultsPath, report) {
   await mkdir(path.dirname(resultsPath), { recursive: true });
   await writeFile(resultsPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+}
+
+function normalizeArtifactEvidence(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object" && Array.isArray(value.artifacts)) {
+    return value.artifacts;
+  }
+  return [];
+}
+
+function artifactIdentityKeysMatch(identity) {
+  return (
+    identity &&
+    typeof identity === "object" &&
+    !Array.isArray(identity) &&
+    JSON.stringify(Object.keys(identity).sort()) ===
+      JSON.stringify([...PRODUCT_JOURNEY_ARTIFACT_KEYS].sort())
+  );
+}
+
+function isValidProductJourneyArtifact(identity) {
+  return (
+    artifactIdentityKeysMatch(identity) &&
+    typeof identity.name === "string" &&
+    identity.name.length > 0 &&
+    typeof identity.path === "string" &&
+    identity.path.length > 0 &&
+    typeof identity.requestedPath === "string" &&
+    identity.requestedPath.length > 0 &&
+    typeof identity.realPath === "string" &&
+    identity.realPath.length > 0 &&
+    !identity.path.includes("\0") &&
+    !identity.requestedPath.includes("\0") &&
+    !identity.realPath.includes("\0") &&
+    Number.isSafeInteger(identity.size) &&
+    identity.size >= 0 &&
+    /^sha256:[0-9a-f]{64}$/u.test(String(identity.sha256 ?? ""))
+  );
+}
+
+function artifactIdentityEqual(left, right) {
+  return (
+    isValidProductJourneyArtifact(left) &&
+    isValidProductJourneyArtifact(right) &&
+    PRODUCT_JOURNEY_ARTIFACT_KEYS.every((field) => left[field] === right[field])
+  );
+}
+
+function assertProductJourneyArtifactSet(
+  actual,
+  expected,
+  label = "product journey artifacts",
+) {
+  if (!Array.isArray(actual) || !Array.isArray(expected)) {
+    throw new Error(`${label} must be an artifact array`);
+  }
+  if (actual.length !== expected.length) {
+    throw new Error(
+      `${label} must contain exactly ${expected.length} artifacts (received ${actual.length})`,
+    );
+  }
+  const expectedNames = expected.map((artifact) => artifact.name);
+  const actualNames = actual.map((artifact) => artifact?.name);
+  if (
+    new Set(actualNames).size !== actualNames.length ||
+    JSON.stringify(actualNames) !== JSON.stringify(expectedNames)
+  ) {
+    throw new Error(
+      `${label} names/set mismatch: expected ${expectedNames.join(", ")}, received ${actualNames.join(", ")}`,
+    );
+  }
+  for (const [index, artifact] of actual.entries()) {
+    if (!isValidProductJourneyArtifact(artifact)) {
+      throw new Error(`${label} entry ${index} has invalid identity`);
+    }
+    if (!artifactIdentityEqual(artifact, expected[index])) {
+      throw new Error(
+        `${label} entry ${artifact.name} path/realPath/size/sha256 mismatch`,
+      );
+    }
+  }
+  return actual;
+}
+
+export function assertProductJourneyArtifactEvidence(actual, expected, label) {
+  return assertProductJourneyArtifactSet(actual, expected, label);
+}
+
+const C2ZC_FIXTURE_SUMMARY_KEYS = Object.freeze([
+  "manifestVersion",
+  "manifestSha256",
+  "fixtureSha256",
+  "fixtureSizeBytes",
+  "semanticContentsDigest",
+  "contractVersion",
+  "builderVersion",
+  "candidateHeadSha",
+  "candidateTreeSha",
+  "candidateStatusSha256",
+]);
+
+function normalizeSha256(value) {
+  return String(value ?? "").startsWith("sha256:")
+    ? String(value)
+    : `sha256:${String(value ?? "")}`;
+}
+
+function assertC2ZcFixtureSummary(
+  summary,
+  { candidate = null, label = "C2-ZC fixture summary" } = {},
+) {
+  if (
+    !isPlainObject(summary) ||
+    JSON.stringify(Object.keys(summary).sort()) !==
+      JSON.stringify([...C2ZC_FIXTURE_SUMMARY_KEYS].sort()) ||
+    !Number.isSafeInteger(summary.manifestVersion) ||
+    summary.manifestVersion < 1 ||
+    !PRODUCT_JOURNEY_SHA256_HEX.test(
+      normalizeSha256(summary.manifestSha256).slice(7),
+    ) ||
+    !PRODUCT_JOURNEY_SHA256_HEX.test(
+      normalizeSha256(summary.fixtureSha256).slice(7),
+    ) ||
+    !Number.isSafeInteger(summary.fixtureSizeBytes) ||
+    summary.fixtureSizeBytes < 0 ||
+    !PRODUCT_JOURNEY_SHA256_HEX.test(
+      normalizeSha256(summary.semanticContentsDigest).slice(7),
+    ) ||
+    typeof summary.contractVersion !== "number" ||
+    typeof summary.builderVersion !== "string" ||
+    !PRODUCT_JOURNEY_GIT_OBJECT_ID.test(summary.candidateHeadSha) ||
+    !PRODUCT_JOURNEY_GIT_OBJECT_ID.test(summary.candidateTreeSha) ||
+    !/^sha256:[0-9a-f]{64}$/u.test(summary.candidateStatusSha256)
+  ) {
+    throw new Error(`${label} has an invalid compact evidence shape`);
+  }
+  if (candidate) {
+    const candidateStatusSha256 = normalizeSha256(
+      candidate.fixtureStatusSha256 ??
+        candidate.worktreeStatusHash ??
+        candidate.statusSha256,
+    );
+    if (
+      summary.candidateHeadSha !== candidate.resolvedHeadSha ||
+      summary.candidateTreeSha !==
+        (candidate.resolvedHeadTreeSha ?? candidate.resolvedTreeSha) ||
+      summary.candidateStatusSha256 !== candidateStatusSha256
+    ) {
+      throw new Error(`${label} is bound to a different candidate`);
+    }
+  }
+  return summary;
+}
+
+export function assertC2ZcProductJourneyFixtureSummary(
+  actual,
+  expected,
+  label = "C2-ZC product journey fixture summary",
+) {
+  assertC2ZcFixtureSummary(actual, { label });
+  assertC2ZcFixtureSummary(expected, { label: `${label} expected` });
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`${label} does not match the verified fixture evidence`);
+  }
+  return actual;
+}
+
+function createC2ZcFixtureSummary(manifest, manifestIdentity) {
+  return {
+    manifestVersion: manifest.manifestVersion,
+    manifestSha256: manifestIdentity.sha256,
+    fixtureSha256: manifest.fixtureSha256,
+    fixtureSizeBytes: manifest.fixtureSizeBytes,
+    semanticContentsDigest: manifest.semantic.contentsDigest,
+    contractVersion: manifest.contractVersion,
+    builderVersion: manifest.builderVersion,
+    candidateHeadSha: manifest.candidate.resolvedHeadSha,
+    candidateTreeSha: manifest.candidate.resolvedTreeSha,
+    candidateStatusSha256: manifest.candidate.statusSha256,
+  };
+}
+
+function productJourneyPathInsideRoot(root, value, label) {
+  const relative = path.relative(path.resolve(root), path.resolve(value));
+  if (
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error(`${label} must stay inside the product artifact root`);
+  }
+}
+
+/** Load and hash the stable C2-ZC fixture, returning only its bound summary. */
+export async function readC2ZcProductJourneyFixtureEvidence({
+  root = rootDir,
+  environment = process.env,
+  candidate = null,
+} = {}) {
+  const raw = environment[C2ZC_RESTORE_FIXTURE_ENV];
+  if (raw === undefined || raw === "") return null;
+  const input = await loadC2ZcRestoreFixtureInput(undefined, environment);
+  if (typeof input.manifestPath !== "string" || input.manifestPath === "") {
+    throw new Error("C2-ZC product journey fixture must use a manifest path");
+  }
+  const fixturePath = path.resolve(input.path);
+  const manifestPath = path.resolve(input.manifestPath);
+  const databasePath = path.resolve(
+    path.dirname(manifestPath),
+    input.manifest.artifacts.database.path,
+  );
+  const expectedFixturePath = path.resolve(
+    path.dirname(manifestPath),
+    input.manifest.artifacts.fixture.path,
+  );
+  for (const [label, value] of [
+    ["C2-ZC fixture", fixturePath],
+    ["C2-ZC fixture database", databasePath],
+    ["C2-ZC fixture manifest", manifestPath],
+  ]) {
+    productJourneyPathInsideRoot(root, value, label);
+  }
+  const [fixtureIdentity, databaseIdentity, manifestIdentity, expectedFixture] =
+    await Promise.all([
+      resolveProductJourneyArtifact(fixturePath, { root }),
+      resolveProductJourneyArtifact(databasePath, { root }),
+      resolveProductJourneyArtifact(manifestPath, { root }),
+      resolveProductJourneyArtifact(expectedFixturePath, { root }),
+    ]);
+  if (
+    fixtureIdentity.realPath !== expectedFixture.realPath ||
+    fixtureIdentity.sha256 !== input.manifest.artifacts.fixture.sha256 ||
+    fixtureIdentity.size !== input.manifest.artifacts.fixture.sizeBytes ||
+    databaseIdentity.sha256 !== input.manifest.artifacts.database.sha256 ||
+    databaseIdentity.size !== input.manifest.artifacts.database.sizeBytes ||
+    input.manifest.fixtureSha256 !== fixtureIdentity.sha256 ||
+    input.manifest.fixtureSizeBytes !== fixtureIdentity.size
+  ) {
+    throw new Error(
+      "C2-ZC product journey fixture bytes, realpaths, or manifest artifacts do not match",
+    );
+  }
+  assertC2ZcFixtureCandidateBinding(
+    input.manifest.candidate,
+    candidate ?? input.manifest.candidate,
+    "C2-ZC product journey fixture candidate",
+  );
+  return assertC2ZcFixtureSummary(
+    createC2ZcFixtureSummary(input.manifest, manifestIdentity),
+    { candidate },
+  );
+}
+
+function productJourneyFixtureEvidenceEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function resolveAndVerifyProductJourneyArtifacts(
+  journeys,
+  {
+    catalog = PRODUCT_JOURNEY_CATALOG,
+    root = rootDir,
+    env = process.env,
+    platform = process.platform,
+    preflightArtifacts,
+  } = {},
+) {
+  const requests = resolveProductJourneyArtifactRequests(journeys, {
+    catalog,
+    root,
+    env,
+    platform,
+  });
+  const resolved = [];
+  for (const request of requests) {
+    resolved.push({
+      name: request.name,
+      ...(await resolveProductJourneyArtifact(request.path, {
+        executable: request.executable === true,
+        root,
+        platform,
+      })),
+    });
+  }
+  if (preflightArtifacts !== undefined) {
+    assertProductJourneyArtifactSet(
+      normalizeArtifactEvidence(preflightArtifacts),
+      resolved,
+      "product journey preflight artifacts",
+    );
+  }
+  return resolved;
+}
+
+function hasC2ZcAcceptanceJourney(journeys) {
+  const selectedIds = new Set(journeys.map((journey) => journey?.id));
+  return selectedIds.has(C2ZC_PRODUCT_JOURNEY_ID);
+}
+
+function requiresC2ZcRustAcceptance({ journeys, selectionName }) {
+  return selectionName === "c2-zc" || hasC2ZcAcceptanceJourney(journeys);
+}
+
+export function readProductJourneyBuildReceipt(environment = process.env) {
+  const raw = environment[PRODUCT_JOURNEY_BUILD_RECEIPT_ENV];
+  if (!raw) return null;
+  try {
+    const receipt = JSON.parse(raw);
+    assertProductJourneyBuildReceipt(receipt);
+    return receipt;
+  } catch {
+    return null;
+  }
+}
+
+function isValidProductJourneyCandidate(candidate) {
+  if (
+    !candidate ||
+    typeof candidate !== "object" ||
+    Array.isArray(candidate) ||
+    JSON.stringify(Object.keys(candidate).sort()) !==
+      JSON.stringify([...PRODUCT_JOURNEY_CANDIDATE_KEYS].sort())
+  ) {
+    return false;
+  }
+  if (
+    ["requestedBase", "requestedHead"].some(
+      (field) =>
+        typeof candidate[field] !== "string" ||
+        candidate[field].length === 0 ||
+        candidate[field].includes("\u0000"),
+    ) ||
+    [
+      "resolvedBaseSha",
+      "resolvedHeadSha",
+      "resolvedHeadTreeSha",
+      "currentHeadSha",
+    ].some(
+      (field) =>
+        typeof candidate[field] !== "string" ||
+        !PRODUCT_JOURNEY_GIT_OBJECT_ID.test(candidate[field]),
+    ) ||
+    typeof candidate.worktreeClean !== "boolean" ||
+    !PRODUCT_JOURNEY_SHA256_HEX.test(candidate.worktreeFingerprint ?? "") ||
+    !PRODUCT_JOURNEY_SHA256_HEX.test(candidate.worktreeStatusHash ?? "")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function productJourneyCandidatesEqual(left, right) {
+  return (
+    isValidProductJourneyCandidate(left) &&
+    isValidProductJourneyCandidate(right) &&
+    PRODUCT_JOURNEY_CANDIDATE_KEYS.every(
+      (field) => left[field] === right[field],
+    )
+  );
+}
+
+function assertProductJourneyBuildReceipt(
+  receipt,
+  {
+    candidate = null,
+    artifacts = null,
+    label = "product journey build receipt",
+  } = {},
+) {
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    Array.isArray(receipt) ||
+    JSON.stringify(Object.keys(receipt).sort()) !==
+      JSON.stringify([...PRODUCT_JOURNEY_BUILD_RECEIPT_KEYS].sort()) ||
+    receipt.version !== 1 ||
+    receipt.verified !== true ||
+    receipt.source !== "local-ci-candidate" ||
+    !isValidProductJourneyCandidate(receipt.candidate) ||
+    receipt.candidate.worktreeClean !== true ||
+    receipt.candidate.resolvedHeadSha !== receipt.candidate.currentHeadSha ||
+    !Array.isArray(receipt.artifacts) ||
+    receipt.artifacts.length === 0
+  ) {
+    throw new Error(`${label} must include exact verified artifact identities`);
+  }
+  assertProductJourneyArtifactSet(
+    receipt.artifacts,
+    receipt.artifacts,
+    `${label} artifacts`,
+  );
+  if (
+    candidate &&
+    !productJourneyCandidatesEqual(receipt.candidate, candidate)
+  ) {
+    throw new Error(`${label} is bound to a different candidate`);
+  }
+  if (artifacts) {
+    assertProductJourneyArtifactSet(
+      receipt.artifacts,
+      artifacts,
+      `${label} artifacts`,
+    );
+  }
+  return receipt;
+}
+
+function assertProductJourneyBuildReceiptArtifacts(
+  buildReceipt,
+  resolvedArtifacts,
+  { required = false, candidate = null } = {},
+) {
+  if (!required && !buildReceipt) return;
+  assertProductJourneyBuildReceipt(buildReceipt, {
+    candidate,
+    artifacts: resolvedArtifacts,
+  });
+}
+
+export async function readC2ZcRustAcceptanceEvidence({
+  required,
+  root = rootDir,
+  environment = process.env,
+}) {
+  const configuredPath =
+    environment[C2ZC_RUST_RECEIPT_PATH_ENV] ??
+    (required ? C2ZC_RUST_ACCEPTANCE_RECEIPT_PATH : null);
+  if (!configuredPath) {
+    if (required) {
+      throw new Error(
+        `${C2ZC_RUST_RECEIPT_PATH_ENV} is required for complete C2-ZC acceptance`,
+      );
+    }
+    return {
+      required: false,
+      verified: false,
+      reason: "not-required",
+    };
+  }
+  const candidate = await resolveC2ZcRustAcceptanceCandidate({
+    root,
+    requestedBase: environment[C2ZC_RUST_BASE_ENV] ?? "origin/master",
+    requestedHead: environment[C2ZC_RUST_HEAD_ENV] ?? "HEAD",
+  });
+  const verified = await verifyC2ZcRustAcceptanceReceipt({
+    root,
+    candidate,
+    catalogDigest: C2ZC_RUST_ACCEPTANCE_CATALOG_DIGEST,
+    receiptPath: configuredPath,
+    receiptSha256: environment[C2ZC_RUST_RECEIPT_SHA256_ENV] ?? null,
+  });
+  if (!productJourneyCandidatesEqual(candidate, verified.receipt.candidate)) {
+    throw new Error(
+      "C2-ZC Rust acceptance receipt is not bound to the live product journey candidate",
+    );
+  }
+  return {
+    required,
+    verified: true,
+    receiptPath: verified.receiptPath,
+    receiptSha256: verified.receiptSha256,
+    candidate,
+    gates: verified.receipt.gates,
+    verifyOutcome: verified.receipt.verifyOutcome,
+    receipt: verified.receipt,
+  };
+}
+
+export function refreshProductJourneyOutcome(report) {
+  const requiredJourneyIds =
+    Array.isArray(report.requiredJourneyIds) &&
+    report.requiredJourneyIds.length > 0
+      ? report.requiredJourneyIds
+      : report.journeyIds;
+  const requiredResults = (report.journeys ?? []).filter((journey) =>
+    requiredJourneyIds.includes(journey?.id),
+  );
+  const exactLanePass =
+    report.status === "passed" &&
+    Array.isArray(requiredJourneyIds) &&
+    Array.isArray(report.journeys) &&
+    requiredResults.length === requiredJourneyIds.length &&
+    requiredResults.every((journey) => journey.status === "passed");
+  const exactLaneClean =
+    exactLanePass &&
+    requiredResults.every((journey) => journey.cleanPass === true);
+  const rustAcceptanceComplete =
+    report.acceptanceRequired !== true ||
+    (report.c2zcRustAcceptance?.required === true &&
+      report.c2zcRustAcceptance?.verified === true &&
+      isPlainObject(report.c2zcRustAcceptance?.verifyOutcome) &&
+      isPlainObject(report.c2zcRustAcceptance?.receipt) &&
+      JSON.stringify(report.c2zcRustAcceptance.verifyOutcome) ===
+        JSON.stringify(report.c2zcRustAcceptance.receipt.verifyOutcome));
+  const buildReceiptComplete =
+    report.acceptanceRequired !== true ||
+    (report.buildReceipt?.verified === true &&
+      isValidProductJourneyCandidate(report.buildReceipt.candidate) &&
+      report.buildReceipt.candidate.worktreeClean === true &&
+      Array.isArray(report.buildReceipt.artifacts) &&
+      report.buildReceipt.artifacts.length > 0 &&
+      report.buildReceipt.artifacts.every(isValidProductJourneyArtifact));
+  const candidateBindingComplete =
+    report.acceptanceRequired !== true ||
+    (productJourneyCandidatesEqual(
+      report.buildReceipt?.candidate,
+      report.c2zcRustAcceptance?.candidate,
+    ) &&
+      productJourneyCandidatesEqual(
+        report.c2zcRustAcceptance?.candidate,
+        report.c2zcRustAcceptance?.receipt?.candidate,
+      ));
+  const fixtureEvidenceComplete =
+    report.acceptanceRequired !== true ||
+    (report.c2zcRestoreFixture !== null &&
+      report.c2zcRestoreFixture !== undefined);
+  report.rustAcceptanceComplete = rustAcceptanceComplete;
+  report.allPassed =
+    exactLanePass &&
+    rustAcceptanceComplete &&
+    buildReceiptComplete &&
+    candidateBindingComplete &&
+    fixtureEvidenceComplete;
+  report.allClean =
+    exactLaneClean &&
+    rustAcceptanceComplete &&
+    buildReceiptComplete &&
+    candidateBindingComplete &&
+    fixtureEvidenceComplete;
+  // This is the final acceptance bit. It cannot be inherited from a Rust-only
+  // preflight when a required product lane failed or is not clean.
+  report.acceptanceComplete =
+    report.acceptanceRequired === true && report.allClean;
+  return report;
+}
+
+async function writeAuditManifest(
+  outputPath,
+  report,
+  artifactEvidence,
+  { root = rootDir } = {},
+) {
+  const results = await resolveProductJourneyArtifact(outputPath, { root });
+  const manifestPath = path.join(path.dirname(outputPath), "manifest.json");
+  const manifest = {
+    version: PRODUCT_JOURNEY_AUDIT_MANIFEST_VERSION,
+    status: report.status,
+    catalogDigest: report.catalogDigest,
+    journeyIds: [...report.journeyIds],
+    requiredJourneyIds: [...(report.requiredJourneyIds ?? report.journeyIds)],
+    allPassed: report.allPassed === true,
+    allClean: report.allClean === true,
+    acceptanceRequired: report.acceptanceRequired === true,
+    rustAcceptanceComplete: report.rustAcceptanceComplete === true,
+    buildReceipt: report.buildReceipt ?? null,
+    acceptanceComplete: report.acceptanceComplete === true,
+    c2zcRustAcceptance: report.c2zcRustAcceptance ?? null,
+    c2zcRestoreFixture: report.c2zcRestoreFixture ?? null,
+    results: {
+      path: path.basename(outputPath),
+      realPath: results.realPath,
+      sha256: results.sha256,
+    },
+    artifacts: normalizeArtifactEvidence(artifactEvidence),
+  };
+  await writeFile(
+    manifestPath,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf8",
+  );
+  return manifestPath;
+}
+
+async function writeFailureReport(
+  outputPath,
+  report,
+  artifactEvidence,
+  { root = rootDir } = {},
+) {
+  refreshProductJourneyOutcome(report);
+  await writeResults(outputPath, report);
+  try {
+    await writeAuditManifest(outputPath, report, artifactEvidence, { root });
+  } catch (error) {
+    // Preserve the bounded journey diagnostics and the original failure. The
+    // manifest error is visible without replacing the useful failure record.
+    report.auditManifestError = serializeError(error);
+    await writeResults(outputPath, report);
+  }
 }
 
 function notRunResults(journeys, reason) {
@@ -2088,26 +2963,165 @@ function notRunResults(journeys, reason) {
 export async function runProductJourneys({
   createHarness,
   journeys = PRODUCT_JOURNEYS,
-  assertArtifacts = assertBuildArtifacts,
+  catalog = PRODUCT_JOURNEY_CATALOG,
+  artifactJourneys = journeys,
+  requiredJourneyIds = null,
+  assertArtifacts = null,
   clock = () => performance.now(),
+  expectedCatalogDigest = process.env.GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST,
+  requireAll = process.env.GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL === "true",
+  selectionName = process.env.GRIMODEX_PRODUCT_JOURNEY_SET ?? "",
+  root = rootDir,
+  environment = process.env,
+  rustAcceptanceEvidence = null,
+  buildReceipt = null,
   resultsPath,
 } = {}) {
-  const outputPath = resolveResultsPath(resultsPath);
+  const outputPath = resolveResultsPath(resultsPath, { root, environment });
+  const catalogDigest =
+    catalog === PRODUCT_JOURNEY_CATALOG
+      ? PRODUCT_JOURNEY_CATALOG_DIGEST
+      : digestProductJourneyCatalog(catalog);
+  const selectedRequiredJourneyIds = journeys
+    .filter((journey) => {
+      const catalogEntry = catalog.find((entry) => entry.id === journey.id);
+      return (
+        (journey.required ?? catalogEntry?.required ?? true) !== false &&
+        (journey.acceptanceRole ?? catalogEntry?.acceptanceRole) !==
+          "diagnostic"
+      );
+    })
+    .map((journey) => journey.id);
+  const reportRequiredJourneyIds =
+    requiredJourneyIds === null
+      ? catalog
+          .filter(
+            (journey) =>
+              journey.required !== false &&
+              journey.acceptanceRole !== "diagnostic",
+          )
+          .map((journey) => journey.id)
+      : [...requiredJourneyIds];
+  if (
+    requiredJourneyIds !== null &&
+    JSON.stringify(reportRequiredJourneyIds) !==
+      JSON.stringify(selectedRequiredJourneyIds)
+  ) {
+    throw new Error(
+      "explicit product journey required IDs must match the selected required journeys in order",
+    );
+  }
   const report = {
     version: PRODUCT_JOURNEY_RESULTS_VERSION,
     status: "passed",
+    catalogDigest,
+    catalogJourneyIds: catalog.map((journey) => journey.id),
+    journeyIds: journeys.map((journey) => journey.id),
+    requiredJourneyIds: reportRequiredJourneyIds,
+    acceptanceRequired: requiresC2ZcRustAcceptance({
+      journeys,
+      selectionName,
+    }),
+    rustAcceptanceComplete: false,
+    buildReceipt: buildReceipt ?? readProductJourneyBuildReceipt(environment),
+    acceptanceComplete: false,
+    c2zcRustAcceptance: null,
+    c2zcRestoreFixture: null,
+    selectionBinding: {
+      catalogJourneyIds: catalog.map((journey) => journey.id),
+      journeyIds: journeys.map((journey) => journey.id),
+      requireAll,
+      selectionName,
+      complete: false,
+    },
+    allPassed: false,
+    allClean: false,
     journeys: [],
   };
+  let artifactEvidence = [];
 
   try {
-    await assertArtifacts(journeys);
+    report.selectionBinding = assertProductJourneySelectionBinding({
+      catalog,
+      journeys,
+      requireAll,
+      selectionName,
+    });
+    if (
+      expectedCatalogDigest !== undefined &&
+      expectedCatalogDigest !== catalogDigest
+    ) {
+      throw new Error(
+        `product journey catalog digest mismatch: expected ${expectedCatalogDigest}, observed ${catalogDigest}`,
+      );
+    }
+    report.c2zcRustAcceptance =
+      rustAcceptanceEvidence ??
+      (await readC2ZcRustAcceptanceEvidence({
+        required: report.acceptanceRequired,
+        root,
+        environment,
+      }));
+    const fixtureEnvironmentValue = environment[C2ZC_RESTORE_FIXTURE_ENV];
+    const fixtureRequiredWithoutOverride =
+      report.acceptanceRequired === true && rustAcceptanceEvidence === null;
+    if (
+      report.acceptanceRequired === true &&
+      (fixtureEnvironmentValue !== undefined || fixtureRequiredWithoutOverride)
+    ) {
+      report.c2zcRestoreFixture = await readC2ZcProductJourneyFixtureEvidence({
+        root,
+        environment,
+        candidate: report.c2zcRustAcceptance?.candidate ?? null,
+      });
+    }
+    report.rustAcceptanceComplete =
+      report.acceptanceRequired !== true ||
+      (report.c2zcRustAcceptance.required === true &&
+        report.c2zcRustAcceptance.verified === true);
+    const preflight =
+      assertArtifacts ??
+      ((selectedJourneys) =>
+        assertBuildArtifacts(selectedJourneys, {
+          catalog,
+          root,
+          env: environment,
+        }));
+    artifactEvidence = await preflight(artifactJourneys);
+    const resolvedArtifacts = await resolveAndVerifyProductJourneyArtifacts(
+      artifactJourneys,
+      {
+        catalog,
+        root,
+        env: environment,
+        preflightArtifacts: artifactEvidence,
+      },
+    );
+    if (report.acceptanceRequired === true) {
+      assertProductJourneyBuildReceiptArtifacts(
+        report.buildReceipt,
+        resolvedArtifacts,
+        {
+          required: true,
+          candidate: report.c2zcRustAcceptance?.candidate,
+        },
+      );
+    } else if (report.buildReceipt) {
+      assertProductJourneyBuildReceiptArtifacts(
+        report.buildReceipt,
+        resolvedArtifacts,
+        {
+          candidate: report.c2zcRustAcceptance?.candidate,
+        },
+      );
+    }
   } catch (error) {
     report.status = "failed";
     report.error = serializeError(error);
     report.journeys.push(
       ...notRunResults(journeys, "Artifact preflight failed."),
     );
-    await writeResults(outputPath, report);
+    await writeFailureReport(outputPath, report, artifactEvidence, { root });
     throw error;
   }
 
@@ -2115,30 +3129,65 @@ export async function runProductJourneys({
     createHarness ??
     (() =>
       createProductJourneyHarness({
-        mainCjs,
+        mainCjs: path.join(root, "dist-electron", "main.cjs"),
+        artifactRoot: environment.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ?? null,
       }));
+  const continueAfterJourneyFailure = selectionName === "c2-zc";
+  let firstJourneyFailure = null;
   for (const [index, journey] of journeys.entries()) {
+    const catalogEntry = catalog.find((entry) => entry.id === journey.id);
+    const journeyIsRequired =
+      (journey.required ?? catalogEntry?.required ?? true) !== false &&
+      (journey.acceptanceRole ?? catalogEntry?.acceptanceRole) !== "diagnostic";
     const startedAt = clock();
     let durationMs = null;
     let harness = null;
+    let journeyResultIndex = -1;
     try {
       harness = factory();
-      await journey.run(harness);
+      harness.c2zcRustAcceptanceEvidence = report.c2zcRustAcceptance;
+      const runJourney = () => journey.run(harness);
+      const c2zcWatchdogRequired =
+        selectionName === "c2-zc" &&
+        C2ZC_PRODUCT_JOURNEY_IDS.includes(journey.id);
+      if (
+        c2zcWatchdogRequired &&
+        typeof harness.withLaneWatchdog !== "function"
+      ) {
+        throw new Error(
+          `C2-ZC lane ${journey.id} requires harness.withLaneWatchdog`,
+        );
+      }
+      const journeyResult =
+        typeof harness.withLaneWatchdog === "function"
+          ? await harness.withLaneWatchdog(runJourney, {
+              phase: journey.id,
+              timeoutMs: PRODUCT_JOURNEY_LANE_WATCHDOG_TIMEOUT_MS,
+            })
+          : await runJourney();
       durationMs = elapsedMilliseconds(clock, startedAt);
       const diagnostics = normalizeProductJourneyDiagnostics(
         await harness.finalizeDiagnostics?.(),
       );
-      await harness.dispose({ success: true, name: journey.id });
-      report.journeys.push({
+      const passedResult = {
         id: journey.id,
         status: "passed",
         durationMs,
         ...diagnostics,
-      });
+        ...(journeyResult === undefined ? {} : { result: journeyResult }),
+      };
+      report.journeys.push(passedResult);
+      journeyResultIndex = report.journeys.length - 1;
+      // A journey result can contain the launch attestation and other
+      // evidence that cleanup removes (for example the nonce receipt tree).
+      // Persist it before disposing the harness so a successful return cannot
+      // be lost merely because its temporary filesystem evidence is consumed.
+      await writeResults(outputPath, report);
+      await harness.dispose({ success: true, name: journey.id });
       log(`${journey.id}: PASS`);
     } catch (error) {
       durationMs ??= elapsedMilliseconds(clock, startedAt);
-      report.status = "failed";
+      if (journeyIsRequired) report.status = "failed";
       const journeyDiagnostics = normalizeProductJourneyDiagnostics(
         error?.diagnostics ?? harness?.diagnostics?.(),
       );
@@ -2153,13 +3202,11 @@ export async function runProductJourneys({
         // because the renderer itself emitted no errors.
         cleanPass: false,
       };
-      report.journeys.push(failedResult);
-      report.journeys.push(
-        ...notRunResults(
-          journeys.slice(index + 1),
-          `Fail-fast after ${journey.id}.`,
-        ),
-      );
+      if (journeyResultIndex >= 0) {
+        report.journeys[journeyResultIndex] = failedResult;
+      } else {
+        report.journeys.push(failedResult);
+      }
       if (harness) {
         try {
           await harness.dispose({ success: false, name: journey.id });
@@ -2187,23 +3234,126 @@ export async function runProductJourneys({
           );
         }
       }
-      await writeResults(outputPath, report);
-      throw new Error(`${journey.id}: ${error?.stack ?? error}`, {
-        cause: error,
-      });
+      const wrappedError = new Error(
+        `${journey.id}: ${error?.stack ?? error}`,
+        {
+          cause: error,
+        },
+      );
+      if (continueAfterJourneyFailure) {
+        if (journeyIsRequired) firstJourneyFailure ??= wrappedError;
+        await writeResults(outputPath, report);
+        log(
+          `${journey.id}: FAIL (${journeyIsRequired ? "continuing required C2-ZC lane" : "diagnostic only"})`,
+        );
+        continue;
+      }
+      report.journeys.push(
+        ...notRunResults(
+          journeys.slice(index + 1),
+          `Fail-fast after ${journey.id}.`,
+        ),
+      );
+      await writeFailureReport(outputPath, report, artifactEvidence, { root });
+      throw wrappedError;
     }
   }
+  try {
+    // Re-read every configured artifact after the last lane.  This closes the
+    // window in which a build output could be replaced while journeys were
+    // running, before any acceptance bit or audit manifest is emitted.
+    artifactEvidence = await resolveAndVerifyProductJourneyArtifacts(
+      artifactJourneys,
+      {
+        catalog,
+        root,
+        env: environment,
+        preflightArtifacts: artifactEvidence,
+      },
+    );
+    if (report.acceptanceRequired === true) {
+      assertProductJourneyBuildReceiptArtifacts(
+        report.buildReceipt,
+        artifactEvidence,
+        {
+          required: true,
+          candidate: report.c2zcRustAcceptance?.candidate,
+        },
+      );
+    } else if (report.buildReceipt) {
+      assertProductJourneyBuildReceiptArtifacts(
+        report.buildReceipt,
+        artifactEvidence,
+        {
+          candidate: report.c2zcRustAcceptance?.candidate,
+        },
+      );
+    }
+    if (
+      report.acceptanceRequired === true &&
+      report.c2zcRestoreFixture !== null
+    ) {
+      const currentFixtureEvidence =
+        await readC2ZcProductJourneyFixtureEvidence({
+          root,
+          environment,
+          candidate: report.c2zcRustAcceptance?.candidate ?? null,
+        });
+      assertC2ZcFixtureSummary(currentFixtureEvidence, {
+        candidate: report.c2zcRustAcceptance?.candidate ?? null,
+        label: "C2-ZC product journey fixture summary",
+      });
+      if (
+        !productJourneyFixtureEvidenceEqual(
+          report.c2zcRestoreFixture,
+          currentFixtureEvidence,
+        )
+      ) {
+        throw new Error(
+          "C2-ZC restore fixture changed after product journeys ran",
+        );
+      }
+      report.c2zcRestoreFixture = currentFixtureEvidence;
+    }
+  } catch (error) {
+    report.status = "failed";
+    report.error = serializeError(error);
+    await writeFailureReport(outputPath, report, artifactEvidence, { root });
+    throw error;
+  }
+  refreshProductJourneyOutcome(report);
   await writeResults(outputPath, report);
+  try {
+    await writeAuditManifest(outputPath, report, artifactEvidence, { root });
+  } catch (error) {
+    report.status = "failed";
+    report.error = serializeError(error);
+    refreshProductJourneyOutcome(report);
+    await writeResults(outputPath, report);
+    throw error;
+  }
+  if (firstJourneyFailure) {
+    throw firstJourneyFailure;
+  }
   return report;
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) {
-  const journeySet = resolveProductJourneySet();
+  const requireAll =
+    process.env.GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL === "true";
+  const selectionName = process.env.GRIMODEX_PRODUCT_JOURNEY_SET ?? "";
+  const journeySet = resolveProductJourneySet(selectionName);
   const selectedJourneys = resolveSelectedProductJourneys(
     journeySet,
     process.env.GRIMODEX_PRODUCT_JOURNEY_IDS,
+    { requireAll },
   );
-  runProductJourneys({ journeys: selectedJourneys }).then(
+  runProductJourneys({
+    catalog: resolveProductJourneyCatalog(selectionName),
+    journeys: selectedJourneys,
+    requireAll,
+    selectionName,
+  }).then(
     () => log("PASS — product journeys completed"),
     (error) => {
       console.error(`[electron:product] FAIL: ${error?.stack ?? error}`);

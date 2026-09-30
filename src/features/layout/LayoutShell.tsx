@@ -76,6 +76,7 @@ export const LayoutShell = memo(function LayoutShell({
 }: LayoutShellProps) {
   const segments = useRegionSegments();
   const layout = useLayoutStore((s) => s.layout);
+  const initialized = useLayoutStore((s) => s.initialized);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const { crossfadeControls } = useLayoutPresetCrossfade();
   const shellRef = useRef<HTMLDivElement>(null);
@@ -267,6 +268,7 @@ export const LayoutShell = memo(function LayoutShell({
         ref={shellRef}
         data-workspace-glass-root
         data-layout-shell
+        data-layout-initialized={initialized ? "true" : "false"}
         data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
         data-workspace-fluid-glass-refraction={glass.refraction}
         data-zen-mode={zenMode ? "true" : undefined}

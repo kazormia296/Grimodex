@@ -778,6 +778,14 @@ fn promote_sticky(tx: &Transaction<'_>, payload: &MapWritePayload) -> anyhow::Re
                     updated_at
                 ],
             )?;
+            if target_type == "scene" {
+                crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                    tx,
+                    project_id,
+                    new_entity_id,
+                    updated_at,
+                )?;
+            }
             (target_type.to_string(), Some(new_entity_id), None, None)
         }
         "snippet" => {
@@ -1656,8 +1664,6 @@ pub fn apply_map_write(db: &Database, payload: MapWritePayload) -> anyhow::Resul
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     fn row_snapshot_digest(db: &Database, sql: &str, params: &[&str]) -> String {
@@ -1699,8 +1705,7 @@ mod tests {
     }
 
     fn fixture() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.with_conn(|conn| {
             conn.execute_batch(
                 "INSERT INTO projects (id, title) VALUES ('p1', 'One'), ('p2', 'Two');

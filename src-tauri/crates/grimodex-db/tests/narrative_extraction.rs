@@ -1,3 +1,6 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use chrono::{Duration, Utc};
 use grimodex_db::narrative_extraction::{
     self, ensure_test_schema, AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload,
@@ -157,8 +160,7 @@ fn test_db() -> Database {
 }
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.execute(
         "INSERT INTO projects (id, title) VALUES (?, 'Project')",
         &[Value::String("project-1".to_string())],
@@ -2958,9 +2960,7 @@ fn current_chronicle_shared_snapshot_authority_rejects_later_proposal_tampering(
     )
     .expect_err("the shared Snapshot map must not weaken later Proposal compilation");
     assert!(
-        error
-            .to_string()
-            .contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"),
+        error.to_string().contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"),
         "unexpected shared Snapshot compiler error: {error:#}"
     );
 
@@ -4512,7 +4512,7 @@ fn revise_and_decide_rejects_stale_expected_current_revision() {
 
 #[test]
 fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
-    let db = test_db();
+    let db = migrated_db();
     create_run_with_task(&db, "run-review-bundle", "task-review-bundle");
 
     let claim = claim_with_owner(&db, "run-review-bundle", "worker-bundle", 120);

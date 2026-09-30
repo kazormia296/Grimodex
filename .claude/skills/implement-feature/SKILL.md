@@ -1,40 +1,11 @@
 ---
 name: implement-feature
 description: >
-  機能を実装する。手順は superpowers の方法論スキルに委譲し、ここでは
-  プロジェクト固有の制約と検証だけを足す。
-  Use when: 新機能の追加、既存機能の拡張、「実装して」「作って」「追加して」
-  と言われたとき。UIコンポーネント、DB操作、Electron IPC追加を含む。
+  Grimodex の新機能や既存機能の拡張を実装し、要求された振る舞いを検証する。
+  不具合修正は debug-issue、AI 指示・skill・評価資産の変更は grimodex-author を使う。
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, MultiEdit
 argument-hint: [feature-description]
 ---
 
-「$1」を実装する。
-
-## 方法論は superpowers に委譲する（薄い独自手順で上書きしないこと）
-
-このスキルは入口にすぎない。各フェーズは対応する superpowers スキルを起動し、
-そのまま劣化させずに従う:
-
-1. `superpowers:brainstorming` — 着手前に意図・要件・設計を確定する
-2. `superpowers:writing-plans` — 多段タスクなら計画を書く
-3. `superpowers:test-driven-development` — 実装前にテストを書く（test-first / red→green）
-4. `superpowers:verification-before-completion` — 「完了」と言う前に検証する
-5. **実装後は敵対的レビューで壊しにいく** — `/review-code`、または
-   `superpowers:requesting-code-review` でレビュアー subagent を派遣する場合は
-   vanilla の `code-reviewer.md` ではなく `review-code/adversarial-reviewer.md`
-   を使う。Critical→Important の「壊し方」を潰してから完了とする。
-
-## このプロジェクト固有で必ず守ること
-
-- 探索時、Electron IPC が絡むなら renderer / preload / main / N-API の境界を確認する。
-  IPC コマンド追加なら `/add-electron-command` の契約・実装・テスト更新に従う。
-- 状態管理: グローバル=Zustand / 局所=Jotai。DB は Drizzle 経由（生 SQL 禁止）。
-- 検証コマンド（verification-before-completion の証拠として出力を確認する）:
-  - `pnpm test`
-  - `npx tsc --noEmit`
-  - `pnpm lint:fix`
-  - 共有 Rust 変更時: `cargo check --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding` と同条件の `cargo test`
-  - N-API adapter 変更時: `cargo check --manifest-path electron/native/grimodex-node/Cargo.toml` と同 manifest の `cargo test`
-  - レイアウト変更時（CenterStripe/RegionStripe/Splitter/LayoutShell 周辺）: `pnpm test:browser`
-- コミットは変更ファイルを個別 `git add`（`git add -A` 禁止）。master へ直接 commit せず branch を切り、push は branch + PR（master 直 push は hook でブロック済み）。
+この Claude Code コマンドは [共通 skill](../../../.agents/skills/implement-feature/SKILL.md) を読み、
+依頼の対象・引数・実行範囲に適用する。補助資料への相対リンクは、共通 skill の所在を基点に参照する。

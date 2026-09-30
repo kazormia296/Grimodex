@@ -16,10 +16,11 @@ use std::collections::BTreeSet;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::c2z_preparation::{
     inspect_workspace_cutover_readiness, ReadinessGate, ReadinessState, WorkspaceCutoverReadiness,
@@ -32,7 +33,8 @@ use super::evaluator::{BuildAction, EvidenceFreshness};
 use super::incremental_freshness::SuccessfulIncrementalFreshnessCycle;
 use super::maintenance_lifecycle::load_completed_maintenance_run_in_tx;
 use super::maintenance_runtime::{
-    NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION, REBUILD_DERIVED_WORK_KEY,
+    is_scan_staging_project_in_tx, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
+    REBUILD_DERIVED_WORK_KEY,
 };
 use super::reconciliation_envelope::SourceBasisRow;
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
@@ -434,7 +436,7 @@ fn validate_freshness_evaluation_reference(
 /// shared maintenance lifecycle owned by `dependency-rebuild-derived`.
 /// Otherwise a stale Verify/Backfill id or an incomplete Rebuild ledger can
 /// make old evidence look current after canonical cutover.
-fn validate_current_evaluation_run_reference(
+pub(crate) fn validate_current_evaluation_run_reference(
     conn: &Connection,
     project_id: &str,
     current_epoch_id: &str,
@@ -448,10 +450,14 @@ fn validate_current_evaluation_run_reference(
         Option<String>,
         String,
         Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
     );
     let row: Option<EvaluationPublisherRow> = conn
         .query_row(
-            "SELECT project_id, run_kind, semantic_epoch_id, status, consumer_id
+            "SELECT project_id, run_kind, semantic_epoch_id, status, consumer_id,
+                    spec_json, work_key, outcome_summary_json
                FROM narrative_extraction_runs
               WHERE id = ?1",
             [run_id],
@@ -462,15 +468,39 @@ fn validate_current_evaluation_run_reference(
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
                 ))
             },
         )
         .optional()?;
-    let Some((run_project_id, run_kind, run_epoch_id, status, consumer_id)) = row else {
+    let Some((
+        run_project_id,
+        run_kind,
+        run_epoch_id,
+        status,
+        consumer_id,
+        spec_json,
+        work_key,
+        outcome_summary_json,
+    )) = row
+    else {
         anyhow::bail!(
             "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISSING: application '{application_id}' references missing Freshness publisher Run '{run_id}'"
         );
     };
+    let work_key = work_key.ok_or_else(|| anyhow::anyhow!(
+        "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: consumer '{application_id}' references publisher Run '{run_id}' without a work key"
+    ))?;
+    anyhow::ensure!(
+        !is_idle_checkpoint_publisher(
+            &spec_json,
+            &work_key,
+            outcome_summary_json.as_deref(),
+        ),
+        "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references idle checkpoint Run '{run_id}', which is scheduler evidence only and cannot publish Generic Consumer Freshness"
+    );
     match run_kind.as_deref() {
         Some("freshness-evaluation") => {
             anyhow::ensure!(
@@ -484,9 +514,9 @@ fn validate_current_evaluation_run_reference(
             Ok(())
         }
         Some("semantic-index-rebuild") => {
-            let handle = load_completed_maintenance_run_in_tx(conn, run_id).map_err(|error| {
-                anyhow::anyhow!(
-                    "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Rebuild Run '{run_id}' without the exact completed maintenance lifecycle: {error}"
+            let handle = load_completed_maintenance_run_in_tx(conn, run_id).with_context(|| {
+                format!(
+                    "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: consumer '{application_id}' references Rebuild Run '{run_id}' without the exact completed maintenance lifecycle"
                 )
             })?;
             anyhow::ensure!(
@@ -502,6 +532,40 @@ fn validate_current_evaluation_run_reference(
             "NEX_C2ZC_GENERIC_FRESHNESS_RUN_MISMATCH: application '{application_id}' references Run '{run_id}' that is not the completed current-Epoch Freshness publisher"
         ),
     }
+}
+
+/// An idle checkpoint is a zero-width scheduler receipt, not a Generic
+/// Consumer Freshness publisher.  Keep this check at the shared provenance
+/// boundary so both the irreversible cutover validator and the post-marker
+/// canonical reader reject the same forged reference.
+fn is_idle_checkpoint_publisher(
+    spec_json: &str,
+    work_key: &str,
+    outcome_summary_json: Option<&str>,
+) -> bool {
+    let tagged_spec = serde_json::from_str::<Value>(spec_json)
+        .ok()
+        .and_then(|value| value.get("kind").and_then(Value::as_str).map(str::to_owned))
+        .is_some_and(|kind| kind == "incremental-freshness-idle-checkpoint@1");
+    if tagged_spec {
+        return true;
+    }
+
+    let tagged_outcome = outcome_summary_json
+        .and_then(|json| serde_json::from_str::<Value>(json).ok())
+        .and_then(|value| value.get("kind").and_then(Value::as_str).map(str::to_owned))
+        .is_some_and(|kind| kind == "current-epoch-idle-checkpoint");
+    if tagged_outcome {
+        return true;
+    }
+
+    let Some(coordinates) = work_key.strip_prefix("incremental-freshness:") else {
+        return false;
+    };
+    let parts = coordinates.split(':').collect::<Vec<_>>();
+    parts.len() == 4
+        && parts[1].parse::<i64>().ok() == parts[2].parse::<i64>().ok()
+        && parts[1].parse::<i64>().is_ok()
 }
 
 /// Mint and register the only scheduler-liveness receipt accepted by the
@@ -570,6 +634,41 @@ pub(crate) fn is_generic_freshness_canonical(conn: &Connection) -> Result<bool> 
     }
 }
 
+/// Resolve the Semantic Epoch for an ordinary Narrative Run at the C2-ZC
+/// writer boundary. The marker is the only activation switch: before it, the
+/// legacy NULL provenance remains valid. Scan staging Projects are hidden
+/// from the canonical workspace until their publish transaction removes the
+/// staging marker and mints their birth Epoch.
+pub(crate) fn current_c2zc_run_epoch_in_tx(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Option<String>> {
+    match read_cutover_marker(conn)? {
+        None => Ok(None),
+        Some(version) if version == C2_ZC_CUTOVER_CONTRACT_VERSION => {
+            let project_exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            if !project_exists || is_scan_staging_project_in_tx(conn, project_id)? {
+                return Ok(None);
+            }
+            get_current_epoch(conn, project_id)?
+                .map(|epoch| epoch.id)
+                .map(Some)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_C2ZC_RUN_CURRENT_EPOCH_MISSING: project '{project_id}' has no current Semantic Epoch"
+                    )
+                })
+        }
+        Some(version) => anyhow::bail!(
+            "NEX_C2ZC_CUTOVER_MARKER_UNSUPPORTED: marker contract version {version} is not current"
+        ),
+    }
+}
+
 /// The canonical authority event that proves a Project was created by one of
 /// the allowed Project-birth writers.  Each variant keeps its own identity
 /// contract; a generic "any change event" bootstrap would let unrelated
@@ -577,7 +676,13 @@ pub(crate) fn is_generic_freshness_canonical(conn: &Connection) -> Result<bool> 
 #[derive(Clone, Copy)]
 enum C2zcProjectBirthAuthority<'a> {
     ProjectCreate,
-    ImportApply { import_session_id: &'a str },
+    ImportApply {
+        import_session_id: &'a str,
+    },
+    ScanPublish {
+        request_id: &'a str,
+        session_id: &'a str,
+    },
 }
 
 impl C2zcProjectBirthAuthority<'_> {
@@ -585,6 +690,7 @@ impl C2zcProjectBirthAuthority<'_> {
         match self {
             Self::ProjectCreate => "NEX_C2ZC_PROJECT_BIRTH_MARKER_UNSUPPORTED",
             Self::ImportApply { .. } => "NEX_C2ZC_IMPORT_PROJECT_BIRTH_MARKER_UNSUPPORTED",
+            Self::ScanPublish { .. } => "NEX_C2ZC_SCAN_PUBLISH_MARKER_UNSUPPORTED",
         }
     }
 
@@ -592,6 +698,7 @@ impl C2zcProjectBirthAuthority<'_> {
         match self {
             Self::ProjectCreate => "NEX_C2ZC_PROJECT_BIRTH_EVENT_MISSING",
             Self::ImportApply { .. } => "NEX_C2ZC_IMPORT_PROJECT_BIRTH_EVENT_MISSING",
+            Self::ScanPublish { .. } => "NEX_C2ZC_SCAN_PUBLISH_EVENT_MISSING",
         }
     }
 
@@ -599,6 +706,7 @@ impl C2zcProjectBirthAuthority<'_> {
         match self {
             Self::ProjectCreate => "NEX_C2ZC_PROJECT_BIRTH_EPOCH_CONFLICT",
             Self::ImportApply { .. } => "NEX_C2ZC_IMPORT_PROJECT_BIRTH_EPOCH_CONFLICT",
+            Self::ScanPublish { .. } => "NEX_C2ZC_SCAN_PUBLISH_EPOCH_CONFLICT",
         }
     }
 
@@ -606,6 +714,7 @@ impl C2zcProjectBirthAuthority<'_> {
         match self {
             Self::ProjectCreate => "project.create",
             Self::ImportApply { .. } => "import.session.apply",
+            Self::ScanPublish { .. } => "scan.import.publish",
         }
     }
 }
@@ -644,6 +753,30 @@ pub(crate) fn mint_c2zc_import_project_birth_epoch_in_tx(
         import_apply_event_uid,
         "importApplyEventUid",
         C2zcProjectBirthAuthority::ImportApply { import_session_id },
+    )
+}
+
+/// Bind a Project published by the Scan staging writer to its first Semantic
+/// Epoch. Scan has a separate canonical event identity from Import Apply:
+/// only the exact publish event payload can establish this birth authority.
+pub(crate) fn mint_c2zc_scan_publish_project_birth_epoch_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    request_id: &str,
+    session_id: &str,
+    scan_publish_event_uid: &str,
+) -> Result<Option<String>> {
+    require_non_blank(request_id, "requestId")?;
+    require_non_blank(session_id, "sessionId")?;
+    mint_c2zc_project_birth_epoch_for_canonical_event_in_tx(
+        conn,
+        project_id,
+        scan_publish_event_uid,
+        "scanPublishEventUid",
+        C2zcProjectBirthAuthority::ScanPublish {
+            request_id,
+            session_id,
+        },
     )
 }
 
@@ -691,6 +824,46 @@ fn mint_c2zc_project_birth_epoch_for_canonical_event_in_tx(
                     AND json_extract(payload, '$.sessionId') = ?3
                )",
             params![project_id, event_uid, import_session_id],
+            |row| row.get(0),
+        )?,
+        C2zcProjectBirthAuthority::ScanPublish {
+            request_id,
+            session_id,
+        } => conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM change_events
+                  WHERE project_id = ?1
+                    AND event_uid = ?2
+                    AND domain = 'scan'
+                    AND op_type = 'scan.import.publish'
+                    AND entity_type = 'project'
+                    AND entity_id = ?1
+                    AND session_id = ?4
+                    AND json_valid(payload)
+                    AND json_type(payload) = 'object'
+                    AND json_type(payload, '$.projectId') = 'text'
+                    AND json_extract(payload, '$.projectId') = ?1
+                    AND json_type(payload, '$.requestId') = 'text'
+                    AND json_extract(payload, '$.requestId') = ?3
+                    AND json_type(payload, '$.sessionId') = 'text'
+                    AND json_extract(payload, '$.sessionId') = ?4
+                    AND NOT EXISTS (
+                        SELECT 1 FROM json_each(payload)
+                         WHERE key NOT IN (
+                             'projectId', 'requestId', 'sessionId',
+                             'authorityRoute', 'authorityCaller', 'authorityEvidence'
+                         )
+                    )
+                    AND (
+                        json_type(payload, '$.authorityRoute') IS NULL
+                        OR json_extract(payload, '$.authorityRoute') = 'import-apply'
+                    )
+                    AND (
+                        json_type(payload, '$.authorityCaller') IS NULL
+                        OR json_extract(payload, '$.authorityCaller') = 'import-session'
+                    )
+               )",
+            params![project_id, event_uid, request_id, session_id],
             |row| row.get(0),
         )?,
     };
@@ -799,7 +972,18 @@ fn workspace_project_ids(conn: &Connection) -> Result<Vec<String>> {
     let project_ids = statement
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(project_ids)
+    drop(statement);
+    project_ids
+        .into_iter()
+        .map(|project_id| -> Result<Option<String>> {
+            if is_scan_staging_project_in_tx(conn, &project_id)? {
+                Ok(None)
+            } else {
+                Ok(Some(project_id))
+            }
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|project_ids| project_ids.into_iter().flatten().collect())
 }
 
 fn validate_scheduler_liveness(
@@ -1235,5 +1419,53 @@ mod tests {
             })
         })
         .expect("verify mismatched Import authority event is rejected");
+    }
+
+    #[test]
+    fn scan_publish_birth_requires_its_exact_canonical_event_payload() {
+        let db = migrated_db();
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z")?;
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES (?1, ?2)",
+                    params!["scan-project", "Scan project"],
+                )?;
+                conn.execute(
+                    "INSERT INTO change_events (
+                         event_uid, project_id, scene_id, domain, op_type,
+                         entity_type, entity_id, payload, session_id, sequence,
+                         timestamp, prev_hash, hash
+                     ) VALUES (?1, ?2, NULL, 'scan', 'scan.import.publish',
+                               'project', ?2, ?3, ?4, 1, 0, '', '')",
+                    params![
+                        "scan-event",
+                        "scan-project",
+                        r#"{"projectId":"scan-project","requestId":"scan-request","sessionId":"scan-session","extra":true}"#,
+                        "scan-session",
+                    ],
+                )?;
+
+                let error = mint_c2zc_scan_publish_project_birth_epoch_in_tx(
+                    conn,
+                    "scan-project",
+                    "scan-request",
+                    "scan-session",
+                    "scan-event",
+                )
+                .expect_err("extra payload fields must not mint a Scan birth Epoch");
+                assert!(error
+                    .to_string()
+                    .contains("NEX_C2ZC_SCAN_PUBLISH_EVENT_MISSING"));
+                let epoch_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE project_id = ?1",
+                    ["scan-project"],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(epoch_count, 0);
+                Ok(())
+            })
+        })
+        .expect("verify exact Scan publish authority event validation");
     }
 }

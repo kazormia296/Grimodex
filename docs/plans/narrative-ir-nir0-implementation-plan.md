@@ -4,7 +4,7 @@
 
 - **Lifecycle:** Complete — certified Chronicle add-only pilot
 - **Milestone:** NIR-0 — C2B activation and Chronicle add-only certification
-- **Last updated:** 2026-08-27
+- **Last updated:** 2026-09-05
 - **Stacked base at creation:** PR #551, `codex/c2-parallel-foundations` at `eb428bd75a3ff08936526eaeb82ae58ff7e76146`
 - **Contract PR:** `NIR0-00: Narrative Revision Semantics, Native-Verified Human Derivation, Material-Basis Inheritance, Monotonicity, and Project-Scoped Identity Contract`
 - **Pilot:** Chronicle `scene-event@1`
@@ -884,7 +884,11 @@ D1 owns:
 
 ### 10.3 D2 — shadow runtime integration
 
-Starts after C2-ZC merges.
+D2 shadow integration is already implemented and verified by the focused
+evidence on the current tree. That evidence does not activate D2 authority or
+complete the full V2 cutover. C2-ZC final acceptance is now recorded by PR #564;
+D2 authority changes still require their own NIR-1 approval and must not be
+inferred from the C2-ZC cutover.
 
 D2 owns V2 shadow evaluation in:
 
@@ -893,7 +897,10 @@ D2 owns V2 shadow evaluation in:
 - incremental Freshness runtime,
 - restore/rebuild verification.
 
-V1 remains canonical unless a later explicit cutover changes the ratified V1/V2 priority.
+The C2-ZC Generic Consumer Freshness path is represented by the accepted
+post-certification cutover recorded in the C2-ZC impact matrix. Within this D2
+shadow lane, V1 evaluation remains the compatibility baseline until a separate
+V1/V2 priority decision and NIR-1 approval change the ratified D2 contract.
 
 ---
 
@@ -1217,5 +1224,13 @@ NIR0-CERT
 ```
 
 NIR0-CERT has now closed the NIR-0 milestone against PR #559's tested and
-integrated tree. C2-ZC retains ownership of the next canonical-authority
-boundary; future NIR-1 work must not reopen or silently widen this certificate.
+integrated tree. The post-certification C2-ZC closeout is accepted through PR
+#564, with the complete product journey, Quick/verify, Full/receipt, runtime
+performance, and Sol evidence recorded in the C2-ZC impact matrix. Its accepted
+candidate is base `201f8968f324bef1341282c625aee3fb164ea401`, head
+`2c1bc67c749eb90e4d441099bfa9bc7ea6ee950e`, tree
+`e7dff96286be3f111d9130cf89faf37929b88f17`, merge
+`0e62b40b622652f203690968d308b837e1481a33`, and Full run
+`cb03f6fb-b711-4377-bf7b-a5bd23c7ce79`. The NIR-1 start condition is
+satisfied; future NIR-1 work must not reopen or silently widen this
+certificate, and NIR-1 remains planned rather than implemented.

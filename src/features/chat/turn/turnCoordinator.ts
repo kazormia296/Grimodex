@@ -44,6 +44,8 @@ export interface TurnControl {
   transport: TurnTransport;
   transportStarted: boolean;
   aborted: boolean;
+  /** Hold admission until captured authority is kept/cancelled or prior authority retired. */
+  preTransportAdmissionPending: boolean;
   phase: TurnPhase;
 }
 
@@ -85,6 +87,7 @@ export function createTurnControl(input: CreateTurnControlInput): TurnControl {
     transport: input.transport,
     transportStarted: false,
     aborted: false,
+    preTransportAdmissionPending: false,
     phase: "preparing",
   };
 }

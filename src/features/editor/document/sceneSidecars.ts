@@ -10,12 +10,29 @@ import {
   type ResolvedAnchorLoads,
 } from "@/features/editor/anchorLoads";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { isD2aEgressDenied } from "@/lib/tauri";
 import { markEnd, markStart } from "@/lib/perfLog";
 
 export interface SceneSidecarServices {
   loadAuthorshipSpans: typeof attributionApi.loadAuthorshipSpans;
   loadForeshadowAnchors: typeof foreshadowApi.loadForeshadowAnchors;
   listAnnotationsForScene: typeof annotationApi.listAnnotationsForScene;
+}
+
+/**
+ * The restricted-profile anchor projection is deliberately version-only, but
+ * an unavailable projection still cannot be replaced with an empty array:
+ * doing that would leave stale OCC tokens on the document. This is a
+ * fail-closed fallback for a broken/older Native projection, not the normal
+ * D2a path (which is allowed by the main gate).
+ */
+export class SceneForeshadowAnchorsUnavailableError extends Error {
+  constructor() {
+    super(
+      "D2A_EGRESS_DENIED: plaintext-publication: foreshadow anchor projection is unavailable; scene remains unsaveable until it can be loaded",
+    );
+    this.name = "SceneForeshadowAnchorsUnavailableError";
+  }
 }
 
 const defaultSceneSidecarServices: SceneSidecarServices = {
@@ -53,7 +70,19 @@ export function applySceneSidecars(
   // a normal switch look like a live workspace failure.
   if (isCancelled()) return;
 
+  const foreshadowDenied = sidecars.errors.some(
+    ({ label, reason }) =>
+      label === "foreshadowAnchors" && isD2aEgressDenied(reason),
+  );
+  if (foreshadowDenied) {
+    // The typed projection is expected to be allowed in restricted mode. If
+    // it is nevertheless unavailable, do not hydrate a saveable document with
+    // stale marks/version tokens.
+    throw new SceneForeshadowAnchorsUnavailableError();
+  }
+
   for (const { label, reason } of sidecars.errors) {
+    if (isD2aEgressDenied(reason)) continue;
     debugLog.error(
       "EditorPane",
       `sceneLoad.loadAnchors:${label} failed`,
@@ -111,8 +140,9 @@ export function applySceneSidecars(
     }
   }
 
-  // Store hydration intentionally remains unconditional for compatibility with
-  // the previous EditorPane behavior; only editor dispatch is cancellation-gated.
+  // Store hydration remains unconditional for non-blocking sidecar failures
+  // for compatibility with the previous EditorPane behavior; the blocking
+  // foreshadow denial returned above never reaches this branch.
   if (sidecars.annotations) {
     useAnnotationStore.getState().setFocusedAnnotationId(null);
     useAnnotationStore

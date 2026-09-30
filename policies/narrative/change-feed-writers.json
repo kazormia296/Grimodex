@@ -2,6 +2,17 @@
   "schemaVersion": 1,
   "gateId": "gate-c1",
   "operationFragments": ["policies/narrative/change-feed-operations/*.json"],
+  "canonicalBirths": [
+    { "operationId": "project.create.renderer", "opType": "project.create" },
+    {
+      "operationId": "import.session.apply.internal",
+      "opType": "import.session.apply"
+    },
+    {
+      "operationId": "scan.import.publish",
+      "opType": "scan.import.publish"
+    }
+  ],
   "semanticBoundary": {
     "schemaVersion": 1,
     "scanRoots": [
@@ -55,6 +66,7 @@
         "entity_tags_set",
         "authorship_replace_lane",
         "scan_staging_project_create",
+        "scan_staging_project_publish",
         "narrative_runtime_policy_set",
         "narrative_extraction_",
         "import_web_editor_workspace",
@@ -647,7 +659,8 @@
         "narrative.revision-envelope",
         "narrative.freshness",
         "narrative.field-authority",
-        "narrative.maintenance-feed"
+        "narrative.maintenance-feed",
+        "idempotency.receipt"
       ],
       "scope": "project",
       "requiredIdentities": ["projectId"],
@@ -1299,11 +1312,13 @@
     },
     {
       "id": "scan.staging-project.create",
+      "visibility": "hidden",
+      "canonicality": "noncanonical",
       "authorityRoute": "import-apply",
       "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
-      "reason": "The scan staging project is an isolated import workspace and is not visible as a canonical narrative aggregate until import apply.",
+      "reason": "The scan staging project is a hidden, noncanonical import workspace and is not visible as a canonical narrative aggregate until the typed scan.import.publish operation.",
       "exclusionReason": "staging-only",
       "implementation": {
         "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
@@ -1325,6 +1340,41 @@
       "scope": "workspace",
       "requiredIdentities": [],
       "canonical": null
+    },
+    {
+      "id": "scan.import.publish",
+      "visibility": "visible",
+      "canonicality": "canonical",
+      "authorityRoute": "import-apply",
+      "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Publishing a completed scan import promotes the hidden staging project through one typed canonical Feed transaction.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "publish_scan_staging_project"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "scan_staging_project_publish",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "scan_staging_project_publish",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "scan.import.publish" }
     },
     {
       "id": "trash.envelope.create",
@@ -4544,6 +4594,29 @@
       },
       "routes": [],
       "writerIds": ["narrative.dependency-declaration"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "nir1.generation.storage",
+      "authorityRoute": "restore-or-migration",
+      "controls": [
+        "exclusive-system-operation",
+        "semantic-epoch-event",
+        "full-rebuild-marker"
+      ],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "runtimeEvidence": { "status": "excluded", "reason": "control-plane" },
+      "reason": "Native D2b storage persists immutable generation attempt, message-version, input-reference, qualification-reference, and terminal-receipt metadata. These rows record observations against existing stores; they do not mutate a canonical Narrative aggregate or append a Change Feed event.",
+      "exclusionReason": "control-plane",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/nir1_generation.rs",
+        "symbol": "create_attempt"
+      },
+      "routes": [],
+      "writerIds": ["nir1_generation.storage"],
       "scope": "project",
       "requiredIdentities": ["projectId"],
       "canonical": null

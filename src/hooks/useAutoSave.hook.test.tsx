@@ -50,6 +50,19 @@ describe("useAutoSave callback freshness", () => {
     unmount();
   });
 
+  it("forwards a lifecycle flush permit to the latest save callback", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const { result, unmount } = renderHook(() => useAutoSave(save, 100));
+
+    act(() => result.current.schedule());
+    await act(async () => {
+      await flushAllAutoSaves({ preexistingDraft: true });
+    });
+
+    expect(save).toHaveBeenCalledWith({ preexistingDraft: true });
+    unmount();
+  });
+
   it("keeps an unmounted pending save registered until it settles", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {

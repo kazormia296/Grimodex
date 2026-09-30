@@ -1,14 +1,8 @@
 ---
 name: write-grimodex-copy
 description: >
-  docs/communication-style-guide.md を正本として、Grimodex の公開向け文章を
-  事実ベースで作成・改稿し、特に日本語／英語のリリースノートの意味、深刻度、
-  対応方法を一致させる。「リリースノートを書いて／直して」「日英の更新記録」
-  「リリース告知」「延期・障害・保守告知」「広報文」「SNS告知」
-  「README冒頭」「公式サイト見出し」「開発状況報告」で使用する。
-  Issue、PR、コミットメッセージ、UI文言、エラーメッセージと復旧手順、
-  API・IPC・MCP・CLI仕様、開発者向けセットアップ、法務文書、
-  セキュリティアドバイザリの技術詳細には使用しない。
+  Grimodex の公開向け紹介文、告知、日英リリースノートを communication-style-guide に
+  沿って作成・改稿する。開発者向け手順、Issue／PR、UI 文言などの技術文書には使わない。
 ---
 
 # Write Grimodex Copy

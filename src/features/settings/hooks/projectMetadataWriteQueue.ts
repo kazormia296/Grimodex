@@ -8,7 +8,10 @@ import {
   isCurrentMutationAuthority,
   type MutationAuthority,
 } from "@/features/concurrency/mutationAuthority";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 
 export type ProjectMetadataField =
@@ -358,7 +361,7 @@ function discardProjectMetadataWrites(): void {
 }
 
 registerQuiescenceProvider({
-  id: "project-metadata-writes",
+  id: createQuiescenceProviderId("project-metadata-writes"),
   stage: "scoped-mutations",
   flush: flushProjectMetadataWrites,
   discard: discardProjectMetadataWrites,

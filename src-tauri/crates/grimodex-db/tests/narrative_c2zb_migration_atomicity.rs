@@ -14,7 +14,7 @@ use grimodex_db::Database;
 use rusqlite::{params, Connection};
 
 const SCHEMA_31: i32 = 31;
-const CURRENT_SCHEMA: i32 = 34;
+const CURRENT_SCHEMA: i32 = grimodex_core::SCHEMA_VERSION;
 const MARKER: &str = "narrative-c2-application-rekey-v32";
 const RUN_KIND: &str = "narrative-extraction-run";
 const APPLICATION_KIND: &str = "application";

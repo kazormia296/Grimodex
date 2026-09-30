@@ -11,6 +11,29 @@ export declare class Backend {
    */
   constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null, rerankerResourceRoot?: string | undefined | null)
   /**
+   * Main-only D2a startup status. A fresh profile remains unrestricted until
+   * the main process explicitly activates the first protected publication;
+   * a persisted restricted profile reruns its startup quiescence barrier.
+   */
+  initializeProfileEgress(): Promise<string>
+  /**
+   * Main-only first protected-publication activation. The caller is the
+   * Electron main process; this method is deliberately absent from the
+   * renderer IPC contract. Activation is durable and followed by the same
+   * quiescence barrier used for a restricted-profile restart.
+   */
+  activateProfileEgress(): Promise<string>
+  /**
+   * Main-only registration of one exact caller identity for this Backend
+   * process generation. Renderer IPC never exposes this method.
+   */
+  registerProfileEgressCaller(identity: string): void
+  /**
+   * Main-only invalidation when the trusted workspace binding changes.
+   * Renderer-provided identities cannot clear or retain Native registrations.
+   */
+  invalidateProfileEgressCallers(): void
+  /**
    * Main-process-only bridge used during the Electron v2 first-run
    * credential migration. This method is deliberately absent from
    * `NAPI_COMMANDS`, so renderer IPC cannot request plaintext credentials.
@@ -43,7 +66,8 @@ export declare class Backend {
   /**
    * Electron main scheduler 専用の Change Feed freshness cycle。
    * renderer IPC には登録せず、1 call で共有runtimeの有界batchを最大1件だけ
-   * 処理する。workspace未open・切替中・Safe Mode・feed空はJS nullを返す。
+   * 処理する。workspace未open・切替中・Safe Mode・通常のfeed空はJS nullを返し、
+   * C2-ZCのexpected NOT_READYだけはmain activation owner向けの小さなJSONを返す。
    */
   runNarrativeFreshnessCycle(): Promise<string | null>
   /**
@@ -53,6 +77,21 @@ export declare class Backend {
    * scheduler can bind a request before it enters its pending queue.
    */
   getNarrativeMaintenanceWorkspaceBinding(): string | null
+  /**
+   * Main-only, delivery-independent descriptor recovery preflight. This
+   * is intentionally callable before the main delivery ledger is touched:
+   * an existing recovery root must remain actionable even when all normal
+   * delivery records are retained at capacity.
+   */
+  reconcileNarrativeMaintenanceRecovery(requestedWorkspacePath?: string | undefined | null): Promise<string>
+  /**
+   * Main-only ACK for the replayable descriptor recovery receipt.  The
+   * descriptor and its durable responsibility were already resolved before
+   * this call; ACK only retires the process-local notification so a
+   * Freshness preflight cannot consume it before the main scheduler has
+   * observed the exact recovered binding.
+   */
+  ackNarrativeMaintenanceRecovery(descriptorId: string): string
   /**
    * Configure the one-shot, main-only product-journey seam. The payload is
    * parsed into the shared Rust schema and validated again there; this
@@ -84,6 +123,27 @@ export declare class Backend {
    */
   ackNarrativeMaintenanceWakeOutbox(ids: Array<string>, workspaceBinding: any): Promise<string>
   /**
+   * Register one process-local maintenance attempt against the exact
+   * workspace recovery generation. This is main-only and has no durable
+   * schema; durable Run/Task/Attempt rows remain owned by the existing
+   * maintenance runtime.
+   */
+  beginNarrativeMaintenanceAttempt(attemptId: string, workspaceBinding: any): Promise<string>
+  /**
+   * Request cancellation and wait until the Native attempt has produced a
+   * terminal receipt. A late request after FinalizeGranted observes the
+   * already-successful receipt and cannot rewrite it.
+   */
+  cancelNarrativeMaintenanceAttempt(attemptId: string, reason: string): Promise<string>
+  /**
+   * Retire a consumed Native terminal receipt.  This method is main-only
+   * and intentionally absent from the renderer/preload contract.  The
+   * registry refuses an ACK while an admitted owner or waiter still holds
+   * the receipt, so a late ACK cannot delete a result another caller is
+   * still waiting to observe.
+   */
+  ackNarrativeMaintenanceAttempt(attemptId: string): string
+  /**
    * Electron main-only serialized system-work cycle.
    *
    * The request is validated in shared Rust, then executed against one
@@ -96,6 +156,17 @@ export declare class Backend {
    * successful drain.
    */
   runNarrativeMaintenanceCycle(payload: any): Promise<string>
+  /**
+   * ACK only the Native delivery record after main has applied the
+   * structurally validated terminal result.  This retires transport state;
+   * it does not settle an unfinished Run or recovery descriptor.
+   */
+  ackNarrativeMaintenanceDelivery(sequence: number): Promise<string>
+  /**
+   * Resolve a lost admission reply without allocating another delivery
+   * record.  Main may fence only the current H+1 sequence.
+   */
+  resolveNarrativeMaintenanceDelivery(sequence: number): Promise<string>
   /**
    * Persist a scheduler delivery failure before Electron drops its
    * process-local identity. The receipt is append-only and workspace-scoped
@@ -124,16 +195,17 @@ export declare class Backend {
    * drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
    * CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
    * は "run" | "get" | "all" | "values"。
-   * 返り値: `QueryResult` の JSON 文字列 `{"rows":[…]}` (Tauri ワイヤと同形)。
+   * 返り値: mainが消費する内部種別marker付きのJSON文字列。mainはrendererへ
+   * 渡す前に `__grimodexDbResultKind` を除去する。
    */
-  dbExecute(sql: string, params: any, method: string): Promise<string>
+  dbExecute(sql: string, params: any, method: string, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * 複数文を単一トランザクションで実行 (BEGIN IMMEDIATE、途中失敗で全
    * ROLLBACK — grimodex-db の `execute_batch_tx`)。オートセーブの通り道。
    * `statements` は `[{ sql, params, method }, …]`。
-   * 返り値: 最終文の rows を載せた `QueryResult` の JSON 文字列。
+   * 返り値: 最終文のrowsと、mainが消費する内部種別markerを載せたJSON文字列。
    */
-  dbExecuteBatch(statements: any): Promise<string>
+  dbExecuteBatch(statements: any, callerIdentity?: string | undefined | null): Promise<string>
   /** Read Native-owned Narrative runtime policy (Release Gate B Foundation). */
   narrativeRuntimePolicyGet(): Promise<string>
   /** CAS update for Native-owned Narrative runtime policy. */
@@ -187,6 +259,7 @@ export declare class Backend {
   codexRenameUndo(payload: any): Promise<string>
   codexRenameApply(payload: any): Promise<string>
   scanStagingProjectCreate(payload: any): Promise<void>
+  scanStagingProjectPublish(payload: any): Promise<string>
   projectCreate(payload: any): Promise<string>
   projectPatch(payload: any): Promise<string>
   projectDelete(payload: any): Promise<void>
@@ -241,6 +314,20 @@ export declare class Backend {
    */
   openWorkspace(path: string): Promise<string>
   /**
+   * Main-only, strict lifecycle snapshot. This deliberately does not call
+   * `active_database`: recovery-only and transition states must remain
+   * observable while no authority is published.
+   */
+  getWorkspaceLifecycleView(): Promise<string>
+  /**
+   * Request the idempotent Native lifecycle shutdown and publish `Closed`
+   * only after every admitted Open/Restore worker has returned.  The core
+   * still refuses the terminal transition while delivery records,
+   * descriptors, or maintenance permits remain unresolved, so a timeout
+   * or an interrupted worker cannot be mistaken for terminal proof.
+   */
+  shutdownWorkspaceLifecycle(): Promise<string>
+  /**
    * 既存 workspace 判定 (commands/workspace.rs の同名コマンドと同一実装)。
    * 軽量 stat のみなので設計どおり同期のまま (§4.2「純関数の validate 除く」)。
    */
@@ -280,7 +367,7 @@ export declare class Backend {
    * 再open時にDB由来のCodex matcherを破棄し、semantic 4-cache epochも
    * rotateして復元前DBへのlate writeを不可視にする。
    */
-  restoreBackup(fileName: string): Promise<void>
+  restoreBackup(fileName: string): Promise<string>
   /** Safe Mode中の復元候補をopaque idだけで列挙する。 */
   listRecoveryCandidates(): Promise<string>
   /** candidate idを検証し、復元前の候補メタデータを返す。 */
@@ -321,6 +408,39 @@ export declare class Backend {
    * の JSON 文字列。
    */
   timelapseAppendBatch(projectId: string, sessionId: string, events: any): Promise<string>
+  /**
+   * Append missing genesis editor-body baselines in one native transaction.
+   * Any existing same-entity snapshot (including a later rebaseline) makes
+   * that entity ineligible. The renderer supplies identity only; trusted
+   * workspace tables own payload, domain, entityType, and project membership.
+   */
+  timelapseGenesisBaselinesAppend(expectedWorkspacePath: string, projectId: string, kind: string, entityIds: Array<string>, anchorTimestamp: number): Promise<string>
+  /**
+   * Append body baselines at the current canonical tail. Renderer callers
+   * provide identities only; Native resolves ownership and body payload
+   * from the trusted workspace tables inside one immediate transaction.
+   */
+  timelapseBodyBaselinesAppend(expectedWorkspacePath: string, projectId: string, targets: any, expectedAnchorSequence?: number | undefined | null): Promise<string>
+  /**
+   * Logically reset timelapse history for the authorized project in one
+   * transaction. Canonical `change_events` and their hash chain remain
+   * intact; project `state_snapshots` are deleted and Native advances the
+   * trusted `resetSequence` cutoff. The summary reports the logical event
+   * count hidden by the new cutoff and the snapshots deleted.
+   */
+  timelapseHistoryPurge(expectedWorkspacePath: string, projectId: string): Promise<string>
+  /**
+   * Set `timelapse.enabled` under the same exact workspace binding used by
+   * the protected timelapse writers. This prevents a switch from redirecting
+   * an enable/rollback to a project with the same id in another database.
+   */
+  timelapseEnabledSet(expectedWorkspacePath: string, projectId: string, enabled: boolean): Promise<string>
+  /**
+   * Record a renderer UI snapshot under the fixed
+   * `layout/workspace/workspace` scope. Native derives the anchor timestamp
+   * and checks the optional observed canonical tail.
+   */
+  timelapseLayoutSnapshotRecord(expectedWorkspacePath: string, projectId: string, payload: any, expectedAnchorSequence?: number | undefined | null): Promise<string>
   /**
    * Append a durable batch to the complete AI-use audit ledger. The
    * renderer snapshots `expected_workspace_path` before dispatch; every
@@ -398,8 +518,8 @@ export declare class Backend {
   trashBinPrune(projectId: string, retentionDays: number, maxCount: number): Promise<string>
   /**
    * FTS optimize (commands/integrity.rs の写像 — 実装は grimodex-db の
-   * `Database::fts_optimize` を Tauri と共用)。workspace open 後のアイドル
-   * タイミングで呼ばれる fail-soft コマンド。
+   * `Database::fts_optimize` を Tauri と共用)。明示的なメンテナンス用であり、
+   * workspace open からは自動実行しない。
    */
   ftsOptimize(): Promise<void>
   /** FTS 全再構築 (設定画面のデータカテゴリから明示実行)。 */
@@ -477,6 +597,71 @@ export declare class Backend {
    * 返り値: camelCase `CodexCandidate[]` の JSON 文字列。
    */
   extractCodexCandidates(projectId: string, minCount?: number | undefined | null): Promise<string>
+  relatedScenesBegin(payload: any): Promise<string>
+  relatedScenesContinue(ownerKey: string, operationTicket: string): Promise<string>
+  relatedScenesRelease(ownerKey: string, operationTicket: string): Promise<string>
+  relatedScenesReleaseOwner(ownerKey: string): Promise<string>
+  relatedScenesReconcile(): Promise<string>
+  nir1EvidenceQualify(ownerKey: string, navigationIdentity: string): Promise<string>
+  /**
+   * The product Graph route stays closed until C-query/C-product acceptance.
+   * Internal canonical reader tests do not authorize this exported entry.
+   */
+  nir1GraphQuery(payload: any): Promise<string>
+  /**
+   * Pack typed NIR-1 context units without persisting or forwarding them.
+   * The request is deliberately a pure Native operation so renderer-side
+   * selection cannot bypass the Raw/Evidence atomicity rules.
+   */
+  nir1PackContext(payload: any): Promise<string>
+  /**
+   * Persist one Native-bound NIR-1 Entity/Relation Revision as an
+   * unreviewed Proposal. The existing human decision endpoint is the only
+   * path that can make it eligible for a later cold read.
+   */
+  nir1EntityRelationRevisionCreate(payload: any, workspaceBinding: any): Promise<string>
+  /**
+   * Resolve live Entity/Relation identities and atomically persist the
+   * dedicated typed review Run plus its unreviewed Revision.  The Native
+   * workspace binding covers the whole transaction; a failed preparation
+   * cannot leave a resumable Run without a typed Revision.
+   */
+  nir1EntityRelationRevisionPrepare(payload: any, workspaceBinding: any): Promise<string>
+  /**
+   * Re-open one typed NIR-1 Revision from the currently pinned workspace.
+   * The workspace path is an authority check only; the project and
+   * Revision identities are rechecked inside the same read transaction.
+   */
+  nir1EntityRelationRevisionRead(payload: any): Promise<string>
+  /**
+   * Read the current draft or explicitly human-approved typed Revision for
+   * one dedicated review Run after a cold reopen.  Generic review bundle
+   * storage is intentionally not consulted.
+   */
+  nir1EntityRelationRevisionReadCurrent(payload: any): Promise<string>
+  /**
+   * Find and reopen the current typed review Run for a launcher target.
+   * Native filters the sealed typed Revision metadata before any ordering
+   * limit, then publishes only the dedicated renderer projection (or the
+   * target Run's unavailable reason).
+   */
+  nir1EntityRelationRevisionRestore(payload: any): Promise<string>
+  /**
+   * Read the Native-owned A1 scene Scope binding and registry from the
+   * workspace selected at IPC arrival. The renderer supplies identity only;
+   * the active workspace path remains the Native authority check.
+   */
+  narrativeSceneScopeRead(payload: any): Promise<string>
+  /**
+   * Atomically update one A1 scene Scope binding with Native OCC and the
+   * existing Change Feed/invalidation writer.
+   */
+  narrativeSceneScopeUpdate(payload: any): Promise<string>
+  /**
+   * Atomically update the project Scope vocabulary registry. Scene bindings
+   * are revalidated against the new registry inside the same transaction.
+   */
+  narrativeSceneScopeRegistryUpdate(payload: any): Promise<string>
   /**
    * Rebuild可能なsemantic background indexingを協調停止する。
    * 4-cache epochをrotateし、既にpin済みのscene/bulk jobはitem/chunk境界で
@@ -857,6 +1042,22 @@ export declare class Backend {
    * は別runや将来runへ波及しない。
    */
   abortPostEffectRun(runId: string, projectId: string): Promise<void>
+  /**
+   * Local-only fresh Human capture. The caller identity is injected by
+   * Electron main; no renderer-provided caller, old version, route, or
+   * prepared payload is accepted or returned.
+   */
+  captureCurrentChatInput(submission: any, callerIdentity: string): Promise<string>
+  /**
+   * Revoke current preparation authority for one persisted session only.
+   * This cannot capture a Human row, return a version, or dispatch a provider.
+   */
+  retireCurrentChatInput(request: any, callerIdentity: string): Promise<string>
+  /**
+   * Cancellation-only owner-bound terminalization for an exact submission.
+   * It cannot create or return a capture capability.
+   */
+  cancelCurrentChatInput(submission: any, callerIdentity: string): Promise<string>
   /**
    * AI 設定を読む (Tauri の get_ai_settings と同一 — ai-settings.json、キー非含有)。
    * 返り値: `AiSettings` の JSON 文字列 (camelCase)。

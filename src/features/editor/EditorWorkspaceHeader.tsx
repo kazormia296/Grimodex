@@ -16,7 +16,7 @@ import { GrimodexLogo } from "@/components/GrimodexLogo";
 import { WindowControls } from "@/components/WindowControls";
 import { requestWebEditorHandoffImport } from "@/features/import/webEditorHandoffRequest";
 import { cn } from "@/lib/utils";
-import { WorkPulse } from "@/features/work-layer/WorkLayer";
+import { WorkPulse } from "@/features/work-layer/WorkPulse";
 
 interface EditorWorkspaceHeaderProps {
   runtimeCapabilities: RuntimeCapabilities;

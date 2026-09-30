@@ -18,6 +18,21 @@ const ALLOWED_RENDERER_PERMISSIONS = new Set([
   "clipboard-sanitized-write",
 ]);
 
+let assertExternalEgressAllowed: () => void = () => {
+  throw new Error("D2A_EGRESS_DENIED: startup gate unavailable");
+};
+
+/** Main startup supplies the Native-backed D2a URL publication gate. */
+export function setExternalEgressGate(
+  assertion: (() => void) | null | undefined,
+): void {
+  assertExternalEgressAllowed =
+    assertion ??
+    (() => {
+      throw new Error("D2A_EGRESS_DENIED: startup gate unavailable");
+    });
+}
+
 /** dev サーバー URL と同一 origin か（リロード / HMR フルリロード用の例外）。 */
 export function isAllowedNavigation(url: string): boolean {
   const rendererUrl = process.env.ELECTRON_RENDERER_URL;
@@ -79,6 +94,7 @@ export function isAllowedRendererPermission(options: {
 
 function openExternalIfAllowed(url: string): void {
   try {
+    assertExternalEgressAllowed?.();
     if (ALLOWED_EXTERNAL_PROTOCOLS.has(new URL(url).protocol)) {
       void shell.openExternal(url);
     }

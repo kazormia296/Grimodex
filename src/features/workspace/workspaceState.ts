@@ -35,6 +35,15 @@ export interface WorkspaceState {
   workspaceOpenRequestInProgress: boolean;
   /** True only after the active DB's project/settings hydration completed. */
   workspaceHydrated: boolean;
+  /** Main-projected Native lifecycle state; renderer cannot use it as authority. */
+  workspaceLifecycleRevision?: number;
+  workspaceLifecycleStatus?:
+    | "ready"
+    | "transition"
+    | "recovery-required"
+    | "closed";
+  workspaceLifecycleActivation?: "ready" | "requires-open" | "none";
+  workspaceLifecycleBindingToken?: string | null;
   activeWorkspaceName: string | null;
   error: string | null;
   pendingTrustPath: string | null;

@@ -2,6 +2,10 @@ use super::*;
 use std::sync::{atomic::Ordering, mpsc, Arc};
 use std::time::{Duration, Instant};
 
+fn current_schema_db() -> Database {
+    crate::test_support::current_schema_memory().expect("current-schema fixture")
+}
+
 fn test_db() -> Database {
     let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
     db.migrate().expect("migrate");
@@ -291,7 +295,7 @@ fn test_migrate_creates_all_tables() {
 /// silent に機能を殺す。この test が唯一その drift を捕まえる。
 #[test]
 fn test_ai_usage_insert_roundtrip_matches_recordai_columns() {
-    let db = test_db();
+    let db = current_schema_db();
     // FK: ai_usage.project_id REFERENCES projects(id)
     db.execute(
         "INSERT INTO projects (id, title, created_at, updated_at) \
@@ -627,7 +631,7 @@ fn test_seed_data() {
 
 #[test]
 fn test_crud_projects() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO projects (id, title, genre, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -691,7 +695,7 @@ fn test_crud_projects() {
 
 #[test]
 fn test_crud_tree_nodes() {
-    let db = test_db();
+    let db = current_schema_db();
     seed_default_chapter(&db);
 
     // Create a scene under the default chapter
@@ -745,7 +749,7 @@ fn test_crud_tree_nodes() {
 
 #[test]
 fn test_cascade_delete_project_to_nodes() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO projects (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
@@ -809,7 +813,7 @@ fn test_cascade_delete_project_to_nodes() {
 
 #[test]
 fn test_crud_codex_entries() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -867,7 +871,7 @@ fn test_crud_codex_entries() {
 
 #[test]
 fn test_crud_snippets() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO snippets (id, project_id, title, content, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -912,7 +916,7 @@ fn test_crud_snippets() {
 
 #[test]
 fn test_crud_chat_sessions_and_messages() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO chat_sessions (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -975,7 +979,7 @@ fn test_crud_chat_sessions_and_messages() {
 
 #[test]
 fn test_chat_messages_role_check_constraint() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO chat_sessions (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -1006,7 +1010,7 @@ fn test_chat_messages_role_check_constraint() {
 
 #[test]
 fn test_cascade_delete_session_to_messages() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO chat_sessions (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -1049,7 +1053,7 @@ fn test_cascade_delete_session_to_messages() {
 
 #[test]
 fn test_crud_settings() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO app_settings (key, value) VALUES (?, ?)",
@@ -1092,7 +1096,7 @@ fn test_crud_settings() {
 
 #[test]
 fn test_fts5_codex_search() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1155,7 +1159,7 @@ fn test_fts5_codex_search_matches_body_content() {
     // name/aliases/summary/tags_cache. A writer's distinctive body word
     // (here 主席卒業) lives only in `content`, so a fresh-DB search for it
     // must surface the entry.
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1295,7 +1299,7 @@ fn test_search_fts_codex_like_matches_content() {
     // The search_fts codex LIKE fallback (short, <3 codepoint query) must also
     // match body content — mirroring the FTS path and the scene LIKE branch.
     // 共鳴 (2 codepoints) lives only in the body, so it exercises the fallback.
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1330,8 +1334,7 @@ fn test_search_fts_codex_like_matches_content() {
 
 #[test]
 fn test_search_fts_en_project_stems_query() {
-    let db = Database::new(Path::new(":memory:")).expect("open");
-    db.migrate().expect("migrate");
+    let db = current_schema_db();
     {
         let conn = db.conn.lock().expect("lock");
         conn.execute_batch(
@@ -1403,11 +1406,6 @@ fn measure_en_fts_recall_trigram_vs_porter() {
     }
     // Note: "run" is 3 codepoints and survives the sanitizer; 1-2 char queries
     // are dropped by to_fts_match for both tokenizers (documented limitation).
-    println!(
-        "[eval] _en (porter unicode61) recall: {}/{} inflected queries",
-        en_hits,
-        queries.len()
-    );
     // Sanity floor: stemming should retrieve clearly inflected matches.
     assert!(
         en_hits >= 4,
@@ -1417,7 +1415,7 @@ fn measure_en_fts_recall_trigram_vs_porter() {
 
 #[test]
 fn test_fts5_snippets_search() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO snippets (id, project_id, title, content, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1447,7 +1445,7 @@ fn test_fts5_snippets_search() {
 
 #[test]
 fn test_fts5_chat_messages_search() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO chat_sessions (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -1487,7 +1485,7 @@ fn test_fts5_chat_messages_search() {
 
 #[test]
 fn test_fts5_sync_on_update() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1538,7 +1536,7 @@ fn test_fts5_sync_on_update() {
 
 #[test]
 fn test_fts5_sync_on_delete() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1616,8 +1614,7 @@ fn test_en_fts_triggers_route_and_stem() {
 
 #[test]
 fn test_rebuild_en_fts_repopulates_after_wipe() {
-    let db = Database::new(Path::new(":memory:")).expect("open");
-    db.migrate().expect("migrate");
+    let db = current_schema_db();
     {
         let conn = db.conn.lock().expect("lock");
         conn.execute_batch(
@@ -1657,8 +1654,7 @@ fn test_rebuild_en_fts_repopulates_after_wipe() {
 /// unguarded delete triggers must remove the row on cascade.
 #[test]
 fn test_en_fts_no_orphan_on_cascade_delete() {
-    let db = Database::new(Path::new(":memory:")).expect("open");
-    db.migrate().expect("migrate");
+    let db = current_schema_db();
     let conn = db.conn.lock().expect("lock");
 
     conn.execute_batch(
@@ -1700,7 +1696,7 @@ fn test_en_fts_no_orphan_on_cascade_delete() {
 
 #[test]
 fn test_nullify_codex_source_on_message_delete() {
-    let db = test_db();
+    let db = current_schema_db();
 
     // Create session + message
     db.execute(
@@ -1742,7 +1738,7 @@ fn test_nullify_codex_source_on_message_delete() {
 
 #[test]
 fn test_nullify_snippet_scene_on_node_delete() {
-    let db = test_db();
+    let db = current_schema_db();
     seed_default_chapter(&db);
 
     // Create scene node
@@ -1787,7 +1783,7 @@ fn test_nullify_snippet_scene_on_node_delete() {
 /// versions are cleaned up.
 #[test]
 fn test_delete_tree_node_preserves_snapshot_protected_versions() {
-    let db = test_db();
+    let db = current_schema_db();
     let p = |s: &str| Value::String(s.into());
 
     db.execute(
@@ -1888,7 +1884,7 @@ fn test_delete_tree_node_preserves_snapshot_protected_versions() {
 /// snapshot-protected content_version) during the wipe.
 #[test]
 fn test_defer_foreign_keys_wipe_and_restore_round_trip() {
-    let db = test_db();
+    let db = current_schema_db();
     let p = |s: &str| Value::String(s.into());
 
     db.execute(
@@ -1965,7 +1961,7 @@ fn test_defer_foreign_keys_wipe_and_restore_round_trip() {
 /// applyPlan.ts buildUndoStatements がこの順序を組む。
 #[test]
 fn test_ai_tree_group_undo_preserves_existing_scene() {
-    let db = test_db();
+    let db = current_schema_db();
     let p = |s: &str| Value::String(s.into());
 
     // 既存シーン S を root に作る。
@@ -2046,7 +2042,7 @@ fn test_ai_tree_group_undo_preserves_existing_scene() {
 /// あることを裏付ける(applyPlan.ts が踏襲してはならない順序)。
 #[test]
 fn test_ai_tree_naive_undo_order_loses_existing_scene() {
-    let db = test_db();
+    let db = current_schema_db();
     let p = |s: &str| Value::String(s.into());
 
     db.execute(
@@ -2169,7 +2165,7 @@ fn test_migrate_replaces_legacy_cv_triggers() {
 /// snapshot protection covers them too.
 #[test]
 fn test_delete_codex_entry_and_snippet_preserve_snapshot_versions() {
-    let db = test_db();
+    let db = current_schema_db();
     let p = |s: &str| Value::String(s.into());
 
     // Codex entry with a snapshot-protected version
@@ -2296,7 +2292,7 @@ fn test_integrity_check_detects_and_repairs_orphans() {
 
 #[test]
 fn test_fts_optimize_succeeds() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
@@ -2328,8 +2324,7 @@ fn test_fts_optimize_succeeds() {
 
 #[test]
 fn test_fts_rebuild_includes_en_tables() {
-    let db = Database::new(Path::new(":memory:")).expect("open");
-    db.migrate().expect("migrate");
+    let db = current_schema_db();
     {
         let conn = db.conn.lock().expect("lock");
         conn.execute_batch(
@@ -2419,7 +2414,7 @@ fn test_wal_mode_enabled() {
 
 #[test]
 fn test_authorship_spans_crud() {
-    let db = test_db();
+    let db = current_schema_db();
     seed_default_chapter(&db);
 
     // Create a scene node first
@@ -2460,7 +2455,7 @@ fn test_authorship_spans_crud() {
 
 #[test]
 fn test_codex_detail_definitions_crud() {
-    let db = test_db();
+    let db = current_schema_db();
 
     // Insert a definition for built-in type
     db.execute(
@@ -2491,7 +2486,7 @@ fn test_codex_detail_definitions_crud() {
 fn test_codex_detail_definitions_rejects_unknown_type_slug() {
     // 複合FK (project_id, type_slug) → codex_types(project_id, slug) により、
     // codex_types に存在しない type_slug への INSERT は DB 層で拒否される。
-    let db = test_db();
+    let db = current_schema_db();
 
     let result = db.execute(
         "INSERT INTO codex_detail_definitions (id, project_id, type_slug, name, field_type, sort_order) VALUES (?, ?, ?, ?, ?, ?)",
@@ -2515,7 +2510,7 @@ fn test_codex_detail_definitions_rejects_unknown_type_slug() {
 fn test_codex_entries_rejects_unknown_type() {
     // 複合FK (project_id, type) → codex_types(project_id, slug) により、
     // codex_types に存在しない type への INSERT は DB 層で拒否される。
-    let db = test_db();
+    let db = current_schema_db();
 
     let result = db.execute(
         "INSERT INTO codex_entries (id, project_id, type, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -2536,7 +2531,7 @@ fn test_codex_entries_rejects_unknown_type() {
 
 #[test]
 fn test_codex_detail_definitions_rejects_invalid_field_type() {
-    let db = test_db();
+    let db = current_schema_db();
 
     let result = db.execute(
         "INSERT INTO codex_detail_definitions (id, project_id, type_slug, name, field_type, sort_order) VALUES (?, ?, ?, ?, ?, ?)",
@@ -2560,7 +2555,7 @@ fn test_codex_detail_definitions_rejects_invalid_field_type() {
 
 #[test]
 fn test_builtin_types_seeded_on_new_project() {
-    let db = test_db();
+    let db = current_schema_db();
 
     // Create a new project
     db.execute(
@@ -2600,7 +2595,7 @@ fn test_builtin_types_seeded_on_new_project() {
 
 #[test]
 fn test_cascade_delete_codex_entry_to_entry_tags() {
-    let db = test_db();
+    let db = current_schema_db();
 
     // Insert codex entry
     db.execute(
@@ -2660,7 +2655,7 @@ fn test_cascade_delete_codex_entry_to_entry_tags() {
 
 #[test]
 fn test_cascade_delete_codex_entry_to_detail_values() {
-    let db = test_db();
+    let db = current_schema_db();
 
     // Insert codex entry
     db.execute(
@@ -2725,7 +2720,7 @@ fn test_cascade_delete_codex_entry_to_detail_values() {
 
 #[test]
 fn test_codex_types_crud() {
-    let db = test_db();
+    let db = current_schema_db();
 
     // Verify built-in types exist
     let rows = db
@@ -2781,7 +2776,7 @@ fn test_codex_types_crud() {
 
 #[test]
 fn test_codex_tags_crud() {
-    let db = test_db();
+    let db = current_schema_db();
 
     db.execute(
         "INSERT INTO codex_tags (id, project_id, name, color) VALUES (?, ?, ?, ?)",
@@ -2825,7 +2820,7 @@ fn test_codex_tags_crud() {
 
 #[test]
 fn test_context_mode_rejects_invalid_value() {
-    let db = test_db();
+    let db = current_schema_db();
 
     let result = db.execute(
         "INSERT INTO codex_entries (id, project_id, type, name, context_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -2847,7 +2842,7 @@ fn test_context_mode_rejects_invalid_value() {
 
 #[test]
 fn test_authorship_spans_check_rejects_zero_owners() {
-    let db = test_db();
+    let db = current_schema_db();
 
     // All three owner columns NULL → CHECK violation
     let result = db.execute(
@@ -2868,7 +2863,7 @@ fn test_authorship_spans_check_rejects_zero_owners() {
 
 #[test]
 fn test_authorship_spans_check_rejects_two_owners() {
-    let db = test_db();
+    let db = current_schema_db();
     seed_default_chapter(&db);
 
     // Two owner columns set → CHECK violation
@@ -2889,7 +2884,7 @@ fn test_authorship_spans_check_rejects_two_owners() {
 
 #[test]
 fn test_authorship_spans_check_accepts_single_owner() {
-    let db = test_db();
+    let db = current_schema_db();
     seed_default_chapter(&db);
 
     // node_id only → OK
@@ -2911,7 +2906,7 @@ fn test_authorship_spans_check_accepts_single_owner() {
 
 #[test]
 fn test_content_versions_cascade_on_tree_node_delete() {
-    let db = test_db();
+    let db = current_schema_db();
 
     // Insert a scene node
     db.execute(
@@ -2952,7 +2947,7 @@ fn test_content_versions_cascade_on_tree_node_delete() {
 
 #[test]
 fn test_content_versions_cascade_on_codex_entry_delete() {
-    let db = test_db();
+    let db = current_schema_db();
 
     // Insert codex entry
     db.execute(
@@ -3044,7 +3039,7 @@ fn test_post_effect_tables_exist() {
 
 #[test]
 fn test_post_effect_runs_rejects_invalid_effect_type() {
-    let db = test_db();
+    let db = current_schema_db();
     let result = db.execute(
         "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version, status) \
          VALUES ('r1', 'default-project', 'bogus', 'scene', 'm', 'v', 'running')",
@@ -3056,7 +3051,7 @@ fn test_post_effect_runs_rejects_invalid_effect_type() {
 
 #[test]
 fn test_post_effect_runs_rejects_invalid_status() {
-    let db = test_db();
+    let db = current_schema_db();
     let result = db.execute(
         "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version, status) \
          VALUES ('r1', 'default-project', 'consistency', 'scene', 'm', 'v', 'spinning')",
@@ -3068,7 +3063,7 @@ fn test_post_effect_runs_rejects_invalid_status() {
 
 #[test]
 fn test_post_effect_annotations_rejects_invalid_category() {
-    let db = test_db();
+    let db = current_schema_db();
     seed_post_effect_scene(&db);
     insert_pe_run(&db, "r1", Some("pe-scene"), "completed");
     let result = db.execute(
@@ -3082,7 +3077,7 @@ fn test_post_effect_annotations_rejects_invalid_category() {
 
 #[test]
 fn test_post_effect_relations_rejects_invalid_direction() {
-    let db = test_db();
+    let db = current_schema_db();
     seed_post_effect_scene(&db);
     insert_pe_run(&db, "r1", Some("pe-scene"), "completed");
     db.execute(
@@ -3106,7 +3101,7 @@ fn test_post_effect_relations_rejects_invalid_direction() {
 fn test_post_effect_runs_running_scope_unique() {
     // 同じ (project, effect_type, scope) で running は 1 本まで。
     // running が終了すれば次の run を起動できる。
-    let db = test_db();
+    let db = current_schema_db();
     seed_post_effect_scene(&db);
 
     insert_pe_run(&db, "r1", Some("pe-scene"), "running");
@@ -3146,7 +3141,7 @@ fn test_post_effect_runs_running_scope_unique() {
 fn test_post_effect_runs_running_scope_unique_for_project_wide() {
     // scope_target_id IS NULL (project-wide) でも単一性を保つ。
     // SQLite の NULL distinct 挙動を COALESCE で潰している箇所のテスト。
-    let db = test_db();
+    let db = current_schema_db();
     insert_pe_run(&db, "r1", None, "running");
     let dup = db.execute(
         "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version, status, started_at) \
@@ -3162,7 +3157,7 @@ fn test_post_effect_runs_running_scope_unique_for_project_wide() {
 
 #[test]
 fn test_post_effect_annotations_fts_sync_on_insert() {
-    let db = test_db();
+    let db = current_schema_db();
     seed_post_effect_scene(&db);
     insert_pe_run(&db, "r1", Some("pe-scene"), "completed");
     db.execute(
@@ -3719,8 +3714,7 @@ fn test_migrate_impact_review_categories_widens_legacy_timeline_check() {
 
 #[test]
 fn test_language_switch_reroutes_en_index() {
-    let db = Database::new(Path::new(":memory:")).expect("open");
-    db.migrate().expect("migrate");
+    let db = current_schema_db();
     {
         let conn = db.conn.lock().expect("lock");
         conn.execute_batch(
@@ -3984,7 +3978,7 @@ fn test_slim_preserves_event_chunks_for_offline_dense_search() {
 fn test_rebuild_fts_if_stale_repopulates_empty_index() {
     // slim バックアップ復元の happy path 以外（再オープン失敗経由の reload / 手動昇格）
     // で開かれた「content あり・FTS 空」の DB を open 時に自己修復することを gate する。
-    let db = test_db();
+    let db = current_schema_db();
     db.execute(
         "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) \
          VALUES ('c1','default-project','character','セラフ','古代の守護者スロウン','[]', datetime('now'), datetime('now'))",
@@ -4044,7 +4038,7 @@ fn test_rebuild_fts_if_stale_repopulates_empty_index() {
 #[test]
 fn test_rebuild_fts_if_stale_is_noop_when_populated() {
     // 通常 DB（索引が埋まっている）では検索が維持される（余計に壊さない）。
-    let db = test_db();
+    let db = current_schema_db();
     db.execute(
         "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) \
          VALUES ('c1','default-project','character','セラフ','古代の守護者スロウン','[]', datetime('now'), datetime('now'))",

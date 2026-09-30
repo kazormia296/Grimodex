@@ -4,7 +4,8 @@
 //! `grimodex_db::narrative_extraction` surface.  They are the RED contract for
 //! SCHEMA 33: the SCHEMA 32 parent has no declaration-set storage yet.
 
-use std::path::Path;
+#[path = "../test-support/adapter.rs"]
+mod test_support;
 
 use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 use grimodex_db::narrative_extraction::{
@@ -21,8 +22,16 @@ const CONSUMER_KEY: &str = "revision-1";
 const CREATED_AT: &str = "2026-08-24T00:00:00.000Z";
 
 fn migrated_db() -> Database {
-    let db = Database::new(Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
+    seed_project(db)
+}
+
+fn fresh_migrated_db() -> Database {
+    let db = test_support::fresh_migrated_memory().expect("migrate database");
+    seed_project(db)
+}
+
+fn seed_project(db: Database) -> Database {
     db.with_conn(|conn| {
         conn.execute(
             "INSERT INTO projects (id, title) VALUES (?1, 'D1 fixture')",
@@ -76,7 +85,7 @@ fn text_range_declaration(source: &str, from: u64, to: u64) -> DependencyDeclara
 
 #[test]
 fn migration_adds_schema_33_sealed_declaration_storage() {
-    let db = migrated_db();
+    let db = fresh_migrated_db();
     let (version, tables): (i32, Vec<String>) = db
         .with_conn(|conn| {
             let version = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -94,8 +103,8 @@ fn migration_adds_schema_33_sealed_declaration_storage() {
         .expect("inspect D1 schema");
 
     // D1's declaration tables are introduced at SCHEMA 33; the current
-    // migration continues through the C2A SCHEMA 34 checkpoint.
-    assert_eq!(version, 34);
+    // migration continues through the latest NIR-1 checkpoint.
+    assert_eq!(version, grimodex_core::SCHEMA_VERSION);
     assert_eq!(
         tables,
         vec![
@@ -358,7 +367,7 @@ fn incomplete_or_corrupt_v2_storage_fails_closed_without_hiding_v1() {
 
 #[test]
 fn rewinding_the_marker_and_removing_d1_objects_replays_migration() {
-    let db = migrated_db();
+    let db = fresh_migrated_db();
     db.with_conn(|conn| {
         conn.execute_batch(
             "DROP TABLE narrative_dependency_declaration_heads;
@@ -375,7 +384,69 @@ fn rewinding_the_marker_and_removing_d1_objects_replays_migration() {
         .with_conn(|conn| Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?))
         .expect("read replayed marker");
     // Replaying from the historical SCHEMA 32 parent runs D1 (33) and then
-    // reaches the current C2A checkpoint (34).
-    assert_eq!(version, 34);
+    // reaches the current NIR-1 checkpoint.
+    assert_eq!(version, grimodex_core::SCHEMA_VERSION);
     assert!(verify_dependency_declaration_storage(&db).expect("verify replayed schema"));
+}
+
+#[test]
+fn repeated_selectors_cannot_borrow_another_entries_binding_or_a_previous_read() {
+    use grimodex_core::narrative_dependency::{
+        compute_dependency_set_digest, DependencySetDigestEntry,
+    };
+    for field in [
+        "dependency_role",
+        "selector_json",
+        "selector_digest",
+        "dependency_key",
+    ] {
+        let db = migrated_db();
+        let receipt = write_dependency_declaration_set(
+            &db,
+            request(
+                "repeated-selector",
+                1,
+                0,
+                (0..8)
+                    .map(|i| scene_declaration(&format!("project:scene:repeated-{i}")))
+                    .collect(),
+            ),
+        )
+        .expect("seal repeated complete selectors");
+        let read = || {
+            read_active_dependency_declaration_set(&db, PROJECT_ID, CONSUMER_KIND, CONSUMER_KEY)
+                .expect("read complete set")
+        };
+        assert_eq!(read().expect("valid set").entries.len(), 8);
+        assert_eq!(read().expect("fresh independent read").entries.len(), 8);
+        db.with_conn(|conn| {
+            let value = match field {
+                "dependency_role" => "ranking-only".to_owned(),
+                "selector_json" => "{ \"kind\": \"whole-source\" }".to_owned(),
+                _ => format!("sha256:{}", "0".repeat(64)),
+            };
+            conn.execute(
+                &format!("UPDATE narrative_dependency_declaration_entries SET {field}=?1
+                    WHERE id=(SELECT id FROM narrative_dependency_declaration_entries
+                    WHERE declaration_set_id=?2 ORDER BY id DESC LIMIT 1)"),
+                params![value, receipt.declaration_set_id],
+            )?;
+            // Bind the aggregate to the altered tuple: rejection must also
+            // validate that tuple, not depend only on a stale set digest.
+            let mut statement = conn.prepare("SELECT source_object_identity,dependency_key,selector_digest
+                FROM narrative_dependency_declaration_entries WHERE declaration_set_id=?1")?;
+            let entries = statement.query_map([&receipt.declaration_set_id], |row| Ok(
+                DependencySetDigestEntry {
+                    source_object_identity: row.get(0)?,
+                    dependency_key: row.get(1)?,
+                    selector_digest: row.get(2)?,
+                }
+            ))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let digest = compute_dependency_set_digest(&entries)?;
+            conn.execute("UPDATE narrative_dependency_declaration_sets SET dependency_set_digest=?1 WHERE id=?2",
+                params![digest, receipt.declaration_set_id])?;
+            Ok(())
+        }).expect("bounded storage-corruption fixture");
+        assert!(read().is_none(), "altered {field} must be revalidated");
+    }
 }

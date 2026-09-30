@@ -104,7 +104,13 @@ fn subprocess_kill_after_live_seal_does_not_drop_wal_commits_silently() {
 
 #[test]
 fn subprocess_kill_after_live_seal_then_restore_candidate_reaches_ready() {
-    let root = temp_ws("restore-journey");
+    for phase in ["restore.after_live_seal", "restore.after_replace"] {
+        interrupted_install_then_explicit_recovery_reaches_ready(phase);
+    }
+}
+
+fn interrupted_install_then_explicit_recovery_reaches_ready(phase: &str) {
+    let root = temp_ws(phase);
     let workspace = root.join("workspace");
     fs::create_dir_all(workspace.join("backups")).expect("mkdir");
     let live = workspace.join("grimodex.db");
@@ -115,20 +121,21 @@ fn subprocess_kill_after_live_seal_then_restore_candidate_reaches_ready() {
     create_migrated_db(&candidate, "backup");
 
     let ready_path = root.join("restore-journey-ready");
-    let mut child = spawn_restore_harness(
-        &workspace,
-        &candidate,
-        "restore.after_live_seal",
-        &ready_path,
-    );
-    wait_for_ready(&mut child, &ready_path, "restore.after_live_seal");
+    let mut child = spawn_restore_harness(&workspace, &candidate, phase, &ready_path);
+    wait_for_ready(&mut child, &ready_path, phase);
+    let stopped_at = Instant::now();
     child.kill().expect("kill");
-    let _ = child.wait();
+    let status = child.wait().expect("observe actual Restore worker exit");
+    assert!(!status.success());
+    eprintln!(
+        "BC-2 {phase} kill-to-exit: {:.3} ms (crash recovery, not cooperative cancellation)",
+        stopped_at.elapsed().as_secs_f64() * 1000.0
+    );
 
     let ws_state = WorkspaceState {
         inner: Mutex::new(None),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
-        switching: std::sync::atomic::AtomicBool::new(false),
+        switching: grimodex_db::WorkspaceLifecycleCompatibilityView::new(false),
         open_lock: Mutex::new(()),
     };
     let gs_path = GlobalSettingsPath {
@@ -230,7 +237,7 @@ fn concurrent_shared_writer_after_handoff_survives_restore_publish() {
     let ws_state = WorkspaceState {
         inner: Mutex::new(None),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
-        switching: std::sync::atomic::AtomicBool::new(false),
+        switching: grimodex_db::WorkspaceLifecycleCompatibilityView::new(false),
         open_lock: Mutex::new(()),
     };
     let gs_path = GlobalSettingsPath {

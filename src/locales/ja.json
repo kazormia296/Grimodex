@@ -270,6 +270,7 @@
     "delete": "削除",
     "copy": "コピー",
     "close": "閉じる",
+    "retry": "再試行",
     "add": "追加",
     "edit": "編集",
     "reset": "リセット",
@@ -4095,6 +4096,8 @@
     }
   },
   "inlineAi": {
+    "accept": "反映",
+    "reject": "破棄",
     "generateFailed": "生成に失敗しました",
     "proposalAlreadyFinalized": "このAI提案は別の経路で処理済みだったため、古いプレビューを閉じました",
     "pendingBlocked": "未確定のAI生成があります。Tab で反映 / Esc で破棄してから操作できます",
@@ -4158,6 +4161,15 @@
     "slashMenuLabel": "インライン AI コマンド"
   },
   "relatedScenes": {
+    "rank": "{{rank}}位",
+    "approvedInterpretation": "承認済みの解釈",
+    "fresh": "参照元を確認済み",
+    "actuality": "成立性",
+    "attribution": "帰属",
+    "narrativeFrame": "語りの枠組み",
+    "openEvidence": "根拠の本文を開く",
+    "irUnsupported": "この参照条件では承認済み解釈を検索できません。本文検索の結果を表示します。",
+    "irUnavailable": "承認済み解釈は現在参照できません。本文検索の結果を表示します。",
     "noActiveScene": "シーンを選ぶと、関連する過去シーンが表示されます",
     "loading": "検索中…",
     "empty": "関連する過去シーンは見つかりませんでした",
@@ -5342,7 +5354,12 @@
     "reindexComplete": "再インデックス完了",
     "reindexing": "セマンティック再インデックス中",
     "noScenes": "対象シーンなし",
-    "progressDetail": "{{scene}} / {{total}} シーン · {{chunks}} チャンク"
+    "progressDetail": "{{scene}} / {{total}} シーン · {{chunks}} チャンク",
+    "modelDownloadFailed": "埋め込みモデルのダウンロードに失敗しました",
+    "modelDownloadComplete": "埋め込みモデルの準備が整いました",
+    "modelDownloading": "埋め込みモデルをダウンロード中…",
+    "modelDownloadFallback": "全文検索(FTS)で続行します",
+    "retryModelDownload": "再試行"
   },
   "beat": {
     "generateBeats": {
@@ -5819,6 +5836,7 @@
     "extractShort": "抽出",
     "unnamed": "（無名）",
     "extract": {
+      "reanalysisRequired": "保存済みの抽出候補を復元できません。本文から再解析してください。",
       "title": "本文からイベントを抽出",
       "hint": "選んだ章/フォルダの本文を AI が読み、作中のイベントを提案します。取り込むと年表に追加されます。",
       "selectFolder": "章/フォルダを選択…",

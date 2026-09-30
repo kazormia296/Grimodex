@@ -34,6 +34,20 @@ interface Call {
   args: unknown[];
 }
 
+const restoreOutcomeWire = JSON.stringify({
+  status: "restored",
+  operationOutcome: "succeeded",
+  contentEffect: "replaced",
+  lifecycle: {
+    schemaVersion: 1,
+    revision: 4,
+    status: "ready",
+    bindingToken: "restore-token",
+    activation: "ready",
+  },
+  activation: "ready",
+});
+
 function mutationIdentity(requestId: string, projectId = "p1") {
   return {
     projectId,
@@ -46,6 +60,33 @@ function mutationIdentity(requestId: string, projectId = "p1") {
     controls: [
       "runtime-policy",
       "actor-context",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
+    provenance: null,
+    writesAuthorityProtectedField: false,
+    originalTransactionId: null,
+    undoJournalId: null,
+  } as const;
+}
+
+function scanPublishIdentity(
+  requestId = "scan-publish-request-1",
+  projectId = "project-1",
+) {
+  return {
+    projectId,
+    requestId,
+    sessionId: "scan-publish-session-1",
+    eventUid: "scan-publish-event-1",
+    origin: "import",
+    authorityRoute: "import-apply",
+    caller: "import-session",
+    controls: [
+      "import-policy",
+      "source-package-evidence",
       "typed-writer",
       "occ",
       "change-event",
@@ -190,6 +231,32 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     timelapseAppendBatch: record(
       "timelapseAppendBatch",
       Promise.resolve('{"insertedCount":1,"tailSequence":2,"tailHash":"h"}'),
+    ) as never,
+    timelapseGenesisBaselinesAppend: record(
+      "timelapseGenesisBaselinesAppend",
+      Promise.resolve(
+        '{"insertedCount":2,"skippedExistingBaselineCount":1,"skippedExistingBodyStepCount":1}',
+      ),
+    ) as never,
+    timelapseBodyBaselinesAppend: record(
+      "timelapseBodyBaselinesAppend",
+      Promise.resolve(
+        '{"insertedCount":2,"skippedExistingCount":1,"anchorSequence":7,"anchorTimestamp":1800000000000}',
+      ),
+    ) as never,
+    timelapseHistoryPurge: record(
+      "timelapseHistoryPurge",
+      Promise.resolve('{"deletedEventCount":3,"deletedSnapshotCount":2}'),
+    ) as never,
+    timelapseEnabledSet: record(
+      "timelapseEnabledSet",
+      Promise.resolve('{"enabled":true}'),
+    ) as never,
+    timelapseLayoutSnapshotRecord: record(
+      "timelapseLayoutSnapshotRecord",
+      Promise.resolve(
+        '{"inserted":true,"anchorSequence":7,"anchorTimestamp":1800000000000}',
+      ),
     ) as never,
     aiAuditAppendBatch: record(
       "aiAuditAppendBatch",
@@ -768,7 +835,9 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     ) as never,
     replyToAnnotation: record(
       "replyToAnnotation",
-      Promise.resolve('{"id":"a2","parent_id":"a1"}'),
+      Promise.resolve(
+        '{"id":"a2","parent_id":"a1","content":"返信本文","sceneId":"s1"}',
+      ),
     ) as never,
     savePostEffectAnnotations: record(
       "savePostEffectAnnotations",
@@ -1177,6 +1246,63 @@ describe("dispatchInvoke", () => {
       ok: false,
       error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionIsRunResumableForReview`,
     });
+  });
+
+  it("target-aware typed restore keeps workspace and launcher identities exact", async () => {
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"runId":"run-a","response":{"status":"unavailable","result":{"reason":"source-revision-changed"}}}',
+      );
+    const { backend, calls } = fakeBackend();
+    backend.nir1EntityRelationRevisionRestore = (...args) => {
+      calls.push({ method: "nir1EntityRelationRevisionRestore", args });
+      return method(...args);
+    };
+    const args = {
+      expectedWorkspacePath: "/workspace/project-1",
+      projectId: "project-1",
+      entityId: "entity-a",
+      relationId: "relation-a",
+    };
+
+    const result = await dispatchInvoke(
+      "nir1_entity_relation_revision_restore",
+      args,
+      { backend, shell: noShell },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        runId: "run-a",
+        response: {
+          status: "unavailable",
+          result: { reason: "source-revision-changed" },
+        },
+      },
+    });
+    expect(calls).toEqual([
+      {
+        method: "nir1EntityRelationRevisionRestore",
+        args: [args],
+      },
+    ]);
+
+    for (const invalid of [
+      { ...args, entityId: " entity-a" },
+      { ...args, relationId: " relation-a" },
+      { ...args, projectId: "" },
+      { ...args, unexpected: true },
+    ]) {
+      const rejected = await dispatchInvoke(
+        "nir1_entity_relation_revision_restore",
+        invalid,
+        { backend, shell: noShell },
+      );
+      expect(rejected.ok).toBe(false);
+    }
+    expect(method).toHaveBeenCalledOnce();
   });
 
   it("Chronicle task resume candidate discovery rejects malformed scope and backend skew", async () => {
@@ -1653,6 +1779,153 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       ok: false,
       error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionCreateHumanDerivedRevision`,
     });
+  });
+
+  it("A1 scene scope read は workspace/project/scene authority を Native へ渡す", async () => {
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"registry":{"registryVersion":"narrative-scene-scope-registry/1","timelineRefs":[],"worldlineRefs":[],"narrativeLayerRefs":[]},"registryRevision":1,"registrySourceToken":"sha256:0000000000000000000000000000000000000000000000000000000000000000","registryUpdatedAt":"2026-09-13T00:00:00.000Z","binding":{"projectId":"project-1","sceneId":"scene-1"}}',
+      );
+    const { backend } = fakeBackend({
+      narrativeSceneScopeRead: method,
+    });
+    const args = {
+      expectedWorkspacePath: "/workspace/project-1",
+      projectId: "project-1",
+      sceneId: "scene-1",
+    };
+
+    const env = await dispatchInvoke("narrative_scene_scope_read", args, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        registry: {
+          registryVersion: "narrative-scene-scope-registry/1",
+          timelineRefs: [],
+          worldlineRefs: [],
+          narrativeLayerRefs: [],
+        },
+        registryRevision: 1,
+        registrySourceToken:
+          "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        registryUpdatedAt: "2026-09-13T00:00:00.000Z",
+        binding: { projectId: "project-1", sceneId: "scene-1" },
+      },
+    });
+    expect(method).toHaveBeenCalledExactlyOnceWith(args);
+  });
+
+  it("A1 scene scope read strips the main-only D2a caller identity before Native", async () => {
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"registry":{"registryVersion":"narrative-scene-scope-registry/1","timelineRefs":[],"worldlineRefs":[],"narrativeLayerRefs":[]},"registryRevision":1,"registrySourceToken":"sha256:0000000000000000000000000000000000000000000000000000000000000000","registryUpdatedAt":"2026-09-13T00:00:00.000Z","binding":{"projectId":"project-1","sceneId":"scene-1"}}',
+      );
+    const { backend } = fakeBackend({
+      narrativeSceneScopeRead: method,
+    });
+    const args = {
+      expectedWorkspacePath: "/workspace/project-1",
+      projectId: "project-1",
+      sceneId: "scene-1",
+      callerIdentity: {
+        profileId: "profile-1",
+        callerId: "caller-1",
+        callerEpoch: 2,
+        senderId: 7,
+        workspaceId: null,
+        sessionId: "session-1",
+      },
+    };
+
+    const env = await dispatchInvoke("narrative_scene_scope_read", args, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(env.ok).toBe(true);
+    expect(method).toHaveBeenCalledExactlyOnceWith({
+      expectedWorkspacePath: args.expectedWorkspacePath,
+      projectId: args.projectId,
+      sceneId: args.sceneId,
+    });
+  });
+
+  it("A1 scene scope mutation は未知の引数を拒否し、typed payloadを一度だけ渡す", async () => {
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"binding":{"projectId":"project-1","sceneId":"scene-1","version":2}}',
+      );
+    const { backend } = fakeBackend({
+      narrativeSceneScopeUpdate: method,
+    });
+    const payload = {
+      projectId: "project-1",
+      sceneId: "scene-1",
+      requestId: "scope-request-1",
+      sessionId: "scope-session-1",
+      eventUid: "scope-event-1",
+      baseVersion: 1,
+      updatedAt: "2026-09-13T00:00:00.000Z",
+      scope: {
+        schemaVersion: 1,
+        compatibilityMarker: "explicit",
+        queryIdentity: {
+          timeline: { kind: "unresolved", reason: "pending" },
+          worldline: { kind: "unresolved", reason: "pending" },
+          narrativeLayer: { kind: "unresolved", reason: "pending" },
+        },
+        materialConstraint: {
+          timeline: { kind: "any" },
+          worldline: { kind: "any" },
+          narrativeLayer: { kind: "any" },
+        },
+        knowledgeHolder: { kind: "reader" },
+        audience: { kind: "reader" },
+      },
+    };
+    const args = {
+      expectedWorkspacePath: "/workspace/project-1",
+      payload,
+      callerIdentity: {
+        profileId: "profile-1",
+        callerId: "caller-1",
+        callerEpoch: 2,
+        senderId: 7,
+        workspaceId: null,
+        sessionId: "session-1",
+      },
+    };
+    const nativeArgs = {
+      expectedWorkspacePath: args.expectedWorkspacePath,
+      payload: args.payload,
+    };
+
+    const env = await dispatchInvoke("narrative_scene_scope_update", args, {
+      backend,
+      shell: noShell,
+    });
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        binding: { projectId: "project-1", sceneId: "scene-1", version: 2 },
+      },
+    });
+    expect(method).toHaveBeenCalledExactlyOnceWith(nativeArgs);
+
+    const rejected = await dispatchInvoke(
+      "narrative_scene_scope_update",
+      { ...args, unexpected: true },
+      { backend, shell: noShell },
+    );
+    expect(rejected.ok).toBe(false);
+    expect(method).toHaveBeenCalledExactlyOnceWith(nativeArgs);
   });
 
   it("semantic per-entity commands forward workspace/project authority before the entity id", async () => {
@@ -2727,6 +3000,16 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       .fn()
       .mockResolvedValue(JSON.stringify(codexRenameUndoResult));
     const scanStagingProjectCreate = vi.fn().mockResolvedValue(undefined);
+    const scanStagingProjectPublish = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        projectId: "project-1",
+        semanticEpochId: null,
+        __writeReceipt: {
+          changeEventUid: "scan-publish-event-1",
+          maintenanceTransactionId: "scan-publish-transaction-1",
+        },
+      }),
+    );
     const projectDelete = vi.fn().mockResolvedValue(undefined);
     const mapWriteReceipt = {
       changeEventUid: "map-event-1",
@@ -2741,6 +3024,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       entityTagsSet: entityTagsSet as never,
       codexRenameUndo: codexRenameUndo as never,
       scanStagingProjectCreate: scanStagingProjectCreate as never,
+      scanStagingProjectPublish: scanStagingProjectPublish as never,
       projectDelete: projectDelete as never,
       mapWriteBundle: mapWriteBundle as never,
     });
@@ -2836,6 +3120,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         scanStagingProjectCreate,
       ],
       [
+        "scan_staging_project_publish",
+        { payload: scanPublishIdentity() },
+        scanStagingProjectPublish,
+      ],
+      [
         "project_delete",
         {
           payload: {
@@ -2873,10 +3162,54 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
             ? codexRenameUndoResult
             : command === "map_write_bundle"
               ? mapWriteReceipt
-              : null,
+              : command === "scan_staging_project_publish"
+                ? {
+                    projectId: "project-1",
+                    semanticEpochId: null,
+                    __writeReceipt: {
+                      changeEventUid: "scan-publish-event-1",
+                      maintenanceTransactionId: "scan-publish-transaction-1",
+                    },
+                  }
+                : null,
       });
       expect(method).toHaveBeenCalledExactlyOnceWith(args.payload);
     }
+  });
+
+  it("scan_staging_project_publish は exact import-apply authority を要求する", async () => {
+    const scanStagingProjectPublish = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify({ projectId: "project-1" }));
+    const { backend } = fakeBackend({
+      scanStagingProjectPublish: scanStagingProjectPublish as never,
+    });
+
+    await expect(
+      dispatchInvoke(
+        "scan_staging_project_publish",
+        { payload: scanPublishIdentity() },
+        { backend, shell: noShell },
+      ),
+    ).resolves.toEqual({ ok: true, value: { projectId: "project-1" } });
+    expect(scanStagingProjectPublish).toHaveBeenCalledExactlyOnceWith(
+      scanPublishIdentity(),
+    );
+
+    const rejected = await dispatchInvoke(
+      "scan_staging_project_publish",
+      {
+        payload: {
+          ...scanPublishIdentity("scan-publish-request-2"),
+          origin: "human",
+          authorityRoute: "human-direct",
+          caller: "manual-wrapper",
+        },
+      },
+      { backend, shell: noShell },
+    );
+    expect(rejected.ok).toBe(false);
+    expect(scanStagingProjectPublish).toHaveBeenCalledOnce();
   });
 
   it("project_create は canonical identity と全Project入力を明示写像する", async () => {
@@ -3056,6 +3389,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "entity_tags_set",
       "project_delete",
       "scan_staging_project_create",
+      "scan_staging_project_publish",
       "map_write_bundle",
     ]) {
       const oldNative = await dispatchInvoke(
@@ -3090,23 +3424,25 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
                       createdAt: "now",
                     },
                   }
-                : command === "project_delete"
-                  ? {
-                      payload: mutationIdentity(
-                        "project-delete-request-2",
-                        "project-1",
-                      ),
-                    }
-                  : {
-                      payload: {
-                        kind: "erase-ai-branch",
-                        projectId: "project-1",
-                        branchId: "branch-1",
-                        spanIds: [],
-                        stickyPositionIds: [],
-                        stickyIds: [],
+                : command === "scan_staging_project_publish"
+                  ? { payload: scanPublishIdentity("scan-publish-unavailable") }
+                  : command === "project_delete"
+                    ? {
+                        payload: mutationIdentity(
+                          "project-delete-request-2",
+                          "project-1",
+                        ),
+                      }
+                    : {
+                        payload: {
+                          kind: "erase-ai-branch",
+                          projectId: "project-1",
+                          branchId: "branch-1",
+                          spanIds: [],
+                          stickyPositionIds: [],
+                          stickyIds: [],
+                        },
                       },
-                    },
         { backend: fakeBackend().backend, shell: noShell },
       );
       expect(oldNative).toMatchObject({
@@ -3608,6 +3944,130 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toEqual([]);
   });
 
+  it("timelapse document coverage: strict proof shape and content dependencies are enforced", async () => {
+    const proof = {
+      eventUid: "coverage-event-1",
+      sessionId: "coverage-session-1",
+      contentDigest: `sha256:${"a".repeat(64)}`,
+    };
+    const codexPayload = {
+      ...mutationIdentity("coverage-proof-1"),
+      content: "body",
+    };
+    const { backend, calls } = fakeBackend();
+
+    const accepted = await dispatchInvoke(
+      "codex_update",
+      { payload: { ...codexPayload, timelapseDocStepCoverage: proof } },
+      { backend, shell: noShell },
+    );
+    expect(accepted.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    calls.length = 0;
+
+    const invalidProofs: readonly Record<string, unknown>[] = [
+      { ...codexPayload, timelapseDocStepCoverage: null },
+      {
+        ...codexPayload,
+        timelapseDocStepCoverage: { ...omitKey(proof, "sessionId") },
+      },
+      {
+        ...codexPayload,
+        timelapseDocStepCoverage: { ...proof, extra: "reject" },
+      },
+      {
+        ...codexPayload,
+        timelapseDocStepCoverage: {
+          ...proof,
+          eventUid: 42,
+        },
+      },
+      {
+        ...codexPayload,
+        timelapseDocStepCoverage: {
+          ...proof,
+          contentDigest: `SHA256:${"a".repeat(64)}`,
+        },
+      },
+      {
+        ...omitKey(codexPayload, "content"),
+        timelapseDocStepCoverage: proof,
+      },
+    ];
+    for (const payload of invalidProofs) {
+      const rejected = await dispatchInvoke(
+        "codex_update",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(rejected.ok).toBe(false);
+    }
+    expect(calls).toEqual([]);
+
+    const treePayload = {
+      ...mutationIdentity("coverage-tree-1"),
+      nodeId: "scene-1",
+      patch: { content: "body", charCount: 4 },
+      baseVersion: 1,
+      bumpVersion: true,
+      updatedAt: "2026-08-12T00:00:00.000Z",
+      timelapseDocStepCoverage: proof,
+    };
+    const treeAccepted = await dispatchInvoke(
+      "tree_node_patch",
+      { payload: treePayload },
+      { backend, shell: noShell },
+    );
+    expect(treeAccepted.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    calls.length = 0;
+
+    const treeMetadataOnly = {
+      ...treePayload,
+      patch: { title: "metadata-only" },
+    };
+    const treeRejected = await dispatchInvoke(
+      "tree_node_patch",
+      { payload: treeMetadataOnly },
+      { backend, shell: noShell },
+    );
+    expect(treeRejected.ok).toBe(false);
+    expect(calls).toEqual([]);
+
+    const scenePayload = {
+      sceneId: "scene-1",
+      projectId: "p1",
+      requestId: "scene-coverage-request-1",
+      sessionId: "scene-coverage-session-1",
+      eventUid: "scene-coverage-event-1",
+      origin: "human",
+      timelapseSteps: [{ stepType: "replace" }],
+      timelapseDocStepCoverage: proof,
+      includeSidecars: true,
+      updatedAt: "2026-08-12T00:00:00.000Z",
+      contentJson: "{}",
+      charCount: 0,
+      placedBeatPreview: null,
+      unplacedBeatsDoc: "[]",
+      unplacedBeatPreview: null,
+      authorshipSpans: [],
+      foreshadowSetups: [],
+      foreshadowPayoffs: [],
+      foreshadowBaseVersions: {},
+      annotationAnchors: [],
+      beatMentions: [],
+      beatPovOverrides: [],
+      docContentSize: 2,
+    };
+    const sceneRejected = await dispatchInvoke(
+      "save_scene_body_bundle",
+      { payload: scenePayload },
+      { backend, shell: noShell },
+    );
+    expect(sceneRejected.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
   it("runtime_performance_seed: owner tokenとtyped graphを1回のnative呼び出しへ写像する", async () => {
     const { backend, calls } = fakeBackend();
     const payload = {
@@ -3902,9 +4362,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
-  it("restore_backup: 安全な fileName だけを位置引数へ写像し unit を null にする", async () => {
+  it("restore_backup: 安全な fileName を位置引数へ写像し strict outcome を検証する", async () => {
     const { backend } = fakeBackend();
-    const restoreBackup = vi.fn().mockResolvedValue(undefined);
+    const restoreBackup = vi.fn().mockResolvedValue(restoreOutcomeWire);
     Object.assign(backend, { restoreBackup });
 
     for (const fileName of [
@@ -3916,7 +4376,22 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         { fileName },
         { backend, shell: noShell },
       );
-      expect(env).toEqual({ ok: true, value: null });
+      expect(env).toEqual({
+        ok: true,
+        value: {
+          status: "restored",
+          operationOutcome: "succeeded",
+          contentEffect: "replaced",
+          lifecycle: {
+            schemaVersion: 1,
+            revision: 4,
+            status: "ready",
+            bindingToken: "restore-token",
+            activation: "ready",
+          },
+          activation: "ready",
+        },
+      });
     }
 
     expect(restoreBackup.mock.calls).toEqual([
@@ -4180,6 +4655,365 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       ok: true,
       value: { insertedCount: 1, tailSequence: 2, tailHash: "h" },
     });
+  });
+
+  it("timelapse_append_batch: Native-owned coverage rows are rejected before dispatch", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "timelapse_append_batch",
+      {
+        projectId: "p1",
+        sessionId: "renderer-session",
+        events: [
+          {
+            eventUid: "forged-coverage",
+            domain: "timelapse-internal",
+            opType: "doc.step.coverage",
+            entityType: "scene",
+            entityId: "scene-1",
+            payload: JSON.stringify({
+              resultContentDigest: `sha256:${"0".repeat(64)}`,
+            }),
+          },
+        ],
+      },
+      { backend, shell: noShell },
+    );
+
+    if (env.ok) {
+      throw new Error("expected public append to reject Native-owned coverage");
+    }
+    expect(env.error).toContain("TIMELAPSE_COVERAGE_RESERVED");
+    expect(calls).toEqual([]);
+  });
+
+  it("timelapse_genesis_baselines_append: exact workspace-bound payloadを位置引数へ写像", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "timelapse_genesis_baselines_append",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: ["scene-1", "scene-2", "scene-3", "scene-4"],
+        anchorTimestamp: 1_800_000_000_000,
+      },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "timelapseGenesisBaselinesAppend",
+        args: [
+          "/workspace/novel.gdx",
+          "p1",
+          "scene",
+          ["scene-1", "scene-2", "scene-3", "scene-4"],
+          1_800_000_000_000,
+        ],
+      },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        insertedCount: 2,
+        skippedExistingBaselineCount: 1,
+        skippedExistingBodyStepCount: 1,
+      },
+    });
+  });
+
+  it.each([
+    [
+      "missing path",
+      { projectId: "p1", kind: "scene", entityIds: ["s1"], anchorTimestamp: 1 },
+    ],
+    [
+      "blank path",
+      {
+        expectedWorkspacePath: "",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: ["s1"],
+        anchorTimestamp: 1,
+      },
+    ],
+    [
+      "unknown kind",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "chapter",
+        entityIds: ["s1"],
+        anchorTimestamp: 1,
+      },
+    ],
+    [
+      "empty ids",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: [],
+        anchorTimestamp: 1,
+      },
+    ],
+    [
+      "duplicate ids",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: ["s1", "s1"],
+        anchorTimestamp: 1,
+      },
+    ],
+    [
+      "too many ids",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: Array.from({ length: 65 }, (_, index) => `s${index}`),
+        anchorTimestamp: 1,
+      },
+    ],
+    [
+      "negative timestamp",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: ["s1"],
+        anchorTimestamp: -1,
+      },
+    ],
+    [
+      "unknown field",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "scene",
+        entityIds: ["s1"],
+        anchorTimestamp: 1,
+        content: "renderer-owned",
+      },
+    ],
+  ])("timelapse genesis rejects %s before Native", async (_label, args) => {
+    const method = vi.fn();
+    const { backend } = fakeBackend({
+      timelapseGenesisBaselinesAppend: method,
+    });
+
+    const env = await dispatchInvoke(
+      "timelapse_genesis_baselines_append",
+      args,
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(false);
+    expect(method).not.toHaveBeenCalled();
+  });
+
+  it("timelapse genesis reports backend version skew explicitly", async () => {
+    const { backend } = fakeBackend({
+      timelapseGenesisBaselinesAppend: undefined,
+    });
+    const env = await dispatchInvoke(
+      "timelapse_genesis_baselines_append",
+      {
+        expectedWorkspacePath: "/workspace/a",
+        projectId: "p1",
+        kind: "snippet",
+        entityIds: ["snippet-1"],
+        anchorTimestamp: 1,
+      },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.error).toContain(IPC_BACKEND_UNAVAILABLE_MARKER);
+      expect(env.error).toContain("timelapseGenesisBaselinesAppend");
+    }
+  });
+
+  it("timelapse_body_baselines_append: identity-only batch and OCC tail are mapped", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "timelapse_body_baselines_append",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        targets: [
+          { kind: "scene", id: "s1" },
+          { kind: "codex", id: "c1" },
+        ],
+        expectedAnchorSequence: 7,
+      },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "timelapseBodyBaselinesAppend",
+        args: [
+          "/workspace/novel.gdx",
+          "p1",
+          [
+            { kind: "scene", id: "s1" },
+            { kind: "codex", id: "c1" },
+          ],
+          7,
+        ],
+      },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        insertedCount: 2,
+        skippedExistingCount: 1,
+        anchorSequence: 7,
+        anchorTimestamp: 1_800_000_000_000,
+      },
+    });
+  });
+
+  it.each([
+    {
+      targets: [{ kind: "scene", id: "s1", payload: "forged" }],
+      expectedAnchorSequence: null,
+    },
+    {
+      targets: [
+        { kind: "scene", id: "s1" },
+        { kind: "scene", id: "s1" },
+      ],
+      expectedAnchorSequence: null,
+    },
+    {
+      targets: [{ kind: "scene", id: "s1" }],
+      expectedAnchorSequence: -1,
+    },
+  ])(
+    "timelapse body rejects forged target shape before Native: %j",
+    async (input) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({ timelapseBodyBaselinesAppend: method });
+      const env = await dispatchInvoke(
+        "timelapse_body_baselines_append",
+        {
+          expectedWorkspacePath: "/workspace/novel.gdx",
+          projectId: "p1",
+          ...input,
+        },
+        { backend, shell: noShell },
+      );
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    },
+  );
+
+  it("timelapse_history_purge: exact workspace/project maps to atomic Native command", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "timelapse_history_purge",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+      },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "timelapseHistoryPurge",
+        args: ["/workspace/novel.gdx", "p1"],
+      },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: { deletedEventCount: 3, deletedSnapshotCount: 2 },
+    });
+  });
+
+  it("timelapse_enabled_set: boolean flag is path-bound", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "timelapse_enabled_set",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        enabled: false,
+      },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "timelapseEnabledSet",
+        args: ["/workspace/novel.gdx", "p1", false],
+      },
+    ]);
+    expect(env).toEqual({ ok: true, value: { enabled: true } });
+  });
+
+  it("timelapse_layout_snapshot_record: only fixed payload scope reaches Native", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "timelapse_layout_snapshot_record",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        payload: {
+          layout: { regions: {} },
+          activePresetId: null,
+          hiddenStripePanels: ["chat"],
+        },
+        expectedAnchorSequence: 7,
+      },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "timelapseLayoutSnapshotRecord",
+        args: [
+          "/workspace/novel.gdx",
+          "p1",
+          {
+            layout: { regions: {} },
+            activePresetId: null,
+            hiddenStripePanels: ["chat"],
+          },
+          7,
+        ],
+      },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        inserted: true,
+        anchorSequence: 7,
+        anchorTimestamp: 1_800_000_000_000,
+      },
+    });
+  });
+
+  it("timelapse layout rejects renderer-selected scope fields", async () => {
+    const method = vi.fn();
+    const { backend } = fakeBackend({
+      timelapseLayoutSnapshotRecord: method,
+    });
+    const env = await dispatchInvoke(
+      "timelapse_layout_snapshot_record",
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        payload: {
+          layout: { regions: {} },
+          domain: "forged",
+        },
+        expectedAnchorSequence: null,
+      },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    expect(method).not.toHaveBeenCalled();
   });
 
   it("tree_node_patch: optional content eventを同じtyped payloadへ保持する", async () => {
@@ -4874,6 +5708,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "ai_tree_plan_apply",
       "ai_tree_plan_undo",
       "authorship_replace_lane",
+      "cancel_current_chat_input",
+      "capture_current_chat_input",
       "chat_index_message",
       "chat_index_status",
       "chat_message_search",
@@ -4999,6 +5835,16 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_maintenance_inbox_list",
       "narrative_runtime_policy_get",
       "narrative_runtime_policy_set",
+      "narrative_scene_scope_read",
+      "narrative_scene_scope_registry_update",
+      "narrative_scene_scope_update",
+      "nir1_entity_relation_revision_create",
+      "nir1_entity_relation_revision_prepare",
+      "nir1_entity_relation_revision_read",
+      "nir1_entity_relation_revision_read_current",
+      "nir1_entity_relation_revision_restore",
+      "nir1_evidence_qualify",
+      "nir1_pack_context",
       "open_workspace",
       "plot_thread_branch_create",
       "plot_thread_branch_delete",
@@ -5023,11 +5869,15 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "project_snapshot_restore_context",
       "quarantine_live_database",
       "rebuild_narrative_derived_state",
+      "related_scenes_begin",
+      "related_scenes_continue",
+      "related_scenes_release",
       "repair_integrity",
       "repair_narrative_dependency_declarations",
       "reply_to_annotation",
       "restore_backup",
       "restore_recovery_candidate",
+      "retire_current_chat_input",
       "retry_narrative_legacy_backfill",
       "revalidate_license",
       "revision_scene_restore",
@@ -5037,6 +5887,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "save_post_effect_annotations",
       "save_scene_body_bundle",
       "scan_staging_project_create",
+      "scan_staging_project_publish",
       "scene_event_link",
       "scene_event_link_batch",
       "scene_event_unlink",
@@ -5063,6 +5914,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "temporal_scene_patch",
       "test_ai_connection",
       "timelapse_append_batch",
+      "timelapse_body_baselines_append",
+      "timelapse_enabled_set",
+      "timelapse_genesis_baselines_append",
+      "timelapse_history_purge",
+      "timelapse_layout_snapshot_record",
       "trash_bin_clear_all",
       "trash_bin_create",
       "trash_bin_delete",
@@ -8448,7 +9304,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(upd).toEqual({ ok: true, value: { id: "a1", status: "dismissed" } });
   });
 
-  it("reply_to_annotation: snake_case の {args} をネストしたまま素通し", async () => {
+  it("reply_to_annotation: snake_case の {args} を渡し、返り値は opaque id に絞る", async () => {
     const { backend, calls } = fakeBackend();
     const args = {
       parent_id: "a1",
@@ -8462,7 +9318,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { backend, shell: noShell },
     );
     expect(calls).toEqual([{ method: "replyToAnnotation", args: [args] }]);
-    expect(env).toEqual({ ok: true, value: { id: "a2", parent_id: "a1" } });
+    expect(env).toEqual({ ok: true, value: { id: "a2" } });
   });
 
   it("save_post_effect_annotations: unit 返りは null（annotations 配列を素通し）", async () => {
@@ -8539,6 +9395,357 @@ const nativeAiAuditContext = {
   parentExecutionId: null,
   pathId: "chat",
 };
+
+describe("capture_current_chat_input", () => {
+  const submission = {
+    submissionId: "capture-submit-1",
+    messageId: "capture-message-1",
+    chatSessionId: "chat-session-1",
+    sceneId: "scene-1",
+    content: "untrusted renderer text",
+    createdAt: "2026-09-28T10:00:00.000Z",
+  };
+  const callerIdentity = {
+    profileId: "profile-1",
+    callerId: "main-caller-1",
+    callerEpoch: 2,
+    senderId: 42,
+    workspaceId: "/workspace-1",
+    sessionId: "main-session-1",
+  };
+  const receipt = {
+    status: "accepted",
+    projectId: "project-1",
+    chatSessionId: submission.chatSessionId,
+    sceneId: submission.sceneId,
+    messageId: submission.messageId,
+  };
+  const bindMainCaller = (value: typeof submission) => {
+    const args: Record<string, unknown> = { submission: value };
+    Object.defineProperty(args, "callerIdentity", { value: callerIdentity });
+    return args;
+  };
+
+  it("passes only strict submission fields and projects a minimal receipt", async () => {
+    const captureCurrentChatInput = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(receipt));
+    const { backend } = fakeBackend({
+      captureCurrentChatInput: captureCurrentChatInput as never,
+    });
+    const env = await dispatchInvoke(
+      "capture_current_chat_input",
+      bindMainCaller(submission),
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({ ok: true, value: receipt });
+    expect(captureCurrentChatInput).toHaveBeenCalledWith(
+      submission,
+      JSON.stringify(callerIdentity),
+    );
+  });
+
+  it("maps only Native's unrestricted disposition to a legacy-only result", async () => {
+    const captureCurrentChatInput = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify({ status: "unrestricted" }));
+    const { backend } = fakeBackend({
+      captureCurrentChatInput: captureCurrentChatInput as never,
+    });
+    const env = await dispatchInvoke(
+      "capture_current_chat_input",
+      bindMainCaller(submission),
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: { status: "legacy-only" },
+    });
+    const malformed = await dispatchInvoke(
+      "capture_current_chat_input",
+      bindMainCaller(submission),
+      {
+        backend: {
+          ...backend,
+          captureCurrentChatInput: vi
+            .fn()
+            .mockResolvedValue(
+              JSON.stringify({ status: "unrestricted", projectId: "forged" }),
+            ),
+        },
+        shell: noShell,
+      },
+    );
+    expect(malformed.ok).toBe(false);
+  });
+
+  it.each([
+    [
+      "top-level version claim",
+      { ...submission, messageVersionId: "old" },
+      false,
+    ],
+    ["empty input", { ...submission, content: "  " }, false],
+    ["unknown command argument", submission, true],
+  ])("rejects %s before Native", async (label, invalidSubmission, topLevel) => {
+    const captureCurrentChatInput = vi.fn();
+    const { backend } = fakeBackend({
+      captureCurrentChatInput: captureCurrentChatInput as never,
+    });
+    const args = bindMainCaller(invalidSubmission as typeof submission);
+    if (topLevel) args.claimedCaller = callerIdentity;
+
+    const env = await dispatchInvoke("capture_current_chat_input", args, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(env.ok, label).toBe(false);
+    expect(captureCurrentChatInput).not.toHaveBeenCalled();
+  });
+
+  it("rejects a renderer caller claim unless main replaced it with a hidden identity", async () => {
+    const captureCurrentChatInput = vi.fn();
+    const { backend } = fakeBackend({
+      captureCurrentChatInput: captureCurrentChatInput as never,
+    });
+    const env = await dispatchInvoke(
+      "capture_current_chat_input",
+      { submission, callerIdentity },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("unknown field"),
+    });
+    expect(captureCurrentChatInput).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when Native returns payload-bearing or mismatched receipt data", async () => {
+    for (const nativeResult of [
+      { ...receipt, canonicalPayload: "PRIVATE_PAYLOAD" },
+      { ...receipt, chatSessionId: "other-session" },
+    ]) {
+      const captureCurrentChatInput = vi
+        .fn()
+        .mockResolvedValue(JSON.stringify(nativeResult));
+      const { backend } = fakeBackend({
+        captureCurrentChatInput: captureCurrentChatInput as never,
+      });
+      const env = await dispatchInvoke(
+        "capture_current_chat_input",
+        bindMainCaller(submission),
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(JSON.stringify(env)).not.toContain("PRIVATE_PAYLOAD");
+    }
+  });
+
+  it("reports backend unavailable without attempting a capture", async () => {
+    const env = await dispatchInvoke(
+      "capture_current_chat_input",
+      bindMainCaller(submission),
+      { backend: null, shell: noShell },
+    );
+    expect(env).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} capture_current_chat_input`,
+    });
+  });
+});
+
+describe("cancel_current_chat_input", () => {
+  const submission = {
+    submissionId: "capture-submit-1",
+    messageId: "capture-message-1",
+    chatSessionId: "chat-session-1",
+    sceneId: "scene-1",
+  };
+  const callerIdentity = {
+    profileId: "profile-1",
+    callerId: "main-caller-1",
+    callerEpoch: 2,
+    senderId: 42,
+    workspaceId: "/workspace-1",
+    sessionId: "main-session-1",
+  };
+
+  it("passes only the exact submission binding and accepts a terminal receipt", async () => {
+    const cancelCurrentChatInput = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        status: "cancelled",
+        submissionId: submission.submissionId,
+        messageId: submission.messageId,
+      }),
+    );
+    const { backend } = fakeBackend({
+      cancelCurrentChatInput: cancelCurrentChatInput as never,
+    });
+    const args: Record<string, unknown> = { submission };
+    Object.defineProperty(args, "callerIdentity", { value: callerIdentity });
+
+    const env = await dispatchInvoke("cancel_current_chat_input", args, {
+      backend,
+      shell: noShell,
+    });
+
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        status: "cancelled",
+        submissionId: submission.submissionId,
+        messageId: submission.messageId,
+      },
+    });
+    expect(cancelCurrentChatInput).toHaveBeenCalledWith(
+      submission,
+      JSON.stringify(callerIdentity),
+    );
+  });
+
+  it("rejects extra submission fields and mismatched terminal receipts", async () => {
+    const cancelCurrentChatInput = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        status: "cancelled",
+        submissionId: "other-submission",
+        messageId: submission.messageId,
+      }),
+    );
+    const { backend } = fakeBackend({
+      cancelCurrentChatInput: cancelCurrentChatInput as never,
+    });
+    const args: Record<string, unknown> = {
+      submission: { ...submission, content: "do not replay" },
+    };
+    Object.defineProperty(args, "callerIdentity", { value: callerIdentity });
+
+    const invalidArgs = await dispatchInvoke(
+      "cancel_current_chat_input",
+      args,
+      {
+        backend,
+        shell: noShell,
+      },
+    );
+    expect(invalidArgs.ok).toBe(false);
+    expect(cancelCurrentChatInput).not.toHaveBeenCalled();
+
+    const validArgs: Record<string, unknown> = { submission };
+    Object.defineProperty(validArgs, "callerIdentity", {
+      value: callerIdentity,
+    });
+    const mismatch = await dispatchInvoke(
+      "cancel_current_chat_input",
+      validArgs,
+      { backend, shell: noShell },
+    );
+    expect(mismatch).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(
+        "IPC_CAPTURE_CANCEL_RESULT_BINDING_MISMATCH",
+      ),
+    });
+  });
+});
+
+describe("retire_current_chat_input", () => {
+  const callerIdentity = {
+    profileId: "profile-1",
+    callerId: "main-caller-1",
+    callerEpoch: 2,
+    senderId: 42,
+    workspaceId: "/workspace-1",
+    sessionId: "main-session-1",
+  };
+  const request = { chatSessionId: "chat-session-1" };
+  const bindMainCaller = () => {
+    const args: Record<string, unknown> = { ...request };
+    Object.defineProperty(args, "callerIdentity", { value: callerIdentity });
+    return args;
+  };
+
+  it("passes a strict session-only request and projects a minimal receipt", async () => {
+    const retireCurrentChatInput = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        status: "retired",
+        chatSessionId: request.chatSessionId,
+      }),
+    );
+    const { backend } = fakeBackend({
+      retireCurrentChatInput: retireCurrentChatInput as never,
+    });
+    const env = await dispatchInvoke(
+      "retire_current_chat_input",
+      bindMainCaller(),
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: { status: "retired", chatSessionId: request.chatSessionId },
+    });
+    expect(retireCurrentChatInput).toHaveBeenCalledWith(
+      request,
+      JSON.stringify(callerIdentity),
+    );
+  });
+
+  it("maps Native's unrestricted disposition to legacy-only, never a retirement receipt", async () => {
+    const retireCurrentChatInput = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify({ status: "unrestricted" }));
+    const { backend } = fakeBackend({
+      retireCurrentChatInput: retireCurrentChatInput as never,
+    });
+    const env = await dispatchInvoke(
+      "retire_current_chat_input",
+      bindMainCaller(),
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: { status: "legacy-only" },
+    });
+  });
+
+  it("rejects claimed capture authority, invalid sessions, and mismatched receipts", async () => {
+    const retireCurrentChatInput = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        status: "retired",
+        chatSessionId: "other-session",
+      }),
+    );
+    const { backend } = fakeBackend({
+      retireCurrentChatInput: retireCurrentChatInput as never,
+    });
+    const claimed = bindMainCaller();
+    claimed.captureId = "renderer-claim";
+    const invalid = await dispatchInvoke("retire_current_chat_input", claimed, {
+      backend,
+      shell: noShell,
+    });
+    expect(invalid.ok).toBe(false);
+    expect(retireCurrentChatInput).not.toHaveBeenCalled();
+
+    const mismatch = await dispatchInvoke(
+      "retire_current_chat_input",
+      bindMainCaller(),
+      { backend, shell: noShell },
+    );
+    expect(mismatch).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(
+        "IPC_CHAT_CAPTURE_RETIRE_RESULT_BINDING_MISMATCH",
+      ),
+    });
+  });
+});
 
 describe("AI チャットコマンド", () => {
   const fakeSecrets = (key = "sk-resolved") => ({
@@ -9278,6 +10485,40 @@ describe("Post-effect Phase 3d コマンド", () => {
     ).toHaveLength(1);
   });
 
+  it("start_post_effect_run は Native へ渡す caller identity を outer main binding から再投影する", async () => {
+    const { backend, methods } = makeBackend();
+    const issued = {
+      profileId: "profile-1",
+      callerId: "main-caller-1",
+      callerEpoch: 2,
+      senderId: 42,
+      workspaceId: null,
+      sessionId: "session-1",
+    };
+    const forged = {
+      ...issued,
+      senderId: 7,
+      callerId: "renderer-forged",
+    };
+
+    const env = await dispatchInvoke(
+      "start_post_effect_run",
+      {
+        ...startArgs({ ...singleArgs, callerIdentity: forged }),
+        callerIdentity: issued,
+      },
+      { backend, shell: noShell, secrets: secrets("sk-review") },
+    );
+
+    expect(env.ok).toBe(true);
+    expect(methods.startPostEffectRun).toHaveBeenCalledWith(
+      expect.objectContaining({ callerIdentity: issued }),
+      expect.any(Object),
+      expect.any(String),
+      null,
+    );
+  });
+
   it("start_post_effect_run_multi は scenes を含むsnake_case argsを保持し、optional key=nullでも開始する", async () => {
     const { backend, calls, methods } = makeBackend();
     const keyStore = secrets(null);
@@ -9719,4 +10960,118 @@ describe("Post-effect Phase 3d コマンド", () => {
       expect(methods.startPostEffectRunMulti).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("NIR-1 two-result command boundary", () => {
+  const ownerKey = "related-scenes-owner:main-issued";
+  const begin = {
+    ownerKey,
+    expectedWorkspacePath: "/workspace",
+    projectId: "project",
+    currentSceneId: "s2",
+    query: "saved tail",
+  };
+
+  it("maps only validated begin fields and keeps operation ownership on follow-ups", async () => {
+    const relatedScenesBegin = vi
+      .fn()
+      .mockResolvedValue('{"status":"raw-ready"}');
+    const relatedScenesContinue = vi
+      .fn()
+      .mockResolvedValue('{"status":"available","scenes":[]}');
+    const relatedScenesRelease = vi
+      .fn()
+      .mockResolvedValue('{"status":"released"}');
+    const nir1EvidenceQualify = vi
+      .fn()
+      .mockResolvedValue('{"status":"unavailable","reason":"invalidated"}');
+    const deps = {
+      backend: {
+        relatedScenesBegin,
+        relatedScenesContinue,
+        relatedScenesRelease,
+        nir1EvidenceQualify,
+      } as unknown as NapiBackendLike,
+      shell: {},
+    };
+    expect(
+      await dispatchInvoke(
+        "related_scenes_begin",
+        { ...begin, arbitraryDb: "/other" },
+        deps,
+      ),
+    ).toMatchObject({ ok: true });
+    expect(relatedScenesBegin).toHaveBeenCalledExactlyOnceWith(begin);
+    await dispatchInvoke(
+      "related_scenes_continue",
+      { ownerKey, operationTicket: "ticket", projectId: "cannot-rebind" },
+      deps,
+    );
+    expect(relatedScenesContinue).toHaveBeenCalledExactlyOnceWith(
+      ownerKey,
+      "ticket",
+    );
+    await dispatchInvoke(
+      "related_scenes_release",
+      { ownerKey, operationTicket: "ticket" },
+      deps,
+    );
+    expect(relatedScenesRelease).toHaveBeenCalledExactlyOnceWith(
+      ownerKey,
+      "ticket",
+    );
+    await dispatchInvoke(
+      "nir1_evidence_qualify",
+      { ownerKey, navigationIdentity: "handle", sceneId: "cannot-rebind" },
+      deps,
+    );
+    expect(nir1EvidenceQualify).toHaveBeenCalledExactlyOnceWith(
+      ownerKey,
+      "handle",
+    );
+  });
+
+  it("rejects malformed begin bindings before Native execution", async () => {
+    const relatedScenesBegin = vi.fn();
+    const deps = {
+      backend: { relatedScenesBegin } as unknown as NapiBackendLike,
+      shell: {},
+    };
+    for (const invalid of [
+      { ...begin, ownerKey: "" },
+      { ...begin, expectedWorkspacePath: "" },
+      { ...begin, projectId: "" },
+      { ...begin, currentSceneId: "" },
+      { ...begin, query: " " },
+      { ...begin, query: "x".repeat(501) },
+      { ...begin, query: 7 },
+    ])
+      expect(
+        (await dispatchInvoke("related_scenes_begin", invalid, deps)).ok,
+      ).toBe(false);
+    expect(relatedScenesBegin).not.toHaveBeenCalled();
+  });
+
+  it("exposes explicit backend/version-skew errors, and never exposes owner release to renderer", async () => {
+    for (const command of [
+      "related_scenes_begin",
+      "related_scenes_continue",
+      "related_scenes_release",
+      "nir1_evidence_qualify",
+    ]) {
+      expect(
+        await dispatchInvoke(command, begin, { backend: null, shell: {} }),
+      ).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("IPC_BACKEND_UNAVAILABLE"),
+      });
+      expect(
+        await dispatchInvoke(command, begin, {
+          backend: {} as NapiBackendLike,
+          shell: {},
+        }),
+      ).toMatchObject({ ok: false });
+    }
+    expect(NAPI_COMMANDS).not.toHaveProperty("related_scenes_release_owner");
+  });
 });

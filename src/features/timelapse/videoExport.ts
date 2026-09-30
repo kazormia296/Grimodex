@@ -1,7 +1,7 @@
 /**
  * 執筆タイムラプス video export — thin MediaRecorder wrapper.
  *
- * The caller (TimelapsePlayer / future export UI) is responsible for
+ * The export orchestrator is responsible for
  * driving the canvas through the desired frames; this module just turns
  * `canvas.captureStream()` into a webm Blob and resolves once the recorder
  * stops.

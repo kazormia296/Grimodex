@@ -50,6 +50,7 @@ struct StoredHistoricalArtifact {
 /// target.
 #[derive(Debug)]
 pub(crate) struct SealedSnapshotDocumentBinding {
+    pub(crate) document_ref: String,
     pub(crate) source_key: String,
     pub(crate) node_id: String,
 }
@@ -689,13 +690,33 @@ pub(crate) fn load_sealed_snapshot_document_binding_in_tx(
     document_ref: &str,
 ) -> anyhow::Result<SealedSnapshotDocumentBinding> {
     anyhow::ensure!(
-        !conn.is_autocommit(),
-        "NEX_SCOPE_AUTHORITY_TRANSACTION_REQUIRED: sealed snapshot lookup requires a caller-owned transaction"
-    );
-    anyhow::ensure!(
         !document_ref.trim().is_empty() && document_ref.trim() == document_ref,
         "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_INVALID: edited revealDocumentRef must be trimmed and non-empty"
     );
+    let mut matches = load_sealed_snapshot_document_bindings_in_tx(conn, project_id, run_id)?
+        .into_iter()
+        .filter(|d| d.document_ref == document_ref);
+    let document = matches.next().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_MISSING: parent corpus has no document '{}'",
+            document_ref
+        )
+    })?;
+    anyhow::ensure!(
+        matches.next().is_none(),
+        "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_AMBIGUOUS: parent corpus has multiple documents '{}'",
+        document_ref
+    );
+    Ok(document)
+}
+
+pub(crate) fn load_sealed_snapshot_document_bindings_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<Vec<SealedSnapshotDocumentBinding>> {
+    anyhow::ensure!(!conn.is_autocommit(),
+        "NEX_SCOPE_AUTHORITY_TRANSACTION_REQUIRED: sealed snapshot lookup requires a caller-owned transaction");
     let (durable_project_id, snapshot_digest): (String, Option<String>) = conn.query_row(
         "SELECT project_id, snapshot_digest
            FROM narrative_extraction_runs
@@ -762,30 +783,15 @@ pub(crate) fn load_sealed_snapshot_document_binding_in_tx(
         "NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID: parent corpus payloadDigest differs from Native canonical payload"
     );
     let corpus = validate_sealed_snapshot_payload(&payload, project_id, &snapshot_digest)?;
-    let matches = corpus
+    Ok(corpus
         .documents
         .iter()
-        .filter(|document| document.document_ref == document_ref)
-        .collect::<Vec<_>>();
-    let document = match matches.as_slice() {
-        [] => {
-            return Err(anyhow::anyhow!(
-                "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_MISSING: parent corpus has no document '{}'",
-                document_ref
-            ));
-        }
-        [document] => *document,
-        _ => {
-            return Err(anyhow::anyhow!(
-                "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_AMBIGUOUS: parent corpus has multiple documents '{}'",
-                document_ref
-            ));
-        }
-    };
-    Ok(SealedSnapshotDocumentBinding {
-        source_key: document.source_key.clone(),
-        node_id: document.node_id.clone(),
-    })
+        .map(|document| SealedSnapshotDocumentBinding {
+            document_ref: document.document_ref.clone(),
+            source_key: document.source_key.clone(),
+            node_id: document.node_id.clone(),
+        })
+        .collect())
 }
 
 /// The sealed historical basis must stay durably linked to the snapshot

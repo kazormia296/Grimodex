@@ -26,13 +26,12 @@ import { loadLatestProposedProse } from "@/features/agent-writes/prose";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import type { DocumentKey } from "@/features/editor/document/documentKey";
 import { getExternalWriteProjectors } from "@/application/externalWrites/externalWriteProjectors";
-import { isIpcLifecycleCancellation } from "@/lib/tauri";
+import { isD2aEgressDenied, isIpcLifecycleCancellation } from "@/lib/tauri";
 import {
   parseChangePayload,
   payloadString,
   payloadStringArray,
 } from "./changeEventPayload";
-
 const POLL_MS = 750;
 
 /**
@@ -608,6 +607,7 @@ async function pollTick(
     if (!isAuthoritative()) return;
     state.cursor = rows[rows.length - 1].sequence;
   } catch (err) {
+    if (isD2aEgressDenied(err)) return stopExternalWriteFeed();
     if (!isIpcLifecycleCancellation(err)) {
       console.warn("[externalWriteFeed] poll failed; cursor retained", err);
     }

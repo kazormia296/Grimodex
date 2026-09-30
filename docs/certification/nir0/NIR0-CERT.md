@@ -150,19 +150,35 @@ The following remain outside this certificate:
 - the consumed retrieval holdout and other unrelated blocked Heavy evidence;
 - Windows NSIS final compilation, retained as release-only/manual coverage;
 - D2 full V2 authority cutover and replacement of the existing V1
-  Source-grained canonical Freshness path;
+  Source-grained semantic path (distinct from the accepted C2-ZC cutover in
+  PR #564);
 - Scope Disclosure production admission and Retrieval connection;
 - Chronicle `revise`, `retract`, `merge`, and `split`;
 - human Assertion Core edits without an `author-declaration` Source;
 - universal Narrative IR coverage, embedding/graph retrieval, and NIR-1;
 - direct generic public V2 append;
-- the diagnostic-only motif fixture work in PR #554 and future Evaluation
-  Contract v2/content-aware alignment work.
+- the diagnostic-only motif fixture work in merged PR #554 and future
+  Evaluation Contract v2/content-aware alignment work.
+
+## Post-certification C2-ZC closeout
+
+NIR0-CERT remains a bounded certificate for the Chronicle `scene-event@1`
+`add` pilot and does not retroactively include later authority changes. The
+separate C2-ZC work was accepted through [PR #564](https://github.com/kazormia296/Grimodex/pull/564): the main/N-API Freshness wake activates Generic Consumer Freshness only after current-Epoch Verify/Rebuild/parity/no-active-maintenance/liveness gates pass. The accepted candidate is bound to base `201f8968f324bef1341282c625aee3fb164ea401`, head `2c1bc67c749eb90e4d441099bfa9bc7ea6ee950e`, tree `e7dff96286be3f111d9130cf89faf37929b88f17`, merge `0e62b40b622652f203690968d308b837e1481a33`, and Full run `cb03f6fb-b711-4377-bf7b-a5bd23c7ce79`; Quick/verify, Rust 17/17, Verify 13/13, product journeys 26/26 allPassed/allClean, runtime performance, and Sol final passed. The durable marker and canonical no-fallback behavior are therefore accepted. Canonical project births are exactly
+`project.create`, `import.session.apply`, and `scan.import.publish`.
+`scan.staging-project.create` is a hidden, noncanonical staging allocation and
+is not product project-create proof; promotion requires the typed
+`scan_staging_project_publish` route. The accepted evidence is recorded in the
+[C2-ZC impact
+matrix](../plans/narrative-c2zc-canonical-cutover-impact-matrix.md) and its
+focused Rust/N-API contract tests. This post-certification acceptance satisfies
+the NIR-1 start condition; NIR-1 remains planned and is not part of NIR0-CERT.
 
 ## Certification verdict
 
 The tested and integrated implementation satisfies NIR-0 for the bounded
 Chronicle `scene-event@1` `add` pilot. NIR-0 is therefore **PASS** when this
-closeout record lands. C2-ZC remains the next explicit authority boundary, and
-NIR-1 remains blocked on that cutover rather than being silently activated by
-this certificate.
+closeout record lands. C2-ZC is a separate accepted post-certification
+authority boundary; its evidence does not widen NIR0-CERT. NIR-1's start
+condition is satisfied, but its retrieval implementation has not started and
+is not silently activated by this certificate.

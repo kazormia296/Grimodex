@@ -58,6 +58,14 @@ export interface QuiescenceLease {
   }) => void;
 }
 
+export interface QuiescenceLeasePreparation {
+  readonly reason: QuiescenceLeaseReason;
+  acquire: (options?: {
+    transition?: LifecycleTransitionInput;
+  }) => QuiescenceLease;
+  cancel: () => void;
+}
+
 export class QuiescenceLeaseConflictError extends Error {
   readonly requestedReason: QuiescenceLeaseReason;
 
@@ -69,6 +77,7 @@ export class QuiescenceLeaseConflictError extends Error {
 }
 
 const activeLeases = new Map<symbol, QuiescenceLeaseReason>();
+const pendingLeasePreparations = new Map<symbol, QuiescenceLeaseReason>();
 const ipcReadBarrierReleases = new Map<symbol, () => void>();
 const ipcDerivedBarrierReleases = new Map<symbol, () => void>();
 const ipcMutationBarrierReleases = new Map<symbol, () => void>();
@@ -159,57 +168,40 @@ export function isAuthorityBlockingLifecycleIdle(): boolean {
   return !hasAuthorityBlockingLifecycle();
 }
 
-/**
- * Acquires one holder of the shared destructive-lifecycle barrier.
- *
- * Destructive operations may overlap intentionally (for example a newer
- * Project load superseding an older one, or a same-path Workspace reopen
- * performing a nested Project load). The barrier therefore stays active until
- * every holder releases instead of treating nested acquisition as an error.
- */
-export function acquireQuiescenceLease(
+function assertQuiescenceLeaseCanStart(
   reason: QuiescenceLeaseReason,
-  options?: {
-    transition?: LifecycleTransitionInput;
-  },
-): QuiescenceLease {
+  existingReasons: readonly QuiescenceLeaseReason[],
+): void {
   if (rendererTeardownStarted) {
     throw new QuiescenceLeaseConflictError(
       reason,
       `Cannot start ${reason} after renderer teardown`,
     );
   }
-  const dataDeleteActive = [...activeLeases.values()].some(
-    (activeReason) => activeReason === "data-delete",
-  );
-  const auditExportActive = [...activeLeases.values()].some(
-    (activeReason) => activeReason === "audit-export",
-  );
-  const narrativeSnapshotActive = [...activeLeases.values()].some(
-    (activeReason) => activeReason === "narrative-snapshot",
-  );
-  const workspaceRestoreActive = [...activeLeases.values()].some(
-    (activeReason) => activeReason === "workspace-restore",
-  );
-  if (reason === "workspace-restore" && activeLeases.size > 0) {
+  const dataDeleteActive = existingReasons.includes("data-delete");
+  const auditExportActive = existingReasons.includes("audit-export");
+  const narrativeSnapshotActive =
+    existingReasons.includes("narrative-snapshot");
+  const workspaceRestoreActive = existingReasons.includes("workspace-restore");
+  if (reason === "workspace-restore" && existingReasons.length > 0) {
     throw new QuiescenceLeaseConflictError(
       reason,
       "Cannot restore a workspace while another lifecycle is active",
     );
   }
-  if (reason === "narrative-snapshot" && activeLeases.size > 0) {
+  if (reason === "narrative-snapshot" && existingReasons.length > 0) {
     throw new QuiescenceLeaseConflictError(
       reason,
       "Cannot create a narrative snapshot while another lifecycle is active",
     );
   }
-  if (reason === "audit-export" && activeLeases.size > 0) {
+  if (reason === "audit-export" && existingReasons.length > 0) {
     throw new QuiescenceLeaseConflictError(
       reason,
       "Cannot start audit-export while another lifecycle is active",
     );
   }
-  if (reason === "data-delete" && activeLeases.size > 0) {
+  if (reason === "data-delete" && existingReasons.length > 0) {
     throw new QuiescenceLeaseConflictError(
       reason,
       "Cannot clear data while another destructive lifecycle is active",
@@ -248,6 +240,23 @@ export function acquireQuiescenceLease(
       `Cannot start ${reason} while workspace restore is active`,
     );
   }
+}
+
+/**
+ * Acquires one holder of the shared destructive-lifecycle barrier.
+ *
+ * Destructive operations may overlap intentionally (for example a newer
+ * Project load superseding an older one, or a same-path Workspace reopen
+ * performing a nested Project load). The barrier therefore stays active until
+ * every holder releases instead of treating nested acquisition as an error.
+ */
+export function acquireQuiescenceLease(
+  reason: QuiescenceLeaseReason,
+  options?: {
+    transition?: LifecycleTransitionInput;
+  },
+): QuiescenceLease {
+  assertQuiescenceLeaseCanStart(reason, [...activeLeases.values()]);
   // A close requested after data deletion began is allowed to acquire its
   // own lease. The close controller observes data-delete as authority-blocking
   // and waits for it; the reverse direction above prevents deletion from
@@ -380,6 +389,47 @@ export function acquireQuiescenceLease(
   };
 }
 
+/**
+ * Closes renderer mutation scheduling without touching Native read admission.
+ * Lifecycle entrypoints use this short prelude while awaiting a background
+ * timelapse genesis read, then atomically replace it with the real lease.
+ */
+export function prepareQuiescenceLease(
+  reason: QuiescenceLeaseReason,
+): QuiescenceLeasePreparation {
+  assertQuiescenceLeaseCanStart(reason, [
+    ...activeLeases.values(),
+    ...pendingLeasePreparations.values(),
+  ]);
+  const token = Symbol(`prepare:${reason}`);
+  pendingLeasePreparations.set(token, reason);
+  notifyLeaseTopologyChanged();
+  let active = true;
+  const cancel = (): void => {
+    if (!active) return;
+    active = false;
+    pendingLeasePreparations.delete(token);
+    notifyLeaseTopologyChanged();
+  };
+  return {
+    reason,
+    acquire(options) {
+      if (!active) {
+        throw new QuiescenceLeaseConflictError(
+          reason,
+          `Cannot acquire cancelled ${reason} preparation`,
+        );
+      }
+      try {
+        return acquireQuiescenceLease(reason, options);
+      } finally {
+        cancel();
+      }
+    },
+    cancel,
+  };
+}
+
 export function isQuiescenceLeaseActive(
   reason?: QuiescenceLeaseReason,
 ): boolean {
@@ -404,9 +454,25 @@ export function canScheduleQuiescenceMutation(options?: {
 }): boolean {
   return (
     !rendererTeardownStarted &&
-    (!isQuiescenceLeaseActive() ||
+    ((activeLeases.size === 0 && pendingLeasePreparations.size === 0) ||
       preexistingParticipantInvocationDepth > 0 ||
       options?.preexistingDraft === true)
+  );
+}
+
+/**
+ * Editor body steps remain observable during stable read-only leases. Every
+ * authority-replacing/destructive lifecycle (and its prelude) still suppresses
+ * capture so an old document cannot enter the replacement chain.
+ */
+export function canCaptureTimelapseChangeEvent(): boolean {
+  if (rendererTeardownStarted) return false;
+  const reasons = [
+    ...activeLeases.values(),
+    ...pendingLeasePreparations.values(),
+  ];
+  return reasons.every(
+    (reason) => reason === "audit-export" || reason === "narrative-snapshot",
   );
 }
 
@@ -534,6 +600,7 @@ export function _resetQuiescenceLeasesForTests(): void {
   auditExportActualTaskTrackingReleases.clear();
   lifecycleTransitionDeactivations.clear();
   activeLeases.clear();
+  pendingLeasePreparations.clear();
   currentProjectReadAuthorityToken = null;
   preexistingParticipantInvocationDepth = 0;
   rendererTeardownStarted = false;

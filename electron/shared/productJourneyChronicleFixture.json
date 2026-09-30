@@ -1,0 +1,68 @@
+{
+  "id": "chronicle-extract-review-apply-reopen",
+  "version": 1,
+  "requirementIds": [
+    "GDX-AI-AUDIT-001",
+    "GDX-GROUND-001",
+    "GDX-PRECHECK-001",
+    "GDX-NARR-EVIDENCE-001"
+  ],
+  "expectedRejectedHypothesisReason": "hypothesis-observation-actuality-mismatch",
+  "rows": [
+    {
+      "key": "mixed-actual",
+      "text": "衛兵が門を開けた。",
+      "predicate": "門を開ける",
+      "actuality": "actual",
+      "narrativeFrame": "story-world",
+      "title": "門が開いた",
+      "summary": "衛兵が実際に門を開けた。"
+    },
+    {
+      "key": "mixed-rumored",
+      "text": "旅人は、衛兵が門を開けたという噂を聞いた。",
+      "predicate": "門を開ける",
+      "actuality": "rumored",
+      "narrativeFrame": "story-world",
+      "title": "噂に含まれる開門",
+      "summary": "噂に含まれる開門を誤って実際の出来事として合成する固定応答。"
+    },
+    {
+      "key": "mixed-planned",
+      "text": "衛兵は門を開けるつもりだった。",
+      "predicate": "門を開ける",
+      "actuality": "planned",
+      "narrativeFrame": "story-world",
+      "title": "計画に含まれる開門",
+      "summary": "計画に含まれる開門を誤って実際の出来事として合成する固定応答。"
+    },
+    {
+      "key": "mixed-dreamed",
+      "text": "衛兵は門を開ける夢を見た。",
+      "predicate": "門を開ける",
+      "actuality": "dreamed",
+      "narrativeFrame": "dream",
+      "title": "夢に含まれる開門",
+      "summary": "夢に含まれる開門を誤って実際の出来事として合成する固定応答。"
+    },
+    {
+      "key": "independent-actual",
+      "text": "船頭が鐘を鳴らした。",
+      "predicate": "鐘を鳴らす",
+      "actuality": "actual",
+      "narrativeFrame": "story-world",
+      "title": "鐘が鳴った",
+      "summary": "船頭が実際に鐘を鳴らした。"
+    }
+  ],
+  "expected": {
+    "observationCount": 5,
+    "clusterSizes": [4, 1],
+    "hypothesisCount": 5,
+    "rejectedHypothesisCount": 3,
+    "proposalCount": 2,
+    "approvedCount": 2,
+    "appliedEventCount": 2,
+    "commitCount": 1
+  }
+}

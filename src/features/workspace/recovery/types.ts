@@ -21,6 +21,15 @@ export interface NativeWorkspacePayload {
   workspaceId?: string;
 }
 
+/** Operation-specific proof returned by Native with a successful Open. */
+export interface NativeWorkspaceLifecycleProof {
+  schemaVersion: 1;
+  revision: number;
+  status: "ready";
+  bindingToken: string;
+  activation: "ready";
+}
+
 export interface MigrationReceipt {
   fromSchema: number;
   toSchema: number;
@@ -30,11 +39,16 @@ export interface MigrationReceipt {
 }
 
 export type NativeWorkspaceOpenOutcome =
-  | { status: "ready"; workspace: NativeWorkspacePayload }
+  | {
+      status: "ready";
+      workspace: NativeWorkspacePayload;
+      lifecycle?: NativeWorkspaceLifecycleProof;
+    }
   | {
       status: "migrated";
       workspace: NativeWorkspacePayload;
       migration: MigrationReceipt;
+      lifecycle?: NativeWorkspaceLifecycleProof;
     }
   | {
       status: "recovery-required";
@@ -47,6 +61,20 @@ export type NativeWorkspaceOpenOutcome =
       status: "safe-mode";
       reason: string;
       candidates: RecoveryCandidate[];
+    }
+  | {
+      status: "not-admitted";
+      reasonCode: string;
+      snapshot: {
+        state:
+          | "no-workspace"
+          | "ready"
+          | "transition"
+          | "recovery-required"
+          | "closed";
+        revision: number;
+        phase?: "draining" | "replacing" | "recovering" | "finishing";
+      };
     };
 
 export interface RecoveryShellState {

@@ -67,8 +67,8 @@ use super::plot_thread_operations::{
     OP_KIND_PLOT_THREAD_CREATE, OP_KIND_PLOT_THREAD_PATCH,
 };
 use super::reconciliation_envelope::{
-    load_read_set_rows, load_source_basis_rows, validate_reconciliation_envelope, SourceBasisRow,
-    ORIGIN_ENVELOPED,
+    envelope_schema_version, load_read_set_rows, load_source_basis_rows,
+    validate_reconciliation_envelope, SourceBasisRow, ORIGIN_ENVELOPED,
 };
 use super::repository::{
     current_chronicle_revision_requires_probable_duplicate_review,
@@ -80,7 +80,11 @@ use super::semantic_bindings::{
     apply_semantic_binding_upsert_in_tx, parse_semantic_binding_upsert_payload,
     OP_KIND_SEMANTIC_BINDING_UPSERT,
 };
-use super::source_revision::resolve_source_revision;
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
+use super::source_revision::{
+    is_validation_terminated, resolve_source_revision_with_validation_context,
+    validation_context, validation_terminated, ValidationTerminationReason,
+};
 use super::task_leases::with_immediate_transaction;
 use super::temporal_constraints::{
     apply_constraint_create_in_tx, parse_constraint_create_payload, OP_KIND_CONSTRAINT_CREATE,
@@ -111,6 +115,26 @@ const STATUS_UNDONE: &str = "undone";
 const STATUS_REDONE: &str = "redone";
 const STATUS_FAILED: &str = "failed";
 const STATUS_INVALIDATED: &str = "invalidated";
+
+/// Explicit owner for the frozen standalone DB/legacy adapter.  Native's
+/// production path supplies `ForegroundValidationControl`; this adapter is
+/// only used when the caller already owns the Database transaction boundary.
+struct StandaloneForegroundValidationControl;
+
+impl GraphWorkControl for StandaloneForegroundValidationControl {
+    fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // This adapter is constructed only by the public standalone transaction
+    // owner below. That owner already supplies the DB/transaction boundary
+    // required by the compatibility API, so it must explicitly opt into the
+    // full eligibility read rather than inheriting the fail-closed default
+    // used by arbitrary controls.
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
+}
 
 struct CommitPlanValidationContext<'a> {
     expected_calendar_version: Option<i64>,
@@ -151,8 +175,32 @@ pub fn narrative_extraction_prepare_commit(
     db: &Database,
     payload: PrepareCommitPayload,
 ) -> anyhow::Result<Value> {
+    // The standalone DB API is the frozen compatibility adapter used by the
+    // legacy shell and file-backed tests.  It owns the enclosing transaction
+    // for the duration of this call, so it supplies an explicit command
+    // context instead of silently falling back to `NeverStop`.
+    let mut compatibility_owner = StandaloneForegroundValidationControl;
+    narrative_extraction_prepare_commit_with_control(
+        db,
+        payload,
+        Some(&mut compatibility_owner),
+    )
+}
+
+/// Foreground lifecycle owner variant.  The borrowed control is threaded only
+/// through the whole-eligibility Source contract; it does not grant any
+/// semantic Apply authority or create a nested maintenance admission.
+pub fn narrative_extraction_prepare_commit_with_control(
+    db: &Database,
+    payload: PrepareCommitPayload,
+    control: Option<&mut dyn GraphWorkControl>,
+) -> anyhow::Result<Value> {
+    let mut lifecycle_control = control;
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            if let Some(control) = lifecycle_control.as_mut() {
+                control.check(GraphWorkStage::Source)?;
+            }
             require_narrative_apply_allowed(conn)?;
             let mut sealed_plan = sealed_plan_json(&payload)?;
             let plan_digest = digest_plan(&json!({
@@ -226,12 +274,29 @@ pub fn narrative_extraction_prepare_commit(
             )?;
             let authority_digest =
                 digest_authority_rows(conn, &payload.proposal_set_id, &applications)?;
-            let source_contract = build_source_contract(
-                conn,
-                &payload.project_id,
-                &payload.run_id,
-                &applications,
-            )?;
+            let source_contract = {
+                // The foreground command owns this borrowed validation
+                // capability for the duration of the same write transaction.
+                // It is intentionally not a maintenance re-admission.
+                let owner: &mut dyn GraphWorkControl = lifecycle_control
+                    .as_deref_mut()
+                    .ok_or_else(|| {
+                        validation_terminated(
+                            ValidationTerminationReason::ContextUnavailable,
+                            "whole-project eligibility requires a caller-owned validation context",
+                        )
+                    })?;
+                build_source_contract(
+                    conn,
+                    &payload.project_id,
+                    &payload.run_id,
+                    &applications,
+                    owner,
+                )?
+            };
+            if let Some(control) = lifecycle_control.as_mut() {
+                control.check(GraphWorkStage::Source)?;
+            }
             validate_retraction_targets(
                 conn,
                 &payload.project_id,
@@ -424,7 +489,16 @@ fn build_source_contract(
     project_id: &str,
     run_id: &str,
     applications: &[(String, String)],
+    owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<SealedSourceContract> {
+    if !owner.allows_full_eligibility() {
+        return Err(validation_terminated(
+            ValidationTerminationReason::ContextUnavailable,
+            "whole-project eligibility requires a caller-owned validation context",
+        ));
+    }
+    let mut validation = validation_context(conn, owner);
+    validation.ensure_connection(conn)?;
     let mut revision_rows = Vec::with_capacity(applications.len());
     let mut source_rows = Vec::new();
     let mut read_rows = Vec::new();
@@ -473,8 +547,8 @@ fn build_source_contract(
         }));
 
         for source in &persisted_source_basis {
-            let current = resolve_source_revision(
-                conn,
+            let current = resolve_source_revision_with_validation_context(
+                &mut validation,
                 project_id,
                 run_id,
                 &source.source_kind,
@@ -497,6 +571,22 @@ fn build_source_contract(
             }));
         }
 
+        if envelope_schema_version(&envelope) == Some(2) {
+            for row in super::v2_apply_sources::load_v2_apply_sources_with_validation_context(
+                &mut validation,
+                project_id,
+                run_id,
+                revision_id,
+                &envelope,
+            )? {
+                read_rows.push(json!({
+                    "proposalId": proposal_id, "revisionId": revision_id,
+                    "inputRef": row.source_key, "kind": row.source_kind,
+                    "revisionToken": row.revision_token,
+                }));
+            }
+            continue;
+        }
         let read_set = envelope
             .get("readSet")
             .and_then(Value::as_array)
@@ -518,8 +608,13 @@ fn build_source_contract(
                 .and_then(Value::as_str)
                 .map(Ok)
                 .unwrap_or_else(|| source_kind_for_read_set(kind))?;
-            let current =
-                resolve_source_revision(conn, project_id, run_id, source_kind, input_ref)?;
+            let current = resolve_source_revision_with_validation_context(
+                &mut validation,
+                project_id,
+                run_id,
+                source_kind,
+                input_ref,
+            )?;
             if let Some(expected) = object.get("revisionToken").and_then(Value::as_str) {
                 anyhow::ensure!(
                     current.revision_token == expected,
@@ -775,6 +870,10 @@ fn load_retraction_metadata(
     let object = envelope.as_object().ok_or_else(|| {
         anyhow::anyhow!("NEX_RETRACTION_ENVELOPE_INVALID: envelope is not an object")
     })?;
+    if envelope_schema_version(&envelope) == Some(2) {
+        super::v2_apply_sources::ensure_supported_intent(&envelope)?;
+        return Ok(("add".to_string(), None));
+    }
     let change_kind = object
         .get("changeKind")
         .and_then(Value::as_str)
@@ -822,10 +921,28 @@ pub fn narrative_extraction_apply_commit(
     db: &Database,
     payload: ApplyCommitPayload,
 ) -> anyhow::Result<Value> {
+    let mut compatibility_owner = StandaloneForegroundValidationControl;
+    narrative_extraction_apply_commit_with_control(
+        db,
+        payload,
+        Some(&mut compatibility_owner),
+    )
+}
+
+/// Apply counterpart of [`narrative_extraction_prepare_commit_with_control`].
+pub fn narrative_extraction_apply_commit_with_control(
+    db: &Database,
+    payload: ApplyCommitPayload,
+    control: Option<&mut dyn GraphWorkControl>,
+) -> anyhow::Result<Value> {
+    let mut lifecycle_control = control;
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let timestamp = Utc::now().timestamp_millis();
 
     let apply_result = db.with_conn(|conn| {
+        if let Some(control) = lifecycle_control.as_deref_mut() {
+            control.check(GraphWorkStage::Source)?;
+        }
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         with_immediate_transaction(conn, |conn| {
             let existing =
@@ -930,12 +1047,29 @@ pub fn narrative_extraction_apply_commit(
                 existing.prepared_policy_version == Some(current_policy_version),
                 "NEX_PREPARED_POLICY_CHANGED: prepared policy version no longer matches"
             );
-            let current_source_contract = build_source_contract(
-                conn,
-                &sealed_plan.project_id,
-                &sealed_plan.run_id,
-                &applications,
-            )?;
+            let current_source_contract = {
+                // Apply revalidates the sealed contract on the same
+                // transaction and borrowed owner as its DML.  A separate
+                // connection or nested maintenance admission is forbidden.
+                let owner: &mut dyn GraphWorkControl = lifecycle_control
+                    .as_deref_mut()
+                    .ok_or_else(|| {
+                        validation_terminated(
+                            ValidationTerminationReason::ContextUnavailable,
+                            "whole-project eligibility requires a caller-owned validation context",
+                        )
+                    })?;
+                build_source_contract(
+                    conn,
+                    &sealed_plan.project_id,
+                    &sealed_plan.run_id,
+                    &applications,
+                    owner,
+                )?
+            };
+            if let Some(control) = lifecycle_control.as_deref_mut() {
+                control.check(GraphWorkStage::Source)?;
+            }
             anyhow::ensure!(
                 current_source_contract.revision_envelope_digest
                     == sealed_source_contract.revision_envelope_digest,
@@ -982,6 +1116,7 @@ pub fn narrative_extraction_apply_commit(
 
             let mut created = Vec::new();
             let mut after_snapshots = Vec::new();
+            let mut scene_scope_refresh_events = Vec::new();
             let mut application_ids = Vec::with_capacity(payload.applications.len());
             // Kept so each Contribution can name the operation that produced
             // it (SCHEMA 29). 1:1 with `payload.operations` by construction,
@@ -1235,6 +1370,9 @@ pub fn narrative_extraction_apply_commit(
                             &scene_payload,
                             &now,
                         )?;
+                        if let Some(event) = result.scope_refresh_event.clone() {
+                            scene_scope_refresh_events.push(event);
+                        }
                         (
                             "temporal_scene_chronicle",
                             result.entity_id,
@@ -1270,6 +1408,9 @@ pub fn narrative_extraction_apply_commit(
                             &story_order_payload,
                             &now,
                         )?;
+                        if let Some(event) = result.scope_refresh_event.clone() {
+                            scene_scope_refresh_events.push(event);
+                        }
                         (
                             "temporal_scene_story_order",
                             result.entity_id,
@@ -1516,7 +1657,33 @@ pub fn narrative_extraction_apply_commit(
                     |row| row.get(0),
                 )?;
                 let envelope: Value = serde_json::from_str(&envelope_json)?;
-                let read_set = load_read_set_rows(&envelope)?;
+                let read_set = if envelope_schema_version(&envelope) == Some(2) {
+                    let owner: &mut dyn GraphWorkControl = lifecycle_control
+                        .as_deref_mut()
+                        .ok_or_else(|| {
+                            validation_terminated(
+                                ValidationTerminationReason::ContextUnavailable,
+                                "V2 apply source validation requires a caller-owned validation context",
+                            )
+                        })?;
+                    if !owner.allows_full_eligibility() {
+                        return Err(validation_terminated(
+                            ValidationTerminationReason::ContextUnavailable,
+                            "V2 apply source validation requires a caller-owned validation context",
+                        ));
+                    }
+                    let mut validation = validation_context(conn, owner);
+                    validation.ensure_connection(conn)?;
+                    super::v2_apply_sources::load_v2_apply_sources_with_validation_context(
+                        &mut validation,
+                        &payload.project_id,
+                        &payload.run_id,
+                        &application.revision_id,
+                        &envelope,
+                    )?
+                } else {
+                    load_read_set_rows(&envelope)?
+                };
                 let source_rows = source_basis.into_iter().chain(read_set).collect::<Vec<_>>();
                 let generic_freshness_canonical = is_generic_freshness_canonical(conn)?;
                 if generic_freshness_canonical {
@@ -1735,12 +1902,13 @@ pub fn narrative_extraction_apply_commit(
                 }
             }
 
-            let maintenance_events = events_from_journal_entities(
+            let mut maintenance_events = events_from_journal_entities(
                 after_json["entities"]
                     .as_array()
                     .ok_or_else(|| anyhow::anyhow!("commit journal entities are missing"))?,
                 NarrativeChangeCauseKind::Forward,
             )?;
+            maintenance_events.extend(scene_scope_refresh_events);
             let maintenance_transaction = if maintenance_events.is_empty() {
                 None
             } else {
@@ -1808,6 +1976,13 @@ pub fn narrative_extraction_apply_commit(
     match apply_result {
         Ok(receipt) => Ok(receipt),
         Err(err) => {
+            // A lifecycle stop is neither Source absence nor an Apply
+            // failure.  Preserve the typed signal and leave the durable
+            // Prepared row retryable; string-based audit classifiers below
+            // must never turn it into failed/invalidated.
+            if is_validation_terminated(&err) {
+                return Err(err);
+            }
             let message = err.to_string();
             let invalidation = message.contains("NEX_SOURCE_")
                 || message.contains("NEX_READ_SET_DRIFT")
@@ -2084,8 +2259,7 @@ fn validate_commit_plan(
     )?;
     anyhow::ensure!(set_ok == 1, "proposal set not found for run/project");
 
-    let current_chronicle =
-        current_chronicle_run_spec_for_run(conn, ctx.project_id, ctx.run_id)?;
+    let current_chronicle = current_chronicle_run_spec_for_run(conn, ctx.project_id, ctx.run_id)?;
     let mut chronicle_document_authority = None;
 
     let has_chronicle = ctx.operations.iter().any(|op| is_chronicle_op(&op.kind));
@@ -2253,13 +2427,12 @@ fn validate_commit_plan(
 
         if !op.proposal_id.is_empty() {
             if current_chronicle && chronicle_document_authority.is_none() {
-                chronicle_document_authority = Some(
-                    load_verified_chronicle_commit_document_authority(
+                chronicle_document_authority =
+                    Some(load_verified_chronicle_commit_document_authority(
                         conn,
                         ctx.project_id,
                         ctx.run_id,
-                    )?,
-                );
+                    )?);
             }
             let operation_chronicle_authority = if current_chronicle {
                 ChronicleCommitPlanAuthority::Current(

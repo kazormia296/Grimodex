@@ -22,6 +22,8 @@ import {
   broadcastBackendEvent,
   broadcastMainEvent,
   registerEventBus,
+  refreshWorkspaceLifecycleView,
+  setBackendEventEgressGate,
   sendBackendEventToWindow,
   sendMainEventToWindow,
 } from "./events.js";
@@ -32,6 +34,11 @@ import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
 import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
+import {
+  createNarrativeMaintenanceQuitFinalizer,
+  runIndependentShutdownCleanups,
+} from "./narrativeMaintenanceShutdown.js";
+import type { NarrativeMaintenanceTriggerCoordinator } from "./narrativeMaintenanceTriggers.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
 import {
@@ -52,9 +59,11 @@ import {
 } from "./updater.js";
 import { createVivliostyleManager } from "./vivliostyle.js";
 import { createMainWindow, getWindow } from "./windows.js";
+import { createProfileEgressGate } from "./profileEgress.js";
 import {
   applySessionPermissionPolicy,
   registerSecurityHandlers,
+  setExternalEgressGate,
 } from "./security.js";
 import { parseWebEditorHandoffProtocolRequest } from "./webEditorHandoffProtocol.js";
 import {
@@ -63,7 +72,12 @@ import {
 } from "./productJourneyAi.js";
 import {
   configureNarrativeMaintenanceCiSeam,
+  createNarrativeMaintenanceCiHeldFreshnessWriter,
+  shouldFailFastNarrativeMaintenanceCiLaunch,
+  shouldDisableNarrativeFreshnessForLaunch,
+  writeNarrativeMaintenanceCiReceipt,
   type NarrativeMaintenanceCiBackend,
+  type NarrativeMaintenanceCiHeldFreshnessWriter,
 } from "./narrativeMaintenanceCiSeam.js";
 
 const WEB_EDITOR_HANDOFF_EVENT = "web-editor-handoff:requested";
@@ -78,6 +92,73 @@ const WEB_EDITOR_HANDOFF_PAYLOAD = {
 let pendingWebEditorHandoff =
   parseWebEditorHandoffProtocolRequest(process.argv) !== null;
 let mainRendererReady = false;
+
+async function initializeNarrativeMaintenanceStartup(
+  userDataDir: string,
+): Promise<{
+  initializedBackend: ReturnType<typeof initBackend>;
+  profileEgress: Awaited<ReturnType<typeof createProfileEgressGate>>;
+  narrativeMaintenanceCiSeam: Awaited<
+    ReturnType<typeof configureNarrativeMaintenanceCiSeam>
+  >;
+  narrativeMaintenanceCiHeldFreshnessWriter: NarrativeMaintenanceCiHeldFreshnessWriter | null;
+} | null> {
+  const failFast = shouldFailFastNarrativeMaintenanceCiLaunch({
+    isPackaged: app.isPackaged,
+    env: process.env,
+  });
+  try {
+    // Ordinary/packaged launches retain the backend's explicit fail-soft
+    // envelope. The owner-gated CI acceptance launch must fail before a
+    // renderer can appear when native startup is unavailable.
+    const initializedBackend = initBackend({ failFast });
+    // D2a is the first main/native boundary after backend construction. It
+    // must complete before CI seams, workspace events, schedulers, or a
+    // renderer can publish profile plaintext.
+    const profileEgress = await createProfileEgressGate(initializedBackend);
+    setBackendEventEgressGate(profileEgress);
+    // The product-journey seam is deliberately configured at this one startup
+    // point: after native initialization, before any scheduler can observe a
+    // workspace event. Unauthorized launches return inactive without reading
+    // or forwarding the test-only environment values.
+    const narrativeMaintenanceCiSeam =
+      await configureNarrativeMaintenanceCiSeam(
+        initializedBackend as unknown as NarrativeMaintenanceCiBackend | null,
+        {
+          isPackaged: app.isPackaged,
+          env: process.env,
+        },
+      );
+    // The harness may accept a seam-controlled renderer only after native
+    // configuration has acknowledged the exact launch. Production launches
+    // are inactive and therefore intentionally write no receipt.
+    await writeNarrativeMaintenanceCiReceipt(narrativeMaintenanceCiSeam, {
+      isPackaged: app.isPackaged,
+      userDataDir,
+    });
+    const narrativeMaintenanceCiHeldFreshnessWriter =
+      createNarrativeMaintenanceCiHeldFreshnessWriter(
+        narrativeMaintenanceCiSeam,
+        {
+          userDataDir,
+        },
+      );
+    return {
+      initializedBackend,
+      profileEgress,
+      narrativeMaintenanceCiSeam,
+      narrativeMaintenanceCiHeldFreshnessWriter,
+    };
+  } catch (error) {
+    if (!failFast) throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[grimodex-electron] CI product-journey startup failed: ${detail}`,
+    );
+    app.exit(1);
+    return null;
+  }
+}
 
 function flushPendingWebEditorHandoff(): void {
   if (!pendingWebEditorHandoff || !mainRendererReady) return;
@@ -156,19 +237,17 @@ if (!gotSingleInstanceLock) {
     if (!process.env.ELECTRON_RENDERER_URL) {
       registerAppProtocolHandler(path.join(__dirname, "..", "dist"));
     }
-    // .node ロード失敗は fail-soft（backend=null → 明示エラー envelope）
-    const initializedBackend = initBackend();
-    // The product-journey seam is deliberately configured at this one startup
-    // point: after native initialization, before any scheduler can observe a
-    // workspace event. Unauthorized launches return inactive without reading
-    // or forwarding the test-only environment values.
-    const narrativeMaintenanceCiSeam = await configureNarrativeMaintenanceCiSeam(
-      initializedBackend as unknown as NarrativeMaintenanceCiBackend | null,
-      {
-        isPackaged: app.isPackaged,
-        env: process.env,
-      },
+    const startup = await initializeNarrativeMaintenanceStartup(
+      configuredUserDataDir,
     );
+    if (!startup) return;
+    const {
+      initializedBackend,
+      profileEgress,
+      narrativeMaintenanceCiSeam,
+      narrativeMaintenanceCiHeldFreshnessWriter,
+    } = startup;
+    setExternalEgressGate(() => profileEgress.assertExternalUrl());
     const backend = wrapBackendForProductJourneyAi(
       initializedBackend,
       shouldUseProductJourneyAi({ isPackaged: app.isPackaged }),
@@ -408,28 +487,172 @@ if (!gotSingleInstanceLock) {
     const licenseValidation = createLicenseValidationScheduler(
       backend,
       broadcastBackendEvent,
+      {
+        startEnabled: !profileEgress.restricted && !profileEgress.unavailable,
+      },
     );
-    const narrativeFreshness = createNarrativeFreshnessScheduler(backend);
+    // D2a activation is main-owned: close and drain all main-owned external
+    // transports before Native persists the restricted profile state. These
+    // callbacks never cross the renderer/preload contract.
+    if (!profileEgress.unavailable) {
+      profileEgress.registerMainEgressParticipant("cli-ai", () =>
+        cliAi.quiesceForProfileEgress(),
+      );
+      profileEgress.registerMainEgressParticipant("codex-app-server", () =>
+        codexApp.quiesceForProfileEgress(),
+      );
+      profileEgress.registerMainEgressParticipant("license-validation", () =>
+        licenseValidation.quiesceForProfileEgress(),
+      );
+      profileEgress.registerMainEgressParticipant("vivliostyle", () =>
+        vivliostyle.quiesceForProfileEgress(),
+      );
+    }
+    let narrativeMaintenanceTriggers: NarrativeMaintenanceTriggerCoordinator | null =
+      null;
+    const narrativeFreshness = createNarrativeFreshnessScheduler(backend, {
+      onCutoverNotReady: () => {
+        narrativeMaintenanceTriggers?.requestBeforeCutoverPreparation();
+      },
+      onCycleCompleted: (observation) => {
+        void Promise.resolve(
+          narrativeMaintenanceCiHeldFreshnessWriter?.recordFreshness(
+            observation,
+          ),
+        ).catch((error: unknown) => {
+          // Held Freshness is a CI-only acceptance artifact. A failed observer
+          // must remain diagnostic and never become an unhandled rejection in
+          // an otherwise healthy production scheduler.
+          console.warn(
+            "[narrative-freshness] held-freshness receipt failed:",
+            error,
+          );
+        });
+      },
+    });
     // Main-only system-work seam. Trigger discovery is owned by this process;
     // renderer/preload never supplies project scope, paths, or phase data.
-    const {
-      scheduler: narrativeMaintenance,
-      coordinator: narrativeMaintenanceTriggers,
-    } = bootstrapNarrativeMaintenance(backend, narrativeMaintenanceCiSeam);
+    const { scheduler: narrativeMaintenance, coordinator } =
+      bootstrapNarrativeMaintenance(backend, narrativeMaintenanceCiSeam);
+    narrativeMaintenanceTriggers = coordinator;
     licenseValidation.start();
-    narrativeFreshness.start();
-    app.on("will-quit", () => {
-      // close veto を通過して終了が確定してから同期 KILL する。before-quit で
-      // dispose すると、未保存確認で終了を取り消した後も全 handler が死ぬ。
-      vivliostyle.disposeAll();
-      updater.dispose();
-      licenseValidation.dispose();
-      narrativeFreshness.dispose();
-      narrativeMaintenanceTriggers?.dispose();
-      narrativeMaintenance?.dispose();
-      cliAi.disposeAll();
-      void codexApp.dispose();
-      void externalMount.disposeAll();
+    if (!shouldDisableNarrativeFreshnessForLaunch(narrativeMaintenanceCiSeam)) {
+      narrativeFreshness.start();
+    }
+    // Electron can emit `will-quit` as soon as app.close()/app.quit() is
+    // requested, before the renderer's close-veto protocol has completed its
+    // genesis prelude and strict persistence drain. Keep the promise that
+    // represents the main window's actual teardown separate from the Native
+    // lifecycle shutdown so Native cannot enter Transition while the
+    // renderer still needs its workspace authority to flush.
+    let rendererTeardown: Promise<void> = Promise.resolve();
+    const quitFinalizer = createNarrativeMaintenanceQuitFinalizer({
+      dispose: async () => {
+        // Native shutdown observes Open/Restore through the shared lifecycle
+        // owner. Always issue that idempotent request even when the scheduler
+        // cannot produce its terminal receipt; otherwise an independent
+        // scheduler failure could strand an active workspace worker outside
+        // the shutdown observation budget.
+        // Discovery may still enqueue recovery work while Freshness is
+        // joining an in-flight Native cycle. Start the independent producer
+        // shutdowns together, but make maintenance disposal wait for
+        // Freshness to join before it performs its final recovery drain.
+        // Otherwise a Freshness cycle could create a descriptor immediately
+        // after maintenance observed `none`, leaving Native close with an
+        // unpumped process-local owner.
+        const coordinatorResult = Promise.resolve()
+          .then(() => narrativeMaintenanceTriggers?.dispose())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
+        // Freshness is a separate main-owned producer, but its in-flight
+        // Native cycle is still a lifecycle participant. Join it before
+        // request_shutdown so a cooperative stop is observed as a normal
+        // terminal cycle instead of being converted into a RecoveryRequired
+        // descriptor while the application is already closing.
+        const freshnessResult = Promise.resolve()
+          .then(() => narrativeFreshness.dispose())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
+        const schedulerResult = freshnessResult
+          .then(() => narrativeMaintenance?.dispose())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
+        const nativeResult = Promise.all([
+          rendererTeardown,
+          coordinatorResult,
+          schedulerResult,
+          freshnessResult,
+        ])
+          .then(() => backend?.shutdownWorkspaceLifecycle?.())
+          .then(
+            () => undefined,
+            (error) => error,
+          );
+        const schedulerError = await schedulerResult;
+        let nativeError = await nativeResult;
+        // Native may observe an admitted maintenance delivery before the
+        // scheduler has finished its cancellation/ACK handoff.  A failed
+        // `publish_closed` at that boundary is not terminal proof of a
+        // failed shutdown: once the scheduler has retired its exact delivery
+        // record, re-observe the same idempotent Native shutdown request.
+        // Keep this retry inside the single finalizer attempt so the bounded
+        // observation budget remains the authority for termination.
+        if (nativeError !== undefined && backend?.shutdownWorkspaceLifecycle) {
+          nativeError = await Promise.resolve()
+            .then(() => backend.shutdownWorkspaceLifecycle?.())
+            .then(
+              () => undefined,
+              (error) => error,
+            );
+        }
+        if (schedulerError !== undefined || nativeError !== undefined) {
+          const failures = [schedulerError, nativeError].filter(
+            (error): error is unknown => error !== undefined,
+          );
+          throw new AggregateError(
+            failures,
+            "workspace lifecycle shutdown did not reach a terminal receipt",
+          );
+        }
+      },
+      error: (error) => {
+        console.error(
+          "[grimodex-electron] narrative maintenance shutdown failed:",
+          error,
+        );
+      },
+      complete: () =>
+        runIndependentShutdownCleanups([
+          () => vivliostyle.disposeAll(),
+          () => updater.dispose(),
+          () => licenseValidation.dispose(),
+          () => narrativeFreshness.dispose(),
+          () => narrativeMaintenanceTriggers?.dispose(),
+          () => narrativeMaintenanceCiHeldFreshnessWriter?.dispose(),
+          () => cliAi.disposeAll(),
+          () => codexApp.dispose(),
+          () => externalMount.disposeAll(),
+        ]),
+      quit: () => app.quit(),
+      exit: (code) => {
+        console.error(
+          "[grimodex-electron] maintenance shutdown could not be proven after bounded retries; exiting fatally",
+        );
+        app.exit(code);
+      },
+    });
+    app.on("will-quit", (event) => {
+      // The finalizer vetoes the current quit synchronously, then waits for a
+      // validated Native terminal receipt before releasing the rest of the
+      // process teardown. Reentrant will-quit events only observe the same
+      // in-flight barrier.
+      void quitFinalizer(event);
     });
     // API キー保管（バッチ3a）: safeStorage 暗号化 + ai-keys.json。has/save/delete は
     // shell ハンドラ、チャット送信のキー解決は dispatchInvoke へ secrets として注入。
@@ -464,23 +687,43 @@ if (!gotSingleInstanceLock) {
       keyStore,
       broadcastBackendEvent,
       narrativeMaintenanceCiSeam,
+      profileEgress,
+      licenseValidation,
+      narrativeMaintenance ?? undefined,
+      narrativeFreshness,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には
     // 届かない（FE 購読者なしのデバッグチャネル — TSFn 実証は
     // workspace:opened が担う）。
-    registerEventBus(backend, (channel, payload) => {
-      narrativeMaintenanceTriggers?.handleBackendEvent(channel, payload);
-      if (channel === "workspace:opened") {
-        void codexApp.handleWorkspaceChanged();
-      }
-    });
+    registerEventBus(
+      backend,
+      (channel, payload) => {
+        narrativeFreshness.handleBackendEvent(channel, payload);
+        narrativeMaintenanceTriggers?.handleBackendEvent(channel, payload);
+        if (channel === "workspace:opened") {
+          void codexApp.handleWorkspaceChanged();
+        }
+      },
+      profileEgress,
+    );
     performance.mark("grimodex:electron-create-main-window");
     const mainWindow = createMainWindow();
+    rendererTeardown = new Promise<void>((resolve) => {
+      if (mainWindow.isDestroyed()) {
+        resolve();
+        return;
+      }
+      mainWindow.once("closed", resolve);
+    });
     mainWindow.webContents.once("did-finish-load", () => {
       performance.mark("grimodex:renderer-finished-load");
       mainRendererReady = true;
       flushPendingWebEditorHandoff();
+      // The event may have preceded renderer subscription.  Re-read the
+      // main-only snapshot and publish it through the same revision validator;
+      // a stale response cannot revive an old binding.
+      void refreshWorkspaceLifecycleView(backend);
     });
     if (app.isPackaged && process.platform === "linux") {
       scheduleMcpSidecarWarmup(mainWindow, resolveMcpSidecar, (error) => {

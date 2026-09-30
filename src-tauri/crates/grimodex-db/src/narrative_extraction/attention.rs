@@ -828,11 +828,9 @@ mod tests {
     use super::*;
     use crate::Database;
     use rusqlite::params;
-    use std::path::Path;
 
     fn fixture() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES ('proj-1', 'Project 1')",

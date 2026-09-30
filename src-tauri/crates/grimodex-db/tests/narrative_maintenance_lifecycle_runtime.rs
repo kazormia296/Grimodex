@@ -73,6 +73,7 @@ fn foreground_config() -> NarrativeMaintenanceCiConfig {
         fault: None,
         trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
         setup: None,
+        freshness_hold_project_id: None,
         product_journey_barrier_id: Some("barrier-c2-5b-lifecycle".to_string()),
         correlation: Some("correlation-c2-5b-lifecycle".to_string()),
     }
@@ -264,7 +265,7 @@ fn foreground_success_holds_all_three_rows_then_exact_release_shares_one_timesta
         Some(&config),
     )
     .expect("foreground phase succeeds");
-    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+    assert_eq!(result.status, MaintenanceCycleStatus::Deferred);
 
     let barrier = find_running_foreground_system_work_run(&db, &config, &binding)
         .expect("find exact foreground Run")
@@ -341,7 +342,7 @@ fn foreground_backfill_stays_running_when_same_cycle_rediscovery_binds_epoch() {
         Some(&config),
     )
     .expect("foreground Backfill cycle succeeds");
-    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+    assert_eq!(result.status, MaintenanceCycleStatus::Deferred);
 
     let barrier = find_running_foreground_system_work_run(&db, &config, &binding)
         .expect("find exact foreground Backfill")
@@ -390,7 +391,7 @@ fn foreground_backfill_stays_running_across_followup_cycle_only_for_exact_owner(
         Some(&config),
     )
     .expect("first foreground Backfill cycle succeeds");
-    assert_eq!(first.status, MaintenanceCycleStatus::Accepted);
+    assert_eq!(first.status, MaintenanceCycleStatus::Deferred);
     let barrier = find_running_foreground_system_work_run(&db, &config, &binding)
         .expect("find exact foreground owner")
         .expect("first cycle must leave one held Run");
@@ -398,6 +399,8 @@ fn foreground_backfill_stays_running_across_followup_cycle_only_for_exact_owner(
     let followup = MaintenanceCycleRequest {
         work: Vec::new(),
         wake_project_ids: vec![PROJECT_ID.to_string()],
+        delivery_sequence: None,
+        delivery_fingerprint: None,
         workspace_binding: Some(binding.clone()),
     };
     let second = run_system_work_cycle_with_modes_and_config_and_foreground_owner(
@@ -408,7 +411,7 @@ fn foreground_backfill_stays_running_across_followup_cycle_only_for_exact_owner(
         Some(&barrier),
     )
     .expect("same-process follow-up keeps the exact owner held");
-    assert_eq!(second.status, MaintenanceCycleStatus::Accepted);
+    assert_eq!(second.status, MaintenanceCycleStatus::Deferred);
 
     let rows: Vec<(String, String, Option<String>)> = db
         .with_conn(|conn| {

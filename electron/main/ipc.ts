@@ -24,6 +24,7 @@ import {
   IPC,
   IPC_BACKEND_UNAVAILABLE_MARKER,
   IPC_UNIMPLEMENTED_MARKER,
+  toErrorString,
 } from "../shared/ipcContract.js";
 import type {
   CanonicalAuthorityRoute,
@@ -44,14 +45,54 @@ import {
 } from "./windows.js";
 import {
   claimNarrativeMaintenanceForegroundRelease,
+  normalizeWorkspaceBinding,
   scheduleNarrativeMaintenanceForegroundRelease,
 } from "./narrativeMaintenance.js";
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
+import type { LicenseValidationScheduler } from "./licenseValidation.js";
+import { createRelatedScenesSearchAuthority } from "./relatedScenesSearchAuthority.js";
+import { createRelatedScenesReconciler } from "./relatedScenesReconciler.js";
+import type {
+  MainIssuedCallerIdentity,
+  ProfileEgressGate,
+} from "./profileEgress.js";
+import type {
+  NarrativeMaintenanceQuiesceLease,
+  NarrativeMaintenanceScheduler,
+} from "./narrativeMaintenance.js";
+import type {
+  NarrativeFreshnessQuiesceLease,
+  NarrativeFreshnessScheduler,
+} from "./narrativeFreshness.js";
 
 const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_create",
   "snippet_update",
   "snippet_delete",
+]);
+
+const MANUAL_LICENSE_COMMANDS = new Set([
+  "activate_license",
+  "revalidate_license",
+  "deactivate_license",
+]);
+
+const WORKSPACE_SWITCH_COMMANDS = new Set([
+  "open_workspace",
+  "restore_backup",
+  "restore_recovery_candidate",
+]);
+
+const MANUAL_NARRATIVE_MAINTENANCE_COMMANDS = new Set([
+  "verify_narrative_dependency_graph",
+  "rebuild_narrative_derived_state",
+]);
+
+// Scan publication is an import-only canonical writer. Keep it out of the
+// generic renderer writer set so a forged human/AI origin cannot select a
+// different authority route at the main boundary.
+const IMPORT_ONLY_CANONICAL_WRITER_COMMANDS = new Set([
+  "scan_staging_project_publish",
 ]);
 
 // Codex has two renderer-facing writer families. The `agent_codex_*` commands
@@ -237,6 +278,23 @@ const HISTORY_JOURNAL_WRITER_COMMANDS = new Set([
   "foreshadow_delete",
   "foreshadow_update_setup",
   "foreshadow_setup_create_ai",
+]);
+
+const RELATED_SCENES_MUTATION_WAKE_COMMANDS = new Set([
+  ...HISTORY_JOURNAL_WRITER_COMMANDS,
+  "narrative_extraction_save_proposal_set",
+  "nir1_entity_relation_revision_create",
+  "nir1_entity_relation_revision_prepare",
+  "narrative_extraction_create_human_derived_revision",
+  "narrative_extraction_append_revision",
+  "narrative_extraction_append_decision",
+  "narrative_extraction_append_human_decision",
+  "narrative_extraction_revise_and_decide",
+  "narrative_extraction_revise_and_decide_as_human",
+  "narrative_extraction_apply_commit",
+  "narrative_extraction_undo_commit",
+  "narrative_extraction_redo_commit",
+  "semantic_cancel_background",
 ]);
 
 const MAX_RENDERER_HISTORY_JOURNALS = 4096;
@@ -949,12 +1007,21 @@ async function policyAllowsAgentTool(
   backend: NapiBackendLike,
   projectId: string,
   policy: AgentAuthorityPolicy,
+  callerIdentity?: MainIssuedCallerIdentity,
 ): Promise<boolean> {
-  const raw = await backend.dbExecute(
-    "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
-    [projectId],
-    "get",
-  );
+  const raw =
+    callerIdentity === undefined
+      ? await backend.dbExecute(
+          "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+          [projectId],
+          "get",
+        )
+      : await backend.dbExecute(
+          "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+          [projectId],
+          "get",
+          JSON.stringify(callerIdentity),
+        );
   const parsed = JSON.parse(raw) as { rows?: unknown };
   const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
   if (rows.length === 0) return false;
@@ -1469,6 +1536,7 @@ async function issueAgentAuthorityCapabilitiesForSender(
   args: CommandArgs,
   response: unknown,
   backend: NapiBackendLike | null,
+  callerIdentity?: MainIssuedCallerIdentity,
 ): Promise<unknown> {
   if (!backend || !isRecord(args.auditContext)) return response;
   if (args.auditContext.pathId !== "chat_agent_main") return response;
@@ -1498,7 +1566,14 @@ async function issueAgentAuthorityCapabilitiesForSender(
     ) {
       continue;
     }
-    if (!(await policyAllowsAgentTool(backend, projectId, definition.policy))) {
+    if (
+      !(await policyAllowsAgentTool(
+        backend,
+        projectId,
+        definition.policy,
+        callerIdentity,
+      ))
+    ) {
       continue;
     }
     const canonicalInputDigest = canonicalAgentToolInputDigest(
@@ -1648,6 +1723,62 @@ function isRecord(value: unknown): value is CommandArgs {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const NATIVE_DB_RESULT_KIND_KEY = "__grimodexDbResultKind";
+type NativeDbResultKind = "read" | "committed-mutation";
+
+function nativeDbResultKind(
+  command: string,
+  value: unknown,
+): NativeDbResultKind | "invalid" | null {
+  if (command !== "db_execute" && command !== "db_execute_batch") {
+    return null;
+  }
+  if (!isRecord(value) || !Object.hasOwn(value, NATIVE_DB_RESULT_KIND_KEY)) {
+    return null;
+  }
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 2 ||
+    !keys.includes("rows") ||
+    !Array.isArray(value.rows)
+  ) {
+    return "invalid";
+  }
+  if (
+    value[NATIVE_DB_RESULT_KIND_KEY] === "read" ||
+    value[NATIVE_DB_RESULT_KIND_KEY] === "committed-mutation"
+  ) {
+    return value[NATIVE_DB_RESULT_KIND_KEY];
+  }
+  return "invalid";
+}
+
+function stripNativeDbResultKind(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const publicValue = { ...value };
+  delete publicValue[NATIVE_DB_RESULT_KIND_KEY];
+  return publicValue;
+}
+
+function isOpaqueCommittedDbMutationReceipt(
+  command: string,
+  value: unknown,
+): boolean {
+  if (command !== "db_execute" && command !== "db_execute_batch") {
+    return false;
+  }
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  return (
+    keys.length === 2 &&
+    keys.includes("rows") &&
+    keys.includes("committed") &&
+    value.committed === true &&
+    Array.isArray(value.rows) &&
+    value.rows.length === 0
+  );
+}
+
 function isHistoryReplayCommand(cmd: string, payload: CommandArgs): boolean {
   return (
     HISTORY_REPLAY_COMMANDS.has(cmd) ||
@@ -1727,6 +1858,10 @@ function authorityRouteForRendererCommand(
     );
   }
 
+  if (IMPORT_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
+    return authorityRouteForUnambiguousOrigin(payload.origin, ["import-apply"]);
+  }
+
   if (HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
     return payload.origin === "human" ? "human-direct" : undefined;
   }
@@ -1779,6 +1914,7 @@ export function bindRendererAuthorityForIpc(
   if (!route) {
     const requiresAuthority =
       GENERIC_CANONICAL_WRITER_COMMANDS.has(cmd) ||
+      IMPORT_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||
       CODEX_RENDERER_COMMANDS.has(cmd) ||
       RENDERER_CHRONICLE_COMMANDS.has(cmd) ||
       HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||
@@ -1919,7 +2055,42 @@ export function registerIpcRouter(
   secrets?: SecretsResolver,
   broadcast?: (channel: string, payload: unknown) => void,
   narrativeMaintenanceCiSeam: NarrativeMaintenanceCiSeam = { active: false },
+  profileEgress?: ProfileEgressGate,
+  licenseValidation?: Pick<
+    LicenseValidationScheduler,
+    "runManualOperation"
+  >,
+  narrativeMaintenance?: Pick<
+    NarrativeMaintenanceScheduler,
+    | "quiesceForWorkspaceSwitch"
+    | "reconcileRecoveryBeforeWorkspaceOpen"
+    | "beginNarrativeMaintenanceAttempt"
+    | "cancelNarrativeMaintenanceAttempt"
+  >,
+  narrativeFreshness?: Pick<
+    NarrativeFreshnessScheduler,
+    "quiesceForWorkspaceSwitch"
+  >,
 ): void {
+  const relatedScenesReconciler = createRelatedScenesReconciler({
+    reconcile: async () => {
+      if (!backend?.relatedScenesReconcile)
+        throw new Error("RELATED_SCENES_RECONCILIATION_UNAVAILABLE");
+      return JSON.parse(await backend.relatedScenesReconcile()) as {
+        activeOperations: number;
+      };
+    },
+    reportFailure: () =>
+      console.warn("[related-scenes] Native generation reconciliation failed"),
+  });
+  const relatedScenesAuthority = createRelatedScenesSearchAuthority({
+    releaseOwner: (ownerKey) => {
+      relatedScenesReconciler.releaseOwner(ownerKey);
+      return backend?.relatedScenesReleaseOwner?.(ownerKey);
+    },
+    onReleaseFailure: () =>
+      console.warn("[related-scenes] Native owner cleanup failed"),
+  });
   ipcMain.handle(
     IPC.invoke,
     async (event, cmd: unknown, args: unknown): Promise<Envelope> => {
@@ -1927,11 +2098,23 @@ export function registerIpcRouter(
         ? performance.now()
         : null;
       let workspaceOpenResult: "success" | "failure" = "failure";
+      let workspaceSwitchLeases: Array<
+        NarrativeMaintenanceQuiesceLease | NarrativeFreshnessQuiesceLease
+      > = [];
       try {
         if (typeof cmd !== "string") {
           return {
             ok: false,
             error: "IPC_INVALID_REQUEST: command name must be a string",
+          };
+        }
+        if (
+          cmd === "capture_current_chat_input" &&
+          event.sender.isDestroyed()
+        ) {
+          return {
+            ok: false,
+            error: "IPC_CAPTURE_SENDER_DESTROYED: no capture was started",
           };
         }
         const win = BrowserWindow.fromWebContents(event.sender);
@@ -1940,15 +2123,51 @@ export function registerIpcRouter(
             ? extraShellHandlers(win)
             : extraShellHandlers;
         const rawArgs = isRecord(args) ? args : {};
-        const boundArgs = bindRendererAuthorityForIpc(
+        const canonicalArgs = bindRendererAuthorityForIpc(
           cmd,
           rawArgs,
           event.sender.id,
         );
-        const envelope = await dispatchInvoke(
+        const boundArgs = relatedScenesAuthority.bind(
           cmd,
-          boundArgs,
-          {
+          canonicalArgs,
+          event.sender,
+        );
+        // `attemptId` is a main-issued lifecycle identity. Strip any value
+        // supplied by a renderer before the profile gate and only add the
+        // exact scheduler-owned id below after admission succeeds.
+        const rendererSafeArgs =
+          MANUAL_NARRATIVE_MAINTENANCE_COMMANDS.has(cmd) &&
+          isRecord(boundArgs) &&
+          isRecord(boundArgs.payload)
+            ? (() => {
+                const { attemptId: _rendererAttemptId, ...payload } =
+                  boundArgs.payload;
+                return { ...boundArgs, payload };
+              })()
+            : boundArgs;
+        const callerIdentity = profileEgress?.issueCallerIdentity(
+          event.sender.id,
+        );
+        // Keep the main-issued identity available to the profile gate and the
+        // generic DB adapter without changing the enumerable wire shape of
+        // typed commands. A number of existing Native requests deliberately
+        // reject unknown fields, so an enumerable authority sidecar would
+        // make otherwise valid UI calls fail their exact-key validation.
+        let dispatchArgs = callerIdentity
+          ? Object.defineProperty({ ...rendererSafeArgs }, "callerIdentity", {
+              value: callerIdentity,
+              enumerable: false,
+              configurable: true,
+            })
+          : rendererSafeArgs;
+        try {
+          profileEgress?.assertInvoke(cmd, dispatchArgs);
+        } catch (error) {
+          return { ok: false, error: toErrorString(error) };
+        }
+        const dispatch = (): Promise<Envelope> =>
+          dispatchInvoke(cmd, dispatchArgs, {
             backend,
             shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
             secrets,
@@ -1959,9 +2178,305 @@ export function registerIpcRouter(
                 agentArgs,
                 response,
                 backend,
+                callerIdentity,
               ),
-          },
-        );
+          });
+        let envelope: Envelope;
+        let manualMaintenanceAttemptId: string | null = null;
+        try {
+          if (WORKSPACE_SWITCH_COMMANDS.has(cmd)) {
+            const requestedWorkspacePath =
+              cmd === "open_workspace" && "path" in dispatchArgs
+                ? dispatchArgs.path
+                : undefined;
+            if (
+              cmd === "open_workspace" &&
+              (typeof requestedWorkspacePath !== "string" ||
+                requestedWorkspacePath.trim().length === 0 ||
+                requestedWorkspacePath.includes("\0"))
+            ) {
+              throw new Error(
+                "invalid args `path` for command `open_workspace`: expected a non-empty path",
+              );
+            }
+            const acquired: Array<
+              NarrativeMaintenanceQuiesceLease | NarrativeFreshnessQuiesceLease
+            > = [];
+            try {
+              const maintenanceLease =
+                await narrativeMaintenance?.quiesceForWorkspaceSwitch?.();
+              if (
+                maintenanceLease &&
+                typeof maintenanceLease === "object" &&
+                typeof maintenanceLease.resume === "function"
+              ) {
+                acquired.push(maintenanceLease);
+              }
+              const freshnessLease =
+                await narrativeFreshness?.quiesceForWorkspaceSwitch?.();
+              if (
+                freshnessLease &&
+                typeof freshnessLease === "object" &&
+                typeof freshnessLease.resume === "function"
+              ) {
+                acquired.push(freshnessLease);
+              }
+              if (typeof requestedWorkspacePath === "string") {
+                // Freshness can publish a recovery descriptor while joining.
+                // Keep both producers stopped until Native has reconciled
+                // only this Open target and main has ACKed its exact proof.
+                await narrativeMaintenance?.reconcileRecoveryBeforeWorkspaceOpen?.(
+                  requestedWorkspacePath,
+                );
+              }
+              workspaceSwitchLeases = acquired;
+            } catch (error) {
+              await Promise.all(
+                acquired.map((lease) =>
+                  Promise.resolve(lease.resume(false)).catch(() => undefined),
+                ),
+              );
+              throw error;
+            }
+          }
+          if (
+            MANUAL_NARRATIVE_MAINTENANCE_COMMANDS.has(cmd) &&
+            typeof narrativeMaintenance?.beginNarrativeMaintenanceAttempt ===
+              "function" &&
+            typeof narrativeMaintenance?.cancelNarrativeMaintenanceAttempt ===
+              "function"
+          ) {
+            const binding = normalizeWorkspaceBinding(
+              backend?.getNarrativeMaintenanceWorkspaceBinding?.(),
+            );
+            if (binding !== null) {
+              const attemptId = `manual-ipc-${randomUUID()}`;
+              await narrativeMaintenance.beginNarrativeMaintenanceAttempt(
+                attemptId,
+                binding,
+              );
+              manualMaintenanceAttemptId = attemptId;
+              if (isRecord(dispatchArgs) && isRecord(dispatchArgs.payload)) {
+                // The attempt identity is issued by main after the renderer
+                // request has passed its authority gate. Native binds the
+                // manual operation to this exact process-local attempt.
+                dispatchArgs = {
+                  ...dispatchArgs,
+                  payload: {
+                    ...dispatchArgs.payload,
+                    attemptId,
+                  },
+                };
+              } else {
+                throw new Error(
+                  "NEX_MAINTENANCE_ATTEMPT_PAYLOAD_MISSING: manual maintenance payload is unavailable",
+                );
+              }
+            }
+          }
+          envelope =
+            licenseValidation && MANUAL_LICENSE_COMMANDS.has(cmd)
+              ? await licenseValidation.runManualOperation(dispatch)
+              : await dispatch();
+        } catch (error) {
+          envelope = { ok: false, error: toErrorString(error) };
+        }
+        if (cmd === "capture_current_chat_input") {
+          const legacyOnly =
+            envelope.ok &&
+            isRecord(envelope.value) &&
+            envelope.value.status === "legacy-only";
+          const cancelCommittedCapture = async (): Promise<void> => {
+            const rawSubmission = (dispatchArgs as Record<string, unknown>)
+              .submission;
+            const submission =
+              isRecord(rawSubmission) &&
+              [
+                rawSubmission.submissionId,
+                rawSubmission.messageId,
+                rawSubmission.chatSessionId,
+                rawSubmission.sceneId,
+              ].every((value) => typeof value === "string")
+                ? {
+                    submissionId: rawSubmission.submissionId as string,
+                    messageId: rawSubmission.messageId as string,
+                    chatSessionId: rawSubmission.chatSessionId as string,
+                    sceneId: rawSubmission.sceneId as string,
+                  }
+                : null;
+            if (
+              !submission ||
+              !callerIdentity ||
+              !backend?.cancelCurrentChatInput
+            ) {
+              return;
+            }
+            const raw = await backend.cancelCurrentChatInput(
+              submission,
+              JSON.stringify(callerIdentity),
+            );
+            const receipt: unknown = JSON.parse(raw);
+            if (
+              !isRecord(receipt) ||
+              !["cancelled", "not-current", "not-found"].includes(
+                String(receipt.status),
+              ) ||
+              receipt.submissionId !== submission.submissionId ||
+              receipt.messageId !== submission.messageId
+            ) {
+              throw new Error("IPC_CAPTURE_CANCEL_TERMINAL_RECEIPT_INVALID");
+            }
+          };
+          if (envelope.ok && !legacyOnly && event.sender.isDestroyed()) {
+            try {
+              await cancelCommittedCapture();
+            } catch (error) {
+              console.warn(
+                "[ipc] sender-lost chat capture cancellation failed",
+                toErrorString(error),
+              );
+            }
+            envelope = {
+              ok: false,
+              error:
+                "IPC_CAPTURE_OUTCOME_UNKNOWN: sender was destroyed after local Native admission",
+            };
+          } else if (envelope.ok && !legacyOnly) {
+            try {
+              // The Native transaction may have committed before a workspace
+              // or caller transition. Never acknowledge that stale result as
+              // accepted; terminalize that exact insert when the old Native
+              // owner is still live, otherwise the incarnation check rejects reuse.
+              profileEgress?.assertInvoke(cmd, dispatchArgs);
+            } catch (error) {
+              try {
+                await cancelCommittedCapture();
+              } catch (cleanupError) {
+                console.warn(
+                  "[ipc] stale chat capture cancellation failed",
+                  toErrorString(cleanupError),
+                );
+              }
+              envelope = {
+                ok: false,
+                error: `IPC_CAPTURE_OUTCOME_UNKNOWN: ${toErrorString(error)}`,
+              };
+            }
+          } else if (!envelope.ok) {
+            try {
+              // Native may commit and then fail its post-commit workspace check.
+              await cancelCommittedCapture();
+            } catch (error) {
+              console.warn(
+                "[ipc] failed chat capture cleanup failed",
+                toErrorString(error),
+              );
+            }
+          }
+        }
+        if (cmd === "restore_backup" && envelope.ok) {
+          // The renderer also consumes this operation-scoped result, but the
+          // main profile gate must see the trusted Native proof first.  A
+          // failed Restore may return `unchanged` without another
+          // `workspace:opened`; feed that proof into the same authorization
+          // owner before the next renderer invoke can mint a caller.
+          profileEgress?.observeWorkspaceLifecycleResult?.(envelope.value);
+        }
+        if (
+          manualMaintenanceAttemptId !== null &&
+          typeof narrativeMaintenance?.cancelNarrativeMaintenanceAttempt ===
+            "function"
+        ) {
+          try {
+            const receipt =
+              await narrativeMaintenance.cancelNarrativeMaintenanceAttempt(
+                manualMaintenanceAttemptId,
+                "closed",
+              );
+            const receiptRecord = isRecord(receipt) ? receipt : null;
+            const cleanup =
+              receiptRecord && isRecord(receiptRecord.cleanup)
+                ? receiptRecord.cleanup
+                : null;
+            const reusable =
+              receiptRecord?.connectionReusable === true &&
+              cleanup?.status === "clean";
+            if (!reusable && envelope.ok) {
+              envelope = {
+                ok: false,
+                error:
+                  "NEX_MAINTENANCE_CONNECTION_UNUSABLE: manual maintenance terminal receipt did not prove Native connection reuse",
+              };
+            }
+          } catch (error) {
+            const cleanupError = toErrorString(error);
+            envelope = envelope.ok
+              ? { ok: false, error: cleanupError }
+              : {
+                  ok: false,
+                  error: `${envelope.error}; ${cleanupError}`,
+                };
+          }
+        }
+        if (envelope.ok) {
+          const resultKind = nativeDbResultKind(cmd, envelope.value);
+          if (resultKind === "invalid") {
+            envelope = {
+              ok: false,
+              error: "D2A_EGRESS_DENIED: invalid native database result kind",
+            };
+          } else if (!isOpaqueCommittedDbMutationReceipt(cmd, envelope.value)) {
+            try {
+              // A result admitted before activation may finish after the
+              // profile gate closes. Re-check only plaintext publication
+              // routes here. Native's result kind is authoritative for the
+              // distinction between a read and a mutation; never re-infer it
+              // from the SQL text in main.
+              profileEgress?.assertPlaintextPublication(cmd, dispatchArgs);
+              if (resultKind !== null) {
+                envelope = {
+                  ok: true,
+                  value: stripNativeDbResultKind(envelope.value),
+                };
+              }
+            } catch (error) {
+              if (resultKind === "committed-mutation") {
+                // The mutation is already durable. Do not report it as a
+                // rejected operation, and do not expose rows that may contain
+                // protected RETURNING/plaintext data.
+                envelope = { ok: true, value: { rows: [], committed: true } };
+              } else {
+                envelope = { ok: false, error: toErrorString(error) };
+              }
+            }
+          }
+        }
+        if (envelope.ok && typeof boundArgs.ownerKey === "string") {
+          if (cmd === "related_scenes_begin" && isRecord(envelope.value)) {
+            const ir = envelope.value.ir;
+            if (
+              isRecord(ir) &&
+              ir.status === "pending" &&
+              typeof ir.operationTicket === "string"
+            ) {
+              relatedScenesReconciler.track(
+                boundArgs.ownerKey,
+                ir.operationTicket,
+              );
+            }
+          } else if (
+            cmd === "related_scenes_release" &&
+            typeof boundArgs.operationTicket === "string"
+          ) {
+            relatedScenesReconciler.release(
+              boundArgs.ownerKey,
+              boundArgs.operationTicket,
+            );
+          }
+        }
+        if (envelope.ok && RELATED_SCENES_MUTATION_WAKE_COMMANDS.has(cmd)) {
+          relatedScenesReconciler.wake();
+        }
         if (
           narrativeMaintenanceCiSeam.active &&
           narrativeMaintenanceCiSeam.trigger === "foreground-workspace-wake" &&
@@ -1974,10 +2489,11 @@ export function registerIpcRouter(
             ? boundArgs.payload
             : boundArgs;
           if (isNonEmptyTrimmedString(payload.projectId)) {
-            const claimedRunId = await claimNarrativeMaintenanceForegroundRelease(
-              backend,
-              payload.projectId,
-            );
+            const claimedRunId =
+              await claimNarrativeMaintenanceForegroundRelease(
+                backend,
+                payload.projectId,
+              );
             if (claimedRunId !== null) {
               scheduleNarrativeMaintenanceForegroundRelease(
                 backend,
@@ -2008,6 +2524,25 @@ export function registerIpcRouter(
             );
           }
         }
+        if (workspaceSwitchLeases.length > 0) {
+          const leases = workspaceSwitchLeases;
+          workspaceSwitchLeases = [];
+          await Promise.all(
+            leases.map(async (lease) => {
+              try {
+                // Restore retained maintenance/Freshness work after the
+                // workspace switch attempt. Each lease remains closed after
+                // cleanup failure and rejects stale/overlapping resumes.
+                await lease.resume(envelope.ok);
+              } catch (resumeError) {
+                console.warn(
+                  "[narrative-maintenance] failed to resume retained workspace participants:",
+                  resumeError,
+                );
+              }
+            }),
+          );
+        }
         workspaceOpenResult = envelope.ok ? "success" : "failure";
         if (!envelope.ok) {
           if (envelope.error.startsWith(IPC_UNIMPLEMENTED_MARKER)) {
@@ -2032,9 +2567,16 @@ export function registerIpcRouter(
 
   // パネル別窓（§6.5、S7）の実体を注入する（shellCommands は windows.ts に
   // 直接依存しない — PanelWindowDelegate のコメント参照）。
-  registerShellBridgeHandlers({
+  const panelWindowDelegate = {
     open: openPanelWindow,
     focusByLabel: focusPanelWindow,
     existsByLabel: hasPanelWindow,
-  });
+  };
+  if (profileEgress) {
+    registerShellBridgeHandlers(panelWindowDelegate, undefined, () =>
+      profileEgress.assertExternalUrl(),
+    );
+  } else {
+    registerShellBridgeHandlers(panelWindowDelegate);
+  }
 }

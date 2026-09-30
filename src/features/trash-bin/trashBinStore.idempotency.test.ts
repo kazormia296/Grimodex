@@ -145,6 +145,78 @@ describe("trashBinStore Project authority and delayed persistence", () => {
     expect(useTrashBinStore.getState().items.has("trash-request-1")).toBe(true);
   });
 
+  it("close drain forwards a preexisting permit without admitting a fresh capture", async () => {
+    vi.mocked(trashApi.createTrashItem).mockResolvedValue(
+      createdItem("trash-request-1"),
+    );
+    useTrashBinStore
+      .getState()
+      .enqueuePending(input, { tempId: "trash-request-1" });
+
+    const lease = acquireQuiescenceLease("window-close");
+    try {
+      await expect(
+        flushPendingTrashItemsStrict({ preexistingDraft: true }),
+      ).resolves.toBeUndefined();
+
+      expect(trashApi.createTrashItem).toHaveBeenCalledWith(input, {
+        charCount: 4,
+        isInteresting: false,
+        id: "trash-request-1",
+        preexistingDraft: true,
+      });
+
+      expect(
+        useTrashBinStore
+          .getState()
+          .enqueuePending(input, { tempId: "fresh-during-close" }),
+      ).toBe(false);
+    } finally {
+      lease.release();
+    }
+  });
+
+  it("clears an in-flight close-drain failure so a later ordinary retry succeeds", async () => {
+    vi.mocked(trashApi.createTrashItem).mockRejectedValueOnce(
+      new Error("close-drain create failed"),
+    );
+    useTrashBinStore
+      .getState()
+      .enqueuePending(input, { tempId: "trash-request-1" });
+
+    const lease = acquireQuiescenceLease("window-close");
+    try {
+      await expect(
+        flushPendingTrashItemsStrict({ preexistingDraft: true }),
+      ).rejects.toThrow("pending Trash Bin captures failed");
+    } finally {
+      lease.release();
+    }
+
+    // The failed durable create must remain queued, while its in-flight
+    // promise is cleared so the next boundary can retry without a sticky
+    // preexisting permit or a stale rejected promise.
+    expect(useTrashBinStore.getState().pendingQueue).toHaveLength(1);
+
+    vi.mocked(trashApi.createTrashItem).mockResolvedValueOnce(
+      createdItem("trash-request-1"),
+    );
+    await expect(flushPendingTrashItemsStrict()).resolves.toBeUndefined();
+
+    expect(trashApi.createTrashItem).toHaveBeenNthCalledWith(1, input, {
+      charCount: 4,
+      isInteresting: false,
+      id: "trash-request-1",
+      preexistingDraft: true,
+    });
+    expect(trashApi.createTrashItem).toHaveBeenNthCalledWith(2, input, {
+      charCount: 4,
+      isInteresting: false,
+      id: "trash-request-1",
+    });
+    expect(useTrashBinStore.getState().pendingQueue).toHaveLength(0);
+  });
+
   it("does not admit a new delayed capture after lifecycle quiescence starts", () => {
     const lease = acquireQuiescenceLease("project-load");
     try {

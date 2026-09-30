@@ -32,14 +32,12 @@ use super::human_material_basis::{
     project_d1_declaration_set, resolve_human_material_basis, D1ParentAuthority,
     HumanMaterialDerivationKind, HumanMaterialParentBundle, HumanMaterialResolutionContext,
     MaterialBasis, TrustedDependencyEntry, TrustedEvidenceEntry, TrustedHumanMaterialResolution,
-    TrustedSourceBasisEntry, V1PersistedEdge, D1_PRODUCER_ID,
+    TrustedSourceBasisEntry, V1PersistedEdge,
 };
 use super::models::{CreateHumanDerivedRevisionRequest, TrustedScopeV2Projection};
 use super::project_scope_authority::load_live_project_scope_authority;
 use super::reconciliation_envelope::load_source_basis_rows;
-use super::repository::{
-    record_revision_dependency_edges_in_tx, PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
-};
+use super::repository::record_revision_dependency_edges_in_tx;
 use super::restore_rebuild::evaluate_edge_from_db;
 use super::scope_authority_runtime::load_sealed_snapshot_document_binding_in_tx;
 use super::task_leases::with_immediate_transaction;
@@ -379,18 +377,32 @@ fn resolve_live_scope_override_authority(
         }
     };
 
-    let trusted_material = build_scope_override_material_sidecar(
+    let identity = super::scope_dependency_projection::bind_identity_in_tx(
+        conn,
+        trusted_project_id,
+        &parent.owning_run_id,
+        &context.scene_ref,
+        &context.edited_document_ref,
+        context.secret_scope,
+    )?;
+    let projection_source_key = identity.source_key()?;
+    let projection_token =
+        grimodex_core::narrative_scope_dependency_projection::projection_revision(
+            &identity, &authority,
+        )?;
+    let trusted_material = build_scope_override_material_sidecar_for_kind(
         parent,
         context,
-        &authority_source_key,
-        &authority.source.revision_token,
+        grimodex_core::narrative_scope_dependency_projection::SOURCE_KIND,
+        &projection_source_key,
+        &projection_token,
     )?;
     let scope_projection = if context.secret_scope {
         Some(build_live_scope_v2_projection(
             &authority,
             &context.scene_ref,
             mapping,
-            &authority_source_key,
+            &projection_source_key,
         )?)
     } else {
         None
@@ -465,12 +477,35 @@ fn unresolved_scope_reason(reason: &NarrativeScopeAuthorityUnresolvedReasonV2) -
     }
 }
 
-fn build_scope_override_material_sidecar(
+pub(crate) fn build_scope_override_material_sidecar(
     parent: &HumanMaterialParentBundle,
     context: &HumanMaterialResolutionContext,
     authority_source_key: &str,
     authority_revision_token: &str,
 ) -> anyhow::Result<TrustedHumanMaterialResolution> {
+    build_scope_override_material_sidecar_for_kind(
+        parent,
+        context,
+        SCOPE_AUTHORITY_SOURCE_KIND,
+        authority_source_key,
+        authority_revision_token,
+    )
+}
+
+pub(crate) fn build_scope_override_material_sidecar_for_kind(
+    parent: &HumanMaterialParentBundle,
+    context: &HumanMaterialResolutionContext,
+    source_kind: &str,
+    authority_source_key: &str,
+    authority_revision_token: &str,
+) -> anyhow::Result<TrustedHumanMaterialResolution> {
+    anyhow::ensure!(
+        matches!(
+            source_kind,
+            "project-scope-authority" | "scope-dependency-projection-v1"
+        ),
+        "NEX_C2B_SCOPE_AUTHORITY_INVALID: unknown Scope dependency contract"
+    );
     anyhow::ensure!(
         !authority_revision_token.trim().is_empty(),
         "NEX_C2B_SCOPE_AUTHORITY_INVALID: live authority revision token is empty"
@@ -515,7 +550,7 @@ fn build_scope_override_material_sidecar(
         });
     }
     source_basis.push(TrustedSourceBasisEntry {
-        source_kind: SCOPE_AUTHORITY_SOURCE_KIND.to_owned(),
+        source_kind: source_kind.to_owned(),
         source_key: authority_source_key.to_owned(),
         revision_token: authority_revision_token.to_owned(),
         revision_observed_at: None,
@@ -659,8 +694,15 @@ fn create_human_derived_revision_with_c2b_projection_materialization_in_tx(
             project_id: trusted_project_id.to_owned(),
             consumer_kind: PROPOSAL_REVISION_CONSUMER_KIND.to_owned(),
             consumer_key: child_receipt.revision_id.clone(),
-            producer_id: D1_PRODUCER_ID.to_owned(),
-            producer_generation: PROPOSAL_REVISION_D1_PRODUCER_GENERATION,
+            producer_id: super::human_material_basis::material_d1_producer(
+                &admission.material_basis,
+            )
+            .0
+            .to_owned(),
+            producer_generation: super::human_material_basis::material_d1_producer(
+                &admission.material_basis,
+            )
+            .1,
         },
     )?;
     write_dependency_declaration_set_in_tx(
@@ -723,6 +765,7 @@ fn create_human_derived_revision_with_c2b_projection_materialization_in_tx(
         updated == 1,
         "NEX_PROPOSAL_REVISION_CONFLICT: current revision changed concurrently"
     );
+    super::nir1_chronicle_index::invalidate::suspend_project_in_tx(conn, trusted_project_id)?;
     let saved_object = saved
         .as_object_mut()
         .ok_or_else(|| anyhow!("NEX_C2B_CHILD_RECEIPT_INVALID: C2A receipt is not an object"))?;

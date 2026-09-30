@@ -31,6 +31,13 @@ const REQUIRED_RUN_KINDS = [
   "dependency-repair",
 ];
 
+const NON_INCREMENTAL_RUN_KINDS = new Set([
+  "dependency-backfill",
+  "dependency-verify",
+  "dependency-rebuild-derived",
+  "dependency-repair",
+]);
+
 const EXPECTED_EXISTING_RUN_KIND_VALUES = {
   "dependency-backfill": "backfill",
   "dependency-verify": null,
@@ -39,6 +46,30 @@ const EXPECTED_EXISTING_RUN_KIND_VALUES = {
   "dependency-repair": null,
 };
 
+const REQUIRED_DEPENDENCY_VERIFY_DURABLE_CHECKS = [
+  "producer-and-generation-consistency",
+  "active-edge-duplicates",
+  "cross-project-edge",
+  "consumer-and-source-key-format",
+  "application-revision-artifact-references",
+  "dependency-set-digest",
+  "contribution-to-application-commit-correspondence",
+  "legacy-mirror-migration-parity",
+];
+
+const REQUIRED_DEPENDENCY_VERIFY_REBUILDABLE_CHECKS = [
+  "edge-state-belongs-to-current-epoch",
+  "consumer-freshness-dependency-set-digest",
+  "finding-observation-belongs-to-current-epoch",
+  "cursor-and-feed-head-consistency",
+  "semantic-index-generation-correspondence",
+];
+
+const REQUIRED_DEPENDENCY_VERIFY_CHECK_COUNT = 13;
+const REQUIRED_DEPENDENCY_VERIFY_PRODUCTION_COVERAGE = "13/13";
+const RESERVED_SEMANTIC_INDEX_REBUILDABLE_TARGET =
+  "semantic-index-generation-cache";
+
 const MAINTENANCE_ROUTE_REGISTRY_VERSION = "narrative-maintenance-route/v1";
 const MAINTENANCE_ROUTE_ENTRY_POINT = "run_narrative_maintenance_cycle";
 const MAINTENANCE_ROUTE_IDS = new Set([
@@ -46,11 +77,6 @@ const MAINTENANCE_ROUTE_IDS = new Set([
   "dependency-verify",
   "dependency-rebuild-derived",
 ]);
-const C2ZC_FUTURE_OBLIGATION_RUN_KINDS = new Set([
-  "dependency-verify",
-  "dependency-rebuild-derived",
-]);
-
 const MAINTENANCE_TRIGGER_VALUES = {
   "dependency-backfill": "automatic-once-after-schema-upgrade",
   "dependency-verify": "automatic-on-trigger-event",
@@ -145,6 +171,103 @@ const INCREMENTAL_FRESHNESS_WRITES_ALLOWED = [
 const INCREMENTAL_FRESHNESS_COMPLETED_UNACKED_INVARIANT =
   "never-reuse-completed-run-and-reprocess-under-new-runtime-owned-run";
 
+const INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT = {
+  kind: "current-epoch-idle-checkpoint",
+  version: 1,
+  specKind: "incremental-freshness-idle-checkpoint@1",
+  runKind: "freshness-evaluation",
+  taskKind: "incremental-freshness-batch",
+  zeroWidthRange: {
+    fromSequenceExclusive: "feedHead",
+    throughSequenceInclusive: "feedHead",
+    feedHead: "feedHead",
+  },
+  epochBinding: "current-semantic-epoch",
+  cursor: {
+    acknowledgedThroughSequence: "feedHead",
+    requiresClean: true,
+    missingAllowedOnlyAtFeedHead: 0,
+  },
+  projectSelection: {
+    projectsPerWake: 1,
+    order: "project-id-ascending",
+  },
+  suppression: {
+    existingCurrentEpochFreshnessRunAnyStatus: true,
+  },
+  descriptorBinding: {
+    digestAlgorithm: "sha256-canonical-json",
+    inputDigestBinding: "task-input-to-spec-and-work-key",
+    taskInput: {
+      exactKeys: [
+        "kind",
+        "version",
+        "projectId",
+        "semanticEpochId",
+        "fromSequenceExclusive",
+        "throughSequenceInclusive",
+        "feedHead",
+        "inputDigest",
+      ],
+      kind: "current-epoch-idle-checkpoint",
+      version: 1,
+      digestField: "inputDigest",
+      digestInput: "canonical-payload-without-inputDigest",
+    },
+    spec: {
+      exactKeys: ["kind", "inputDigest"],
+      kind: "incremental-freshness-idle-checkpoint@1",
+      inputDigest: "same-as-task-input",
+      digestField: "specDigest",
+      digestInput: "canonical-spec-object",
+    },
+    workKey: {
+      format:
+        "incremental-freshness:{semanticEpochId}:{fromSequenceExclusive}:{throughSequenceInclusive}:{inputDigestHex}",
+      digestInput: "task-input-inputDigest-without-sha256-prefix",
+    },
+  },
+  lifecycle: {
+    taskCount: 1,
+    completedTaskCount: 1,
+    taskStatus: "completed",
+    taskAttemptCountEqualsAttemptRows: true,
+    attemptNumbering: "1..N-contiguous",
+    attemptStatuses: ["failed", "completed"],
+    completedAttemptCount: 1,
+    runningAttemptCount: 0,
+    activeAttemptCount: 0,
+    noActiveAttempt: true,
+    failedRetryHistoryAllowed: true,
+    failedRetryHistoryOrder: "failed-before-completed-only",
+    completedAttemptMustBeLast: true,
+    retryCap: {
+      maxAttemptsPerTask: 3,
+      corruptedTaskKindCannotBypass: true,
+    },
+  },
+  nextWake: {
+    noChurn: true,
+  },
+  databaseEvidence: {
+    schedulerLiveness: "not-proven",
+    canonicalCutover: "not-proven",
+  },
+  writesAllowed: ["run-task-attempt-state", "freshness-evaluator-cursor"],
+  forbiddenWrites: [
+    "narrative-change-set",
+    "consumer-freshness",
+    "dependency-edge-state",
+    "finding-observation",
+    "attention",
+    "domain-state",
+    "d2-declarations",
+    "d2-shadow",
+    "semantic-index",
+  ],
+  forbiddenPublishers: ["generic-consumer-freshness"],
+};
+
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -159,6 +282,44 @@ function sameStringArray(actual, expected) {
     actual.length === expected.length &&
     actual.every((value, index) => value === expected[index])
   );
+}
+
+function validateExactContract(actual, expected, fieldPath, errors) {
+  if (Array.isArray(expected)) {
+    if (
+      !Array.isArray(actual) ||
+      actual.length !== expected.length ||
+      actual.some((value, index) => value !== expected[index])
+    ) {
+      errors.push(`${fieldPath} must be exactly ${JSON.stringify(expected)}`);
+    }
+    return;
+  }
+
+  if (isObject(expected)) {
+    if (!isObject(actual)) {
+      errors.push(`${fieldPath} must be an exact object contract`);
+      return;
+    }
+    for (const [key, expectedValue] of Object.entries(expected)) {
+      validateExactContract(
+        actual[key],
+        expectedValue,
+        `${fieldPath}.${key}`,
+        errors,
+      );
+    }
+    for (const key of Object.keys(actual)) {
+      if (!Object.hasOwn(expected, key)) {
+        errors.push(`${fieldPath}.${key} is not part of the exact contract`);
+      }
+    }
+    return;
+  }
+
+  if (actual !== expected) {
+    errors.push(`${fieldPath} must be exactly ${JSON.stringify(expected)}`);
+  }
 }
 
 function readJson(repoRoot, relativePath, errors, label) {
@@ -274,43 +435,37 @@ function validateImplementationStatus(entry, errors) {
   }
 }
 
-function validateFutureTriggerObligations(entry, errors) {
+function validateRetiredC2ZcTriggerDeclarations(entry, errors) {
   const obligations = entry.futureTriggerObligations;
   if (entry.triggerEvents?.includes("before-c2z-cutover")) {
     errors.push(
-      `${entry.runKind} must keep 'before-c2z-cutover' out of current triggerEvents; record it only as a futureTriggerObligation`,
+      `${entry.runKind} must keep obsolete 'before-c2z-cutover' out of current triggerEvents; C2-ZC activation is owned by the main-only scheduler wake`,
     );
   }
-  if (C2ZC_FUTURE_OBLIGATION_RUN_KINDS.has(entry.runKind)) {
-    const obligation = obligations?.length === 1 ? obligations[0] : null;
-    if (
-      !isObject(obligation) ||
-      obligation.condition !== "before-c2z-cutover" ||
-      obligation.gate !== "C2-ZC" ||
-      obligation.satisfiesCurrentWiredStatus !== false
-    ) {
-      errors.push(
-        `${entry.runKind}.futureTriggerObligations must contain exactly one before-c2z-cutover obligation for gate 'C2-ZC' with satisfiesCurrentWiredStatus: false`,
-      );
-    }
+  if (obligations !== undefined) {
+    errors.push(
+      `${entry.runKind}.futureTriggerObligations is obsolete under the C2-ZC main-only scheduler contract; final C2-ZC acceptance remains pending`,
+    );
   }
-  if (obligations === undefined) return;
-  if (!Array.isArray(obligations)) return;
+}
 
-  for (const obligation of obligations) {
-    if (!isObject(obligation)) continue;
-    if (obligation.condition === "before-c2z-cutover") {
-      if (obligation.gate !== "C2-ZC") {
-        errors.push(
-          `${entry.runKind}.futureTriggerObligations.before-c2z-cutover must target gate 'C2-ZC'`,
-        );
-      }
-      if (obligation.satisfiesCurrentWiredStatus !== false) {
-        errors.push(
-          `${entry.runKind}.futureTriggerObligations.before-c2z-cutover cannot satisfy current wired status`,
-        );
-      }
-    }
+function validateIdleCheckpoint(entry, errors) {
+  validateExactContract(
+    entry.idleCheckpoint,
+    INCREMENTAL_FRESHNESS_IDLE_CHECKPOINT,
+    "incremental-freshness.idleCheckpoint",
+    errors,
+  );
+}
+
+function validateIdleCheckpointPlacement(entry, errors) {
+  if (
+    NON_INCREMENTAL_RUN_KINDS.has(entry.runKind) &&
+    entry.idleCheckpoint !== undefined
+  ) {
+    errors.push(
+      `${entry.runKind}.idleCheckpoint is only permitted on incremental-freshness`,
+    );
   }
 }
 
@@ -344,6 +499,7 @@ function validateIncrementalFreshness(entry, errors) {
       );
     }
   }
+  validateIdleCheckpoint(entry, errors);
   if (
     !sameStringArray(
       entry.resumeSemantics,
@@ -525,6 +681,7 @@ function validateRunKindSpecificFields(entry, errors) {
         "dependency-verify must declare forbidSideEffectRepair: true",
       );
     }
+    validateDependencyVerifyCoverage(entry, errors);
   }
 
   if (entry.runKind === "dependency-rebuild-derived") {
@@ -541,6 +698,55 @@ function validateRunKindSpecificFields(entry, errors) {
         "dependency-rebuild-derived must declare a non-empty forbiddenWrites list",
       );
     }
+    if (
+      entry.rebuildableTargets?.includes(
+        RESERVED_SEMANTIC_INDEX_REBUILDABLE_TARGET,
+      )
+    ) {
+      errors.push(
+        `dependency-rebuild-derived.rebuildableTargets must not include '${RESERVED_SEMANTIC_INDEX_REBUILDABLE_TARGET}' while semantic-index is reserved`,
+      );
+    }
+  }
+}
+
+function validateDependencyVerifyCoverage(entry, errors) {
+  if (
+    !sameStringArray(
+      entry.verifiesDurableGraph,
+      REQUIRED_DEPENDENCY_VERIFY_DURABLE_CHECKS,
+    ) ||
+    !sameStringArray(
+      entry.verifiesRebuildableState,
+      REQUIRED_DEPENDENCY_VERIFY_REBUILDABLE_CHECKS,
+    )
+  ) {
+    errors.push(
+      "dependency-verify must retain all 13 production Verify checks without reduction",
+    );
+  }
+
+  const coverage = entry.verifyCoverage;
+  if (
+    !isObject(coverage) ||
+    coverage.requiredCheckCount !== REQUIRED_DEPENDENCY_VERIFY_CHECK_COUNT
+  ) {
+    errors.push(
+      "dependency-verify.verifyCoverage.requiredCheckCount must be 13",
+    );
+  }
+  if (
+    !isObject(coverage) ||
+    coverage.productionCoverage !== REQUIRED_DEPENDENCY_VERIFY_PRODUCTION_COVERAGE
+  ) {
+    errors.push(
+      "dependency-verify.verifyCoverage.productionCoverage must be '13/13'",
+    );
+  }
+  if (!isObject(coverage) || coverage.reductionForbidden !== true) {
+    errors.push(
+      "dependency-verify.verifyCoverage.reductionForbidden must be true",
+    );
   }
 }
 
@@ -599,7 +805,8 @@ function validateCrossFieldContract(policy, errors) {
     }
 
     validateImplementationStatus(entry, errors);
-    validateFutureTriggerObligations(entry, errors);
+    validateRetiredC2ZcTriggerDeclarations(entry, errors);
+    validateIdleCheckpointPlacement(entry, errors);
     validateIncrementalFreshness(entry, errors);
     validateRunKindSpecificFields(entry, errors);
   }

@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "chronicle-judge-case-contract/1",
+  "caseId": "transfer-plan-001",
+  "authorship": {
+    "status": "draft-for-human-review",
+    "derivation": "source-text-only",
+    "independentSourceAnnotation": true,
+    "candidateOutputContamination": false,
+    "reviewRequired": true,
+    "formalCertification": false,
+    "semanticGoldStatus": "user-approved",
+    "runtimeCapability": "supported",
+    "ordinaryQualityRun": "enabled",
+    "reviewScope": {
+      "sourceAndGoldReviewed": true,
+      "eventObservationPolicy": "case-atomic-claims-user-approved",
+      "atomicObservationClaimIds": ["P1"],
+      "temporalScope": "all-relations-unscored",
+      "temporalRelationIds": [],
+      "excludedTemporalScopes": ["temporal-metadata", "proposal-importance"],
+      "scopeExclusionIds": ["speech-act", "residual-state", "temporal-metadata", "proposal-importance"]
+    },
+    "excludedInputs": [
+      "deleted-provider-response",
+      "candidate-observation-wording",
+      "v1-scorer-decision"
+    ]
+  },
+  "coverage": {
+    "observation": "targeted",
+    "temporal": "targeted",
+    "proposal": "targeted"
+  },
+  "sourceDocuments": [
+    {
+      "id": "transfer-plan-source",
+      "title": "人物が話す計画",
+      "text": "リナはソウに「私は薬箱を運ぶ予定だ」と話した。薬箱は机の上に残っていた。",
+      "textSha256": "9c515bb167409dcc57726d7eff547808c565a0dfba8b13e4fb8a11fee108fe15"
+    }
+  ],
+  "observationGold": {
+    "claims": [
+      {
+        "id": "P1",
+        "predicate": "carry",
+        "participants": [
+          { "entity": "リナ", "role": "agent" },
+          { "entity": "薬箱", "role": "theme" }
+        ],
+        "actuality": "planned",
+        "attribution": "character:リナ",
+        "narrativeFrame": "reported",
+        "requiredDirectRegions": [
+          { "documentId": "transfer-plan-source", "start": 7, "end": 17 }
+        ],
+        "allowedContextRegions": [
+          { "documentId": "transfer-plan-source", "start": 0, "end": 6 },
+          { "documentId": "transfer-plan-source", "start": 18, "end": 22 }
+        ],
+        "granularity": "atomic"
+      }
+    ]
+  },
+  "temporalGold": {
+    "coverage": "targeted",
+    "relations": [],
+    "unscoredClaimIds": ["P1"]
+  },
+  "proposalPolicy": {
+    "mode": "unscored",
+    "scoredClaimIds": [],
+    "reason": "importance-not-annotated"
+  },
+  "scopeExclusions": [
+    {
+      "id": "speech-act",
+      "meaning": "計画を話したという発話行為は、予定内容P1とは別のObservationとして採点しない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-plan-source", "start": 18, "end": 22 }
+      ],
+      "allowedContextRegions": [
+        { "documentId": "transfer-plan-source", "start": 0, "end": 6 },
+        { "documentId": "transfer-plan-source", "start": 7, "end": 17 }
+      ],
+      "reason": "The speech act is outside the targeted event scope."
+    },
+    {
+      "id": "residual-state",
+      "meaning": "薬箱が机の上に残っていたという状態は、計画P1とは別のObservationとして採点しない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-plan-source", "start": 23, "end": 36 }
+      ],
+      "allowedContextRegions": [],
+      "reason": "The residual location is outside the targeted event scope."
+    },
+    {
+      "id": "temporal-metadata",
+      "meaning": "計画の時間値は今回の対象範囲に含めない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-plan-source", "start": 7, "end": 17 }
+      ],
+      "allowedContextRegions": [],
+      "reason": "temporal coverage is targeted with no relation Gold."
+    },
+    {
+      "id": "proposal-importance",
+      "meaning": "計画のProposal重要度と選別は今回の対象範囲に含めない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-plan-source", "start": 7, "end": 17 }
+      ],
+      "allowedContextRegions": [],
+      "reason": "importance is not annotated."
+    }
+  ]
+}

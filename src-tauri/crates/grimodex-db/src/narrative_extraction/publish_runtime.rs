@@ -51,7 +51,9 @@ use std::collections::HashSet;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::consumer_identity::{consumer_finding_key, validate_consumer_identity};
+use super::consumer_identity::{
+    consumer_finding_key, is_reserved_semantic_index_consumer_kind, validate_consumer_identity,
+};
 use super::cursor_reservation::acknowledge_cursor_reservation_in_tx;
 use super::dependency_edges::consumer_dependency_set_digest;
 use super::evaluator::{
@@ -107,16 +109,19 @@ fn ensure_edge_belongs_to_project(
     project_id: &str,
     edge_id: &str,
 ) -> anyhow::Result<()> {
-    let owner: Option<String> = conn
+    let edge_identity: Option<(String, String, String)> = conn
         .query_row(
-            "SELECT project_id FROM narrative_dependency_edges WHERE id = ?1",
+            "SELECT project_id, consumer_kind, consumer_key
+               FROM narrative_dependency_edges WHERE id = ?1",
             params![edge_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    match owner {
-        Some(owner) if owner == project_id => Ok(()),
-        Some(_) => anyhow::bail!(
+    match edge_identity {
+        Some((owner, consumer_kind, consumer_key)) if owner == project_id => {
+            ensure_generic_freshness_target(conn, project_id, &consumer_kind, &consumer_key, false)
+        }
+        Some((_, _, _)) => anyhow::bail!(
             "NEX_PUBLISH_RUNTIME_EDGE_PROJECT_MISMATCH: dependency edge '{edge_id}' does not \
              belong to project '{project_id}'"
         ),
@@ -124,6 +129,36 @@ fn ensure_edge_belongs_to_project(
             "NEX_PUBLISH_RUNTIME_EDGE_MISSING: dependency edge '{edge_id}' was not found"
         ),
     }
+}
+
+fn ensure_generic_freshness_target(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    allow_unmaterialized_graph: bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !is_reserved_semantic_index_consumer_kind(consumer_kind)
+            || super::nir1_chronicle_index::is_registered_chronicle_index(
+                conn,
+                project_id,
+                consumer_key,
+            )?
+            || super::nir1_entity_relation_index::is_registered(
+                conn,
+                project_id,
+                consumer_key,
+            )?
+            || (allow_unmaterialized_graph
+                && super::nir1_entity_relation_index::is_publish_target(
+                    conn,
+                    project_id,
+                    consumer_key,
+                )?),
+        "NEX_PUBLISH_RUNTIME_RESERVED_CONSUMER: '{consumer_kind}' is not a Generic Freshness target"
+    );
+    Ok(())
 }
 
 /// Upsert one Dependency Edge's latest evaluated outcome into
@@ -155,6 +190,36 @@ pub(crate) fn write_edge_state_in_tx(
 
     ensure_edge_belongs_to_project(conn, project_id, edge_id)?;
     ensure_epoch_belongs_to_project(conn, project_id, semantic_epoch_id)?;
+    write_validated_edge_state_in_tx(
+        conn,
+        project_id,
+        edge_id,
+        observation,
+        semantic_epoch_id,
+        evaluated_at,
+    )
+}
+
+// Private to this owner: callers either validate the individual Edge or the
+// exact complete Consumer Edge set in the same transaction. No validation
+// capability escapes the call, and every row retains its invalidation hook.
+fn write_validated_edge_state_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    edge_id: &str,
+    observation: &EdgeObservation,
+    semantic_epoch_id: &str,
+    evaluated_at: &str,
+) -> anyhow::Result<()> {
+    super::nir1_chronicle_index::invalidate::before_edge_state_write(
+        conn,
+        project_id,
+        edge_id,
+        observation.freshness.as_str(),
+        observation.reason_code.map(FindingReasonCode::as_str),
+        observation.build_action.as_str(),
+        semantic_epoch_id,
+    )?;
 
     conn.execute(
         "INSERT INTO narrative_dependency_edge_states
@@ -214,8 +279,42 @@ pub(crate) fn write_consumer_freshness_in_tx(
     dependency_set_digest: Option<&str>,
     updated_at: &str,
 ) -> anyhow::Result<()> {
+    write_consumer_freshness_in_tx_inner(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        observation,
+        semantic_epoch_id,
+        last_evaluated_run_id,
+        dependency_set_digest,
+        updated_at,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_consumer_freshness_in_tx_inner(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    observation: &EdgeObservation,
+    semantic_epoch_id: &str,
+    last_evaluated_run_id: Option<&str>,
+    dependency_set_digest: Option<&str>,
+    updated_at: &str,
+    allow_unmaterialized_graph: bool,
+) -> anyhow::Result<()> {
     anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
     validate_consumer_identity(consumer_kind, consumer_key)?;
+    ensure_generic_freshness_target(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        allow_unmaterialized_graph,
+    )?;
     anyhow::ensure!(
         !semantic_epoch_id.trim().is_empty(),
         "semanticEpochId is required"
@@ -224,6 +323,17 @@ pub(crate) fn write_consumer_freshness_in_tx(
 
     ensure_epoch_belongs_to_project(conn, project_id, semantic_epoch_id)?;
 
+    super::nir1_chronicle_index::invalidate::before_consumer_state_write(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        observation.freshness.as_str(),
+        observation.build_action.as_str(),
+        semantic_epoch_id,
+        last_evaluated_run_id,
+        dependency_set_digest,
+    )?;
     conn.execute(
         "INSERT INTO narrative_consumer_freshness
             (project_id, consumer_kind, consumer_key, evidence_freshness, build_action,
@@ -281,6 +391,7 @@ pub(crate) fn seed_consumer_freshness_unknown_in_tx(
         !edge_ids.is_empty(),
         "NEX_PUBLISH_RUNTIME_NO_EDGES: at least one declared Edge is required to seed Generic Freshness"
     );
+    ensure_generic_freshness_target(conn, project_id, consumer_kind, consumer_key, false)?;
     let observation = unknown_edge_observation();
     for edge_id in edge_ids {
         write_edge_state_in_tx(
@@ -322,12 +433,68 @@ pub(crate) fn publish_complete_runless_freshness_in_tx(
     semantic_epoch_id: &str,
     now: &str,
 ) -> anyhow::Result<()> {
+    publish_complete_runless_freshness_in_tx_inner(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        edges_and_observations,
+        semantic_epoch_id,
+        now,
+        false,
+    )
+}
+
+/// Graph's sealed publisher is the only caller allowed to materialise its
+/// first canonical Freshness row after the exact metadata/D1/V1 surfaces have
+/// been written in the same transaction. The ordinary runless writer remains
+/// strict about registration.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn publish_complete_runless_graph_freshness_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    edges_and_observations: &[(String, EdgeObservation)],
+    semantic_epoch_id: &str,
+    now: &str,
+) -> anyhow::Result<()> {
+    publish_complete_runless_freshness_in_tx_inner(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        edges_and_observations,
+        semantic_epoch_id,
+        now,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_complete_runless_freshness_in_tx_inner(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    edges_and_observations: &[(String, EdgeObservation)],
+    semantic_epoch_id: &str,
+    now: &str,
+    allow_unmaterialized_graph: bool,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         !conn.is_autocommit(),
         "Narrative Publish Runtime requires a caller-owned transaction"
     );
     anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
     validate_consumer_identity(consumer_kind, consumer_key)?;
+    ensure_generic_freshness_target(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        allow_unmaterialized_graph,
+    )?;
     anyhow::ensure!(
         !semantic_epoch_id.trim().is_empty(),
         "semanticEpochId is required"
@@ -383,8 +550,11 @@ pub(crate) fn publish_complete_runless_freshness_in_tx(
         "NEX_PUBLISH_RUNTIME_RUNLESS_EDGE_SET_MISMATCH: observations must contain each declared dependency edge exactly once for consumer '{consumer_kind}:{consumer_key}'"
     );
 
+    // The target/epoch guards and exact set comparison above cover every
+    // stored Edge's ownership. This loop changes only states (plus the normal
+    // invalidation hook), never declarations, Edge identities, or the epoch.
     for (edge_id, observation) in edges_and_observations {
-        write_edge_state_in_tx(
+        write_validated_edge_state_in_tx(
             conn,
             project_id,
             edge_id,
@@ -408,7 +578,7 @@ pub(crate) fn publish_complete_runless_freshness_in_tx(
     })?;
     let dependency_set_digest =
         consumer_dependency_set_digest(conn, project_id, consumer_kind, consumer_key)?;
-    write_consumer_freshness_in_tx(
+    write_consumer_freshness_in_tx_inner(
         conn,
         project_id,
         consumer_kind,
@@ -418,6 +588,7 @@ pub(crate) fn publish_complete_runless_freshness_in_tx(
         None,
         Some(&dependency_set_digest),
         now,
+        allow_unmaterialized_graph,
     )?;
 
     Ok(())
@@ -816,6 +987,7 @@ pub(crate) fn publish_freshness_evaluation_edges_only_in_tx(
     anyhow::ensure!(!run_id.trim().is_empty(), "runId is required");
     anyhow::ensure!(!consumer_kind.trim().is_empty(), "consumerKind is required");
     anyhow::ensure!(!consumer_key.trim().is_empty(), "consumerKey is required");
+    ensure_generic_freshness_target(conn, project_id, consumer_kind, consumer_key, false)?;
     anyhow::ensure!(
         !semantic_epoch_id.trim().is_empty(),
         "semanticEpochId is required"
@@ -1010,6 +1182,15 @@ mod tests {
     fn test_db() -> Database {
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
         db.migrate().expect("migrate");
+        seed_test_db(db)
+    }
+
+    fn current_schema_test_db() -> Database {
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
+        seed_test_db(db)
+    }
+
+    fn seed_test_db(db: Database) -> Database {
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
@@ -1163,9 +1344,173 @@ mod tests {
     }
 
     #[test]
+    fn complete_runless_publication_rejects_inexact_sets_before_any_state_write() {
+        let db = current_schema_test_db();
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let epoch = seed_epoch(&tx, "project-1");
+            let foreign_epoch = seed_epoch(&tx, "project-2");
+            let first = seed_edge(&tx, "project-1", RUN_CONSUMER_KIND, "one", "scene:first");
+            let second = seed_edge(&tx, "project-1", RUN_CONSUMER_KIND, "one", "scene:second");
+            let other = seed_edge(&tx, "project-1", RUN_CONSUMER_KIND, "other", "scene:other");
+            let foreign = seed_edge(&tx, "project-2", RUN_CONSUMER_KIND, "one", "scene:foreign");
+            for ids in [
+                vec![first.clone()],
+                vec![first.clone(), first.clone()],
+                vec![first.clone(), other],
+                vec![first.clone(), foreign],
+                vec![first.clone(), second.clone(), "absent".into()],
+            ] {
+                let values = ids.into_iter().map(|id| (id, fresh())).collect::<Vec<_>>();
+                let before = tx.total_changes();
+                let error = publish_complete_runless_freshness_in_tx(
+                    &tx, "project-1", RUN_CONSUMER_KIND, "one", &values, &epoch,
+                    "2026-09-08T00:00:00.000Z",
+                ).expect_err("only the exact complete Consumer may publish");
+                assert!(error.to_string().contains("RUNLESS_EDGE_SET_MISMATCH"));
+                assert_eq!(tx.total_changes(), before, "reject before any state write");
+            }
+            let values = vec![(first, fresh()), (second, stale())];
+            let before = tx.total_changes();
+            let error = publish_complete_runless_freshness_in_tx(
+                &tx, "project-1", RUN_CONSUMER_KIND, "one", &values, &foreign_epoch,
+                "2026-09-08T00:00:00.000Z",
+            ).expect_err("foreign epoch must fail before the batch");
+            assert!(error.to_string().contains("EPOCH_PROJECT_MISMATCH"));
+            assert_eq!(tx.total_changes(), before);
+            publish_complete_runless_freshness_in_tx(
+                &tx, "project-1", RUN_CONSUMER_KIND, "one", &values, &epoch,
+                "2026-09-08T00:00:00.000Z",
+            )?;
+            assert_eq!(consumer_freshness_value(&tx, "one"), "stale");
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states WHERE project_id='project-1'",
+                [], |r| r.get(0),
+            )?;
+            assert_eq!(count, 2);
+            Ok(())
+        }).expect("complete batch identity and worst-result checks");
+    }
+
+    #[test]
+    fn publisher_rejects_reserved_semantic_index_before_writing_generic_state() {
+        let db = test_db();
+        let edge_id = db
+            .with_conn(|conn| {
+                let edge_id = seed_edge(
+                    conn,
+                    "project-1",
+                    "semantic-index",
+                    "lexical",
+                    "project:scene:scene-live",
+                );
+                let epoch_id = seed_epoch(conn, "project-1");
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edge_states
+                        (edge_id, project_id, evidence_freshness, reason_code, build_action,
+                         evaluated_at_epoch_id, evaluated_at)
+                     VALUES (?1, 'project-1', 'stale', 'source-revision-changed',
+                             'rebuild-required', ?2, '2026-08-15T00:00:00.000Z')",
+                    params![edge_id, epoch_id],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_consumer_freshness
+                        (project_id, consumer_kind, consumer_key, evidence_freshness,
+                         build_action, semantic_epoch_id, last_evaluated_run_id, updated_at)
+                     VALUES ('project-1', 'semantic-index', 'lexical', 'stale',
+                             'rebuild-required', ?1, 'previous-run', '2026-08-15T00:00:00.000Z')",
+                    params![epoch_id],
+                )?;
+                Ok::<_, anyhow::Error>(edge_id)
+            })
+            .expect("seed reserved publisher fixture");
+
+        let error = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    let epoch_id =
+                        super::super::semantic_epoch::get_current_epoch(conn, "project-1")?
+                            .ok_or_else(|| anyhow::anyhow!("fixture has no epoch"))?
+                            .id;
+                    publish_freshness_evaluation_edges_only_in_tx(
+                        conn,
+                        "project-1",
+                        "semantic-index-rebuild-run",
+                        "semantic-index",
+                        "lexical",
+                        &[(edge_id.clone(), stale())],
+                        &epoch_id,
+                        "2026-08-15T00:00:01.000Z",
+                    )
+                })
+            })
+            .expect_err("reserved Semantic Index must never enter the Generic publisher");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_PUBLISH_RUNTIME_RESERVED_CONSUMER"),
+            "unexpected reserved publisher rejection: {error:#}"
+        );
+
+        db.with_conn(|conn| {
+            let edge_state: (String, Option<String>, String, String, String) = conn.query_row(
+                "SELECT evidence_freshness, reason_code, build_action,
+                        evaluated_at_epoch_id, evaluated_at
+                   FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                params![edge_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+            assert_eq!(
+                edge_state,
+                (
+                    "stale".to_string(),
+                    Some("source-revision-changed".to_string()),
+                    "rebuild-required".to_string(),
+                    conn.query_row(
+                        "SELECT semantic_epoch_id FROM narrative_consumer_freshness
+                          WHERE project_id = 'project-1' AND consumer_kind = 'semantic-index'
+                            AND consumer_key = 'lexical'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )?,
+                    "2026-08-15T00:00:00.000Z".to_string(),
+                )
+            );
+            let freshness: (String, String, Option<String>, String) = conn.query_row(
+                "SELECT evidence_freshness, build_action, last_evaluated_run_id, updated_at
+                   FROM narrative_consumer_freshness
+                  WHERE project_id = 'project-1' AND consumer_kind = 'semantic-index'
+                    AND consumer_key = 'lexical'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(
+                freshness,
+                (
+                    "stale".to_string(),
+                    "rebuild-required".to_string(),
+                    Some("previous-run".to_string()),
+                    "2026-08-15T00:00:00.000Z".to_string(),
+                )
+            );
+            assert_eq!(finding_count(conn, "project-1"), 0);
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("reserved publisher rejection must leave state untouched");
+    }
+
+    #[test]
     fn production_publish_preserves_attention_on_harmless_epoch_rerun_and_tracks_material_changes()
     {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let consumer_id = "consumer-finding-identity";
             let consumer_key = "proposal-finding-identity";
@@ -1377,7 +1722,7 @@ mod tests {
 
     #[test]
     fn single_fresh_edge_publishes_state_and_freshness_without_a_finding_observation() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -1446,7 +1791,7 @@ mod tests {
 
     #[test]
     fn single_stale_edge_creates_a_finding_observation() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -1500,7 +1845,7 @@ mod tests {
 
     #[test]
     fn worst_freshness_across_edges_wins_the_consumer_freshness_row() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -1631,7 +1976,7 @@ mod tests {
 
     #[test]
     fn empty_edges_list_fails_closed_before_any_write() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -1686,7 +2031,7 @@ mod tests {
     /// per-Edge diagnostic it is a rollup of -- and nothing errored.
     #[test]
     fn a_partial_republish_does_not_roll_consumer_freshness_backwards() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -1835,7 +2180,7 @@ mod tests {
     /// covers has never been evaluated in this Epoch.
     #[test]
     fn a_consumer_is_not_fresh_while_one_of_its_edges_is_unevaluated() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -1894,7 +2239,7 @@ mod tests {
     /// content: adding an Edge changes it even when every Edge is Fresh.
     #[test]
     fn publishing_records_the_consumers_dependency_set_digest() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
@@ -1993,7 +2338,7 @@ mod tests {
 
     #[test]
     fn write_edge_state_fails_closed_when_edge_belongs_to_a_different_project() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             let edge_id = seed_edge(
@@ -2026,7 +2371,7 @@ mod tests {
     /// disagree about what a Consumer even is.
     #[test]
     fn write_consumer_freshness_refuses_a_kind_carrying_the_finding_key_separator() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             let error = write_consumer_freshness_in_tx(
@@ -2052,7 +2397,7 @@ mod tests {
 
     #[test]
     fn write_consumer_freshness_fails_closed_when_epoch_belongs_to_a_different_project() {
-        let db = test_db();
+        let db = current_schema_test_db();
         db.with_conn(|conn| {
             let other_epoch_id = seed_epoch(conn, "project-2");
 

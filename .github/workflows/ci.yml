@@ -586,8 +586,19 @@ jobs:
       - name: Product journey gate
         if: steps.product-journey-impact.outputs.should_run == 'true'
         env:
-          GRIMODEX_PRODUCT_JOURNEY_IDS: ${{ steps.product-journey-impact.outputs.execution_journey_ids }}
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:product-journeys
+          GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL: "true"
+          GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST: ${{ steps.product-journey-impact.outputs.catalog_digest }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${GRIMODEX_PRODUCT_JOURNEY_IDS:-}" ]]; then
+            echo "Full product journey gate rejects GRIMODEX_PRODUCT_JOURNEY_IDS subset execution" >&2
+            exit 1
+          fi
+          if [[ -n "${GRIMODEX_PRODUCT_JOURNEY_SET:-}" ]]; then
+            echo "Full product journey gate rejects GRIMODEX_PRODUCT_JOURNEY_SET subset execution" >&2
+            exit 1
+          fi
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:product-journeys
 
       - name: Upload product journey failure artifacts
         if: always()
@@ -931,6 +942,10 @@ jobs:
           -p grimodex-db
           --features test-failpoints
           --test workspace_migration_supervisor
+
+      - name: Migration recovery failpoint library tests
+        working-directory: src-tauri
+        run: cargo test -p grimodex-db --features test-failpoints --lib
 
       - name: Safe Mode structured outcome + restore-by-id
         working-directory: src-tauri

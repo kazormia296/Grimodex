@@ -2,7 +2,7 @@ import type { EventObservationActuality } from "../observations/eventOccurrence"
 
 export type EventHypothesisActuality = Extract<
   EventObservationActuality,
-  "actual" | "attempted" | "prevented"
+  "actual" | "attempted" | "prevented" | "rumored"
 >;
 
 export type EventHypothesisSignificance =

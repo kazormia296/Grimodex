@@ -156,6 +156,8 @@ const RUST_ONLY_BROWSER_TABLES = new Set([
   "tree_nodes_fts_en",
   "post_effect_annotations_fts",
   "post_effect_annotations_fts_en",
+  "nir1_chat_input_captures",
+  "nir1_chat_input_submission_keys",
 ]);
 
 function executableCreateSql(createSql: string, columnNames: string[]): string {
@@ -822,6 +824,8 @@ export interface BrowserMockOptions {
    * rollback fault-injection triggers. Production builds ignore this flag.
    */
   allowProtectedWriterTestFixtures?: boolean;
+  /** Test-only observation point for the single genesis change-event probe. */
+  onTimelapseGenesisLedgerReadForTest?: () => void;
 }
 
 export interface BrowserAiAuthorizationRequest {
@@ -24277,6 +24281,17 @@ export async function createBrowserMock(
       const projectId = args.projectId as string;
       const sessionId = args.sessionId as string;
       const events = (args.events ?? []) as TimelapseAppendEvent[];
+      if (
+        events.some(
+          (event) =>
+            event.domain === "timelapse-internal" &&
+            event.opType === "doc.step.coverage",
+        )
+      ) {
+        throw new Error(
+          "TIMELAPSE_COVERAGE_RESERVED: renderer append batches cannot create Native-owned coverage",
+        );
+      }
 
       // Per-event idempotency (mirror of the Rust allocator): a committed-but-
       // rejected flush can be re-sent merged with new events; skip the
@@ -24379,6 +24394,728 @@ export async function createBrowserMock(
         tailSequence: sequence,
         tailHash: prevHash,
       };
+    });
+  }
+
+  async function handleTimelapseGenesisBaselinesAppend(
+    args: Record<string, unknown>,
+  ): Promise<{
+    insertedCount: number;
+    skippedExistingBaselineCount: number;
+    skippedExistingBodyStepCount: number;
+  }> {
+    const command = "timelapse_genesis_baselines_append";
+    const exactString = (key: string, maxLength: number): string => {
+      const value = args[key];
+      if (
+        typeof value !== "string" ||
+        value.length === 0 ||
+        value !== value.trim() ||
+        value.length > maxLength
+      ) {
+        throw new Error(`${command} ${key} is invalid`);
+      }
+      return value;
+    };
+    const allowedKeys = new Set([
+      "expectedWorkspacePath",
+      "projectId",
+      "kind",
+      "entityIds",
+      "anchorTimestamp",
+    ]);
+    if (
+      Object.keys(args).length !== allowedKeys.size ||
+      Object.keys(args).some((key) => !allowedKeys.has(key))
+    ) {
+      throw new Error(`${command} requires the exact typed payload`);
+    }
+    const expectedWorkspacePath = exactString("expectedWorkspacePath", 16_384);
+    const projectId = exactString("projectId", 512);
+    const kind = args.kind;
+    if (kind !== "scene" && kind !== "codex" && kind !== "snippet") {
+      throw new Error(`${command} kind is invalid`);
+    }
+    if (
+      !Array.isArray(args.entityIds) ||
+      args.entityIds.length < 1 ||
+      args.entityIds.length > 64
+    ) {
+      throw new Error(`${command} entityIds must contain 1..64 ids`);
+    }
+    const entityIds = args.entityIds.map((value, index) => {
+      if (
+        typeof value !== "string" ||
+        value.length === 0 ||
+        value !== value.trim() ||
+        value.length > 512
+      ) {
+        throw new Error(`${command} entityIds[${index}] is invalid`);
+      }
+      return value;
+    });
+    if (new Set(entityIds).size !== entityIds.length) {
+      throw new Error(`${command} entityIds must be unique`);
+    }
+    const anchorTimestamp = args.anchorTimestamp;
+    if (
+      typeof anchorTimestamp !== "number" ||
+      !Number.isSafeInteger(anchorTimestamp) ||
+      anchorTimestamp < 0
+    ) {
+      throw new Error(`${command} anchorTimestamp is invalid`);
+    }
+
+    const settingsIdentity = handleGetGlobalSettings().lastActiveWorkspace;
+    const activeWorkspacePath =
+      options.workspaceIdentity ??
+      (typeof settingsIdentity === "string" && settingsIdentity.trim()
+        ? settingsIdentity
+        : BROWSER_WORKSPACE_PATH);
+    if (expectedWorkspacePath !== activeWorkspacePath) {
+      throw new Error(
+        `TIMELAPSE_GENESIS_WORKSPACE_CHANGED: expected ${expectedWorkspacePath}, active ${activeWorkspacePath}`,
+      );
+    }
+
+    const spec =
+      kind === "scene"
+        ? {
+            table: "tree_nodes",
+            domain: "editor",
+            entityType: "scene",
+            extraPredicate: "AND node_type = 'scene'",
+          }
+        : kind === "codex"
+          ? {
+              table: "codex_entries",
+              domain: "codex",
+              entityType: "codex_entry",
+              extraPredicate: "",
+            }
+          : {
+              table: "snippets",
+              domain: "snippet",
+              entityType: "snippet",
+              extraPredicate: "",
+            };
+
+    return withAppendLedgerLock(async () => {
+      db.run("BEGIN IMMEDIATE");
+      try {
+        // Match Native ordering: validate every requested ownership scope from
+        // IDs only before reading any potentially-large editor content.
+        for (const entityId of entityIds) {
+          const row = queryOne(
+            `SELECT id FROM ${spec.table}
+              WHERE id = ? AND project_id = ? ${spec.extraPredicate}`,
+            [entityId, projectId],
+          );
+          if (!row) {
+            throw new Error(
+              `TIMELAPSE_GENESIS_ENTITY_NOT_FOUND: ${kind} '${entityId}' is not owned by project '${projectId}'`,
+            );
+          }
+        }
+
+        let insertedCount = 0;
+        const placeholders = entityIds.map(() => "?").join(", ");
+        const existingBaselineIds = new Set(
+          queryAll(
+            `SELECT entity_id FROM state_snapshots
+              WHERE project_id = ? AND domain = ?
+                AND entity_id IN (${placeholders})`,
+            [projectId, spec.domain, ...entityIds],
+          ).map((row) => String(row.entity_id)),
+        );
+        const skippedExistingBaselineCount = existingBaselineIds.size;
+        let skippedExistingBodyStepCount = 0;
+        const unsnapshottedIds = entityIds.filter(
+          (entityId) => !existingBaselineIds.has(entityId),
+        );
+        if (unsnapshottedIds.length === 0) {
+          db.run("COMMIT");
+          return {
+            insertedCount,
+            skippedExistingBaselineCount,
+            skippedExistingBodyStepCount,
+          };
+        }
+
+        const candidatePlaceholders = unsnapshottedIds
+          .map(() => "?")
+          .join(", ");
+        options.onTimelapseGenesisLedgerReadForTest?.();
+        const bodyStepRows = queryAll(
+          `SELECT entity_id FROM change_events
+            WHERE project_id = ? AND domain = ? AND op_type = 'doc.step'
+              AND (entity_id IN (${candidatePlaceholders})
+                OR entity_id IS NULL OR entity_id = '')`,
+          [projectId, spec.domain, ...unsnapshottedIds],
+        );
+        const existingBodyStepIds = new Set<string>();
+        let ambiguousDomainStep = false;
+        for (const row of bodyStepRows) {
+          if (typeof row.entity_id === "string" && row.entity_id.length > 0) {
+            existingBodyStepIds.add(row.entity_id);
+          } else {
+            ambiguousDomainStep = true;
+          }
+        }
+        const eligibleIds = unsnapshottedIds.filter((entityId) => {
+          if (ambiguousDomainStep || existingBodyStepIds.has(entityId)) {
+            skippedExistingBodyStepCount += 1;
+            return false;
+          }
+          return true;
+        });
+
+        const entities = eligibleIds.map((entityId) => {
+          const row = queryOne(
+            `SELECT content FROM ${spec.table}
+              WHERE id = ? AND project_id = ? ${spec.extraPredicate}`,
+            [entityId, projectId],
+          );
+          if (!row || typeof row.content !== "string") {
+            throw new Error(
+              `TIMELAPSE_GENESIS_ENTITY_NOT_FOUND: ${kind} '${entityId}' is not owned by project '${projectId}'`,
+            );
+          }
+          return { entityId, content: row.content };
+        });
+        if (
+          entities.length > 1 &&
+          entities.reduce(
+            (bytes, entity) =>
+              bytes + new TextEncoder().encode(entity.content).byteLength,
+            0,
+          ) >
+            8 * 1024 * 1024
+        ) {
+          throw new Error("TIMELAPSE_GENESIS_BASELINE_BATCH_TOO_LARGE");
+        }
+
+        for (const entity of entities) {
+          db.run(
+            `INSERT INTO state_snapshots
+              (project_id, domain, entity_type, entity_id, anchor_sequence,
+               anchor_timestamp, payload, encoding, created_at)
+             VALUES (?, ?, ?, ?, 0, ?, ?, 'json', ?)`,
+            [
+              projectId,
+              spec.domain,
+              spec.entityType,
+              entity.entityId,
+              anchorTimestamp,
+              entity.content,
+              anchorTimestamp,
+            ],
+          );
+          insertedCount += 1;
+        }
+        db.run("COMMIT");
+        if (insertedCount > 0) options.onDatabaseDirty?.();
+        return {
+          insertedCount,
+          skippedExistingBaselineCount,
+          skippedExistingBodyStepCount,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the atomic append failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  function assertBrowserTimelapseWorkspace(
+    args: Record<string, unknown>,
+  ): void {
+    if (
+      typeof args.expectedWorkspacePath !== "string" ||
+      !args.expectedWorkspacePath.trim()
+    ) {
+      throw new Error("expectedWorkspacePath is required");
+    }
+    const settingsIdentity = handleGetGlobalSettings().lastActiveWorkspace;
+    const activeWorkspacePath =
+      options.workspaceIdentity ??
+      (typeof settingsIdentity === "string" && settingsIdentity.trim()
+        ? settingsIdentity
+        : BROWSER_WORKSPACE_PATH);
+    if (args.expectedWorkspacePath !== activeWorkspacePath) {
+      throw new Error(
+        `TIMELAPSE_WORKSPACE_CHANGED: expected ${args.expectedWorkspacePath}, active ${activeWorkspacePath}`,
+      );
+    }
+  }
+
+  function readTimelapseTailWithTimestamp(projectId: string): {
+    sequence: number;
+    timestamp: number;
+  } {
+    const row = queryOne(
+      "select sequence, timestamp from change_events where project_id = ? order by sequence desc limit 1",
+      [projectId],
+    );
+    return row
+      ? { sequence: Number(row.sequence), timestamp: Number(row.timestamp) }
+      : { sequence: 0, timestamp: Date.now() };
+  }
+
+  function readTimelapseResetSequence(projectId: string): number {
+    const row = queryOne(
+      `select value from project_settings
+        where project_id = ? and key = 'timelapse.resetSequence'`,
+      [projectId],
+    );
+    if (!row) return 0;
+
+    const value = row.value;
+    if (typeof value !== "string" || !/^[+-]?[0-9]+$/u.test(value)) {
+      throw new Error(
+        "TIMELAPSE_HISTORY_INVALID_RESET_SEQUENCE: stored reset sequence is not an integer",
+      );
+    }
+    const sequence = Number(value);
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new Error(
+        "TIMELAPSE_HISTORY_INVALID_RESET_SEQUENCE: stored reset sequence is outside the safe integer range",
+      );
+    }
+    return sequence;
+  }
+
+  function assertTimelapseProject(projectId: string): void {
+    if (
+      typeof projectId !== "string" ||
+      !projectId ||
+      projectId !== projectId.trim() ||
+      projectId.length > 512
+    ) {
+      throw new Error("timelapse projectId is invalid");
+    }
+    if (!queryOne("select 1 from projects where id = ?", [projectId])) {
+      throw new Error(`TIMELAPSE_PROJECT_NOT_FOUND: ${projectId}`);
+    }
+  }
+
+  async function handleTimelapseBodyBaselinesAppend(
+    args: Record<string, unknown>,
+  ): Promise<{
+    insertedCount: number;
+    skippedExistingCount: number;
+    anchorSequence: number;
+    anchorTimestamp: number;
+  }> {
+    const command = "timelapse_body_baselines_append";
+    const allowedKeys = new Set([
+      "expectedWorkspacePath",
+      "projectId",
+      "targets",
+      "expectedAnchorSequence",
+    ]);
+    if (
+      Object.keys(args).length !== allowedKeys.size ||
+      Object.keys(args).some((key) => !allowedKeys.has(key))
+    ) {
+      throw new Error(`${command} requires the exact typed payload`);
+    }
+    assertBrowserTimelapseWorkspace(args);
+    const projectId = typeof args.projectId === "string" ? args.projectId : "";
+    assertTimelapseProject(projectId);
+    if (
+      !Array.isArray(args.targets) ||
+      args.targets.length < 1 ||
+      args.targets.length > 64
+    ) {
+      throw new Error(`${command} targets must contain 1..64 identities`);
+    }
+    const targets = args.targets.map((value, index) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error(`${command} targets[${index}] is invalid`);
+      }
+      const target = value as Record<string, unknown>;
+      if (
+        Object.keys(target).length !== 2 ||
+        !Object.hasOwn(target, "kind") ||
+        !Object.hasOwn(target, "id")
+      ) {
+        throw new Error(`${command} targets[${index}] requires kind and id`);
+      }
+      if (
+        target.kind !== "scene" &&
+        target.kind !== "codex" &&
+        target.kind !== "snippet"
+      ) {
+        throw new Error(`${command} targets[${index}].kind is invalid`);
+      }
+      if (
+        typeof target.id !== "string" ||
+        !target.id ||
+        target.id !== target.id.trim() ||
+        target.id.length > 512
+      ) {
+        throw new Error(`${command} targets[${index}].id is invalid`);
+      }
+      return { kind: target.kind, id: target.id } as {
+        kind: "scene" | "codex" | "snippet";
+        id: string;
+      };
+    });
+    const identities = targets.map(
+      (target) => `${target.kind}\u0000${target.id}`,
+    );
+    if (new Set(identities).size !== identities.length) {
+      throw new Error(`${command} targets must be unique`);
+    }
+    const expectedAnchorSequence = args.expectedAnchorSequence;
+    if (
+      expectedAnchorSequence !== null &&
+      (typeof expectedAnchorSequence !== "number" ||
+        !Number.isSafeInteger(expectedAnchorSequence) ||
+        expectedAnchorSequence < 0)
+    ) {
+      throw new Error(`${command} expectedAnchorSequence is invalid`);
+    }
+
+    return withAppendLedgerLock(async () => {
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const tail = readTimelapseTailWithTimestamp(String(projectId));
+        if (
+          expectedAnchorSequence !== null &&
+          expectedAnchorSequence !== tail.sequence
+        ) {
+          throw new Error(
+            `TIMELAPSE_BODY_SNAPSHOT_ANCHOR_MISMATCH: expected tail ${expectedAnchorSequence}, current tail ${tail.sequence}`,
+          );
+        }
+        const specs = {
+          scene: {
+            table: "tree_nodes",
+            domain: "editor",
+            entityType: "scene",
+            predicate: " AND node_type = 'scene'",
+          },
+          codex: {
+            table: "codex_entries",
+            domain: "codex",
+            entityType: "codex_entry",
+            predicate: "",
+          },
+          snippet: {
+            table: "snippets",
+            domain: "snippet",
+            entityType: "snippet",
+            predicate: "",
+          },
+        } as const;
+        const trusted = new Map<string, string>();
+        for (const target of targets) {
+          const spec = specs[target.kind];
+          const row = queryOne(
+            `select content from ${spec.table} where id = ? and project_id = ?${spec.predicate}`,
+            [target.id, projectId],
+          );
+          if (!row || typeof row.content !== "string") {
+            throw new Error(
+              `TIMELAPSE_BODY_SNAPSHOT_ENTITY_SCOPE_MISMATCH: ${target.kind} '${target.id}' is not owned by project '${projectId}'`,
+            );
+          }
+          trusted.set(`${target.kind}\u0000${target.id}`, row.content);
+        }
+        let insertedCount = 0;
+        let skippedExistingCount = 0;
+        for (const target of targets) {
+          const spec = specs[target.kind];
+          const body = trusted.get(
+            `${target.kind}\u0000${target.id}`,
+          ) as string;
+          const rows = queryAll(
+            `select entity_type, anchor_timestamp, payload, encoding from state_snapshots
+              where project_id = ? and domain = ? and entity_id = ? and anchor_sequence = ?`,
+            [projectId, spec.domain, target.id, tail.sequence],
+          );
+          if (rows.length > 0) {
+            for (const row of rows) {
+              if (
+                row.entity_type !== null &&
+                row.entity_type !== spec.entityType
+              ) {
+                throw new Error(
+                  `${command} existing snapshot scope is invalid`,
+                );
+              }
+              if (
+                Number(row.anchor_timestamp) !== tail.timestamp ||
+                row.payload !== body ||
+                row.encoding !== "json"
+              ) {
+                throw new Error(
+                  `${command} existing snapshot does not match trusted body`,
+                );
+              }
+            }
+            skippedExistingCount += 1;
+            continue;
+          }
+          db.run(
+            `insert into state_snapshots
+              (project_id, domain, entity_type, entity_id, anchor_sequence,
+               anchor_timestamp, payload, encoding, created_at)
+             values (?, ?, ?, ?, ?, ?, ?, 'json', ?)`,
+            [
+              projectId,
+              spec.domain,
+              spec.entityType,
+              target.id,
+              tail.sequence,
+              tail.timestamp,
+              body,
+              tail.timestamp,
+            ],
+          );
+          insertedCount += 1;
+        }
+        db.run("COMMIT");
+        if (insertedCount > 0) options.onDatabaseDirty?.();
+        return {
+          insertedCount,
+          skippedExistingCount,
+          anchorSequence: tail.sequence,
+          anchorTimestamp: tail.timestamp,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original append failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleTimelapseHistoryPurge(
+    args: Record<string, unknown>,
+  ): Promise<{ deletedEventCount: number; deletedSnapshotCount: number }> {
+    const command = "timelapse_history_purge";
+    const allowedKeys = new Set(["expectedWorkspacePath", "projectId"]);
+    if (
+      Object.keys(args).length !== allowedKeys.size ||
+      Object.keys(args).some((key) => !allowedKeys.has(key))
+    ) {
+      throw new Error(`${command} requires the exact typed payload`);
+    }
+    assertBrowserTimelapseWorkspace(args);
+    const projectId = typeof args.projectId === "string" ? args.projectId : "";
+    assertTimelapseProject(projectId);
+    return withAppendLedgerLock(async () => {
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const previousResetSequence = readTimelapseResetSequence(projectId);
+        const currentTailSequence = Number(
+          queryOne(
+            "select coalesce(max(sequence), 0) as sequence from change_events where project_id = ?",
+            [projectId],
+          )?.sequence ?? 0,
+        );
+        if (
+          !Number.isSafeInteger(currentTailSequence) ||
+          currentTailSequence < 0
+        ) {
+          throw new Error(
+            "TIMELAPSE_HISTORY_INVALID_TAIL: canonical tail is outside the safe integer range",
+          );
+        }
+        const deletedEventCount = Number(
+          queryOne(
+            `select count(*) as count from change_events
+              where project_id = ? and sequence > ? and sequence <= ?`,
+            [projectId, previousResetSequence, currentTailSequence],
+          )?.count ?? 0,
+        );
+        const deletedSnapshotCount = Number(
+          queryOne(
+            "select count(*) as count from state_snapshots where project_id = ?",
+            [projectId],
+          )?.count ?? 0,
+        );
+        db.run("delete from state_snapshots where project_id = ?", [projectId]);
+        db.run(
+          `insert into project_settings (project_id, key, value)
+           values (?, 'timelapse.resetSequence', ?)
+           on conflict(project_id, key) do update set value = excluded.value`,
+          [projectId, String(currentTailSequence)],
+        );
+        db.run("COMMIT");
+        if (deletedEventCount + deletedSnapshotCount > 0) {
+          options.onDatabaseDirty?.();
+        }
+        return { deletedEventCount, deletedSnapshotCount };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original purge failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleTimelapseEnabledSet(
+    args: Record<string, unknown>,
+  ): Promise<{ enabled: boolean }> {
+    const command = "timelapse_enabled_set";
+    const allowedKeys = new Set([
+      "expectedWorkspacePath",
+      "projectId",
+      "enabled",
+    ]);
+    if (
+      Object.keys(args).length !== allowedKeys.size ||
+      Object.keys(args).some((key) => !allowedKeys.has(key))
+    ) {
+      throw new Error(`${command} requires the exact typed payload`);
+    }
+    assertBrowserTimelapseWorkspace(args);
+    const projectId = String(args.projectId);
+    assertTimelapseProject(projectId);
+    const enabled = args.enabled;
+    if (typeof enabled !== "boolean") {
+      throw new Error(`${command} enabled is invalid`);
+    }
+    return withAppendLedgerLock(async () => {
+      db.run(
+        `insert into project_settings (project_id, key, value)
+         values (?, 'timelapse.enabled', ?)
+         on conflict(project_id, key) do update set value = excluded.value`,
+        [projectId, enabled ? "true" : "false"],
+      );
+      options.onDatabaseDirty?.();
+      return { enabled };
+    });
+  }
+
+  async function handleTimelapseLayoutSnapshotRecord(
+    args: Record<string, unknown>,
+  ): Promise<{
+    inserted: boolean;
+    anchorSequence: number;
+    anchorTimestamp: number;
+  }> {
+    const command = "timelapse_layout_snapshot_record";
+    const allowedKeys = new Set([
+      "expectedWorkspacePath",
+      "projectId",
+      "payload",
+      "expectedAnchorSequence",
+    ]);
+    if (
+      Object.keys(args).length !== allowedKeys.size ||
+      Object.keys(args).some((key) => !allowedKeys.has(key))
+    ) {
+      throw new Error(`${command} requires the exact typed payload`);
+    }
+    assertBrowserTimelapseWorkspace(args);
+    const projectId = String(args.projectId);
+    assertTimelapseProject(projectId);
+    const payload = args.payload;
+    if (
+      typeof payload !== "object" ||
+      payload === null ||
+      Array.isArray(payload)
+    ) {
+      throw new Error(`${command} payload is invalid`);
+    }
+    const payloadRecord = payload as Record<string, unknown>;
+    if (
+      !Object.hasOwn(payloadRecord, "layout") ||
+      typeof payloadRecord.layout !== "object" ||
+      payloadRecord.layout === null ||
+      Array.isArray(payloadRecord.layout) ||
+      Object.keys(payloadRecord).some(
+        (key) =>
+          !new Set(["layout", "activePresetId", "hiddenStripePanels"]).has(key),
+      )
+    ) {
+      throw new Error(`${command} payload scope is invalid`);
+    }
+    if (
+      Object.hasOwn(payloadRecord, "activePresetId") &&
+      payloadRecord.activePresetId !== null &&
+      typeof payloadRecord.activePresetId !== "string"
+    ) {
+      throw new Error(`${command} activePresetId is invalid`);
+    }
+    if (
+      Object.hasOwn(payloadRecord, "hiddenStripePanels") &&
+      (!Array.isArray(payloadRecord.hiddenStripePanels) ||
+        payloadRecord.hiddenStripePanels.length > 128 ||
+        payloadRecord.hiddenStripePanels.some(
+          (panel) => typeof panel !== "string",
+        ))
+    ) {
+      throw new Error(`${command} hiddenStripePanels is invalid`);
+    }
+    const expectedAnchorSequence = args.expectedAnchorSequence;
+    if (
+      expectedAnchorSequence !== null &&
+      (typeof expectedAnchorSequence !== "number" ||
+        !Number.isSafeInteger(expectedAnchorSequence) ||
+        expectedAnchorSequence < 0)
+    ) {
+      throw new Error(`${command} expectedAnchorSequence is invalid`);
+    }
+    const payloadJson = JSON.stringify(payload);
+    if (payloadJson.length > 4 * 1024 * 1024) {
+      throw new Error(`${command} payload is too large`);
+    }
+    return withAppendLedgerLock(async () => {
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const tail = readTimelapseTailWithTimestamp(projectId);
+        if (
+          expectedAnchorSequence !== null &&
+          expectedAnchorSequence !== tail.sequence
+        ) {
+          throw new Error(
+            `TIMELAPSE_LAYOUT_SNAPSHOT_ANCHOR_MISMATCH: expected tail ${expectedAnchorSequence}, current tail ${tail.sequence}`,
+          );
+        }
+        db.run(
+          `insert into state_snapshots
+            (project_id, domain, entity_type, entity_id, anchor_sequence,
+             anchor_timestamp, payload, encoding, created_at)
+           values (?, 'layout', 'workspace', 'workspace', ?, ?, ?, 'json', ?)`,
+          [
+            projectId,
+            tail.sequence,
+            tail.timestamp,
+            payloadJson,
+            tail.timestamp,
+          ],
+        );
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return {
+          inserted: true,
+          anchorSequence: tail.sequence,
+          anchorTimestamp: tail.timestamp,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original append failure.
+        }
+        throw error;
+      }
     });
   }
 
@@ -27429,6 +28166,16 @@ export async function createBrowserMock(
         } as T;
       case "timelapse_append_batch":
         return (await handleTimelapseAppendBatch(args)) as T;
+      case "timelapse_genesis_baselines_append":
+        return (await handleTimelapseGenesisBaselinesAppend(args)) as T;
+      case "timelapse_body_baselines_append":
+        return (await handleTimelapseBodyBaselinesAppend(args)) as T;
+      case "timelapse_history_purge":
+        return (await handleTimelapseHistoryPurge(args)) as T;
+      case "timelapse_enabled_set":
+        return (await handleTimelapseEnabledSet(args)) as T;
+      case "timelapse_layout_snapshot_record":
+        return (await handleTimelapseLayoutSnapshotRecord(args)) as T;
       case "ime_export_get_status":
       case "ime_export_refresh":
       case "ime_export_set_active_project":

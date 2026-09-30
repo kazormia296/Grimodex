@@ -16,6 +16,12 @@ export interface RelatedScene {
   score: number;
 }
 
+export interface RelatedSceneSelection {
+  readonly scenes: RelatedScene[];
+  /** The confident winner actually anchored by this Raw selector, if retained. */
+  readonly anchorSceneId: string | null;
+}
+
 export interface SelectRelatedScenesOptions {
   /** 現在編集中のシーン ID。null/空 のときは「過去」を定義できないため空配列。 */
   currentSceneId: string | null;
@@ -98,10 +104,22 @@ export function selectRelatedPastScenes(
   hits: SemanticSearchHit[],
   opts: SelectRelatedScenesOptions,
 ): RelatedScene[] {
+  return selectRelatedPastScenesWithAnchor(hits, opts).scenes;
+}
+
+/** Exposes anchor provenance without changing the existing Raw list contract. */
+export function selectRelatedPastScenesWithAnchor(
+  hits: SemanticSearchHit[],
+  opts: SelectRelatedScenesOptions,
+): RelatedSceneSelection {
   const { currentSceneId, sceneOrder, minScore, maxScenes } = opts;
-  if (!currentSceneId) return [];
+  const empty = (): RelatedSceneSelection => ({
+    scenes: [],
+    anchorSceneId: null,
+  });
+  if (!currentSceneId) return empty();
   const currentOrder = sceneOrder.get(currentSceneId);
-  if (currentOrder === undefined) return [];
+  if (currentOrder === undefined) return empty();
 
   const sparseIds = opts.sparseSceneIds ?? [];
   const hasSparse = sparseIds.length > 0;
@@ -132,7 +150,7 @@ export function selectRelatedPastScenes(
   }
 
   const pool = [...bestByScene.values()];
-  if (pool.length === 0) return [];
+  if (pool.length === 0) return empty();
 
   // dense 順位 (cosine 降順, sceneId 安定化)。
   const denseSorted = pool
@@ -168,7 +186,7 @@ export function selectRelatedPastScenes(
     const rrf = 1 / (RRF_K + dRank) + (inSparse ? 1 / (RRF_K + sRank) : 0);
     admitted.push({ hit: h, rrf });
   }
-  if (admitted.length === 0) return [];
+  if (admitted.length === 0) return empty();
 
   // ランキング: sparse / relative が関与するなら RRF (sparse 寄与込み)、純 dense のみなら
   // cosine 降順 (従来挙動を保つ)。
@@ -189,13 +207,21 @@ export function selectRelatedPastScenes(
   // 勝者不在 (rescue-only regime: 最大 cosine が床未満) では固定しない — 守るべき dense
   // 勝者がいないので RRF の語彙順を尊重する。
   // 実測 (liveEval): R@1 0.29→0.40 / MRR 0.60→0.73 回復、R@3 0.54・recall 1.00 維持。
+  let anchorSceneId: string | null = null;
   if (fused && denseSorted[0].score >= minScore) {
     const anchorId = denseSorted[0].sceneId;
     const idx = admitted.findIndex((e) => e.hit.sceneId === anchorId);
+    if (idx >= 0) anchorSceneId = anchorId;
     if (idx > 0) {
       const [anchor] = admitted.splice(idx, 1);
       admitted.unshift(anchor);
     }
   }
-  return admitted.slice(0, cap).map((e) => toRelatedScene(e.hit));
+  const scenes = admitted.slice(0, cap).map((e) => toRelatedScene(e.hit));
+  return {
+    scenes,
+    anchorSceneId: scenes.some((scene) => scene.sceneId === anchorSceneId)
+      ? anchorSceneId
+      : null,
+  };
 }

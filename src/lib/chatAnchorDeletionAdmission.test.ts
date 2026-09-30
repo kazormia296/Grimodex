@@ -43,6 +43,11 @@ import {
   ChatAnchorDeletionBlockedError,
   tryAcquireChatTurnAdmissionLease,
 } from "./chatNavigationGuard";
+import {
+  _resetTimelapseGenesisBarriersForTests,
+  beginTimelapseGenesisBarrier,
+} from "@/features/timelapse/genesisBarrier";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -79,12 +84,15 @@ const DELETE_RECEIPT = {
 describe("Chat anchor deletion admission", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetTimelapseGenesisBarriersForTests();
+    publishCurrentProjectId("project-1");
     __resetChatNavigationGuardForTests();
     registerCodexAnchorLifecycle({ onDeleted: () => {} });
     setSnippetDeletedHandler(() => {});
   });
 
   afterEach(() => {
+    _resetTimelapseGenesisBarriersForTests();
     __resetChatNavigationGuardForTests();
     registerCodexAnchorLifecycle({ onDeleted: () => {} });
     setSnippetDeletedHandler(() => {});
@@ -187,5 +195,23 @@ describe("Chat anchor deletion admission", () => {
     expect(invokeTypedWriter).not.toHaveBeenCalled();
 
     chatAdmission?.release();
+  });
+
+  it.each([
+    ["Codex", () => deleteCodexEntry("project-1", "codex-1")],
+    ["Snippet", () => deleteSnippet("project-1", "snippet-1")],
+  ])("holds %s Native deletion behind genesis", async (_kind, remove) => {
+    const genesis = beginTimelapseGenesisBarrier("project-1");
+    const deleting = remove();
+
+    await Promise.resolve();
+    expect(invokeTypedWriter).not.toHaveBeenCalled();
+
+    genesis.fail(new Error("genesis failed"));
+    await expect(deleting).rejects.toMatchObject({
+      name: "TimelapseGenesisBarrierError",
+    });
+    expect(selectFromDb).not.toHaveBeenCalled();
+    expect(invokeTypedWriter).not.toHaveBeenCalled();
   });
 });
