@@ -5,6 +5,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { runLocalCiCommand } from "./local-ci-process-supervisor.mjs";
 
@@ -222,4 +223,314 @@ test("reports a missing executable without obscuring the spawn error", async (t)
   assert.notEqual(result.exitCode, 0);
   assert.match(result.error, /ENOENT/u);
   assert.equal(result.cleanup.complete, true);
+});
+
+// Exercise the Xvfb owner through the real supervisor with controlled child
+// executables. No browser download or running desktop session is required.
+let nextXvfbTestDisplay = 100;
+
+async function xvfbFixture(t, mode = "") {
+  const { chmod, mkdir, writeFile } = await import("node:fs/promises");
+  const root = await fixture(t);
+  const bin = path.join(root, "bin");
+  await mkdir(bin);
+  const prelude = `#!${process.execPath}
+const fs = require('node:fs');
+const path = require('node:path');
+const root = process.env.XVFB_TEST_ROOT;
+const mode = process.env.XVFB_TEST_MODE;
+`;
+  await writeFile(
+    path.join(bin, "xauth"),
+    prelude +
+      `
+const auth = process.argv[process.argv.indexOf('-f') + 1];
+fs.writeFileSync(path.join(root, 'auth-started'), String(process.pid));
+if (mode === 'auth-hold') { setInterval(() => {}, 1000); }
+else {
+  let input = '';
+  process.stdin.on('data', chunk => input += chunk);
+  process.stdin.on('end', () => {
+    if (mode === 'auth-fail') process.exit(8);
+    fs.appendFileSync(auth, input);
+  });
+}
+`,
+  );
+  await writeFile(
+    path.join(bin, "Xvfb"),
+    prelude +
+      `
+const auth = process.argv[process.argv.indexOf('-auth') + 1];
+const state = { pid: process.pid, parent: process.ppid, auth, argv: process.argv.slice(2),
+  mode: fs.statSync(auth).mode & 511,
+  directoryMode: fs.statSync(path.dirname(auth)).mode & 511,
+  authorizedBeforeStart: /MIT-MAGIC-COOKIE-1 [0-9a-f]{32}/.test(fs.readFileSync(auth, 'utf8')) };
+fs.writeFileSync(path.join(root, 'server.json'), JSON.stringify(state));
+if (mode === 'server-fail') process.exit(9);
+if (mode === 'eof') { fs.closeSync(3); setInterval(() => {}, 1000); }
+else if (mode === 'hold-ready') { setInterval(() => {}, 1000); }
+else {
+  fs.writeSync(3, mode === 'bad-record' ? '12\\n13\\n' : mode === 'oversize' ? '9'.repeat(100) : process.env.XVFB_TEST_DISPLAY + '\\n');
+  if (mode === 'ignore-term') process.on('SIGTERM', () => {});
+  setInterval(() => {
+    if (mode === 'server-dies' && fs.existsSync(path.join(root, 'application-started'))) process.exit(10);
+  }, 10);
+}
+`,
+  );
+  await Promise.all(
+    ["Xvfb", "xauth"].map((name) => chmod(path.join(bin, name), 0o700)),
+  );
+  const helper = fileURLToPath(new URL("./local-ci-xvfb.mjs", import.meta.url));
+  const entry = (source) => ({
+    command: process.execPath,
+    args: [helper, process.execPath, "-e", source],
+    env: {
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      XVFB_TEST_ROOT: root,
+      XVFB_TEST_MODE: mode,
+      XVFB_TEST_DISPLAY: String(nextXvfbTestDisplay++),
+    },
+  });
+  const options = {
+    root,
+    logDirectory: ".logs",
+    taskId: "xvfb",
+    timeoutMs: 10_000,
+  };
+  return { root, entry, options };
+}
+
+async function waitForXvfbFile(file) {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    try {
+      return await readFile(file, "utf8");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Xvfb test did not create ${file}`);
+}
+
+async function assertXvfbClean(root, result) {
+  assert.equal(result.cleanup.complete, true);
+  assert.equal(result.cleanup.groupAlive, false);
+  assert.throws(() => process.kill(-result.pid, 0), { code: "ESRCH" });
+  let server;
+  try {
+    server = JSON.parse(await readFile(path.join(root, "server.json"), "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  assert.throws(() => process.kill(server.pid, 0), { code: "ESRCH" });
+  await assert.rejects(readFile(server.auth), { code: "ENOENT" });
+  assert.equal(server.mode, 0o600);
+  assert.equal(server.directoryMode, 0o700);
+  assert.equal(server.authorizedBeforeStart, true);
+  assert.deepEqual(server.argv, [
+    "-displayfd",
+    "3",
+    "-screen",
+    "0",
+    "1920x1080x24",
+    "-nolisten",
+    "tcp",
+    "-auth",
+    server.auth,
+  ]);
+}
+
+const xvfbApplicationStarted =
+  "require('node:fs').writeFileSync(require('node:path').join(process.env.XVFB_TEST_ROOT,'application-started'),'yes');";
+
+test("Xvfb owners run concurrently with separate displays and private authorization", async (t) => {
+  const fixtures = await Promise.all([
+    xvfbFixture(t),
+    xvfbFixture(t),
+    xvfbFixture(t),
+  ]);
+  const results = await Promise.all(
+    fixtures.map(async ({ root, entry, options }) => {
+      const result = await runLocalCiCommand(
+        entry(`
+      const fs = require('node:fs');
+      const auth = fs.readFileSync(process.env.XAUTHORITY, 'utf8');
+      require('node:assert/strict').match(auth, new RegExp('add ' + process.env.DISPLAY + ' MIT-MAGIC-COOKIE-1'));
+      console.log(JSON.stringify({display:process.env.DISPLAY,auth:process.env.XAUTHORITY}));
+      setTimeout(() => {}, 100);
+    `),
+        options,
+      );
+      assert.equal(result.exitCode, 0);
+      await assertXvfbClean(root, result);
+      return JSON.parse(
+        await readFile(path.join(root, result.logs.stdout.path), "utf8"),
+      );
+    }),
+  );
+  assert.equal(new Set(results.map((result) => result.display)).size, 3);
+  assert.equal(new Set(results.map((result) => result.auth)).size, 3);
+});
+
+for (const [label, mode] of [
+  ["xauth failure", "auth-fail"],
+  ["server startup failure", "server-fail"],
+  ["displayfd EOF", "eof"],
+  ["invalid displayfd", "bad-record"],
+  ["oversized displayfd", "oversize"],
+]) {
+  test(`Xvfb ${label} fails closed without admitting application`, async (t) => {
+    const { root, entry, options } = await xvfbFixture(t, mode);
+    const result = await runLocalCiCommand(
+      entry(xvfbApplicationStarted),
+      options,
+    );
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.timedOut, false);
+    await assert.rejects(readFile(path.join(root, "application-started")), {
+      code: "ENOENT",
+    });
+    await assertXvfbClean(root, result);
+  });
+}
+
+for (const phase of ["auth-hold", "hold-ready", "running"]) {
+  test(`Xvfb cancellation during ${phase} closes admission and reaps children`, async (t) => {
+    const { root, entry, options } = await xvfbFixture(t, phase);
+    const controller = new AbortController();
+    const running = runLocalCiCommand(
+      entry(xvfbApplicationStarted + "setInterval(()=>{},1000);"),
+      { ...options, signal: controller.signal },
+    );
+    await waitForXvfbFile(
+      path.join(
+        root,
+        phase === "auth-hold"
+          ? "auth-started"
+          : phase === "hold-ready"
+            ? "server.json"
+            : "application-started",
+      ),
+    );
+    controller.abort();
+    const result = await running;
+    assert.equal(result.interrupted, true);
+    assert.equal(result.exitCode, 143);
+    if (phase !== "running")
+      await assert.rejects(readFile(path.join(root, "application-started")), {
+        code: "ENOENT",
+      });
+    await assertXvfbClean(root, result);
+  });
+}
+
+test("Xvfb startup remains bounded by the supervisor task timeout", async (t) => {
+  const { root, entry, options } = await xvfbFixture(t, "hold-ready");
+  const result = await runLocalCiCommand(entry(xvfbApplicationStarted), {
+    ...options,
+    timeoutMs: 500,
+  });
+  assert.equal(result.timedOut, true);
+  await assert.rejects(readFile(path.join(root, "application-started")), {
+    code: "ENOENT",
+  });
+  await assertXvfbClean(root, result);
+});
+
+for (const [label, source, expected] of [
+  ["nonzero exit", "process.exit(17)", 17],
+  ["signal exit", "process.kill(process.pid,'SIGTERM')", 143],
+]) {
+  test(`Xvfb preserves application ${label} and removes the server`, async (t) => {
+    const { root, entry, options } = await xvfbFixture(t);
+    const result = await runLocalCiCommand(entry(source), options);
+    assert.equal(result.exitCode, expected);
+    await assertXvfbClean(root, result);
+  });
+}
+
+test("Xvfb command spawn failure still reaps the server", async (t) => {
+  const { root, entry, options } = await xvfbFixture(t);
+  const command = entry("");
+  command.args = [command.args[0], path.join(root, "missing-command")];
+  const result = await runLocalCiCommand(command, options);
+  assert.equal(result.exitCode, 1);
+  await assertXvfbClean(root, result);
+});
+
+test("Xvfb unexpected server death terminates a running application", async (t) => {
+  const { root, entry, options } = await xvfbFixture(t, "server-dies");
+  const result = await runLocalCiCommand(
+    entry(xvfbApplicationStarted + "setInterval(()=>{},1000);"),
+    options,
+  );
+  assert.equal(result.exitCode, 1);
+  await assertXvfbClean(root, result);
+});
+
+test("Xvfb teardown escalates a TERM-resistant server and waits for close", async (t) => {
+  const { root, entry, options } = await xvfbFixture(t, "ignore-term");
+  const result = await runLocalCiCommand(entry("process.exit(0)"), options);
+  assert.equal(result.exitCode, 0);
+  assert.ok(result.durationMs >= 500);
+  await assertXvfbClean(root, result);
+});
+
+test("Xvfb SIGINT cancellation preserves status and leaves no owned process", async (t) => {
+  const { root, entry, options } = await xvfbFixture(t, "hold-ready");
+  const running = runLocalCiCommand(entry(xvfbApplicationStarted), options);
+  const server = JSON.parse(
+    await waitForXvfbFile(path.join(root, "server.json")),
+  );
+  // The fake server's parent is the helper; signal only that owner.
+  process.kill(server.parent, "SIGINT");
+  const result = await running;
+  assert.equal(result.exitCode, 130);
+  await assert.rejects(readFile(path.join(root, "application-started")), {
+    code: "ENOENT",
+  });
+  await assertXvfbClean(root, result);
+});
+
+test("Xvfb executable missing fails before application admission", async (t) => {
+  const { root, entry, options } = await xvfbFixture(t);
+  const { unlink } = await import("node:fs/promises");
+  await unlink(path.join(root, "bin", "Xvfb"));
+  const command = entry(xvfbApplicationStarted);
+  command.env.PATH = path.join(root, "bin");
+  const result = await runLocalCiCommand(command, options);
+  assert.equal(result.exitCode, 1);
+  await assert.rejects(readFile(path.join(root, "application-started")), {
+    code: "ENOENT",
+  });
+  await assertXvfbClean(root, result);
+});
+
+test("Xvfb wrapper does not hide a surviving application descendant from supervisor", async (t) => {
+  const { root, entry, options } = await xvfbFixture(t);
+  await assert.rejects(
+    runLocalCiCommand(
+      entry(`
+    require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}).unref();
+  `),
+      { ...options, termGraceMs: 100 },
+    ),
+    (error) => {
+      assert.match(error.message, /process group survived command close/);
+      assert.equal(error.result.cleanup.survivorDetected, true);
+      assert.equal(error.result.cleanup.complete, true);
+      assert.throws(() => process.kill(-error.result.pid, 0), {
+        code: "ESRCH",
+      });
+      return true;
+    },
+  );
+  const server = JSON.parse(
+    await readFile(path.join(root, "server.json"), "utf8"),
+  );
+  assert.throws(() => process.kill(server.pid, 0), { code: "ESRCH" });
+  await assert.rejects(readFile(server.auth), { code: "ENOENT" });
 });

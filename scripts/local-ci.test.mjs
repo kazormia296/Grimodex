@@ -3949,10 +3949,9 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
   assert.equal(mcpBuildTask.command.env.CARGO_BUILD_JOBS, "2");
   for (const shard of ["1", "2", "3"]) {
     const task = tasksById.get(`journeys.shard-${shard}`);
-    assert.equal(task.command.command, "xvfb-run");
+    assert.equal(task.command.command, "node");
     assert.deepEqual(task.command.args, [
-      "--auto-display",
-      "--server-args=-screen 0 1920x1080x24",
+      "scripts/local-ci-xvfb.mjs",
       "node",
       "electron/scripts/product-journey-shards.mjs",
       "run",
