@@ -167,7 +167,7 @@
     "@tiptap/suggestion": "^3.30.5",
     "@types/canvas-confetti": "^1.9.0",
     "@types/d3-force": "^3.0.10",
-    "@xyflow/react": "^12.10.2",
+    "@xyflow/react": "^12.11.2",
     "ai": "^7.0.112",
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",

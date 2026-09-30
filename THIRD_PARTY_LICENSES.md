@@ -7605,7 +7605,7 @@ See the LICENSE file in the root of this repository.
 ```
 </details>
 
-### @xyflow/react (12.10.2)
+### @xyflow/react (12.11.2)
 
 - License: MIT
 - Repository: https://github.com/xyflow/xyflow
@@ -7639,7 +7639,7 @@ SOFTWARE.
 ```
 </details>
 
-### @xyflow/system (0.0.76)
+### @xyflow/system (0.0.79)
 
 - License: MIT
 - Repository: https://github.com/xyflow/xyflow
