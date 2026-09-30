@@ -66,6 +66,7 @@ export const AUX_SCOPES = [
   "codex_tags",
   "codex_entry_tags",
   "codex_detail_definitions",
+  "codex_detail_semantic_bindings",
   "codex_detail_values",
   "codex_entry_phases",
   "codex_phase_detail_overrides",
@@ -80,6 +81,8 @@ export const AUX_SCOPES = [
   // owned by `foreshadow`
   "foreshadows",
   "foreshadow_setups",
+  "foreshadow_payoffs",
+  "foreshadow_setup_payoff_links",
   "foreshadow_codex_links",
   // owned by `map`
   "map_boards",
@@ -128,6 +131,7 @@ export const AUX_SCOPE_OWNER: Record<AuxScope, RestoreScope> = {
   codex_tags: "codex",
   codex_entry_tags: "codex",
   codex_detail_definitions: "codex",
+  codex_detail_semantic_bindings: "codex",
   codex_detail_values: "codex",
   codex_entry_phases: "codex",
   codex_phase_detail_overrides: "codex",
@@ -139,6 +143,8 @@ export const AUX_SCOPE_OWNER: Record<AuxScope, RestoreScope> = {
   tree_node_labels: "labels",
   foreshadows: "foreshadow",
   foreshadow_setups: "foreshadow",
+  foreshadow_payoffs: "foreshadow",
+  foreshadow_setup_payoff_links: "foreshadow",
   foreshadow_codex_links: "foreshadow",
   map_boards: "map",
   map_ai_branches: "map",
@@ -176,6 +182,7 @@ export const AUX_TABLE: Record<AuxScope, string> = {
   codex_tags: "codex_tags",
   codex_entry_tags: "codex_entry_tags",
   codex_detail_definitions: "codex_detail_definitions",
+  codex_detail_semantic_bindings: "codex_detail_semantic_bindings",
   codex_detail_values: "codex_detail_values",
   codex_entry_phases: "codex_entry_phases",
   codex_phase_detail_overrides: "codex_phase_detail_overrides",
@@ -187,6 +194,8 @@ export const AUX_TABLE: Record<AuxScope, string> = {
   tree_node_labels: "tree_node_labels",
   foreshadows: "foreshadows",
   foreshadow_setups: "foreshadow_setups",
+  foreshadow_payoffs: "foreshadow_payoffs",
+  foreshadow_setup_payoff_links: "foreshadow_setup_payoff_links",
   foreshadow_codex_links: "foreshadow_codex_links",
   map_boards: "map_boards",
   map_ai_branches: "map_ai_branches",
@@ -236,6 +245,7 @@ export const AUX_PROJECT_FILTER: Record<
   codex_types: { where: "project_id = ?", binds: 1 },
   codex_tags: { where: "project_id = ?", binds: 1 },
   codex_detail_definitions: { where: "project_id = ?", binds: 1 },
+  codex_detail_semantic_bindings: { where: "project_id = ?", binds: 1 },
   codex_relations: { where: "project_id = ?", binds: 1 },
   generation_logs: { where: "project_id = ?", binds: 1 },
   map_boards: { where: "project_id = ?", binds: 1 },
@@ -312,6 +322,16 @@ export const AUX_PROJECT_FILTER: Record<
   // via foreshadows
   foreshadow_setups: {
     where: "foreshadow_id IN (SELECT id FROM foreshadows WHERE project_id = ?)",
+    binds: 1,
+  },
+  foreshadow_payoffs: {
+    where: "foreshadow_id IN (SELECT id FROM foreshadows WHERE project_id = ?)",
+    binds: 1,
+  },
+  foreshadow_setup_payoff_links: {
+    where:
+      "setup_id IN (SELECT id FROM foreshadow_setups WHERE foreshadow_id IN " +
+      "(SELECT id FROM foreshadows WHERE project_id = ?))",
     binds: 1,
   },
   foreshadow_codex_links: {
@@ -405,6 +425,7 @@ export const AUX_BODY_DEPENDENCY: Partial<
   tree_node_labels: { skip: true },
   lint_ignored_diagnostics: { skip: true },
   foreshadow_setups: { skip: true },
+  foreshadow_payoffs: { skip: true },
   foreshadows: { nullColumns: ["payoff_scene_id"] },
   map_node_positions: { nullColumns: ["tree_node_id"] },
 };
@@ -460,6 +481,7 @@ export interface SkipReport {
   treeNodeLabels: number;
   lintIgnoredDiagnostics: number;
   foreshadowSetups: number;
+  foreshadowPayoffs: number;
   foreshadowCodexLinks: number;
   postEffectAnnotations: number;
   postEffectAnnotationRelations: number;
@@ -480,6 +502,7 @@ export function emptySkipReport(): SkipReport {
     treeNodeLabels: 0,
     lintIgnoredDiagnostics: 0,
     foreshadowSetups: 0,
+    foreshadowPayoffs: 0,
     foreshadowCodexLinks: 0,
     postEffectAnnotations: 0,
     postEffectAnnotationRelations: 0,
@@ -501,6 +524,7 @@ export function skipReportIsEmpty(r: SkipReport): boolean {
     r.treeNodeLabels +
       r.lintIgnoredDiagnostics +
       r.foreshadowSetups +
+      r.foreshadowPayoffs +
       r.foreshadowCodexLinks +
       r.postEffectAnnotations +
       r.postEffectAnnotationRelations +

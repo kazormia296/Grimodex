@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach } from "vitest";
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 // リニアモード解除時の本文消失バグの回帰テスト。
 // unmount cleanup からの autosave flush は await されない (fire-and-forget) ため、
@@ -19,38 +21,73 @@ const state = vi.hoisted(() => ({
 
 vi.mock("@/db/client", () => ({
   db: {
-    update: () => ({
-      set: () => ({
-        where: () => ({
-          returning: () => {
-            state.events.push("update:dispatched");
-            return new Promise<
-              Array<{ contentVersion: number; contentUpdatedAt: string }>
-            >((res, rej) => {
-              state.resolveUpdate = () => {
-                state.events.push("update:resolved");
-                res([
-                  {
-                    contentVersion: 1,
-                    contentUpdatedAt: "2026-07-13T00:00:01.000Z",
-                  },
-                ]);
-              };
-              state.rejectUpdate = rej;
-            });
-          },
-        }),
-      }),
-    }),
-    select: () => ({
+    select: (selection?: unknown) => ({
       from: () => ({
         where: () => {
+          // saveSceneContent first resolves the node's Project before issuing
+          // the typed tree_node_patch writer. Keep that pre-read distinct from
+          // the post-barrier content read under test.
+          if (selection === undefined) {
+            return Promise.resolve([
+              {
+                id: "s1",
+                projectId: "project-1",
+                version: 0,
+                updatedAt: "2026-07-13T00:00:00.000Z",
+              },
+            ]);
+          }
           state.events.push("select:executed");
           return Promise.resolve(state.rows);
         },
       }),
     }),
   },
+}));
+
+vi.mock("@/lib/tauri", () => ({
+  invoke: (
+    command: string,
+    args?: { payload?: { nodeId?: string; updatedAt?: string } },
+  ) => {
+    if (command !== "tree_node_patch") {
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    }
+    state.events.push("update:dispatched");
+    return new Promise((resolve, reject) => {
+      state.resolveUpdate = () => {
+        state.events.push("update:resolved");
+        resolve({
+          id: args?.payload?.nodeId ?? "s1",
+          projectId: "project-1",
+          version: 1,
+          updatedAt: args?.payload?.updatedAt ?? "2026-07-13T00:00:01.000Z",
+        });
+      };
+      state.rejectUpdate = reject;
+    });
+  },
+}));
+
+vi.mock("@/features/timelapse/bodyWriteMode", () => ({
+  runTimelapseBodyWrite: (
+    _input: unknown,
+    callbacks: {
+      commit: (coverage: undefined) => Promise<unknown>;
+      project: (committed: unknown) => Promise<unknown>;
+    },
+  ) => callbacks.commit(undefined).then(callbacks.project),
+  runTimelapseBodyReplacement: (
+    _input: unknown,
+    callbacks: {
+      commit: () => Promise<unknown>;
+      project: (committed: unknown) => Promise<unknown>;
+    },
+  ) => callbacks.commit().then(callbacks.project),
+  runTimelapseMutation: (
+    _projectId: string,
+    operation: () => Promise<unknown>,
+  ) => operation(),
 }));
 
 import {
@@ -81,6 +118,16 @@ beforeEach(() => {
   state.resolveUpdate = undefined;
   state.rejectUpdate = undefined;
   state.rows = [{ content: DOC, unplacedBeatsDoc: "[]" }];
+  publishCurrentProjectId("project-1");
+  setCurrentWorkspaceIdentity({
+    path: "/workspace/scene-content-test",
+    openRevision: 1,
+  });
+});
+
+afterEach(() => {
+  publishCurrentProjectId(null);
+  setCurrentWorkspaceIdentity(null);
 });
 
 describe("scene content の read-after-write バリア", () => {
@@ -158,6 +205,7 @@ describe("scene content の read-after-write バリア", () => {
     const save = saveSceneContent("s1", DOC).catch(() => {});
     const load = loadSceneContent("s1");
 
+    await vi.waitFor(() => expect(state.rejectUpdate).toBeTypeOf("function"));
     state.rejectUpdate!(new Error("ipc failed"));
     await expect(load).resolves.toBe(DOC);
     await save;

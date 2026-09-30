@@ -235,6 +235,76 @@ test("native AI dispatchはdurable lifecycleの欠落・identity偽装をHTTP前
   }
 });
 
+test("restricted Native chat families reject a forged caller before local HTTP", async () => {
+  let requestCount = 0;
+  const { server, baseUrl } = await startMockServer((_req, res) => {
+    requestCount += 1;
+    res.writeHead(500).end();
+  });
+  const isolatedRoot = mkdtempSync(join(tmpdir(), "grimodex-node-d2a-chat-"));
+  const isolatedAppDataDir = join(isolatedRoot, "app-data");
+  try {
+    mkdirSync(isolatedAppDataDir, { recursive: true });
+    writeFileSync(
+      join(isolatedAppDataDir, "ai-settings.json"),
+      JSON.stringify({
+        provider: "openai-compatible",
+        model: "mock-model",
+        ollamaEndpoint: "",
+        openaiCompatibleEndpoints: [{ id: "test", baseUrl }],
+        activeOpenaiCompatibleEndpointId: "test",
+      }),
+    );
+    const backend = new Backend(isolatedAppDataDir);
+    await backend.initializeProfileEgress();
+    const status = JSON.parse(await backend.activateProfileEgress());
+    const workspace = join(isolatedRoot, "d2a-restricted-chat");
+    await backend.openWorkspace(workspace);
+    const expectedWorkspacePath = realpathSync(workspace);
+    const forgedIdentity = {
+      profileId: status.profileId,
+      callerId: "forged-chat-caller",
+      callerEpoch: status.callerEpoch,
+      senderId: 900,
+      workspaceId: expectedWorkspacePath,
+      sessionId: "forged-chat-session",
+    };
+    const settings = JSON.parse(await backend.getAiSettings());
+    const auditContext = (executionId) => ({
+      expectedWorkspacePath,
+      projectId: null,
+      operationId: `${executionId}-operation`,
+      executionId,
+      parentExecutionId: null,
+      pathId: "restricted-native-chat",
+    });
+    const chatArgs = {
+      ...CHAT_ARGS,
+      auditContext: auditContext("restricted-chat"),
+      callerIdentity: forgedIdentity,
+    };
+    const streamArgs = {
+      ...CHAT_ARGS,
+      streamId: "restricted-chat-stream",
+      auditContext: auditContext("restricted-chat-stream"),
+      callerIdentity: forgedIdentity,
+    };
+
+    await assert.rejects(
+      backend.sendChatMessage(chatArgs, settings, "sk-injected"),
+      /D2A_EGRESS_DENIED:/,
+    );
+    await assert.rejects(
+      backend.sendChatMessageStream(streamArgs, settings, "sk-injected"),
+      /D2A_EGRESS_DENIED:/,
+    );
+    assert.equal(requestCount, 0, "Native gate must precede the local HTTP transport");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    rmSync(isolatedRoot, { recursive: true, force: true });
+  }
+});
+
 test("sendChatMessage がキー注入 + provider/endpoint/model override を保つ", async () => {
   let received;
   const { server, baseUrl } = await startMockServer(async (req, res) => {

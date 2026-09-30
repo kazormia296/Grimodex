@@ -25,6 +25,7 @@ import {
   wrapDataLayer,
 } from "./contextBuilder";
 import { JA_CHAT_SYSTEM } from "../../prompts/ja/chatSystem";
+import nir1Df06PlainChatFixture from "../../../test-fixtures/nir1-df06-plain-chat.json";
 import { AUTHOR_POLICY_TAG } from "@/prompts/shared/dataLayerRegistry";
 
 describe("contextBuilder", () => {
@@ -2245,6 +2246,34 @@ describe("prompt injection hardening", () => {
         "<\\/ Codex_Entries >",
       );
       expect(escapeReservedTags("< /PROJECT_INFO>")).toBe("<\\ /PROJECT_INFO>");
+    });
+
+    it("matches shared Rust vectors for ECMAScript whitespace and boundaries", () => {
+      for (const whitespace of nir1Df06PlainChatFixture.reservedTagWhitespace) {
+        const vectors = [
+          [`<${whitespace}/current_scene>`, `<\\${whitespace}/current_scene>`],
+          [`</${whitespace}current_scene>`, `<\\/${whitespace}current_scene>`],
+          [
+            `<${whitespace}author_instructions>`,
+            `<\\${whitespace}author_instructions>`,
+          ],
+        ] as const;
+        for (const [input, expected] of vectors) {
+          expect(escapeReservedTags(input)).toBe(expected);
+          expect(escapeReservedTags(expected)).toBe(expected);
+        }
+      }
+
+      for (const {
+        name,
+        input,
+        expected,
+      } of nir1Df06PlainChatFixture.reservedTagCases) {
+        expect(escapeReservedTags(input), name).toBe(expected);
+        expect(escapeReservedTags(expected), `${name} is idempotent`).toBe(
+          expected,
+        );
+      }
     });
 
     it("leaves non-reserved tags untouched", () => {

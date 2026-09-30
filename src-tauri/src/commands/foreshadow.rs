@@ -143,6 +143,17 @@ pub(crate) fn foreshadow_unlink_codex(
 }
 
 #[tauri::command(async)]
+pub(crate) fn foreshadow_mark_linked_codex_dirty(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    project_id: String,
+    codex_entry_id: String,
+) -> Result<(), AppError> {
+    with_db(&ws_state, |db| {
+        foreshadow::mark_linked_codex_dirty(db, project_id, codex_entry_id)
+    })
+}
+
+#[tauri::command(async)]
 pub(crate) fn foreshadow_list_linked_codex(
     ws_state: tauri::State<'_, WorkspaceState>,
     foreshadow_id: String,

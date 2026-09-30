@@ -91,7 +91,7 @@ describe("uiMutateChronicleBulk", () => {
     ]);
 
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
-    expect(mocks.invoke).toHaveBeenCalledWith("agent_chronicle_bulk_mutate", {
+    expect(mocks.invoke).toHaveBeenCalledWith("chronicle_bulk_mutate", {
       payload: {
         requestId: expect.any(String),
         projectId: "project-1",

@@ -23,7 +23,15 @@ const { Backend } = require(join(here, "..", "grimodex-node.node"));
 
 const roots = [];
 process.on("exit", () => {
-  for (const root of roots) rmSync(root, { recursive: true, force: true });
+  for (const root of roots) {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch (error) {
+      // The native Backend can release its SQLite handle after exit listeners
+      // on Windows, so fixture cleanup is best-effort there.
+      if (process.platform !== "win32" || error?.code !== "EPERM") throw error;
+    }
+  }
 });
 
 function deferred() {
@@ -103,6 +111,10 @@ function writeReviewResponse(res, suffix = "") {
 
 function writeTypoResponse(res) {
   writeAiResponse(res, { issues: [] });
+}
+
+function writeImpactResponse(res) {
+  writeAiResponse(res, { judgments: [] });
 }
 
 function makeBackend() {
@@ -203,12 +215,91 @@ function scopedArgs(args, workspace) {
 }
 
 async function insertScene(backend, sceneId) {
-  await backend.dbExecute(
-    "INSERT INTO tree_nodes (id, project_id, node_type, title, content) VALUES (?, 'default-project', 'scene', ?, ?)",
-    [sceneId, sceneId, "風が吹く。風が止む。"],
-    "run",
+  const requestId = `post-effect-scene-create:${sceneId}`;
+  return JSON.parse(
+    await backend.treeNodeCreate({
+      requestId,
+      sessionId: `${requestId}:session`,
+      eventUid: `${requestId}:event`,
+      origin: "human",
+      authorityRoute: "human-direct",
+      caller: "manual-wrapper",
+      controls: [
+        "runtime-policy",
+        "actor-context",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
+      originalTransactionId: null,
+      undoJournalId: null,
+      id: sceneId,
+      projectId: "default-project",
+      parentId: null,
+      nodeType: "scene",
+      title: sceneId,
+      sortOrder: sceneId,
+      content: "風が吹く。風が止む。",
+    }),
   );
 }
+
+test("restricted Native post-effect families reject a forged caller before local HTTP", async () => {
+  let requestCount = 0;
+  const { server, baseUrl } = await startMockServer((_req, res) => {
+    requestCount += 1;
+    res.writeHead(500).end();
+  });
+  try {
+    const { backend, workspace } = makeBackend();
+    await backend.initializeProfileEgress();
+    const status = JSON.parse(await backend.activateProfileEgress());
+    await backend.openWorkspace(workspace);
+    const forgedIdentity = {
+      profileId: status.profileId,
+      callerId: "forged-post-effect-caller",
+      callerEpoch: status.callerEpoch,
+      senderId: 902,
+      workspaceId: workspace,
+      sessionId: "forged-post-effect-session",
+    };
+    const settings = aiSettings(baseUrl);
+
+    await assert.rejects(
+      backend.startPostEffectRun(
+        scopedArgs(
+          { ...singleArgs("restricted-post-effect"), callerIdentity: forgedIdentity },
+          workspace,
+        ),
+        settings,
+        null,
+        null,
+      ),
+      /D2A_EGRESS_DENIED:/,
+    );
+    await assert.rejects(
+      backend.startPostEffectRunMulti(
+        scopedArgs(
+          {
+            ...multiArgs(["restricted-post-effect-1", "restricted-post-effect-2"]),
+            callerIdentity: forgedIdentity,
+          },
+          workspace,
+        ),
+        settings,
+        null,
+        null,
+      ),
+      /D2A_EGRESS_DENIED:/,
+    );
+    assert.equal(requestCount, 0, "Native gate must precede the local HTTP transport");
+  } finally {
+    await closeServer(server);
+  }
+});
 
 async function rows(backend, sql, params = []) {
   const result = JSON.parse(await backend.dbExecute(sql, params, "all"));
@@ -249,68 +340,82 @@ async function waitForRunEvent(events, channel, runId, timeoutMs = 5000) {
 }
 
 test("Impact source guard は cache より先に同一connection revisionを原子的に検証する", async () => {
-  const { backend, workspace } = makeBackend();
-  await backend.openWorkspace(workspace);
-  await insertScene(backend, "impact-guard-scene");
-  await backend.dbExecute(
-    `INSERT INTO post_effect_runs
-       (id, project_id, effect_type, scope_type, scope_target_id,
-        model, prompt_version, input_hash, status, started_at, completed_at)
-     VALUES ('impact-guard-cache', 'default-project', 'impact_review',
-             'project', NULL, 'mock-review-model', 'impact_review_v1.1',
-             'impact-guard-cache-hash', 'completed', datetime('now'), datetime('now'))`,
-    [],
-    "run",
-  );
-  const matchingGuard = await readSourceGuard(backend);
-
-  const cached = JSON.parse(
-    await backend.startPostEffectRunMulti(
-      scopedArgs(
-        impactMultiArgs(
-          "impact-guard-scene",
-          "impact-guard-cache-hash",
-          matchingGuard,
-        ),
-        workspace,
-      ),
-      aiSettings("http://127.0.0.1:1"),
-      null,
-      "cache path must not resolve a secret",
-    ),
-  );
-  assert.deepEqual(cached, {
-    run_id: "impact-guard-cache",
-    from_cache: true,
+  const { server, baseUrl } = await startMockServer(async (req, res) => {
+    await readBody(req);
+    writeImpactResponse(res);
   });
 
-  const staleGuard = await readSourceGuard(backend);
-  await backend.dbExecute(
-    "UPDATE projects SET title = 'same-connection change' WHERE id = 'default-project'",
-    [],
-    "run",
-  );
-  await assert.rejects(
-    backend.startPostEffectRunMulti(
-      scopedArgs(
-        impactMultiArgs(
-          "impact-guard-scene",
-          "impact-guard-stale-hash",
-          staleGuard,
+  try {
+    const { backend, events, workspace } = makeBackend();
+    await backend.openWorkspace(workspace);
+    await insertScene(backend, "impact-guard-scene");
+
+    const seedGuard = await readSourceGuard(backend);
+    const seeded = JSON.parse(
+      await backend.startPostEffectRunMulti(
+        scopedArgs(
+          impactMultiArgs(
+            "impact-guard-scene",
+            "impact-guard-cache-hash",
+            seedGuard,
+          ),
+          workspace,
         ),
-        workspace,
+        aiSettings(baseUrl),
+        null,
+        null,
       ),
-      aiSettings("http://127.0.0.1:1"),
-      null,
-      null,
-    ),
-    /IMPACT_SOURCE_CHANGED/,
-  );
-  const [staleRunCount] = await rows(
-    backend,
-    "SELECT COUNT(*) AS n FROM post_effect_runs WHERE input_hash = 'impact-guard-stale-hash'",
-  );
-  assert.equal(staleRunCount.n, 0, "stale guard never creates a run row");
+    );
+    assert.equal(seeded.from_cache, false);
+    await waitForRunEvent(events, "post_effect:done", seeded.run_id);
+
+    const matchingGuard = await readSourceGuard(backend);
+    const cached = JSON.parse(
+      await backend.startPostEffectRunMulti(
+        scopedArgs(
+          impactMultiArgs(
+            "impact-guard-scene",
+            "impact-guard-cache-hash",
+            matchingGuard,
+          ),
+          workspace,
+        ),
+        aiSettings("http://127.0.0.1:1"),
+        null,
+        "cache path must not resolve a secret",
+      ),
+    );
+    assert.deepEqual(cached, {
+      run_id: seeded.run_id,
+      from_cache: true,
+    });
+
+    const staleGuard = await readSourceGuard(backend);
+    await insertScene(backend, "impact-guard-revision-change");
+    await assert.rejects(
+      backend.startPostEffectRunMulti(
+        scopedArgs(
+          impactMultiArgs(
+            "impact-guard-scene",
+            "impact-guard-stale-hash",
+            staleGuard,
+          ),
+          workspace,
+        ),
+        aiSettings("http://127.0.0.1:1"),
+        null,
+        null,
+      ),
+      /IMPACT_SOURCE_CHANGED/,
+    );
+    const [staleRunCount] = await rows(
+      backend,
+      "SELECT COUNT(*) AS n FROM post_effect_runs WHERE input_hash = 'impact-guard-stale-hash'",
+    );
+    assert.equal(staleRunCount.n, 0, "stale guard never creates a run row");
+  } finally {
+    await closeServer(server);
+  }
 });
 
 test("Impact source guard は別Backendのcommitと不正wireをnative境界で拒否する", async () => {
@@ -338,11 +443,7 @@ test("Impact source guard は別Backendのcommitと不正wireをnative境界で�
 
   const second = makeBackend();
   await second.backend.openWorkspace(first.workspace);
-  await second.backend.dbExecute(
-    "UPDATE projects SET title = 'external connection change' WHERE id = 'default-project'",
-    [],
-    "run",
-  );
+  await insertScene(second.backend, "impact-external-revision-change");
 
   await assert.rejects(
     first.backend.startPostEffectRunMulti(

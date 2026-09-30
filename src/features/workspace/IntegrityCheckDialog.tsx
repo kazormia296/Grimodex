@@ -1,27 +1,21 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
-import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { useCurrentProjectId } from "@/features/project/projectStore";
 import {
   buildCrossReferenceReport,
   type CrossReferenceEntry,
 } from "@/features/codex/crossReference";
-
-interface IntegrityReport {
-  orphanedCodexSources: number;
-  orphanedSnippetSources: number;
-  orphanedSnippetScenes: number;
-}
-
-interface RepairReport {
-  codexSourcesFixed: number;
-  snippetSourcesFixed: number;
-  snippetScenesFixed: number;
-}
+import {
+  checkProjectIntegrity,
+  repairProjectIntegrity,
+  type IntegrityReport,
+} from "./integrityApi";
 
 export function IntegrityCheckSection() {
   const { t } = useTranslation();
+  const projectId = useCurrentProjectId();
   const [isChecking, setIsChecking] = useState(false);
   const [isRepairing, setIsRepairing] = useState(false);
   const [isBuildingXref, setIsBuildingXref] = useState(false);
@@ -33,7 +27,7 @@ export function IntegrityCheckSection() {
   async function runCheck() {
     setIsChecking(true);
     try {
-      const result = await invoke<IntegrityReport>("integrity_check");
+      const result = await checkProjectIntegrity(projectId);
       setReport(result);
     } catch (e) {
       toast.error(t("integrity.checkError"));
@@ -46,7 +40,7 @@ export function IntegrityCheckSection() {
   async function runRepair() {
     setIsRepairing(true);
     try {
-      const result = await invoke<RepairReport>("repair_integrity");
+      const result = await repairProjectIntegrity(projectId);
       toast.success(
         t("integrity.repairSuccess", {
           codex: result.codexSourcesFixed,
@@ -55,7 +49,7 @@ export function IntegrityCheckSection() {
         }),
       );
       // Re-run check to update display
-      const updated = await invoke<IntegrityReport>("integrity_check");
+      const updated = await checkProjectIntegrity(projectId);
       setReport(updated);
     } catch (e) {
       toast.error(t("integrity.repairError"));

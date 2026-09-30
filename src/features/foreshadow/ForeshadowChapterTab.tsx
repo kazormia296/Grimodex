@@ -1,10 +1,18 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, Loader2, Sparkles } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useSceneStore } from "@/features/tree/store";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useForeshadowStore } from "./foreshadowStore";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
+import { ForeshadowExtractionReview } from "./extraction-ui/ForeshadowExtractionReview";
 import { getChapterForeshadowStats } from "./api";
 import type { AuditCandidate, ChapterForeshadowStats } from "./types";
 
@@ -27,6 +35,7 @@ export function ForeshadowChapterTab() {
     title: string;
     intent: string;
   } | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   const handleExpandChapter = async (chapterId: string) => {
     if (expandedChapterId === chapterId) {
@@ -58,6 +67,18 @@ export function ForeshadowChapterTab() {
 
   return (
     <div className="flex flex-col">
+      <div className="border-b border-border/50 px-3 py-2">
+        <button
+          type="button"
+          data-testid="foreshadow-open-extraction-review"
+          onClick={() => setReviewOpen(true)}
+          className="flex w-full items-center justify-center gap-1 rounded border border-dashed border-border px-2 py-1.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <Sparkles className="h-3 w-3" />
+          {t("foreshadow.reviewExtract.open", "伏線候補レビュー（プレビュー）")}
+        </button>
+      </div>
+
       {chapters.map((chapter) => {
         const isExpanded = expandedChapterId === chapter.id;
         const chapterStats = stats[chapter.id];
@@ -173,6 +194,26 @@ export function ForeshadowChapterTab() {
           }}
         />
       )}
+
+      <Dialog open={reviewOpen} onOpenChange={setReviewOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {t("foreshadow.reviewExtract.title", "伏線候補レビュー")}
+            </DialogTitle>
+          </DialogHeader>
+          <ForeshadowExtractionReview proposals={[]} />
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setReviewOpen(false)}
+              className="rounded px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent"
+            >
+              {t("common.close", "閉じる")}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "nir1-related-scenes-ranking/2",
+  "statementRepresentation": "ordered-json/1",
+  "irCosineFloors": { "ja": 0.813, "en": 0.66 },
+  "irMaxScenes": 8,
+  "fusion": {
+    "id": "raw-stable-one-supplement/1",
+    "maxScenes": 8,
+    "maxAdditionalScenes": 1
+  }
+}

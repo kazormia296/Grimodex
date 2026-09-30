@@ -1,7 +1,7 @@
 # Grimodex Terms of Use
 
-Last updated: 2026-07-25
-Version: v1.7
+Last updated: 2026-08-19
+Version: v2.0
 
 **Authoritative language notice.** The authoritative, legally binding text of these Terms of Use is the Japanese version (`TERMS_ja.md`). This English version is a reference translation provided for convenience only. In the event of any discrepancy or inconsistency between this English translation and the Japanese version, the Japanese version shall prevail.
 
@@ -9,17 +9,23 @@ These Terms of Use (the "Terms") set forth the conditions for using Grimodex (th
 
 The developer of the Software (the "Developer") refers to **kazormia296**, the copyright holder of the Grimodex project (GitHub: https://github.com/kazormia296/Grimodex ).
 
-By installing, launching, or using the Software, the user (the "User") is deemed to have agreed to all provisions of these Terms.
+By expressly accepting these Terms in the Software and then using the Software, the user (the "User") agrees to all provisions of these Terms.
 
 ---
 
 ## 1. License and Distribution
 
-1.1. The source code and binaries of the Software are provided under the **Elastic License 2.0**. For details, see the bundled `LICENSE` file and https://www.elastic.co/licensing/elastic-license .
+1.1. The first-party source code of the Software is proprietary, and the Developer reserves all rights. The applicable scope and the boundary with legacy versions are set out in the bundled `LICENSE` and `LICENSING.md` files.
 
-1.2. These Terms supplement the Elastic License 2.0. In the event of any conflict between the two, the provisions of the Elastic License 2.0 shall prevail.
+1.2. The source code is publicly viewable for reference, security review, and Issue reporting. Rights needed to view and fork the public repository within GitHub under GitHub's Terms of Service are unaffected, but no broader right to reproduce, modify, distribute, or create derivative works is granted.
 
-1.3. The Software may not be provided to third parties as a hosting service (such as SaaS) (a restriction under the Elastic License 2.0).
+1.3. Subject to a valid trial or purchased product license and any other applicable conditions, the Developer grants the User a limited, non-exclusive, non-transferable, and non-sublicensable right to install and use official Grimodex binaries for their intended purpose.
+
+1.4. Except as expressly permitted by these Terms or by a separate written agreement with the copyright holder, no right is granted to use, copy, modify, merge, publish, distribute, sublicense, sell, host, create derivative works from, or incorporate the Software or any portion of it into another product or service.
+
+1.5. Third-party dependencies, fonts, icons, models, and other materials remain subject to their respective licenses. See `NOTICE`, `THIRD_PARTY_LICENSES.md`, and the license files shipped with the relevant material for details.
+
+1.6. Versions and commits at or before the cutover boundary recorded in `LICENSING.md`, including the boundary commit itself, remain subject to the license that accompanied them when they were made available. These Terms do not retroactively revoke rights already granted for those legacy versions.
 
 ---
 
@@ -94,7 +100,7 @@ In using the Software, the User shall not engage in any of the following acts:
 
 5.1. Using the Software for illegal purposes or purposes that violate laws and regulations.
 5.2. Publishing or distributing content created or generated through the Software in a manner that infringes the rights of third parties.
-5.3. Reverse engineering, modifying, or redistributing the Software to the extent prohibited by the Elastic License 2.0.
+5.3. Except where expressly permitted by applicable law and not subject to contractual restriction, reverse engineering, copying, modifying, merging, publishing, distributing, sublicensing, selling, hosting, creating derivative works from, or incorporating the Software into another product or service beyond the scope permitted by Section 1.
 5.4. Exploiting vulnerabilities in the Software, or engaging in acts that cause damage to other Users or third parties.
 5.5. Any other act that infringes the rights or interests of the Developer or third parties.
 
@@ -120,7 +126,7 @@ In using the Software, the User shall not engage in any of the following acts:
 
 7.2. Minor revisions (such as correcting typos, clarifying expressions, or updating reference links, which do not materially affect the User's rights or obligations) take effect when they are bundled with a new version of the Software, and the User is deemed to have agreed to the revised Terms by continuing to use the new version.
 
-7.3. For revisions that materially affect the User's rights or obligations, the revision will be distributed together with a major or minor version update, and the User will be asked for explicit re-consent when the Software launches. If the User cannot re-consent, the User shall discontinue use of the Software.
+7.3. For revisions that materially affect the User's rights or obligations, the Developer will update the version of these Terms and ask the User for explicit re-consent when the Software launches. Acceptance of an earlier version is not treated as acceptance of the revised Terms. If the User does not re-consent, the User shall not use the updated Software.
 
 ---
 
@@ -134,7 +140,7 @@ In using the Software, the User shall not engage in any of the following acts:
 
 ## 9. Termination
 
-9.1. If the User breaches these Terms, the Developer may, by notice to the User, terminate the User's authorization to use the Software under these Terms with prospective effect. Termination of the license granted under the Elastic License 2.0 is governed by the provisions of that license.
+9.1. If the User breaches these Terms, the Developer may, by notice to the User, terminate prospectively the authorization to use official binaries granted under Section 1.3. This termination does not alter third-party component licenses or rights already granted for legacy versions identified in `LICENSING.md`.
 
 9.2. Even after the authorization to use the Software is terminated, as in 4.10, viewing and exporting the data created by the User is not restricted.
 
@@ -146,7 +152,7 @@ In using the Software, the User shall not engage in any of the following acts:
 
 10.1. (Severability) Even if any provision of these Terms is held invalid or unenforceable under applicable law, the validity and enforceability of the remaining provisions shall not be affected, and the provision held invalid or unenforceable shall be applied with the minimum modification necessary to achieve its original intent.
 
-10.2. (Entire Agreement) These Terms and the license document bundled with the Software (the Elastic License 2.0) constitute the entire agreement between the User and the Developer regarding the use of the Software, and supersede all prior agreements and understandings on this matter.
+10.2. (Entire Agreement) These Terms, the `LICENSE` and `LICENSING.md` files bundled with the Software, and any applicable trial or purchase terms constitute the entire agreement between the User and the Developer regarding use of the Software, and supersede all prior agreements and understandings on this matter.
 
 10.3. (Language) The Japanese version of these Terms is the authoritative text. Even where the Developer provides an English or other reference translation, in the event of any discrepancy or inconsistency between the authoritative text and the reference translation, the Japanese version shall prevail.
 

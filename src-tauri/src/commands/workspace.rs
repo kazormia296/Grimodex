@@ -19,7 +19,8 @@ use super::{AppError, GlobalSettingsPath, WorkspaceState};
 use grimodex_db::backup_restore::list_backups as list_backups_shared;
 pub(crate) use grimodex_db::backup_restore::{restore_backup_core, BackupInfo};
 pub(crate) use grimodex_db::open::reject_unsafe_workspace_path;
-use grimodex_db::open::{open_workspace_sync, OpenDeps, OpenWorkspaceResult};
+use grimodex_db::open::{open_workspace_sync, OpenDeps};
+use grimodex_db::recovery::WorkspaceOpenOutcome;
 use grimodex_db::state::active_workspace_path;
 
 /// アクティブ workspace のバックアップ一覧。列挙・filter・sort の実体は
@@ -86,9 +87,9 @@ pub(crate) fn validate_workspace_path(path: String) -> bool {
 pub(crate) async fn open_workspace(
     app: tauri::AppHandle,
     path: String,
-) -> Result<OpenWorkspaceResult, AppError> {
+) -> Result<WorkspaceOpenOutcome, AppError> {
     let result =
-        tauri::async_runtime::spawn_blocking(move || -> Result<OpenWorkspaceResult, AppError> {
+        tauri::async_runtime::spawn_blocking(move || -> Result<WorkspaceOpenOutcome, AppError> {
             let ws_state = app.state::<WorkspaceState>();
             let gs_path = app.state::<GlobalSettingsPath>();
             #[cfg(feature = "semantic-embedding")]

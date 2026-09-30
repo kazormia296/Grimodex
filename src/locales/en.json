@@ -270,6 +270,7 @@
     "delete": "Delete",
     "copy": "Copy",
     "close": "Close",
+    "retry": "Retry",
     "add": "Add",
     "edit": "Edit",
     "reset": "Reset",
@@ -483,6 +484,17 @@
       "too-many-files": "The folder contains too many manuscript files (maximum {{maxFiles}})",
       "folder-too-large": "The manuscript files in this folder are too large in total (maximum {{maxMiB}} MiB)",
       "path-too-deep": "The folder hierarchy is too deep (maximum {{maxDepth}} levels)"
+    },
+    "generic": {
+      "wizardTitle": "Generic import (preview)",
+      "runPreview": "Run preview",
+      "resourceTreeHint": "Captured files and inferred roles (preview).",
+      "noResources": "No resources",
+      "rolePickerHint": "Review semantic roles for each resource (preview).",
+      "disposition": "Disposition",
+      "summaryHint": "Generic import assembly summary (preview).",
+      "skipped": "Skipped",
+      "decoderPickerHint": "Decoders are auto-selected from extension and magic bytes (preview)."
     },
     "scan": {
       "description": "Load a private Scan editor seed (JSON) into a new project using staged apply. Existing projects are unchanged.",
@@ -767,7 +779,7 @@
       "paletteShortcut": "Enable Ctrl+Shift+Space palette",
       "bubbleMenu": "Show selection toolbar",
       "aozoraInput": "Aozora notation input aid",
-      "aozoraInputDesc": "While typing, convert ｜base《reading》 and 漢字《reading》 to ruby, and 《《text》》 to emphasis dots",
+      "aozoraInputDesc": "While typing or using regular paste, convert ｜base《reading》 and 漢字《reading》 to ruby, 《《text》》 to emphasis dots, and ［＃縦中横］…［＃縦中横終わり］ to tate-chu-yoko",
       "autoPairBrackets": "Auto-close bracket pairs",
       "autoPairBracketsDesc": "Typing 「『（【〔［〈｛ auto-inserts the matching close (typing the close steps over it instead of duplicating)",
       "showInvisibles": "Show whitespace & line breaks",
@@ -802,6 +814,11 @@
       "zenShader_warp": "Warp",
       "zenShader_static-mesh-gradient": "Static Mesh",
       "zenOpacity": "Intensity",
+      "zenResolutionMode": "Rendering quality",
+      "zenResolutionModeDesc": "Balanced renders the animated Scene at 75% resolution. UI, Glass, and readability protection remain native resolution.",
+      "zenResolutionMode_native": "Native",
+      "zenResolutionMode_balanced": "Balanced (recommended)",
+      "zenResolutionMode_performance": "Performance",
       "zenSpeed": "Speed",
       "zenSpeedDesc": "Set to 0 for a still frame. Animation also pauses when the window is inactive or Reduce Motion is enabled.",
       "zenSpeedMode": "Speed range",
@@ -1494,7 +1511,29 @@
         "codex_judgment": "Proper-noun candidate judgment",
         "codex_yomi": "Reading estimation",
         "plot_thread_extract": "Plot thread extraction",
-        "chronicle_extract": "Chronicle event extraction"
+        "chronicle_extract": "Chronicle event extraction",
+        "narrative_observation_extract": "Narrative observation extract",
+        "narrative_event_synthesize": "Narrative event synthesize",
+        "narrative_entity_resolve": "Narrative entity resolve",
+        "narrative_relation_synthesize": "Narrative relation synthesize",
+        "narrative_state_synthesize": "Narrative state synthesize",
+        "narrative_phase_synthesize": "Narrative phase synthesize",
+        "narrative_detail_compose": "Narrative detail compose",
+        "narrative_temporal_attach": "Narrative temporal attach",
+        "narrative_temporal_synthesize": "Narrative temporal synthesize",
+        "narrative_structured_repair": "Narrative structured repair",
+        "narrative_plot_thread_synthesize": "Narrative plot thread synthesize",
+        "narrative_plot_development_classify": "Narrative plot development classify",
+        "narrative_plot_marker_assign": "Narrative plot marker assign",
+        "narrative_plot_relation_synthesize": "Narrative plot relation synthesize",
+        "narrative_foreshadow_signal_synthesize": "Foreshadow setup signal synthesize",
+        "narrative_setup_payoff_link": "Setup/payoff link",
+        "narrative_foreshadow_global_reconcile": "Foreshadow global reconcile",
+        "narrative_foreshadow_quality_evaluate": "Foreshadow quality evaluate",
+        "generic_import_role_classify": "Generic import role classify",
+        "generic_import_document_partition": "Generic import document partition",
+        "generic_import_custom_extract": "Generic import custom extract",
+        "generic_import_record_reconcile": "Generic import record reconcile"
       }
     }
   },
@@ -2422,7 +2461,8 @@
       "fieldTypeText": "Text",
       "fieldTypeDropdown": "Dropdown",
       "fieldTypeCodexReference": "Codex Reference",
-      "manageFieldsTitle": "Manage fields: {{type}}"
+      "manageFieldsTitle": "Manage fields: {{type}}",
+      "editConflict": "Couldn't save: this detail was updated in another window. Reload the latest version and edit again."
     },
     "relation": {
       "title": "Hierarchy (parent/child)",
@@ -4063,6 +4103,8 @@
     }
   },
   "inlineAi": {
+    "accept": "Accept",
+    "reject": "Reject",
     "generateFailed": "Generation failed",
     "proposalAlreadyFinalized": "This AI proposal was already applied or discarded elsewhere. The outdated preview has been dismissed.",
     "pendingBlocked": "You have an unconfirmed AI generation. Press Tab to accept or Esc to discard before continuing.",
@@ -4126,6 +4168,15 @@
     "slashMenuLabel": "Inline AI commands"
   },
   "relatedScenes": {
+    "rank": "Rank {{rank}}",
+    "approvedInterpretation": "Approved interpretation",
+    "fresh": "Sources checked",
+    "actuality": "Actuality",
+    "attribution": "Attribution",
+    "narrativeFrame": "Narrative frame",
+    "openEvidence": "Open supporting passage",
+    "irUnsupported": "Approved interpretations are unavailable for these reading conditions. Showing text search results.",
+    "irUnavailable": "Approved interpretations are currently unavailable. Showing text search results.",
     "noActiveScene": "Select a scene to see related earlier scenes.",
     "loading": "Searching…",
     "empty": "No related earlier scenes found.",
@@ -5312,7 +5363,12 @@
     "reindexComplete": "Reindex complete",
     "reindexing": "Semantic reindexing…",
     "noScenes": "No scenes to index",
-    "progressDetail": "{{scene}} / {{total}} scenes · {{chunks}} chunks"
+    "progressDetail": "{{scene}} / {{total}} scenes · {{chunks}} chunks",
+    "modelDownloadFailed": "Embedding model download failed",
+    "modelDownloadComplete": "Embedding model is ready",
+    "modelDownloading": "Downloading embedding model…",
+    "modelDownloadFallback": "Continuing with full-text search (FTS)",
+    "retryModelDownload": "Retry"
   },
   "beat": {
     "generateBeats": {
@@ -5716,6 +5772,24 @@
       "failed": "Extraction failed",
       "none": "No sub-plots could be extracted."
     },
+    "reviewExtract": {
+      "button": "Extraction preview",
+      "title": "Plot thread proposal review",
+      "hint": "Review AI-proposed plot thread candidates (preview feature).",
+      "empty": "No proposals awaiting review yet.",
+      "markerCount": "{{n}} marker(s)",
+      "blocked": "Needs review",
+      "binding": {
+        "createNew": "Create new",
+        "bindExisting": "Bind to existing thread",
+        "unresolved": "Multiple candidates, unresolved"
+      },
+      "prominence": {
+        "primary": "Primary",
+        "supporting": "Supporting",
+        "minor": "Minor"
+      }
+    },
     "structure": {
       "title": "Structure",
       "hide": "Hide structure analysis",
@@ -5773,6 +5847,7 @@
     "extractShort": "Extract",
     "unnamed": "(unnamed)",
     "extract": {
+      "reanalysisRequired": "Saved extraction proposals could not be restored. Analyze the source text again.",
       "title": "Extract events from prose",
       "hint": "AI reads the chapter/folder's prose and proposes in-story events. Importing adds them to the chronicle.",
       "selectFolder": "Select chapter/folder…",
@@ -6258,6 +6333,260 @@
       "deleteFailed": "Failed to delete template",
       "titleRequired": "Please enter a title",
       "contentRequired": "Please enter the content"
+    }
+  },
+  "narrativeMaintenance": {
+    "title": "Structure health",
+    "shortLabel": "Health",
+    "openPreview": "Structure health (preview)",
+    "previewNote": "Preview: live counts arrive after the dependency index is wired. Default mode is deterministic maintenance only — AI is never auto-applied.",
+    "foundationOnly": "Only the Change Feed foundation is active. Live health counts appear after the dependency index is wired.",
+    "modeLabel": "Mode",
+    "principles": "Detecting change, re-analyzing, and rewriting applied structure are separate stages. Reanchor candidates are computed deterministically but never auto-applied.",
+    "health": {
+      "fresh": "Fresh",
+      "reanchorable": "Needs reanchor review",
+      "contentStale": "Source text changed",
+      "contextStale": "Surrounding context changed",
+      "coverageStale": "Coverage root changed",
+      "sourceMissing": "Evidence missing"
+    }
+  },
+  "workLayer": {
+    "back": "Go back one level",
+    "focus": {
+      "unset": "Not set",
+      "aria": "Focus {{title}}"
+    },
+    "attention": {
+      "aria": "Attention: {{count}} items"
+    },
+    "arrival": {
+      "aria": "{{count}} new Attention items"
+    },
+    "resolution": {
+      "aria": "{{count}} Attention items resolved (UI preview)"
+    },
+    "system": {
+      "aria": "System {{label}}",
+      "activityAria": "System Activity",
+      "activityEmpty": "No system activity details are available yet.",
+      "activityReadOnly": "SYS is a read-only execution preview. It does not turn findings or tasks into checkable work.",
+      "blockedAria": "System Blocked",
+      "blockedReason": "Reason stopped",
+      "blockedReasonFallback": "No stop reason is available yet.",
+      "staleImpact": "What may become stale",
+      "staleImpactFallback": "The impact is not known yet. Existing structure and decisions remain unchanged.",
+      "blockedPreviewOnly": "Retry and Detach are layout previews only. Nothing is saved, retried, or detached.",
+      "retryPreview": "Retry · PREVIEW ONLY",
+      "detachPreview": "Detach · PREVIEW ONLY",
+      "inspectRun": "INSPECT →",
+      "inspectRunAria": "Inspect the system run",
+      "runInspectionAria": "System Run Inspection",
+      "runInspectionNote": "This is a read-only UI backed by fixture data. It does not execute, save, or update NIR.",
+      "blockedNoCheckbox": "A stopped system job is not a completed finding or task, and cannot be resolved with a checkbox."
+    },
+    "tray": {
+      "attentionAria": "Attention work tray",
+      "focusAria": "Focus work tray",
+      "attentionNote": "Resolve these with an author decision. Checkboxes do not complete findings.",
+      "openFinding": "Open {{title}}",
+      "openFindingReview": "Open {{title}} in Change Review",
+      "openProjection": "Open {{count}} items in Resolve Projection",
+      "openProjectionLabel": "OPEN {{count}} ITEMS IN RESOLVE",
+      "addTask": "Add a task to this focus",
+      "addTaskPreviewAria": "Add a task to this focus · PREVIEW ONLY",
+      "taskDraftLabel": "Task draft",
+      "taskDraftPlaceholder": "Enter an author task",
+      "addTaskDraft": "Add draft",
+      "cancelTaskDraft": "Close task draft",
+      "taskDraftNotSaved": "NOT SAVED",
+      "taskDraftPreviewNote": "This draft appears only in the UI and is not saved.",
+      "previewOnly": "PREVIEW ONLY",
+      "switchFocus": "Switch focus",
+      "switchFocusTarget": "Switch focus to {{title}}",
+      "capture": "Capture work",
+      "noFocus": "No focus",
+      "emptyAttention": "No Attention items are waiting for an author decision.",
+      "expandAttention": "Expand {{count}} Attention items",
+      "expandFocus": "Expand Focus",
+      "andMore": " and more"
+    },
+    "lens": {
+      "aria": "Resolve Lens",
+      "sourceMissing": "The anchor is missing from the current manuscript",
+      "reason": "Reason",
+      "previous": "Previous",
+      "bindingPreviewAria": "Preview binding to {{candidate}}",
+      "bindingDecision": "Bind to {{candidate}}",
+      "binding": "Bind to {{candidate}}",
+      "createPerson": "Create as a new character",
+      "annotations": "Lens annotation projections",
+      "impact": "Impact",
+      "hold": "Hold",
+      "holdPreview": "Previewed hold. Nothing has been saved.",
+      "excludePair": "Do not match these two candidates again",
+      "excludePairPreview": "Previewed excluding the candidate pair. Nothing has been saved.",
+      "next": "Next: {{title}}"
+    },
+    "projection": {
+      "aria": "Resolve Projection",
+      "presetUnchanged": "PRESET UNCHANGED",
+      "candidateContext": "Context Portal · Codex",
+      "selectedCandidate": "Selected candidate",
+      "followsCandidate": "Follows candidate selection · UI PREVIEW"
+    },
+    "portal": {
+      "aria": "Context Portal",
+      "open": "Open Context Portal",
+      "noFinding": "No finding is selected",
+      "note": "This temporarily surfaces Codex context that is absent from the preset. The choice has not been saved.",
+      "candidates": "Binding candidates",
+      "empty": "There are no binding candidates.",
+      "notSaved": "NOT SAVED",
+      "preview": "Preview binding",
+      "temporary": "Temporary summon",
+      "dismiss": "Close Context Portal"
+    },
+    "review": {
+      "aria": "Change Review",
+      "open": "Open Change Review",
+      "anchorMissing": "The current anchor could not be found",
+      "previewNote": "This choice is a UI preview and has not been saved or applied.",
+      "target": "Target · Chronicle Event “Escape”",
+      "heading": "Change Review — Chronicle Event “Escape” V1→V2",
+      "proposalNotice": "Reinterpreting Scene 12 produced a proposal that differs from the accepted content. The Story Bible remains unchanged until you apply it.",
+      "diffCaption": "Field-by-field differences between V1 and V2",
+      "versions": {
+        "accepted": "Accepted · V1",
+        "proposal": "PROPOSAL · V2"
+      },
+      "fields": {
+        "title": "Title",
+        "method": "Method",
+        "period": "Period",
+        "notes": "Notes"
+      },
+      "values": {
+        "title": "Escape",
+        "methodOld": "Cut the lock with the blue sword and break out",
+        "methodNew": "Unlock the cell with the found key and leave",
+        "period": "Frost Month, Year 3 · Confirmed",
+        "notesOld": "Shows that the sword's curse was broken"
+      },
+      "unchanged": "UNCHANGED",
+      "removed": "REMOVED",
+      "evidence": {
+        "oldExcerpt": "“She drew the blue sword from its sheath.”",
+        "missing": "MISSING",
+        "oldAnchor": "No match in v48",
+        "newExcerpt": "“Alice picked up the key and left the dungeon.”",
+        "newAnchor": "¶2 · ANCHORED"
+      },
+      "states": {
+        "review": "REVIEW ACCEPTED · V1",
+        "freshness": "FRESHNESS SOURCE-MISSING",
+        "projection": "PROJECTION APPLIED · V1"
+      },
+      "rail": {
+        "trigger": "Source text that triggered the change",
+        "triggerExcerpt": "“Alice picked up the key and left the dungeon. She did not look back.”",
+        "triggerAnchor": "SCENE 12 · ¶2 · v48",
+        "impact": "Impact if applied",
+        "impacts": {
+          "timeline": "Timeline “Escape” node",
+          "scenes": "Related Scenes · 4",
+          "thread": "“Blue sword” thread — affects payoff location",
+          "chat": "Chat Context materialization · 2"
+        },
+        "applyEffect": "Apply: save V2 as a Human-derived Revision and re-project downstream consumers",
+        "rejectEffect": "Reject: keep V1 and record this Material Basis as negative memory"
+      },
+      "actions": {
+        "apply": "Apply proposal",
+        "editApply": "Edit and apply",
+        "reject": "Reject",
+        "hold": "Hold",
+        "ignoreBasis": "Ignore only this Material Basis",
+        "correctionRule": "Create Correction rule"
+      },
+      "decision": "{{action}} (UI Preview)",
+      "previewOnly": "PREVIEW ONLY · NOT SAVED",
+      "correction": {
+        "aria": "Correction rule creation preview",
+        "heading": "CORRECTION RULE · UI PREVIEW",
+        "label": "Correction rule",
+        "defaultValue": "Re-propose a Chronicle Event after its Evidence is lost",
+        "note": "Rule edits remain in this UI preview and are not saved.",
+        "close": "Close Correction rule creation preview"
+      }
+    },
+    "batch": {
+      "aria": "Batch Review",
+      "open": "Review safe proposals as a batch",
+      "heading": "Review safe proposals as a batch",
+      "note": "Use pressed states to select proposals. Checkboxes are reserved for Author Tasks. This approval has not been saved.",
+      "criteria": "A SAFE proposal must be additive, conflict-free, evidence-anchored, and free of duplicate candidates. Everything else remains for individual review.",
+      "individual": "Individual review",
+      "empty": "There are no proposals available for batch review.",
+      "decision": "Approve {{count}} safe proposals as a batch (UI Preview)",
+      "preview": "Preview batch approval",
+      "viewIndividual": "Review individually",
+      "impact": "Impact if approved",
+      "impactNote": "Batch approval is recorded as one Decision and can be undone per proposal. Items requiring individual review are not selected.",
+      "openInspection": "Open Deep Inspection",
+      "impacts": {
+        "chronicle": "Chronicle · Event +2 / State +1 / Relation +1",
+        "timeline": "Timeline rebuild · 1",
+        "scenes": "Re-evaluate Related Scenes · 4"
+      }
+    },
+    "disposed": {
+      "aria": "Disposed decisions",
+      "heading": "Disposed",
+      "retention": "Excluded from count · retained",
+      "open": "Disposed",
+      "openAria": "Open {{count}} disposed decisions",
+      "closeAria": "Close {{count}} disposed decisions",
+      "empty": "There are no disposed decisions.",
+      "note": "A dismissed item resurfaces as a new finding when its material basis changes.",
+      "snoozedDetail": "Held until resurfacing",
+      "heldDetail": "Held for an author decision",
+      "basisIgnoredDetail": "Suppress only this Material Basis",
+      "dismissedDetail": "Do not repeat the same issue",
+      "legacyDetail": "Do not infer a reassignment"
+    },
+    "ledger": {
+      "aria": "All work",
+      "heading": "All work",
+      "open": "All work →",
+      "openAria": "Open all work",
+      "back": "Return to tray",
+      "order": "Recently updated",
+      "empty": "No work matches this filter.",
+      "escape": "to tray",
+      "openActiveAria": "Open active work {{title}} in the tray",
+      "taskProgress": "Tasks {{completed}}/{{total}}",
+      "filters": {
+        "all": "All",
+        "active": "Active",
+        "waiting": "Waiting",
+        "held": "Held",
+        "completed": "Completed"
+      },
+      "groups": {
+        "waiting": "Waiting (LATER)"
+      }
+    },
+    "inspect": {
+      "aria": "Deep Inspection",
+      "open": "Inspect details"
+    },
+    "resolved": {
+      "aria": "Preview decision receipt",
+      "notPersisted": "This confirms a UI-only choice. The decision has not been saved. It can be recorded as a Human Decision after the foundation is connected.",
+      "next": "Next: {{title}} →",
+      "nextAria": "Next: open {{title}} in {{destination}}"
     }
   }
 }

@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "chronicle-judge-case-contract/1",
+  "caseId": "transfer-dream-001",
+  "authorship": {
+    "status": "draft-for-human-review",
+    "derivation": "source-text-only",
+    "independentSourceAnnotation": true,
+    "candidateOutputContamination": false,
+    "reviewRequired": true,
+    "formalCertification": false,
+    "semanticGoldStatus": "user-approved",
+    "runtimeCapability": "supported",
+    "ordinaryQualityRun": "enabled",
+    "reviewScope": {
+      "sourceAndGoldReviewed": true,
+      "eventObservationPolicy": "case-atomic-claims-user-approved",
+      "atomicObservationClaimIds": ["D1", "D2"],
+      "temporalScope": "all-relations-unscored",
+      "temporalRelationIds": [],
+      "excludedTemporalScopes": ["temporal-metadata", "proposal-importance"],
+      "scopeExclusionIds": ["dream-experience", "awakening", "floor-location", "temporal-metadata", "proposal-importance"]
+    },
+    "excludedInputs": [
+      "deleted-provider-response",
+      "candidate-observation-wording",
+      "v1-scorer-decision"
+    ]
+  },
+  "coverage": {
+    "observation": "targeted",
+    "temporal": "targeted",
+    "proposal": "targeted"
+  },
+  "sourceDocuments": [
+    {
+      "id": "transfer-dream-source",
+      "title": "夢と覚醒後の現実",
+      "text": "ユイは、銀の魚が泳ぐ夢を見た。目を覚ましたユイは、床の毛布を畳んだ。",
+      "textSha256": "770d604c8b2014d06026908a81b9b9f6941bc7662bfe7c0e52bd32fa79a0a657"
+    }
+  ],
+  "observationGold": {
+    "claims": [
+      {
+        "id": "D1",
+        "predicate": "swim",
+        "participants": [
+          { "entity": "銀の魚", "role": "agent" }
+        ],
+        "actuality": "dreamed",
+        "attribution": "narrator",
+        "narrativeFrame": "dream",
+        "requiredDirectRegions": [
+          { "documentId": "transfer-dream-source", "start": 4, "end": 10 }
+        ],
+        "allowedContextRegions": [
+          { "documentId": "transfer-dream-source", "start": 10, "end": 14 }
+        ],
+        "granularity": "atomic"
+      },
+      {
+        "id": "D2",
+        "predicate": "fold",
+        "participants": [
+          { "entity": "ユイ", "role": "agent" },
+          { "entity": "毛布", "role": "theme" }
+        ],
+        "actuality": "actual",
+        "attribution": "narrator",
+        "narrativeFrame": "story-world",
+        "requiredDirectRegions": [
+          { "documentId": "transfer-dream-source", "start": 25, "end": 33 }
+        ],
+        "allowedContextRegions": [
+          { "documentId": "transfer-dream-source", "start": 15, "end": 24 }
+        ],
+        "granularity": "atomic"
+      }
+    ]
+  },
+  "temporalGold": {
+    "coverage": "targeted",
+    "relations": [],
+    "unscoredClaimIds": ["D1", "D2"]
+  },
+  "proposalPolicy": {
+    "mode": "unscored",
+    "scoredClaimIds": [],
+    "reason": "importance-not-annotated"
+  },
+  "scopeExclusions": [
+    {
+      "id": "dream-experience",
+      "meaning": "夢を見たという外側の経験は、夢中の遊泳D1とは別のObservationとして採点しない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-dream-source", "start": 10, "end": 14 }
+      ],
+      "allowedContextRegions": [
+        { "documentId": "transfer-dream-source", "start": 4, "end": 10 }
+      ],
+      "reason": "The outer dream experience is outside the targeted event scope."
+    },
+    {
+      "id": "awakening",
+      "meaning": "目を覚ましたという覚醒行為は、覚醒後の畳む行為D2とは別のObservationとして採点しない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-dream-source", "start": 15, "end": 24 }
+      ],
+      "allowedContextRegions": [
+        { "documentId": "transfer-dream-source", "start": 25, "end": 33 }
+      ],
+      "reason": "The awakening event is outside the targeted event scope."
+    },
+    {
+      "id": "floor-location",
+      "meaning": "毛布が床にあるという位置情報は、毛布を畳むD2とは別のObservationとして採点しない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-dream-source", "start": 25, "end": 27 }
+      ],
+      "allowedContextRegions": [
+        { "documentId": "transfer-dream-source", "start": 27, "end": 33 }
+      ],
+      "reason": "The floor location is outside the targeted event scope."
+    },
+    {
+      "id": "temporal-metadata",
+      "meaning": "夢と覚醒後の時間値は今回の対象範囲に含めない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-dream-source", "start": 4, "end": 10 }
+      ],
+      "allowedContextRegions": [],
+      "reason": "temporal coverage is targeted with no relation Gold."
+    },
+    {
+      "id": "proposal-importance",
+      "meaning": "夢と現実のProposal重要度と選別は今回の対象範囲に含めない。",
+      "requiredDirectRegions": [
+        { "documentId": "transfer-dream-source", "start": 25, "end": 33 }
+      ],
+      "allowedContextRegions": [],
+      "reason": "importance is not annotated."
+    }
+  ]
+}

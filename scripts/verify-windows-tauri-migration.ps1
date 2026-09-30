@@ -122,14 +122,35 @@ New-Item -ItemType Directory -Path $migrationDirectory | Out-Null
 
 Assert-Condition (
   -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)
-) "GITHUB_REPOSITORY is required to resolve the pinned public Tauri release."
+) "GITHUB_REPOSITORY is required to resolve the pinned source release."
+Assert-Condition (
+  -not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)
+) "GITHUB_TOKEN is required to resolve the pinned private source release."
 
 # Exercise the exact final Tauri package that users could actually install.
-# Both the release tag and SHA-256 are pinned so a replaced asset fails closed.
+# The source repository is private after the distribution cutover, so resolve
+# the release asset through the authenticated GitHub API. Both the release tag
+# and SHA-256 are pinned so a replaced asset fails closed.
 $legacyInstaller = Join-Path $migrationDirectory $legacyAsset
-$legacyUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$legacyTag/$legacyAsset"
-Invoke-WebRequest -Uri $legacyUrl -OutFile $legacyInstaller
-Assert-Condition (Test-Path -LiteralPath $legacyInstaller) "Pinned public Tauri v0.10.4 installer is missing."
+$githubHeaders = @{
+  Accept = "application/vnd.github+json"
+  Authorization = "Bearer $env:GITHUB_TOKEN"
+  "X-GitHub-Api-Version" = "2022-11-28"
+  "User-Agent" = "Grimodex-windows-migration-contract"
+}
+$releaseApiUrl = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/tags/$legacyTag"
+$release = Invoke-RestMethod -Uri $releaseApiUrl -Headers $githubHeaders -Method Get
+$matchingAssets = @($release.assets | Where-Object { $_.name -eq $legacyAsset })
+Assert-Condition ($matchingAssets.Count -eq 1) "Pinned source Tauri v0.10.4 installer is missing or duplicated."
+$assetApiUrl = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/assets/$($matchingAssets[0].id)"
+$downloadHeaders = @{
+  Accept = "application/octet-stream"
+  Authorization = "Bearer $env:GITHUB_TOKEN"
+  "X-GitHub-Api-Version" = "2022-11-28"
+  "User-Agent" = "Grimodex-windows-migration-contract"
+}
+Invoke-WebRequest -Uri $assetApiUrl -Headers $downloadHeaders -OutFile $legacyInstaller
+Assert-Condition (Test-Path -LiteralPath $legacyInstaller) "Pinned source Tauri v0.10.4 installer is missing."
 Assert-Condition (
   (Get-FileHash -LiteralPath $legacyInstaller -Algorithm SHA256).Hash -eq $legacySha256
 ) "Pinned public Tauri v0.10.4 installer SHA-256 does not match."

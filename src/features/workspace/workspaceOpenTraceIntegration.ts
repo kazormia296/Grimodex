@@ -1,4 +1,5 @@
 import { ensureRuntimeStoreComposition } from "@/application/composition/runtimeStoreCompositionLoader";
+import type { LifecycleTransitionInput } from "@/application/lifecycle/lifecycleTrace";
 import type {
   ProjectLifecycleTimingEvent,
   ProjectLifecycleTimingObserver,
@@ -9,6 +10,21 @@ import type {
   WorkspaceOpenTraceSpan,
   WorkspaceOpenTraceSpanName,
 } from "./workspaceOpenTrace";
+
+export function createWorkspaceOpenTransition(
+  from: LifecycleTransitionInput["from"],
+  targetWorkspacePath: string,
+): LifecycleTransitionInput {
+  return {
+    kind: "workspace",
+    from,
+    to: {
+      workspacePath: targetWorkspacePath,
+      workspaceOpenRevision: null,
+      projectId: null,
+    },
+  };
+}
 
 export async function runWorkspaceOpenTraceStep<T>(
   trace: WorkspaceOpenTrace,

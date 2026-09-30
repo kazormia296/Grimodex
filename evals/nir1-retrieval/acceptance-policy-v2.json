@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "nir1-recovery-acceptance/2",
+  "approvalRef": "docs/plans/nir1-recovery-acceptance-v2.md",
+  "originalContract": {
+    "manifestSha256": "fbc6ac25a0171aac48bee27a859d2b582ed748f82adc1b5ccd28057110c950f3",
+    "corpusSha256": "2da9496e682ecb7e10a4d680d265a6d93db9be761def0e34730c1d1447b69dd2"
+  },
+  "workload": {
+    "path": "evals/nir1-retrieval/recovery-workload.json",
+    "sha256": "5e9c5401d64a4a3d1a527b4d88fce3f046371a620e127c0bb7b9ed6076c99d0e",
+    "probePath": "evals/nir1-retrieval/recovery-workload-v2.json",
+    "probeSha256": "52770092b942e8d32cff6b05cc4412314cefed281e9c2a1cd681037057fafe5d",
+    "currentRevisionCount": 100
+  },
+  "recovery": {
+    "invalidation": "immediate-required",
+    "responsiveness": {
+      "workspaceOpen": "required",
+      "editing": "required",
+      "search": "required",
+      "rawFallback": "required"
+    },
+    "automaticRebuild": {
+      "execution": "background-allowed",
+      "hardCompletionLimitMs": null,
+      "improvementTargetP95Ms": 2000,
+      "improvementTargetIsGate": false
+    },
+    "sampling": {
+      "strategy": "risk-based-focused",
+      "mandatoryTrialsPerMutationClass": null,
+      "mandatoryTotalTrials": null
+    },
+    "restore": {
+      "correctness": "required",
+      "progress": "required",
+      "failureRecovery": "required",
+      "oldEvidenceReuse": "forbidden"
+    }
+  },
+  "priorEvidence": {
+    "retainOriginalCriteria": true,
+    "retroactiveRelabel": false,
+    "retainFailuresAndTimeouts": true
+  }
+}

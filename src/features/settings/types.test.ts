@@ -94,6 +94,7 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     "editor.zenBackground.speed",
     "editor.zenBackground.speedPercent",
     "editor.zenBackground.speedMode",
+    "editor.zenBackground.resolutionMode",
     "editor.zenBackground.shaderProps",
     "editor.zenBackground.scale",
     "editor.zenBackground.rotation",
@@ -167,6 +168,9 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — Zen shader background", () => {
     expect(DEFAULT_SETTINGS["editor.zenBackground.speed"]).toBe("0.42");
     expect(DEFAULT_SETTINGS["editor.zenBackground.speedPercent"]).toBe("3");
     expect(DEFAULT_SETTINGS["editor.zenBackground.speedMode"]).toBe("fast");
+    expect(DEFAULT_SETTINGS["editor.zenBackground.resolutionMode"]).toBe(
+      "balanced",
+    );
     expect(DEFAULT_SETTINGS["editor.zenBackground.scale"]).toBe("1.7");
     expect(DEFAULT_SETTINGS["editor.zenBackground.rotation"]).toBe("170");
     expect(DEFAULT_SETTINGS["editor.zenBackground.offsetX"]).toBe("0.25");

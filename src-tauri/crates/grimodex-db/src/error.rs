@@ -34,9 +34,32 @@ pub enum AppError {
     #[error("No workspace is open")]
     NoWorkspace,
 
+    /// Restore-only Safe Mode 中に通常の DB authority API が呼ばれた。
+    /// Display は安定マーカー `WORKSPACE_SAFE_MODE` を含む — FE / IPC 分類と対。
+    #[error(
+        "WORKSPACE_SAFE_MODE: restore-only session is active; Database authority is not published"
+    )]
+    SafeModeActive,
+
+    /// Safe Mode セッションが無い状態で recovery API が呼ばれた。
+    #[error("No safe mode session is active")]
+    NoSafeMode,
+
     /// ドメイン化されていないアプリ層エラー。`?` で anyhow から自動変換される。
     #[error("{0}")]
     Anyhow(#[from] anyhow::Error),
+}
+
+impl From<crate::workspace_lease::LeaseError> for AppError {
+    fn from(value: crate::workspace_lease::LeaseError) -> Self {
+        AppError::Anyhow(anyhow::anyhow!("{value}"))
+    }
+}
+
+impl From<crate::workspace_lifecycle::LifecycleError> for AppError {
+    fn from(value: crate::workspace_lifecycle::LifecycleError) -> Self {
+        AppError::Anyhow(value.into())
+    }
 }
 
 impl Serialize for AppError {
@@ -67,6 +90,12 @@ mod tests {
         assert!(AppError::NoWorkspace
             .to_string()
             .contains("No workspace is open"));
+        assert!(AppError::SafeModeActive
+            .to_string()
+            .contains("WORKSPACE_SAFE_MODE"));
+        assert!(AppError::NoSafeMode
+            .to_string()
+            .contains("No safe mode session is active"));
     }
 
     #[test]

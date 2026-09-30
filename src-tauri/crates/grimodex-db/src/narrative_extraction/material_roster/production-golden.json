@@ -1,0 +1,950 @@
+{
+  "origin": "cold production journey at cf871087a95e9edcd1d7fa86a4260794ee90c36c; synthetic fixed responses, no repair",
+  "snapshot": {
+    "snapshot": {
+      "schemaVersion": 1,
+      "id": "dd710bbc-36fc-4cf3-b326-2acf99226b24",
+      "snapshotId": "dd710bbc-36fc-4cf3-b326-2acf99226b24",
+      "createdAt": "2026-09-07T16:08:38.151Z",
+      "language": "ja",
+      "normalizerVersion": "gdx-canonical-text/1",
+      "origin": {
+        "kind": "grimodex-project",
+        "projectId": "default-project"
+      },
+      "documents": [
+        {
+          "ref": "D000001",
+          "sourceKey": "project:scene:4a3380f2-5853-4bfd-8c99-a1e6b21961d4",
+          "parentRef": null,
+          "title": "門と鐘",
+          "orderIndex": 0,
+          "canonical": {
+            "unit": "utf16",
+            "text": "衛兵が門を開けた。\n旅人は、衛兵が門を開けたという噂を聞いた。\n衛兵は門を開けるつもりだった。\n衛兵は門を開ける夢を見た。\n船頭が鐘を鳴らした。",
+            "blocks": [
+              {
+                "id": "B000001",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 0,
+                  "to": 9
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000002",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 10,
+                  "to": 31
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000003",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 32,
+                  "to": 47
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000004",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 48,
+                  "to": 61
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000005",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 62,
+                  "to": 72
+                },
+                "depth": 0
+              }
+            ],
+            "projection": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 72,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 9,
+                  "from": 1,
+                  "to": 10,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 9
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 10
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 9,
+                  "canonicalEnd": 10,
+                  "canonical": {
+                    "from": 9,
+                    "to": 10
+                  },
+                  "boundary": {
+                    "leftPmPos": 10,
+                    "rightPmPos": 12
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 10,
+                  "canonicalEnd": 31,
+                  "from": 12,
+                  "to": 33,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 10,
+                    "to": 31
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 12,
+                    "toPos": 33
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 31,
+                  "canonicalEnd": 32,
+                  "canonical": {
+                    "from": 31,
+                    "to": 32
+                  },
+                  "boundary": {
+                    "leftPmPos": 33,
+                    "rightPmPos": 35
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 32,
+                  "canonicalEnd": 47,
+                  "from": 35,
+                  "to": 50,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 32,
+                    "to": 47
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 35,
+                    "toPos": 50
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 47,
+                  "canonicalEnd": 48,
+                  "canonical": {
+                    "from": 47,
+                    "to": 48
+                  },
+                  "boundary": {
+                    "leftPmPos": 50,
+                    "rightPmPos": 52
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 48,
+                  "canonicalEnd": 61,
+                  "from": 52,
+                  "to": 65,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 48,
+                    "to": 61
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 52,
+                    "toPos": 65
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 61,
+                  "canonicalEnd": 62,
+                  "canonical": {
+                    "from": 61,
+                    "to": 62
+                  },
+                  "boundary": {
+                    "leftPmPos": 65,
+                    "rightPmPos": 67
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 62,
+                  "canonicalEnd": 72,
+                  "from": 67,
+                  "to": 77,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 62,
+                    "to": 72
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 67,
+                    "toPos": 77
+                  }
+                }
+              ]
+            },
+            "projectionMap": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 72,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 9,
+                  "from": 1,
+                  "to": 10,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 9
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 10
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 9,
+                  "canonicalEnd": 10,
+                  "canonical": {
+                    "from": 9,
+                    "to": 10
+                  },
+                  "boundary": {
+                    "leftPmPos": 10,
+                    "rightPmPos": 12
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 10,
+                  "canonicalEnd": 31,
+                  "from": 12,
+                  "to": 33,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 10,
+                    "to": 31
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 12,
+                    "toPos": 33
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 31,
+                  "canonicalEnd": 32,
+                  "canonical": {
+                    "from": 31,
+                    "to": 32
+                  },
+                  "boundary": {
+                    "leftPmPos": 33,
+                    "rightPmPos": 35
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 32,
+                  "canonicalEnd": 47,
+                  "from": 35,
+                  "to": 50,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 32,
+                    "to": 47
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 35,
+                    "toPos": 50
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 47,
+                  "canonicalEnd": 48,
+                  "canonical": {
+                    "from": 47,
+                    "to": 48
+                  },
+                  "boundary": {
+                    "leftPmPos": 50,
+                    "rightPmPos": 52
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 48,
+                  "canonicalEnd": 61,
+                  "from": 52,
+                  "to": 65,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 48,
+                    "to": 61
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 52,
+                    "toPos": 65
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 61,
+                  "canonicalEnd": 62,
+                  "canonical": {
+                    "from": 61,
+                    "to": 62
+                  },
+                  "boundary": {
+                    "leftPmPos": 65,
+                    "rightPmPos": 67
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 62,
+                  "canonicalEnd": 72,
+                  "from": 67,
+                  "to": 77,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 62,
+                    "to": 72
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 67,
+                    "toPos": 77
+                  }
+                }
+              ]
+            },
+            "diagnostics": []
+          },
+          "contentDigest": "sha256:565a8ca7ec3202dfb75b7eb516445ea7966541e0f4d28d60923b54b44f96fbbb",
+          "documentDigest": "sha256:a8d9566871b450d33ead3fb7d47aecc04d4da06a0b8bbb772c267ca68ecd0c42",
+          "artifactDigest": "sha256:9dd379f3957275bc2e9206f1dc9e17c63bd86d295ed4cc7b85999bba922a361f",
+          "origin": {
+            "kind": "project-node",
+            "projectId": "default-project",
+            "nodeId": "4a3380f2-5853-4bfd-8c99-a1e6b21961d4",
+            "sourceVersion": 0,
+            "sourceUpdatedAt": "2026-09-07T16:08:35.268597460+00:00",
+            "sourceUri": null
+          }
+        }
+      ],
+      "omissions": [],
+      "digest": "sha256:19c1740f0e2a33de84824aabafab8eb00afbd2d643c93695ec1a8f91867224cb",
+      "artifactDigest": "sha256:975d7f9dec38eb7633b83d8ab906d7c8bf221bf5f62667812c16dffa3f04c173"
+    },
+    "sourceViews": [
+      {
+        "ref": "S0001",
+        "documentRef": "D000001",
+        "documentRange": {
+          "start": 0,
+          "end": 72
+        },
+        "text": "衛兵が門を開けた。\n旅人は、衛兵が門を開けたという噂を聞いた。\n衛兵は門を開けるつもりだった。\n衛兵は門を開ける夢を見た。\n船頭が鐘を鳴らした。",
+        "digest": "sha256:3f3346677080be449cdf594192ae938e6c46ad792ea9e45f27d7e52b1464fb62"
+      }
+    ],
+    "existingEventsCatalog": {
+      "kind": "chronicle.existing-events-catalog@1",
+      "events": []
+    },
+    "evidence": {
+      "kind": "chronicle.snapshot-evidence-companion@1",
+      "version": 1,
+      "mode": "citation-id-v2",
+      "catalogVersion": 1,
+      "catalogDigest": "sha256:5874111ddfcfb73bcb38db2b852c559e9acb2d600c61daa8314a0321149d0156",
+      "snapshotDigest": "sha256:19c1740f0e2a33de84824aabafab8eb00afbd2d643c93695ec1a8f91867224cb",
+      "snapshotArtifactDigest": "sha256:975d7f9dec38eb7633b83d8ab906d7c8bf221bf5f62667812c16dffa3f04c173",
+      "catalog": {
+        "kind": "narrative-evidence-span-catalog",
+        "version": 1,
+        "segmentationVersion": "sentence-like-v1",
+        "snapshotId": "dd710bbc-36fc-4cf3-b326-2acf99226b24",
+        "snapshotDigest": "sha256:19c1740f0e2a33de84824aabafab8eb00afbd2d643c93695ec1a8f91867224cb",
+        "snapshotArtifactDigest": "sha256:975d7f9dec38eb7633b83d8ab906d7c8bf221bf5f62667812c16dffa3f04c173",
+        "entries": [
+          {
+            "canonicalId": "occ:4b4c389965b521d4170d92de6d0ada9aeaf0b3b85b13afd7594842952ac942c7",
+            "sourceRef": "E000001",
+            "documentRef": "D000001",
+            "canonicalRange": {
+              "start": 0,
+              "end": 9
+            },
+            "range": {
+              "start": 0,
+              "end": 9
+            },
+            "quote": "衛兵が門を開けた。",
+            "text": "衛兵が門を開けた。",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000001",
+              "documentRef": "D000001",
+              "documentRange": {
+                "start": 0,
+                "end": 9
+              },
+              "text": "衛兵が門を開けた。",
+              "digest": "sha256:58052df62b16768760a3047fefb960cb7d02551e90707398e957b60d174fe904"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:19c1740f0e2a33de84824aabafab8eb00afbd2d643c93695ec1a8f91867224cb",
+              "snapshotArtifactDigest": "sha256:975d7f9dec38eb7633b83d8ab906d7c8bf221bf5f62667812c16dffa3f04c173",
+              "documentRef": "D000001",
+              "documentArtifactDigest": "sha256:9dd379f3957275bc2e9206f1dc9e17c63bd86d295ed4cc7b85999bba922a361f",
+              "range": {
+                "start": 0,
+                "end": 9
+              },
+              "start": 0,
+              "end": 9,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:110197157fde52d6186c622c0e66765c31cfce288872c7a61d1ef38264c1a4c8",
+            "sourceRef": "E000002",
+            "documentRef": "D000001",
+            "canonicalRange": {
+              "start": 10,
+              "end": 31
+            },
+            "range": {
+              "start": 10,
+              "end": 31
+            },
+            "quote": "旅人は、衛兵が門を開けたという噂を聞いた。",
+            "text": "旅人は、衛兵が門を開けたという噂を聞いた。",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000002",
+              "documentRef": "D000001",
+              "documentRange": {
+                "start": 10,
+                "end": 31
+              },
+              "text": "旅人は、衛兵が門を開けたという噂を聞いた。",
+              "digest": "sha256:f0b5f5fda6a159f988cba8e97c55e9ffdd9028ff48f12ebd627a2c2789dd6872"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:19c1740f0e2a33de84824aabafab8eb00afbd2d643c93695ec1a8f91867224cb",
+              "snapshotArtifactDigest": "sha256:975d7f9dec38eb7633b83d8ab906d7c8bf221bf5f62667812c16dffa3f04c173",
+              "documentRef": "D000001",
+              "documentArtifactDigest": "sha256:9dd379f3957275bc2e9206f1dc9e17c63bd86d295ed4cc7b85999bba922a361f",
+              "range": {
+                "start": 10,
+                "end": 31
+              },
+              "start": 10,
+              "end": 31,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:e6ff76434f218c091351cdf7e7dccd37713359499e279ebd3fa649786e716f0f",
+            "sourceRef": "E000003",
+            "documentRef": "D000001",
+            "canonicalRange": {
+              "start": 32,
+              "end": 47
+            },
+            "range": {
+              "start": 32,
+              "end": 47
+            },
+            "quote": "衛兵は門を開けるつもりだった。",
+            "text": "衛兵は門を開けるつもりだった。",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000003",
+              "documentRef": "D000001",
+              "documentRange": {
+                "start": 32,
+                "end": 47
+              },
+              "text": "衛兵は門を開けるつもりだった。",
+              "digest": "sha256:52545554f1173e505c0057f347eb41901b0d05cf3c7f264d287ec2a426647d88"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:19c1740f0e2a33de84824aabafab8eb00afbd2d643c93695ec1a8f91867224cb",
+              "snapshotArtifactDigest": "sha256:975d7f9dec38eb7633b83d8ab906d7c8bf221bf5f62667812c16dffa3f04c173",
+              "documentRef": "D000001",
+              "documentArtifactDigest": "sha256:9dd379f3957275bc2e9206f1dc9e17c63bd86d295ed4cc7b85999bba922a361f",
+              "range": {
+                "start": 32,
+                "end": 47
+              },
+              "start": 32,
+              "end": 47,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:cda29cc520e68288e72548a0dc8c555c16abf220f6faa237606bc07ab074ac9e",
+            "sourceRef": "E000004",
+            "documentRef": "D000001",
+            "canonicalRange": {
+              "start": 48,
+              "end": 61
+            },
+            "range": {
+              "start": 48,
+              "end": 61
+            },
+            "quote": "衛兵は門を開ける夢を見た。",
+            "text": "衛兵は門を開ける夢を見た。",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000004",
+              "documentRef": "D000001",
+              "documentRange": {
+                "start": 48,
+                "end": 61
+              },
+              "text": "衛兵は門を開ける夢を見た。",
+              "digest": "sha256:899d94b950d1edb64ccf8c95a0286b3da610db8c0a94fffaf29be0b701eac350"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:19c1740f0e2a33de84824aabafab8eb00afbd2d643c93695ec1a8f91867224cb",
+              "snapshotArtifactDigest": "sha256:975d7f9dec38eb7633b83d8ab906d7c8bf221bf5f62667812c16dffa3f04c173",
+              "documentRef": "D000001",
+              "documentArtifactDigest": "sha256:9dd379f3957275bc2e9206f1dc9e17c63bd86d295ed4cc7b85999bba922a361f",
+              "range": {
+                "start": 48,
+                "end": 61
+              },
+              "start": 48,
+              "end": 61,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:54b6f34801fe8a4707e14f7dfafa96ee24e8802cea5783d61313d9bd7b565c8b",
+            "sourceRef": "E000005",
+            "documentRef": "D000001",
+            "canonicalRange": {
+              "start": 62,
+              "end": 72
+            },
+            "range": {
+              "start": 62,
+              "end": 72
+            },
+            "quote": "船頭が鐘を鳴らした。",
+            "text": "船頭が鐘を鳴らした。",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000005",
+              "documentRef": "D000001",
+              "documentRange": {
+                "start": 62,
+                "end": 72
+              },
+              "text": "船頭が鐘を鳴らした。",
+              "digest": "sha256:ee8a354ce57b4c8215e50916faf63dbf990e94fb30228850d1334d304dc0d54b"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:19c1740f0e2a33de84824aabafab8eb00afbd2d643c93695ec1a8f91867224cb",
+              "snapshotArtifactDigest": "sha256:975d7f9dec38eb7633b83d8ab906d7c8bf221bf5f62667812c16dffa3f04c173",
+              "documentRef": "D000001",
+              "documentArtifactDigest": "sha256:9dd379f3957275bc2e9206f1dc9e17c63bd86d295ed4cc7b85999bba922a361f",
+              "range": {
+                "start": 62,
+                "end": 72
+              },
+              "start": 62,
+              "end": 72,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          }
+        ],
+        "digest": "sha256:5874111ddfcfb73bcb38db2b852c559e9acb2d600c61daa8314a0321149d0156"
+      }
+    },
+    "scopeAuthorityDocuments": [
+      {
+        "documentRef": "D000001",
+        "sourceKey": "project:scene:4a3380f2-5853-4bfd-8c99-a1e6b21961d4",
+        "rawStoryKey": null
+      }
+    ]
+  },
+  "plan": {
+    "windows": [
+      {
+        "windowId": "window-001",
+        "documentRef": "D000001",
+        "sourceRef": "S0001",
+        "ownedRanges": [
+          {
+            "start": 0,
+            "end": 72
+          }
+        ],
+        "contextRanges": []
+      }
+    ]
+  },
+  "outputs": [
+    {
+      "rootStageExecutionId": "120c13e5-977b-453a-a92c-f7f4a5bcb944",
+      "terminalStageExecutionId": "120c13e5-977b-453a-a92c-f7f4a5bcb944",
+      "disposition": "root-success",
+      "clusterRef": "cluster-0001",
+      "rawObservations": {
+        "kind": "chronicle.raw-observations@1",
+        "version": 1,
+        "observations": [
+          {
+            "localId": "window-001:obs-001",
+            "evidence": [
+              {
+                "sourceRef": "E000001",
+                "quote": "衛兵が門を開けた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門を開ける",
+              "actuality": "actual",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "window-001:obs-002",
+            "evidence": [
+              {
+                "sourceRef": "E000002",
+                "quote": "旅人は、衛兵が門を開けたという噂を聞いた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門を開ける",
+              "actuality": "rumored",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "window-001:obs-003",
+            "evidence": [
+              {
+                "sourceRef": "E000003",
+                "quote": "衛兵は門を開けるつもりだった。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門を開ける",
+              "actuality": "planned",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "window-001:obs-004",
+            "evidence": [
+              {
+                "sourceRef": "E000004",
+                "quote": "衛兵は門を開ける夢を見た。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "dream"
+            },
+            "payload": {
+              "predicate": "門を開ける",
+              "actuality": "dreamed",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "eventOutput": {
+        "clusterRef": "cluster-0001",
+        "resolution": "multiple-events",
+        "events": [
+          {
+            "observationRefs": [
+              "window-001:obs-001"
+            ],
+            "titleSuggestion": "門が開いた",
+            "summary": "衛兵が実際に門を開けた。",
+            "actuality": "actual",
+            "significance": "major"
+          },
+          {
+            "observationRefs": [
+              "window-001:obs-002"
+            ],
+            "titleSuggestion": "噂に含まれる開門",
+            "summary": "噂に含まれる開門を誤って実際の出来事として合成する固定応答。",
+            "actuality": "actual",
+            "significance": "major"
+          },
+          {
+            "observationRefs": [
+              "window-001:obs-003"
+            ],
+            "titleSuggestion": "計画に含まれる開門",
+            "summary": "計画に含まれる開門を誤って実際の出来事として合成する固定応答。",
+            "actuality": "actual",
+            "significance": "major"
+          },
+          {
+            "observationRefs": [
+              "window-001:obs-004"
+            ],
+            "titleSuggestion": "夢に含まれる開門",
+            "summary": "夢に含まれる開門を誤って実際の出来事として合成する固定応答。",
+            "actuality": "actual",
+            "significance": "major"
+          }
+        ]
+      },
+      "output": {
+        "kind": "chronicle.event-synthesis-output@1",
+        "observationCount": 4,
+        "eventCount": 4,
+        "observationRefs": [
+          "window-001:obs-001",
+          "window-001:obs-002",
+          "window-001:obs-003",
+          "window-001:obs-004"
+        ],
+        "rawObservationsDigest": "sha256:5d71ad70f1d05eeffcb37ef50f2a193907d22b6741176b5cf94000712abb5536",
+        "parsedOutputDigest": "sha256:69ac86834ab1d40c8febfd868b6bc3524a3874a7b930fd8b11a11b48f864619a",
+        "eventOutputDigest": "sha256:ddd167f84310ebde35e1ebe805d285c332414f83b7383b3877fbdf93e3700f18"
+      }
+    },
+    {
+      "rootStageExecutionId": "0b164187-1edd-41f5-ba9e-5ca3ef10e70b",
+      "terminalStageExecutionId": "0b164187-1edd-41f5-ba9e-5ca3ef10e70b",
+      "disposition": "root-success",
+      "clusterRef": "cluster-0002",
+      "rawObservations": {
+        "kind": "chronicle.raw-observations@1",
+        "version": 1,
+        "observations": [
+          {
+            "localId": "window-001:obs-005",
+            "evidence": [
+              {
+                "sourceRef": "E000005",
+                "quote": "船頭が鐘を鳴らした。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を鳴らす",
+              "actuality": "actual",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "eventOutput": {
+        "clusterRef": "cluster-0002",
+        "resolution": "single-event",
+        "events": [
+          {
+            "observationRefs": [
+              "window-001:obs-005"
+            ],
+            "titleSuggestion": "鐘が鳴った",
+            "summary": "船頭が実際に鐘を鳴らした。",
+            "actuality": "actual",
+            "significance": "major"
+          }
+        ]
+      },
+      "output": {
+        "kind": "chronicle.event-synthesis-output@1",
+        "observationCount": 1,
+        "eventCount": 1,
+        "observationRefs": [
+          "window-001:obs-005"
+        ],
+        "rawObservationsDigest": "sha256:d17827739f68866abc2df2d5de0be8018ea0f75d96290db8e7216fe361e0409c",
+        "parsedOutputDigest": "sha256:6335f778fed0e50485b68fecca21b179a2e174c09bef15581ef38516c49dfb61",
+        "eventOutputDigest": "sha256:c393d99562c3e9a10692beafb1c7ed534b8d83f8332e3d21ba719437b23ca76a"
+      }
+    }
+  ],
+  "receipts": [
+    {
+      "componentContractDigest": "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
+      "contextSetDigest": "sha256:cfc0455b49f4f1aa9604f8e136ad02e0415dd7210759449fbc5985f04054e317",
+      "contextSetVersion": "chronicle.context-set/1",
+      "finalRequestDigest": "sha256:5d6570e27dc9f5cced3577f76e40b7db0b5f9a8495e4cccecf4e6739fbc74df4",
+      "kind": "chronicle-stage-terminal-receipt",
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "modelExecutionBinding": {
+        "apiVariant": null,
+        "effectiveModel": null,
+        "endpointBindingId": null,
+        "generationMode": "provider-default",
+        "kind": "chronicle-stage-model-binding",
+        "modelFingerprint": null,
+        "provider": "ollama",
+        "reasoningMode": null,
+        "requestedModel": "product-journey-model",
+        "resolutionStatus": "requested-only",
+        "version": 1
+      },
+      "parseStatus": "parsed",
+      "parsedOutputDigest": null,
+      "rawObservationsDigest": null,
+      "responseDigest": "sha256:5e4d6c13bbd4d26e9762487fc4c0562d6321079d4efdee846a9918dea44b9f5e",
+      "stageExecution": {
+        "attemptId": "e6daf368-489a-4b5f-9922-6d1b24d00806",
+        "projectId": "default-project",
+        "runId": "ca70217c-c532-44db-8009-24e2087fb7de",
+        "stageExecutionId": "0dddd572-91dc-4988-9f8a-5b285d8db048",
+        "stageId": "narrative_observation_extract",
+        "taskId": "f285cbba-ebcd-4b9f-8038-3ab36cfefaf0"
+      },
+      "stageExecutionReceiptDigest": "sha256:2efc43588a19ef5f7389b98ad46240137c37bfa76ebf5aa5ed423e3bc075fa8f",
+      "terminalStatus": "succeeded",
+      "version": 1
+    },
+    {
+      "componentContractDigest": "sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff",
+      "contextSetDigest": "sha256:ab285c50aad9e2630fbf2e4d9c41379fc456cc31a4ab347212e423ec9da2f939",
+      "contextSetVersion": "chronicle.context-set/1",
+      "finalRequestDigest": "sha256:ba05451c5e17bfe196370144f93b082f3f391c1d5ddb1855c27bcbb2ab2be21b",
+      "kind": "chronicle-stage-terminal-receipt",
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "modelExecutionBinding": {
+        "apiVariant": null,
+        "effectiveModel": null,
+        "endpointBindingId": null,
+        "generationMode": "provider-default",
+        "kind": "chronicle-stage-model-binding",
+        "modelFingerprint": null,
+        "provider": "ollama",
+        "reasoningMode": null,
+        "requestedModel": "product-journey-model",
+        "resolutionStatus": "requested-only",
+        "version": 1
+      },
+      "parseStatus": "parsed",
+      "parsedOutputDigest": "sha256:69ac86834ab1d40c8febfd868b6bc3524a3874a7b930fd8b11a11b48f864619a",
+      "rawObservationsDigest": "sha256:5d71ad70f1d05eeffcb37ef50f2a193907d22b6741176b5cf94000712abb5536",
+      "responseDigest": "sha256:c76ef5b937bc580932f18f3c16e45baf84f235b97204fc26de1902bc7861a097",
+      "stageExecution": {
+        "attemptId": "a04f4878-5615-4a1b-96be-cc3f3bd5d0e8",
+        "projectId": "default-project",
+        "runId": "ca70217c-c532-44db-8009-24e2087fb7de",
+        "stageExecutionId": "120c13e5-977b-453a-a92c-f7f4a5bcb944",
+        "stageId": "narrative_event_synthesize",
+        "taskId": "2609886d-6257-4f4c-a640-1459e0366eae"
+      },
+      "stageExecutionReceiptDigest": "sha256:91f779777c82ef4282a1513dbff05bfaacb56ef0f88d79d316ac488f64e4d9c8",
+      "terminalStatus": "succeeded",
+      "version": 1
+    },
+    {
+      "componentContractDigest": "sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff",
+      "contextSetDigest": "sha256:a49f629da182745375b1ae3038c4dc32aaa435e74b1e78a8b1966205326de793",
+      "contextSetVersion": "chronicle.context-set/1",
+      "finalRequestDigest": "sha256:9c9c7c7c4e5aa80d391f5f9b215fc88290b28d4d7f3f6705627ac08f2416e8f7",
+      "kind": "chronicle-stage-terminal-receipt",
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "modelExecutionBinding": {
+        "apiVariant": null,
+        "effectiveModel": null,
+        "endpointBindingId": null,
+        "generationMode": "provider-default",
+        "kind": "chronicle-stage-model-binding",
+        "modelFingerprint": null,
+        "provider": "ollama",
+        "reasoningMode": null,
+        "requestedModel": "product-journey-model",
+        "resolutionStatus": "requested-only",
+        "version": 1
+      },
+      "parseStatus": "parsed",
+      "parsedOutputDigest": "sha256:6335f778fed0e50485b68fecca21b179a2e174c09bef15581ef38516c49dfb61",
+      "rawObservationsDigest": "sha256:d17827739f68866abc2df2d5de0be8018ea0f75d96290db8e7216fe361e0409c",
+      "responseDigest": "sha256:6da24e14e2071bf259e71ad002f44e40e95257637d8d0659d0167de0b936b7ca",
+      "stageExecution": {
+        "attemptId": "a04f4878-5615-4a1b-96be-cc3f3bd5d0e8",
+        "projectId": "default-project",
+        "runId": "ca70217c-c532-44db-8009-24e2087fb7de",
+        "stageExecutionId": "0b164187-1edd-41f5-ba9e-5ca3ef10e70b",
+        "stageId": "narrative_event_synthesize",
+        "taskId": "2609886d-6257-4f4c-a640-1459e0366eae"
+      },
+      "stageExecutionReceiptDigest": "sha256:fdf6968c55ba42bc09918a58cc8ce926cd9887e96ee8b9b10d182a89488f45ec",
+      "terminalStatus": "succeeded",
+      "version": 1
+    }
+  ]
+}

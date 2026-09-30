@@ -2,17 +2,16 @@ import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { toast } from "sonner";
-import type { WorkspaceState } from "./store";
+import type {
+  WorkspaceOpenRequestOutcome,
+  WorkspaceState,
+} from "./workspaceState";
 import {
   beginWorkspaceOpenTrace,
   type WorkspaceOpenTraceSource,
 } from "./workspaceOpenTrace";
 
-export type WorkspaceOpenOutcome =
-  | "opened"
-  | "blocked"
-  | "failed"
-  | "in-progress";
+export type { WorkspaceOpenRequestOutcome } from "./workspaceState";
 
 type WorkspaceStoreGetter = () => WorkspaceState;
 type WorkspaceStoreSetter = (partial: Partial<WorkspaceState>) => void;
@@ -49,7 +48,7 @@ async function openValidatedWorkspace(
   isExisting: boolean,
   get: WorkspaceStoreGetter,
   set: WorkspaceStoreSetter,
-): Promise<WorkspaceOpenOutcome | "trust-required"> {
+): Promise<WorkspaceOpenRequestOutcome | "trust-required"> {
   if (!isExisting) {
     const outcome = await get().openWorkspace(path);
     if (outcome !== "opened") return outcome;

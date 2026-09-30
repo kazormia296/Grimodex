@@ -5,6 +5,7 @@ import {
   _resetQuiescenceParticipantsForTests,
   collectQuiescenceParticipantRecovery,
   flushQuiescenceParticipants,
+  flushQuiescenceParticipantsForScopes,
 } from "./quiescenceParticipants";
 import {
   useQuiescentDraftParticipant,
@@ -42,6 +43,46 @@ describe("useQuiescentDraftParticipant", () => {
 
     expect(first).not.toHaveBeenCalled();
     expect(latest).toHaveBeenCalledOnce();
+  });
+
+  it("flushes only dirty participants in the requested entity scope", async () => {
+    let sceneADirty = true;
+    let sceneBDirty = true;
+    const flushA = vi.fn(async () => {
+      sceneADirty = false;
+    });
+    const flushB = vi.fn(async () => {
+      sceneBDirty = false;
+    });
+    renderHook(() => {
+      useQuiescentDraftParticipant({
+        id: "title:scene-a",
+        enabled: true,
+        scope: { kind: "tree-node", entityId: "scene-a" },
+        isDirty: () => sceneADirty,
+        flush: flushA,
+        discard: () => {
+          sceneADirty = false;
+        },
+      });
+      useQuiescentDraftParticipant({
+        id: "title:scene-b",
+        enabled: true,
+        scope: { kind: "tree-node", entityId: "scene-b" },
+        isDirty: () => sceneBDirty,
+        flush: flushB,
+        discard: () => {
+          sceneBDirty = false;
+        },
+      });
+    });
+
+    await flushQuiescenceParticipantsForScopes([
+      { kind: "tree-node", entityId: "scene-b" },
+    ]);
+
+    expect(flushA).not.toHaveBeenCalled();
+    expect(flushB).toHaveBeenCalledOnce();
   });
 
   it("retains a detached failed draft for recovery and strict retry", async () => {

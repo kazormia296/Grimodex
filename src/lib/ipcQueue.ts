@@ -1,4 +1,7 @@
-import { registerQuiescenceProvider } from "./quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "./quiescenceProviders";
 
 type QueueItem<T> = {
   cmd: string;
@@ -417,7 +420,7 @@ export async function awaitPendingIpcActualTasksForAuditExport(): Promise<void> 
 }
 
 registerQuiescenceProvider({
-  id: "ipc-actual-tasks",
+  id: createQuiescenceProviderId("ipc-actual-tasks"),
   stage: "ipc-actual-tasks",
   flush: awaitPendingIpcActualTasks,
 });

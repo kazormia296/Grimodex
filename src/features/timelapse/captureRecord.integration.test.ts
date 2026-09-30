@@ -21,7 +21,7 @@ vi.mock("@/db/client", () => ({
 import {
   _resetRecorderForTests,
   flushNow,
-  initRecorderForProject,
+  initRecorderForProject as initRecorderForProjectImpl,
   setRecorderEnabled,
 } from "./recorder";
 import { recordChatMessageAdd, recordChatMessageDelete } from "./captureChat";
@@ -35,6 +35,17 @@ import {
   type EventForVerify,
 } from "./hashChain";
 import type { LayoutState } from "@/features/layout/layoutTypes";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+
+async function initRecorderForProject(projectId: string): Promise<boolean> {
+  publishCurrentProjectId(projectId);
+  setCurrentWorkspaceIdentity({
+    path: "/workspace/capture-record-test.gdx",
+    openRevision: 1,
+  });
+  return initRecorderForProjectImpl(projectId);
+}
 
 interface CommandEvent {
   eventUid: string;

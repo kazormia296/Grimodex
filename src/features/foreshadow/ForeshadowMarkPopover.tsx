@@ -87,11 +87,19 @@ export function ForeshadowMarkPopover({ editor }: Props) {
 
   const applySetupMark = (foreshadowId: string) => {
     if (!editor || !savedRange) return;
+    const foreshadow = useForeshadowStore
+      .getState()
+      .items.find((item) => item.id === foreshadowId);
+    if (!foreshadow) return;
     const setupId = crypto.randomUUID();
     editor
       .chain()
       .setTextSelection(savedRange)
-      .setMark("foreshadowSetup", { setupId, foreshadowId })
+      .setMark("foreshadowSetup", {
+        setupId,
+        foreshadowId,
+        baseVersion: foreshadow.version,
+      })
       .run();
     ensureEditorOverlayVisible("foreshadow", editor);
     close();
@@ -99,10 +107,17 @@ export function ForeshadowMarkPopover({ editor }: Props) {
 
   const applyPayoffMark = (foreshadowId: string) => {
     if (!editor || !savedRange) return;
+    const foreshadow = useForeshadowStore
+      .getState()
+      .items.find((item) => item.id === foreshadowId);
+    if (!foreshadow) return;
     editor
       .chain()
       .setTextSelection(savedRange)
-      .setMark("foreshadowPayoff", { foreshadowId })
+      .setMark("foreshadowPayoff", {
+        foreshadowId,
+        baseVersion: foreshadow.version,
+      })
       .run();
     ensureEditorOverlayVisible("foreshadow", editor);
     close();

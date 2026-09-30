@@ -219,6 +219,7 @@ function GridSceneCardImpl({
 
   useQuiescentDraftParticipant({
     id: `grid-add-beat:${scene.id}`,
+    scope: { kind: "tree-node", entityId: scene.id },
     enabled: addingBeat,
     isDirty: () => addingBeatRef.current && beatController.dirty,
     flush: commitBeat,

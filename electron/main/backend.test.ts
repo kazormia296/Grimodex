@@ -2,16 +2,22 @@ import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
+const dialogMock = vi.hoisted(() => ({ showErrorBox: vi.fn() }));
+
 vi.mock("electron", () => ({
   app: {
     getPath: () => "/tmp/grimodex-user-data",
     isPackaged: false,
   },
-  dialog: { showErrorBox: vi.fn() },
+  dialog: dialogMock,
 }));
 
-const { resolveRerankerResourceRoot, resolveSemanticResourceRoot } =
-  await import("./backend.js");
+const {
+  initBackend,
+  resolveNodeBinaryPath,
+  resolveRerankerResourceRoot,
+  resolveSemanticResourceRoot,
+} = await import("./backend.js");
 
 describe("resolveSemanticResourceRoot", () => {
   it("devではrepositoryのsrc-tauri/resources/semanticを明示注入する", () => {
@@ -75,5 +81,29 @@ describe("resolveRerankerResourceRoot", () => {
     ).toBe(
       path.join("/opt/Grimodex/resources", "resources", "reranker", "phase0b"),
     );
+  });
+});
+
+describe("initBackend startup policy", () => {
+  it("fails fast for CI acceptance instead of opening a fail-soft window", () => {
+    vi.stubEnv("GRIMODEX_NODE_PATH", "/tmp/grimodex-missing-backend.node");
+
+    expect(() => initBackend({ failFast: true })).toThrow(
+      /grimodex-node\.node.*見つかりません/,
+    );
+    expect(dialogMock.showErrorBox).not.toHaveBeenCalled();
+    expect(resolveNodeBinaryPath()).toBe("/tmp/grimodex-missing-backend.node");
+
+    vi.unstubAllEnvs();
+  });
+
+  it("retains the existing dialog fail-soft policy outside CI acceptance", () => {
+    vi.stubEnv("GRIMODEX_NODE_PATH", "/tmp/grimodex-missing-backend.node");
+
+    expect(initBackend()).toBeNull();
+    expect(dialogMock.showErrorBox).toHaveBeenCalledOnce();
+
+    dialogMock.showErrorBox.mockReset();
+    vi.unstubAllEnvs();
   });
 });

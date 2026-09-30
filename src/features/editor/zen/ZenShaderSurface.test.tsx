@@ -16,7 +16,15 @@ const shaderLifecycle = vi.hoisted(() => ({
   mountedCapacities: [] as number[],
   unmountedCapacities: [] as number[],
   mountedUniformLengths: [] as number[],
-  props: [] as Array<{ maxPixelCount: number; speed: number }>,
+  props: [] as Array<{
+    maxPixelCount: number;
+    speed: number;
+    renderPipeline: "direct" | "multipass";
+    sceneScale: number;
+  }>,
+  researchOptions: [] as unknown[],
+  hasResearchOptions: [] as boolean[],
+  hasGpuTimingOptions: [] as boolean[],
   antiAliasing: [] as Array<{ minPixelRatio: number; antialias: boolean }>,
   drawCount: 1,
   staticFrameReady: true,
@@ -41,6 +49,10 @@ vi.mock("./ZenMultipassCanvas", () => ({
       webGlContextAttributes?: WebGLContextAttributes;
       compositeFragment: string;
       compositeUniforms: Record<string, unknown>;
+      renderPipeline: "direct" | "multipass";
+      sceneScale: number;
+      researchOptions?: unknown;
+      gpuTimingOptions?: unknown;
     }
   >(function MockZenMultipassCanvas(
     {
@@ -52,6 +64,9 @@ vi.mock("./ZenMultipassCanvas", () => ({
       webGlContextAttributes,
       compositeFragment,
       compositeUniforms,
+      renderPipeline,
+      sceneScale,
+      ...optionalProps
     },
     forwardedRef,
   ) {
@@ -65,7 +80,19 @@ vi.mock("./ZenMultipassCanvas", () => ({
         ? compositeUniforms["u_zenUiSurfaceRects[0]"].length
         : 0,
     ).current;
-    shaderLifecycle.props.push({ maxPixelCount, speed });
+    shaderLifecycle.props.push({
+      maxPixelCount,
+      speed,
+      renderPipeline,
+      sceneScale,
+    });
+    shaderLifecycle.researchOptions.push(optionalProps.researchOptions);
+    shaderLifecycle.hasResearchOptions.push(
+      Object.hasOwn(optionalProps, "researchOptions"),
+    );
+    shaderLifecycle.hasGpuTimingOptions.push(
+      Object.hasOwn(optionalProps, "gpuTimingOptions"),
+    );
     shaderLifecycle.antiAliasing.push({
       minPixelRatio,
       antialias: webGlContextAttributes?.antialias ?? false,
@@ -97,6 +124,7 @@ vi.mock("./ZenMultipassCanvas", () => ({
         ref={elementRef}
         data-paper-shader={shader}
         data-zen-glass-compositor={ownsGlass}
+        data-render-pipeline={renderPipeline}
       />
     );
   }),
@@ -135,6 +163,9 @@ describe("ZenShaderSurface", () => {
     shaderLifecycle.unmountedCapacities.length = 0;
     shaderLifecycle.mountedUniformLengths.length = 0;
     shaderLifecycle.props.length = 0;
+    shaderLifecycle.researchOptions.length = 0;
+    shaderLifecycle.hasResearchOptions.length = 0;
+    shaderLifecycle.hasGpuTimingOptions.length = 0;
     shaderLifecycle.antiAliasing.length = 0;
     shaderLifecycle.drawCount = 1;
     shaderLifecycle.staticFrameReady = true;
@@ -263,6 +294,8 @@ describe("ZenShaderSurface", () => {
     expect(shaderLifecycle.props.at(-1)).toEqual({
       maxPixelCount: 2_073_600,
       speed: resolveZenShaderAnimationSpeed(ZEN_SHADER_DEFAULTS.speed),
+      renderPipeline: "multipass",
+      sceneScale: 3 / 4,
     });
 
     rerender(
@@ -275,7 +308,41 @@ describe("ZenShaderSurface", () => {
     expect(shaderLifecycle.props.at(-1)).toEqual({
       maxPixelCount: 2_073_600,
       speed: 0,
+      renderPipeline: "multipass",
+      sceneScale: 3 / 4,
     });
+  });
+
+  it.each([
+    ["dither", { dither: { ...ZEN_SHADER_DEFAULTS.dither, enabled: true } }],
+    [
+      "halftone",
+      { halftone: { ...ZEN_SHADER_DEFAULTS.halftone, enabled: true } },
+    ],
+  ] as const)("keeps %s at native Scene resolution", (_effect, override) => {
+    const { container } = render(
+      <ZenShaderSurface
+        config={{
+          ...ZEN_SHADER_DEFAULTS,
+          resolutionMode: "performance",
+          ...override,
+        }}
+        playing={false}
+      />,
+    );
+
+    expect(shaderLifecycle.props.at(-1)?.sceneScale).toBe(1);
+    expect(
+      container.querySelector("[data-zen-shader-surface]"),
+    ).toHaveAttribute("data-zen-shader-scene-scale", "1");
+  });
+
+  it("does not pass research or timing options to the normal renderer", () => {
+    render(<ZenShaderSurface config={ZEN_SHADER_DEFAULTS} playing />);
+
+    expect(shaderLifecycle.hasResearchOptions.at(-1)).toBe(false);
+    expect(shaderLifecycle.hasGpuTimingOptions.at(-1)).toBe(false);
+    expect(shaderLifecycle.researchOptions.at(-1)).toBeUndefined();
   });
 
   it("changes speed range without remounting the Paper canvas", () => {
@@ -317,6 +384,8 @@ describe("ZenShaderSurface", () => {
     expect(shaderLifecycle.props.at(-1)).toEqual({
       maxPixelCount: 2_073_600,
       speed: resolveZenShaderAnimationSpeed(ZEN_SHADER_DEFAULTS.speed),
+      renderPipeline: "multipass",
+      sceneScale: 3 / 4,
     });
   });
 
@@ -326,7 +395,76 @@ describe("ZenShaderSurface", () => {
     expect(shaderLifecycle.props.at(-1)).toEqual({
       maxPixelCount: 300_000,
       speed: resolveZenShaderAnimationSpeed(ZEN_SHADER_DEFAULTS.speed),
+      renderPipeline: "multipass",
+      sceneScale: 3 / 4,
     });
+  });
+
+  it("switches direct and multipass paths in place and re-arms first-frame readiness", async () => {
+    shaderLayouts.current = layoutsWithUiSurfaceCount(1);
+    const onRendererStatusChange = vi.fn();
+    const directConfig = {
+      ...ZEN_SHADER_DEFAULTS,
+      resolutionMode: "native" as const,
+      glass: { ...ZEN_SHADER_DEFAULTS.glass, enabled: false },
+      contrastGuard: {
+        ...ZEN_SHADER_DEFAULTS.contrastGuard,
+        mode: "none" as const,
+      },
+      opacity: 100,
+    };
+    const view = render(
+      <ZenShaderSurface
+        config={directConfig}
+        playing={false}
+        onRendererStatusChange={onRendererStatusChange}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(onRendererStatusChange).toHaveBeenLastCalledWith("webgl"),
+    );
+    const mountedCanvas = view.container.querySelector("[data-paper-shader]");
+    expect(mountedCanvas).toHaveAttribute("data-render-pipeline", "direct");
+
+    shaderLifecycle.staticFrameReady = false;
+    view.rerender(
+      <ZenShaderSurface
+        config={{
+          ...directConfig,
+          glass: { ...directConfig.glass, enabled: true },
+        }}
+        playing={false}
+        onRendererStatusChange={onRendererStatusChange}
+      />,
+    );
+
+    expect(view.container.querySelector("[data-paper-shader]")).toBe(
+      mountedCanvas,
+    );
+    expect(mountedCanvas).toHaveAttribute("data-render-pipeline", "multipass");
+    expect(onRendererStatusChange).toHaveBeenLastCalledWith("initializing");
+    expect(shaderLifecycle.unmounted).toEqual([]);
+
+    shaderLifecycle.staticFrameReady = true;
+    await waitFor(() =>
+      expect(onRendererStatusChange).toHaveBeenLastCalledWith("webgl"),
+    );
+
+    shaderLifecycle.staticFrameReady = false;
+    view.rerender(
+      <ZenShaderSurface
+        config={directConfig}
+        playing={false}
+        onRendererStatusChange={onRendererStatusChange}
+      />,
+    );
+    expect(view.container.querySelector("[data-paper-shader]")).toBe(
+      mountedCanvas,
+    );
+    expect(mountedCanvas).toHaveAttribute("data-render-pipeline", "direct");
+    expect(onRendererStatusChange).toHaveBeenLastCalledWith("initializing");
+    expect(shaderLifecycle.unmounted).toEqual([]);
   });
 
   it("uses the static fallback without mounting Paper or shared Glass when WebGL2 is unavailable", async () => {
@@ -385,5 +523,53 @@ describe("ZenShaderSurface", () => {
         "fallback-context-lost",
       );
     });
+  });
+
+  it("restores the direct path after the context-loss fallback is remounted", async () => {
+    const config = {
+      ...ZEN_SHADER_DEFAULTS,
+      resolutionMode: "native" as const,
+      glass: { ...ZEN_SHADER_DEFAULTS.glass, enabled: false },
+      contrastGuard: {
+        ...ZEN_SHADER_DEFAULTS.contrastGuard,
+        mode: "none" as const,
+      },
+      opacity: 100,
+    };
+    const onRendererStatusChange = vi.fn();
+    const first = render(
+      <ZenShaderSurface
+        config={config}
+        playing={false}
+        onRendererStatusChange={onRendererStatusChange}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(onRendererStatusChange).toHaveBeenLastCalledWith("webgl"),
+    );
+    first.container
+      .querySelector("[data-paper-shader]")
+      ?.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    await waitFor(() =>
+      expect(onRendererStatusChange).toHaveBeenLastCalledWith(
+        "fallback-context-lost",
+      ),
+    );
+    first.unmount();
+
+    const restored = render(
+      <ZenShaderSurface
+        config={config}
+        playing={false}
+        onRendererStatusChange={onRendererStatusChange}
+      />,
+    );
+    await waitFor(() =>
+      expect(onRendererStatusChange).toHaveBeenLastCalledWith("webgl"),
+    );
+    expect(
+      restored.container.querySelector("[data-paper-shader]"),
+    ).toHaveAttribute("data-render-pipeline", "direct");
   });
 });

@@ -8,6 +8,11 @@ import {
   codexEntryTags,
 } from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
+import { createCodexEntry } from "@/features/codex/api";
+import { createDefinition, upsertValue } from "@/features/codex/detailApi";
+import { createCodexType, updateCodexType } from "@/features/codex/typeApi";
+import { createCodexTag, setEntryTags } from "@/features/codex/tagApi";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 
 /**
  * Run a SELECT keyed by an id list in chunks so the bound-parameter count
@@ -43,6 +48,19 @@ function sortEntriesForInsert<
 
   for (const entry of entries) visit(entry);
   return sorted;
+}
+
+function parseTypeFilter(value: string | null): string[] | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) &&
+      parsed.every((item) => typeof item === "string")
+      ? parsed
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -84,31 +102,33 @@ export async function seedCodexTypesFromProject(
       );
 
     if (!existingTargetType) {
-      await db.insert(codexTypes).values({
-        id: crypto.randomUUID(),
-        projectId: targetProjectId,
-        slug: sourceType.slug,
-        label: sourceType.label,
-        color: sourceType.color,
-        paletteIndex: sourceType.paletteIndex,
-        icon: sourceType.icon,
-        isBuiltin: sourceType.isBuiltin,
-        sortOrder: sourceType.sortOrder,
-        createdAt: new Date().toISOString(),
-      });
+      await createCodexType(
+        {
+          projectId: targetProjectId,
+          slug: sourceType.slug,
+          label: sourceType.label,
+          color: sourceType.color,
+          paletteIndex: sourceType.paletteIndex,
+          icon: sourceType.icon,
+          isBuiltin: sourceType.isBuiltin,
+          sortOrder: sourceType.sortOrder,
+        },
+        { writeContext: createCanonicalWriteContext("import") },
+      );
     } else {
       // 同 slug の type が既にある (builtin 等) 場合は、コピー元の見た目
       // (label / color / icon …) をシード先へ反映する。slug / isBuiltin は据え置く。
-      await db
-        .update(codexTypes)
-        .set({
+      await updateCodexType(
+        existingTargetType.id,
+        {
           label: sourceType.label,
           color: sourceType.color,
           paletteIndex: sourceType.paletteIndex,
           icon: sourceType.icon,
           sortOrder: sourceType.sortOrder,
-        })
-        .where(eq(codexTypes.id, existingTargetType.id));
+        },
+        { writeContext: createCanonicalWriteContext("import") },
+      );
     }
 
     const sourceDefs = await db
@@ -140,17 +160,19 @@ export async function seedCodexTypesFromProject(
       }
       const newDefId = crypto.randomUUID();
       definitionIdMap.set(def.id, newDefId);
-      await db.insert(codexDetailDefinitions).values({
-        id: newDefId,
-        projectId: targetProjectId,
-        typeSlug: def.typeSlug,
-        name: def.name,
-        fieldType: def.fieldType,
-        fieldConfig: def.fieldConfig,
-        sortOrder: def.sortOrder,
-        includeInContext: def.includeInContext,
-        createdAt: new Date().toISOString(),
-      });
+      await createDefinition(
+        {
+          id: newDefId,
+          projectId: targetProjectId,
+          typeSlug: def.typeSlug,
+          name: def.name,
+          fieldType: def.fieldType,
+          fieldConfig: def.fieldConfig,
+          sortOrder: def.sortOrder,
+          includeInContext: def.includeInContext,
+        },
+        { writeContext: createCanonicalWriteContext("import") },
+      );
     }
 
     const sourceEntries = await db
@@ -170,25 +192,26 @@ export async function seedCodexTypesFromProject(
         ? (entryIdMap.get(entry.parentId) ?? null)
         : null;
 
-      await db.insert(codexEntries).values({
-        id: newEntryId,
-        projectId: targetProjectId,
-        parentId: newParentId,
-        type: entry.type,
-        name: entry.name,
-        aliases: entry.aliases,
-        excludedAliases: entry.excludedAliases,
-        summary: entry.summary,
-        content: entry.content,
-        icon: entry.icon,
-        tagsCache: entry.tagsCache,
-        contextMode: entry.contextMode,
-        childrenBudget: entry.childrenBudget,
-        sourceChatMessageId: null,
-        notes: entry.notes,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
+      await createCodexEntry(
+        {
+          id: newEntryId,
+          projectId: targetProjectId,
+          parentId: newParentId,
+          type: entry.type,
+          name: entry.name,
+          aliases: entry.aliases,
+          excludedAliases: entry.excludedAliases,
+          summary: entry.summary,
+          content: entry.content,
+          icon: entry.icon,
+          tagsCache: entry.tagsCache,
+          contextMode: entry.contextMode,
+          childrenBudget: entry.childrenBudget,
+          sourceChatMessageId: null,
+          notes: entry.notes,
+        },
+        { writeContext: createCanonicalWriteContext("import") },
+      );
     }
   }
 
@@ -207,11 +230,9 @@ export async function seedCodexTypesFromProject(
     const newDefId = definitionIdMap.get(val.definitionId);
     if (!newEntryId || !newDefId) continue;
 
-    await db.insert(codexDetailValues).values({
-      id: crypto.randomUUID(),
-      entryId: newEntryId,
-      definitionId: newDefId,
-      value: val.value,
+    await upsertValue(newEntryId, newDefId, val.value, {
+      raw: true,
+      writeContext: createCanonicalWriteContext("import"),
     });
   }
 
@@ -256,23 +277,31 @@ async function copyEntryTags(
     }
     const newTagId = crypto.randomUUID();
     tagIdMap.set(tag.id, newTagId);
-    await db.insert(codexTags).values({
-      id: newTagId,
-      projectId: targetProjectId,
-      name: tag.name,
-      color: tag.color,
-      typeFilter: tag.typeFilter,
-      createdAt: new Date().toISOString(),
-    });
+    await createCodexTag(
+      {
+        id: newTagId,
+        projectId: targetProjectId,
+        name: tag.name,
+        color: tag.color ?? undefined,
+        typeFilter: parseTypeFilter(tag.typeFilter),
+      },
+      { writeContext: createCanonicalWriteContext("import") },
+    );
   }
 
+  const targetTagIdsByEntry = new Map<string, string[]>();
   for (const link of tagLinks) {
     const newEntryId = entryIdMap.get(link.entryId);
     const newTagId = tagIdMap.get(link.tagId);
     if (!newEntryId || !newTagId) continue;
-    await db.insert(codexEntryTags).values({
-      entryId: newEntryId,
-      tagId: newTagId,
+    const entryTagIds = targetTagIdsByEntry.get(newEntryId) ?? [];
+    entryTagIds.push(newTagId);
+    targetTagIdsByEntry.set(newEntryId, entryTagIds);
+  }
+  for (const [entryId, tagIds] of targetTagIdsByEntry) {
+    await setEntryTags(entryId, [...new Set(tagIds)].sort(), {
+      projectId: targetProjectId,
+      writeContext: createCanonicalWriteContext("import"),
     });
   }
 }

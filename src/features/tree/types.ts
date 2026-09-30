@@ -37,6 +37,7 @@ export interface TreeNodeData {
   contextMode?: string | null;
   aliases?: string | null;
   excludedAliases?: string | null;
+  version?: number;
   createdAt: string;
   updatedAt: string;
 }

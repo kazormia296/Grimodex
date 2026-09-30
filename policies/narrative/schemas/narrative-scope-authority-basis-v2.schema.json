@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schema/narrative/narrative-scope-authority-basis-v2.schema.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contractId",
+    "basisKind",
+    "projectId",
+    "source",
+    "scopeRegistry",
+    "mappings",
+    "digests"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "contractId": { "const": "narrative-scope-authority-basis/2" },
+    "basisKind": { "const": "historical-run-snapshot" },
+    "projectId": { "$ref": "#/$defs/contractString" },
+    "source": { "$ref": "#/$defs/source" },
+    "scopeRegistry": { "$ref": "#/$defs/scopeRegistry" },
+    "mappings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/mapping" }
+    },
+    "digests": { "$ref": "#/$defs/digests" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "wellFormedUtf16String": {
+      "type": "string",
+      "pattern": "^(?![\\s\\S]*[\\ud800-\\udfff])"
+    },
+    "contractString": {
+      "allOf": [
+        { "$ref": "#/$defs/wellFormedUtf16String" },
+        {
+          "type": "string",
+          "pattern": "^(?![\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?![\\s\\S])"
+        }
+      ]
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "source": {
+      "type": "object",
+      "required": ["sourceKind", "sourceKey"],
+      "properties": {
+        "sourceKind": { "const": "snapshot-document" },
+        "sourceKey": {
+          "allOf": [
+            { "$ref": "#/$defs/wellFormedUtf16String" },
+            {
+              "type": "string",
+              "pattern": "^snapshot:(?![\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?![\\s\\S])"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "scopeRegistry": {
+      "type": "object",
+      "required": ["registryVersion", "reservedAudienceRefs"],
+      "properties": {
+        "registryVersion": { "const": "narrative-scope/2" },
+        "reservedAudienceRefs": { "const": ["reader"] }
+      },
+      "additionalProperties": false
+    },
+    "mapping": {
+      "type": "object",
+      "required": [
+        "documentRef",
+        "sourceKey",
+        "sceneRef",
+        "readingOrderRef",
+        "storyTimeRef",
+        "readingRank",
+        "storyTimeOrder"
+      ],
+      "properties": {
+        "documentRef": {
+          "type": "string",
+          "pattern": "^D[0-9]{6}(?![\\s\\S])"
+        },
+        "sourceKey": {
+          "allOf": [
+            { "$ref": "#/$defs/wellFormedUtf16String" },
+            {
+              "type": "string",
+              "pattern": "^project:scene:(?![\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?![\\s\\S])"
+            }
+          ]
+        },
+        "sceneRef": {
+          "allOf": [
+            { "$ref": "#/$defs/wellFormedUtf16String" },
+            {
+              "type": "string",
+              "pattern": "^scene:(?![\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?![\\s\\S])"
+            }
+          ]
+        },
+        "readingOrderRef": {
+          "allOf": [
+            { "$ref": "#/$defs/wellFormedUtf16String" },
+            {
+              "type": "string",
+              "pattern": "^reading:(?![\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?![\\s\\S])"
+            }
+          ]
+        },
+        "storyTimeRef": {
+          "allOf": [
+            { "$ref": "#/$defs/wellFormedUtf16String" },
+            {
+              "type": "string",
+              "pattern": "^story:(?![\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?![\\s\\S])"
+            }
+          ]
+        },
+        "readingRank": { "$ref": "#/$defs/u32" },
+        "storyTimeOrder": { "$ref": "#/$defs/storyTimeOrder" }
+      },
+      "additionalProperties": false
+    },
+    "storyTimeOrder": {
+      "oneOf": [
+        { "$ref": "#/$defs/resolvedStoryTimeOrder" },
+        { "$ref": "#/$defs/notProvidedStoryTimeOrder" },
+        { "$ref": "#/$defs/ambiguousStoryTimeOrder" }
+      ]
+    },
+    "resolvedStoryTimeOrder": {
+      "type": "object",
+      "required": ["status", "rawStoryKey", "storyRank"],
+      "properties": {
+        "status": { "const": "resolved" },
+        "rawStoryKey": { "$ref": "#/$defs/contractString" },
+        "storyRank": { "$ref": "#/$defs/u32" }
+      },
+      "additionalProperties": false
+    },
+    "notProvidedStoryTimeOrder": {
+      "type": "object",
+      "required": ["status", "reason", "rawStoryKey"],
+      "properties": {
+        "status": { "const": "unresolved" },
+        "reason": { "const": "not-provided" },
+        "rawStoryKey": { "const": null }
+      },
+      "additionalProperties": false
+    },
+    "ambiguousStoryTimeOrder": {
+      "type": "object",
+      "required": ["status", "reason", "rawStoryKey"],
+      "properties": {
+        "status": { "const": "unresolved" },
+        "reason": { "const": "ambiguous" },
+        "rawStoryKey": { "$ref": "#/$defs/contractString" }
+      },
+      "additionalProperties": false
+    },
+    "u32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "digests": {
+      "type": "object",
+      "required": [
+        "corpusDigest",
+        "scopeRegistryRevision",
+        "readingOrderRevision",
+        "storyTimeOrderRevision",
+        "authorityDigest",
+        "compositeDigest"
+      ],
+      "properties": {
+        "corpusDigest": { "$ref": "#/$defs/digest" },
+        "scopeRegistryRevision": { "$ref": "#/$defs/digest" },
+        "readingOrderRevision": { "$ref": "#/$defs/digest" },
+        "storyTimeOrderRevision": { "$ref": "#/$defs/digest" },
+        "authorityDigest": { "$ref": "#/$defs/digest" },
+        "compositeDigest": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

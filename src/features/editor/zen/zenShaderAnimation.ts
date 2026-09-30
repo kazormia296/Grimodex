@@ -6,6 +6,32 @@ const FRAME_INTERVAL_MS = 1_000 / ZEN_SHADER_MAX_FPS;
 // rAF timestamps can undershoot an exact refresh interval by a tiny amount.
 const FRAME_INTERVAL_TOLERANCE_MS = 0.1;
 
+export interface ZenShaderFrameCadence {
+  advance: (elapsedMs: number) => boolean;
+  reset: () => void;
+}
+
+export function createZenShaderFrameCadence(): ZenShaderFrameCadence {
+  let pendingElapsed = 0;
+
+  return {
+    advance(elapsedMs) {
+      pendingElapsed += Math.max(0, elapsedMs);
+      if (pendingElapsed + FRAME_INTERVAL_TOLERANCE_MS < FRAME_INTERVAL_MS) {
+        return false;
+      }
+      pendingElapsed =
+        pendingElapsed >= FRAME_INTERVAL_MS
+          ? pendingElapsed % FRAME_INTERVAL_MS
+          : 0;
+      return true;
+    },
+    reset() {
+      pendingElapsed = 0;
+    },
+  };
+}
+
 type ShaderFrameTarget = Pick<ShaderMount, "setFrame">;
 
 interface AnimationFrameDriver {
@@ -30,9 +56,9 @@ export function createZenShaderAnimationScheduler(
   let running = false;
   let requestHandle: number | null = null;
   let lastTimestamp: number | null = null;
-  let pendingElapsed = 0;
   let shaderFrame = 0;
   let speed = 0;
+  const cadence = createZenShaderFrameCadence();
 
   function schedule() {
     requestHandle = driver.request(tick);
@@ -46,16 +72,11 @@ export function createZenShaderAnimationScheduler(
       lastTimestamp = timestamp;
     } else {
       const elapsed = Math.max(0, timestamp - lastTimestamp);
-      pendingElapsed += elapsed;
       shaderFrame += elapsed * speed;
       lastTimestamp = timestamp;
-      if (pendingElapsed + FRAME_INTERVAL_TOLERANCE_MS >= FRAME_INTERVAL_MS) {
+      if (cadence.advance(elapsed)) {
         const target = getTarget();
         if (target) target.setFrame(shaderFrame);
-        pendingElapsed =
-          pendingElapsed >= FRAME_INTERVAL_MS
-            ? pendingElapsed % FRAME_INTERVAL_MS
-            : 0;
       }
     }
 
@@ -65,7 +86,7 @@ export function createZenShaderAnimationScheduler(
   function stop() {
     running = false;
     lastTimestamp = null;
-    pendingElapsed = 0;
+    cadence.reset();
     if (requestHandle !== null) {
       driver.cancel(requestHandle);
       requestHandle = null;
@@ -82,14 +103,14 @@ export function createZenShaderAnimationScheduler(
       if (running) return;
       running = true;
       lastTimestamp = null;
-      pendingElapsed = 0;
+      cadence.reset();
       schedule();
     },
     stop,
     reset() {
       shaderFrame = 0;
       lastTimestamp = null;
-      pendingElapsed = 0;
+      cadence.reset();
     },
     getFrame() {
       return shaderFrame;

@@ -1,0 +1,663 @@
+{
+  "project": {
+    "id": "default-project",
+    "title": "零時の鐘は鳴らない",
+    "genre": "本格推理",
+    "language": "ja",
+    "ai_instructions": "公平な手がかりを本文中に先に提示し、解決で未提示情報を導入しない。音無律の観察は簡潔に、推測と事実を分ける。容疑者の嘘には犯行以外の動機を与え、事件当夜の時刻と物の移動を常に整合させる。"
+  },
+  "tree_nodes": [
+    {
+      "id": "sample-folder-incident",
+      "parent_id": null,
+      "node_type": "folder",
+      "title": "第一部：鳴らない鐘",
+      "synopsis": "嵐の夜、遺言の変更と密室の死が起きる。",
+      "sort_order": "a0",
+      "status": "outline"
+    },
+    {
+      "id": "sample-scene-1",
+      "parent_id": "sample-folder-incident",
+      "node_type": "scene",
+      "title": "一章：嵐の招待状",
+      "synopsis": "音無律は回想録整理のため霧鐘館へ到着する。家政婦は、修理中の鐘が今夜は鳴らないと告げる。",
+      "sort_order": "a0",
+      "status": "complete",
+      "story_time_order": "a0",
+      "story_time_label": "十一月一日・18:05",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"十一月一日、海沿いの旧道は嵐で消えかけていた。音無律が霧鐘館に着いたのは、午後六時を少し回った頃だった。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"崖の上に建つ館は、中央の鐘楼だけが海霧から突き出していた。黒い文字盤の針は動いているのに、館全体は息を止めているように静かだった。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"玄関で律を迎えた家政婦の久世真帆は、濡れた外套を受け取りながら鐘楼を見上げた。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"「修理中です。\"},{\"type\":\"text\",\"text\":\"今夜、鐘は鳴りません\",\"marks\":[{\"type\":\"foreshadowSetup\",\"attrs\":{\"setupId\":\"sample-setup-rope\",\"foreshadowId\":\"sample-foreshadow-rope\"}}]},{\"type\":\"text\",\"text\":\"」\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"律はその言葉を手帳に書いた。仕事は館主・黒瀬宗一郎の回想録を整理することだったが、事実は最初に記録しておくのが彼女の癖だった。\"}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"sample-beat-1\",\"collapsed\":false,\"beatType\":\"summary\",\"pov\":\"sample-codex-ritsu\",\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"律が館へ到着。『今夜、鐘は鳴らない』という物理条件を最初に提示し、嵐で外部と隔絶された状況を作る。\"}]}]}"
+    },
+    {
+      "id": "sample-scene-2",
+      "parent_id": "sample-folder-incident",
+      "node_type": "scene",
+      "title": "二章：最後の晩餐",
+      "synopsis": "黒瀬宗一郎は遺言の変更を宣言する。彼専用の青磁のカップに三枝が紅茶を注ぐ。",
+      "sort_order": "a1",
+      "status": "draft",
+      "story_time_order": "a1",
+      "story_time_label": "十一月一日・20:00",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"夕食は八時に始まった。長い食卓には、宗一郎、娘の澪、秘書の三枝冬馬、主治医の椿千景、家政婦の真帆、そして律が並んだ。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"宗一郎は食後の紅茶が運ばれると、遺言を書き換えたと告げた。明朝、全員の前で新しい内容を読み上げるという。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"三枝が盆を置いた。白いカップが五客と、宗一郎の席にだけ\"},{\"type\":\"text\",\"text\":\"縁の欠けた青磁のカップ\",\"marks\":[{\"type\":\"foreshadowSetup\",\"attrs\":{\"setupId\":\"sample-setup-cup\",\"foreshadowId\":\"sample-foreshadow-cup\"}}]},{\"type\":\"text\",\"text\":\"があった。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"「昔からこれでないと味が分からん」宗一郎はそう言って笑い、三枝が注いだ紅茶を飲んだ。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"澪は席を立ち、椿は宗一郎の顔色を見ていた。真帆だけが、誰がどのカップに触れたかを正確に覚えているようだった。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"十一時半、宗一郎は書類を抱えて鐘楼書斎へ上がった。扉は閉まり、内側で鍵の回る音がした。\"}]}]}"
+    },
+    {
+      "id": "sample-scene-3",
+      "parent_id": "sample-folder-incident",
+      "node_type": "scene",
+      "title": "三章：零時の死体",
+      "synopsis": "十一時五十分に鐘が十二回鳴り、零時十分に宗一郎が密室の書斎で発見される。",
+      "sort_order": "a2",
+      "status": "draft",
+      "story_time_order": "a3",
+      "story_time_label": "十一月二日・00:10",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"十一時五十分。館のどこかで、低い鐘の音が十二回鳴った。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"真帆が顔を上げた。「おかしい。鐘綱は外してあるのに」\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"零時十分、澪が鐘楼書斎の扉を叩いた。返事はない。予備鍵で開けると、宗一郎は机の脇に倒れていた。窓は施錠され、もう一つの出入口はなかった。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"右手の下には銀の懐中時計があり、\"},{\"type\":\"text\",\"text\":\"針は十一時四十七分で止まっていた\",\"marks\":[{\"type\":\"foreshadowSetup\",\"attrs\":{\"setupId\":\"sample-setup-watch\",\"foreshadowId\":\"sample-foreshadow-watch\"}}]},{\"type\":\"text\",\"text\":\"。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"机には遺言書、インク壺、空の受け皿。夕食で使っていた青磁のカップだけが見当たらない。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"そして全員が同じことを言った。\"},{\"type\":\"text\",\"text\":\"零時の鐘を聞いた\",\"marks\":[{\"type\":\"foreshadowSetup\",\"attrs\":{\"setupId\":\"sample-setup-bell\",\"foreshadowId\":\"sample-foreshadow-bell\"}}]},{\"type\":\"text\",\"text\":\"、そのあとで宗一郎は殺されたのだ、と。\"}]}]}"
+    },
+    {
+      "id": "sample-folder-investigation",
+      "parent_id": null,
+      "node_type": "folder",
+      "title": "第二部：十五分の空白",
+      "synopsis": "証言と物証を分け、偽装された犯行時刻を崩していく。",
+      "sort_order": "a1",
+      "status": "outline"
+    },
+    {
+      "id": "sample-scene-4",
+      "parent_id": "sample-folder-investigation",
+      "node_type": "scene",
+      "title": "回想：十一時四十分",
+      "synopsis": "死体発見前、真帆は空の盆を持つ三枝とすれ違い、澪は書斎前で遺言を探していた。",
+      "sort_order": "a0",
+      "status": "complete",
+      "story_time_order": "a2",
+      "story_time_label": "十一月一日・23:40",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"回想：十一時四十分\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"真帆は厨房から食堂へ戻る途中、三枝とすれ違った。彼は空の盆を持ち、温室の方から歩いてきた。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"「旦那様にお茶を？」と聞くと、三枝は首を振った。「もう書斎へ上がられました」\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"そのとき、階段の上で宗一郎の咳が一度だけ聞こえた。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"同じ頃、澪は書斎前の廊下にいた。父の新しい遺言を探すためだったが、彼女はその理由を証言では隠した。\"}]}]}"
+    },
+    {
+      "id": "sample-scene-5",
+      "parent_id": "sample-folder-investigation",
+      "node_type": "scene",
+      "title": "四章：鍵のない密室",
+      "synopsis": "律は密室を出口ではなく、被害者が入室前に口にしたものの問題として捉え直す。",
+      "sort_order": "a1",
+      "status": "revision",
+      "story_time_order": "a4",
+      "story_time_label": "十一月二日・09:00",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"翌朝、律は鐘楼書斎を測った。扉は自動で閉まるばね錠で、宗一郎が入室後に内側から鍵を掛ければ、誰かが外へ出る必要はない。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"それでも澪は書棚の青い詩集から\"},{\"type\":\"text\",\"text\":\"真鍮の予備鍵\",\"marks\":[{\"type\":\"foreshadowSetup\",\"attrs\":{\"setupId\":\"sample-setup-key\",\"foreshadowId\":\"sample-foreshadow-key\"}}]},{\"type\":\"text\",\"text\":\"を見つけた。昨夜、真帆が使った鍵とは別のものだった。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"鐘の機械室では綱が外され、打鐘用の槌も固定されていた。昨夜、塔の鐘が鳴ることは物理的にできなかった。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"窓辺には塩の跡があり、床には乾いた泥が一片だけ残っていた。どちらも犯人の脱出を示すには不自然に整いすぎていた。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"律は密室を『出口の問題』から外した。問うべきは、宗一郎が鍵を掛ける前に何を口にしたかだった。\"}]}]}"
+    },
+    {
+      "id": "sample-scene-6",
+      "parent_id": "sample-folder-investigation",
+      "node_type": "scene",
+      "title": "五章：四つの証言",
+      "synopsis": "澪、椿、真帆、三枝の証言をBeat単位で整理し、それぞれの嘘の目的を切り分ける。",
+      "sort_order": "a2",
+      "status": "draft",
+      "story_time_order": "a5",
+      "story_time_label": "十一月二日・11:00",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"五章：四つの証言\"}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"sample-beat-6a\",\"collapsed\":false,\"beatType\":\"dialogue\",\"pov\":\"sample-codex-mio\",\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"澪の証言。十一時四十五分まで自室にいたと主張するが、実際は書斎前で遺言を探していた。\"}]},{\"type\":\"generatedProseBlock\",\"attrs\":{\"beatId\":\"sample-beat-6a\",\"modified\":false},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"澪は父を憎んでいたことを認めた。けれど、殺すより先に遺言を見つけたかったのだと言った。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"彼女の嘘は犯行を隠すためではなく、盗み見を隠すためだった。\"}]}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"sample-beat-6b\",\"collapsed\":false,\"beatType\":\"guided\",\"pov\":\"sample-codex-chikage\",\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"椿の証言。宗一郎には心臓疾患があり、少量の強心薬でも過量なら致命的になり得る。\"}]},{\"type\":\"generatedProseBlock\",\"attrs\":{\"beatId\":\"sample-beat-6b\",\"modified\":false},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"椿は薬箱の封が切られていたことを最後まで言わなかった。医師としての過失を恐れたからだ。\"}]}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"sample-beat-6c\",\"collapsed\":false,\"beatType\":\"summary\",\"pov\":\"sample-codex-maho\",\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"真帆の証言。鐘綱と槌は修理のため固定済み。食器を片付けたとき、青磁のカップだけ盆に戻らなかった。\"}]},{\"type\":\"generatedProseBlock\",\"attrs\":{\"beatId\":\"sample-beat-6c\",\"modified\":false},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"真帆の記憶は時刻ではなく手順に強かった。白いカップを五つ洗った。青磁は洗っていない。\"}]}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"sample-beat-6d\",\"collapsed\":false,\"beatType\":\"dialogue\",\"pov\":\"sample-codex-toma\",\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"三枝の証言。十一時半以降は温室で一人だったと主張。鐘を聞いて食堂へ戻った。\"}]},{\"type\":\"generatedProseBlock\",\"attrs\":{\"beatId\":\"sample-beat-6d\",\"modified\":false},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"三枝だけが鐘の音を『塔の上から聞こえた』と断言した。ほかの三人は、ただ館内で聞いたとしか言っていない。\"}]}]}]}"
+    },
+    {
+      "id": "sample-folder-solution",
+      "parent_id": null,
+      "node_type": "folder",
+      "title": "第三部：偽りの零時",
+      "synopsis": "鐘の音、毒、密室を一つの時系列へ戻す。",
+      "sort_order": "a2",
+      "status": "outline"
+    },
+    {
+      "id": "sample-scene-7",
+      "parent_id": "sample-folder-solution",
+      "node_type": "scene",
+      "title": "六章：鳴ったはずの鐘",
+      "synopsis": "律は証言を物の移動順に並べ、十一時五十分の鐘が時刻偽装だったと仮説を立てる。",
+      "sort_order": "a0",
+      "status": "outline",
+      "story_time_order": "a6",
+      "story_time_label": "十一月二日・15:00",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"【アウトライン — 未執筆】\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"律が全員の証言を時刻順ではなく、物の移動順に並べ直す。青磁のカップは食堂から温室へ、蝋管は温室から蓄音機へ、宗一郎は紅茶を飲んでから書斎へ。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Beat候補：十一時五十分の鐘を『時刻の証明』ではなく『誰かが時刻をそう思わせるための演出』として反転させる。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Beat候補：懐中時計の停止時刻と、椿の推定死亡時刻を突き合わせる。\"}]}]}"
+    },
+    {
+      "id": "sample-scene-8",
+      "parent_id": "sample-folder-solution",
+      "node_type": "scene",
+      "title": "終章：蝋管の声",
+      "synopsis": "蓄音機の蝋管と青磁のカップから、毒殺と偽の零時を再構成する。",
+      "sort_order": "a1",
+      "status": "final",
+      "story_time_order": "a7",
+      "story_time_label": "十一月二日・20:00",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"律は全員を食堂に集め、蓄音機の蓋を開けた。中には館の鐘を録音した古い蝋管が入っていた。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"昨夜鳴ったのは鐘楼の鐘ではなく、この蝋管の音だった\",\"marks\":[{\"type\":\"foreshadowPayoff\",\"attrs\":{\"foreshadowId\":\"sample-foreshadow-bell\"}}]},{\"type\":\"text\",\"text\":\"。鐘綱も槌も固定されていたからこそ、録音は確実な偽装になる。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"宗一郎は密室で襲われたのではない。夕食後、\"},{\"type\":\"text\",\"text\":\"青磁のカップの紅茶に混ぜられた強心薬\",\"marks\":[{\"type\":\"foreshadowPayoff\",\"attrs\":{\"foreshadowId\":\"sample-foreshadow-cup\"}}]},{\"type\":\"text\",\"text\":\"を飲み、自分で書斎に入り、自分で鍵を掛けた。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"懐中時計が止まった十一時四十七分\",\"marks\":[{\"type\":\"foreshadowPayoff\",\"attrs\":{\"foreshadowId\":\"sample-foreshadow-watch\"}}]},{\"type\":\"text\",\"text\":\"は、彼が倒れた時刻を示していた。零時の鐘は死亡時刻を十五分以上遅らせるための偽装だった。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"真鍮の予備鍵は澪が遺言を探すために隠しただけで、密室には使われていない\",\"marks\":[{\"type\":\"foreshadowPayoff\",\"attrs\":{\"foreshadowId\":\"sample-foreshadow-key\"}}]},{\"type\":\"text\",\"text\":\"。嘘は一つでも、犯罪は一つとは限らない。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"三枝は宗一郎専用のカップに薬を入れ、温室の蓄音機を時限装置で鳴らした。彼だけが音の方向を『塔の上』と説明したのは、全員の記憶を同じ形に整えようとしたからだ。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"切られた鐘綱は、鐘が鳴らないことを示す最初の手がかりだった\",\"marks\":[{\"type\":\"foreshadowPayoff\",\"attrs\":{\"foreshadowId\":\"sample-foreshadow-rope\"}}]},{\"type\":\"text\",\"text\":\"。律は一章の手帳を開き、最初の一行を読み上げた。\"}]}]}"
+    },
+    {
+      "id": "sample-folder-notes",
+      "parent_id": null,
+      "node_type": "folder",
+      "title": "事件簿・メモ",
+      "synopsis": "調査メモとGrimodex機能ガイド。",
+      "sort_order": "a3",
+      "status": "outline"
+    },
+    {
+      "id": "sample-note-guide",
+      "parent_id": "sample-folder-notes",
+      "node_type": "note",
+      "title": "このサンプルの歩き方",
+      "synopsis": null,
+      "sort_order": "a0",
+      "status": "complete",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"heading\",\"attrs\":{\"level\":1},\"content\":[{\"type\":\"text\",\"text\":\"このサンプルの歩き方\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"『零時の鐘は鳴らない』は、Grimodexの主要機能を一つの推理小説で確認するためのサンプル事件簿です。本文は完成稿・下書き・アウトラインを混在させています。\"}]},{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Scenes / Editor / Beat\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Scenesでは三部構成と読み順を確認できます。五章には配置済みBeat、六章には未配置Beatがあります。Editorでは本文、概要、狙い、付箋、履歴を試せます。\"}]},{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Grid / Matrix / Timeline / Chronicle\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Gridには状態・ラベル・Beat・文字数、Matrixには登場人物・POV・場所の交差が表示されます。Timelineは読み順と回想の時系列、Chronicleは事件当夜の分単位の出来事と因果を示します。\"}]},{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Codex / Codex Quick / Map\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"人物、場所、証拠品、鐘の機構をCodexに登録済みです。重要項目はCodex Quickに固定し、Mapには容疑者・証拠・シーンの関係を配置しています。\"}]},{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Chat / Snippet / Foreshadow / 校閲 / 帰属\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Chatには推敲相談と証言整理、Snippetには再利用候補、Foreshadowには設置と回収を収録しています。校閲には固有語辞書、帰属にはhuman / AI / unknownの混在例があります。\"}]},{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Writing Stats / 文屑箱 / Export\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"状態と文字数からWriting Statsを確認できます。文屑箱には削除した段落と没シーンがあります。最後にExportでサンプルを書き出し、実プロジェクトの流れを確認してください。\"}]}]}"
+    },
+    {
+      "id": "sample-note-case",
+      "parent_id": "sample-folder-notes",
+      "node_type": "note",
+      "title": "調査ノート：犯行時刻",
+      "synopsis": null,
+      "sort_order": "a1",
+      "status": "draft",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"調査ノート：犯行時刻\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"確定：宗一郎は十一時三十分以降に鐘楼書斎へ入り、扉を内側から施錠した。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"物証：懐中時計は十一時四十七分。鐘は十一時五十分に聞こえたが、鐘綱と槌は固定済み。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"未確定：蝋管を鳴らす時限装置の具体的な仕組み。温室の散水時計を流用する案。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"容疑者の嘘は目的を分ける。澪＝遺言の盗み見、椿＝薬品管理の過失、真帆＝館の秘密、三枝＝犯行時刻の偽装。\"}]}]}"
+    }
+  ],
+  "codex_entries": [
+    {
+      "id": "sample-codex-ritsu",
+      "type": "character",
+      "name": "音無律",
+      "aliases": "[\"おとなしりつ\",\"律\",\"編集者\",\"調査役\"]",
+      "summary": "フリーの編集者兼ファクトチェッカー。黒瀬宗一郎の回想録整理のため霧鐘館に招かれ、事件の記録役となる。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"三十二歳。人の言葉より、言い直した箇所と書き残した時刻を信用する。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"観察した事実を小さな手帳に番号付きで記録する。感情を急いで結論にしない。\"}]}]}",
+      "notes": null,
+      "context_mode": "always"
+    },
+    {
+      "id": "sample-codex-soichiro",
+      "type": "character",
+      "name": "黒瀬宗一郎",
+      "aliases": "[\"くろせそういちろう\",\"宗一郎\",\"館主\",\"被害者\"]",
+      "summary": "霧鐘館の主で出版社創業者。遺言の変更を宣言した夜、鐘楼書斎で死亡する。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"七十一歳。支配的で、家族と使用人の秘密を握ることで秩序を保ってきた。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"心臓疾患があり、椿千景から強心薬を処方されていた。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-mio",
+      "type": "character",
+      "name": "黒瀬澪",
+      "aliases": "[\"くろせみお\",\"澪\",\"宗一郎の娘\"]",
+      "summary": "宗一郎の一人娘。父の新しい遺言を恐れ、事件当夜に書斎前で探し物をしていた。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"彫刻家。父とは長く対立している。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"予備鍵を隠したため疑われるが、彼女の嘘は遺言の盗み見を隠すためのもの。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-toma",
+      "type": "character",
+      "name": "三枝冬馬",
+      "aliases": "[\"さえぐさとうま\",\"三枝\",\"冬馬\",\"秘書\"]",
+      "summary": "宗一郎の秘書。食後の紅茶を配り、事件当夜は温室にいたと証言する。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"几帳面で、他人の記憶を同じ言葉に揃えようとする癖がある。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"宗一郎に帳簿の改ざんを見抜かれ、翌朝の遺言公開で地位を失う予定だった。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-chikage",
+      "type": "character",
+      "name": "椿千景",
+      "aliases": "[\"つばきちかげ\",\"椿医師\",\"千景\"]",
+      "summary": "黒瀬家の主治医。宗一郎の心臓疾患と薬の危険性を知る。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"薬箱の封が切られていたことを隠した。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"犯人ではないが、管理上の過失を恐れて証言を遅らせる。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-maho",
+      "type": "character",
+      "name": "久世真帆",
+      "aliases": "[\"くぜまほ\",\"真帆\",\"家政婦\"]",
+      "summary": "霧鐘館の家政婦。館の食器、鍵、鐘の修理状況を最も正確に把握している。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"時刻の記憶は曖昧だが、家事の手順は一度も取り違えない。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"青磁のカップが盆へ戻らなかったことに気づく。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-manor",
+      "type": "location",
+      "name": "霧鐘館",
+      "aliases": "[\"きりがねかん\",\"館\",\"黒瀬邸\"]",
+      "summary": "海沿いの崖に建つ旧邸。嵐で旧道が寸断され、事件当夜は外部から孤立する。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"中央に鐘楼、東に温室、西に食堂棟がある。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"館内の音は石造りの廊下で方向感を失いやすい。\"}]}]}",
+      "notes": null,
+      "context_mode": "always"
+    },
+    {
+      "id": "sample-codex-tower",
+      "type": "location",
+      "name": "鐘楼書斎",
+      "aliases": "[\"しょうろうしょさい\",\"書斎\",\"鐘楼\"]",
+      "summary": "宗一郎の私室。ばね錠の扉と施錠窓を持ち、事件では密室に見えた。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"扉は閉めると自動でラッチが掛かる。内側から本錠を回せる。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"上階に鐘の機械室があり、保守用の狭い階段でつながる。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-greenhouse",
+      "type": "location",
+      "name": "温室",
+      "aliases": "[\"おんしつ\",\"硝子温室\"]",
+      "summary": "館の東端にある温室。蓄音機と散水時計が置かれている。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"雨音が強く、食堂から内部を見通せない。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"三枝は事件当夜、十一時半以降ここにいたと主張する。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-watch",
+      "type": "item",
+      "name": "停まった懐中時計",
+      "aliases": "[\"懐中時計\",\"銀時計\",\"十一時四十七分の時計\"]",
+      "summary": "宗一郎の右手の下で見つかった銀時計。十一時四十七分で停止していた。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"落下の衝撃で歯車が噛み、停止した。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"偽の鐘より早い死亡時刻を示す公平な物証。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-cup",
+      "type": "item",
+      "name": "青磁のカップ",
+      "aliases": "[\"青磁\",\"欠けたカップ\",\"宗一郎のカップ\"]",
+      "summary": "宗一郎だけが使う、縁の欠けた青磁のティーカップ。死体発見時には消えていた。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"白い客用カップと区別でき、標的を限定して薬を混ぜられる。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"温室の流しで洗われ、破片ではなく水跡が残る。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-key",
+      "type": "item",
+      "name": "真鍮の予備鍵",
+      "aliases": "[\"予備鍵\",\"真鍮の鍵\"]",
+      "summary": "鐘楼書斎の予備鍵。青い詩集の中から澪が見つける。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"密室トリックの鍵に見えるが、実際には澪が遺言を探すため持ち出した赤い鰊。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-cylinder",
+      "type": "item",
+      "name": "鐘の蝋管",
+      "aliases": "[\"ろうかん\",\"蝋管\",\"鐘の録音\"]",
+      "summary": "霧鐘館の鐘を録音した古い蓄音機用蝋管。温室の蓄音機に入っていた。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"十二回の鐘と短い海鳴りが録音されている。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"散水時計に糸を掛け、十一時五十分に再生レバーを落とせる。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-bell",
+      "type": "lore",
+      "name": "鐘楼の時打ち機構",
+      "aliases": "[\"時打ち機構\",\"鐘綱\",\"打鐘槌\"]",
+      "summary": "鐘綱、打鐘槌、文字盤を連動させる霧鐘館の機構。事件当夜は修理のため物理的に鳴らせなかった。",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"鐘綱は前日に外され、槌は固定具で止められていた。\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"時計の針だけは独立した重錘で動いていた。\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    }
+  ],
+  "chat_sessions": [
+    {
+      "id": "sample-session-1",
+      "node_id": "sample-scene-2",
+      "title": "青磁のカップを公平な手がかりにする",
+      "model": "openrouter/anthropic/claude-sonnet-4.6"
+    },
+    {
+      "id": "sample-session-2",
+      "node_id": "sample-scene-6",
+      "title": "四人の証言を分ける",
+      "model": "openrouter/anthropic/claude-sonnet-4.6"
+    },
+    {
+      "id": "sample-session-3",
+      "node_id": null,
+      "title": "密室トリックの検証",
+      "model": "openrouter/anthropic/claude-sonnet-4.6"
+    }
+  ],
+  "chat_messages": [
+    {
+      "id": "sample-msg-1",
+      "session_id": "sample-session-1",
+      "role": "user",
+      "content": "青磁のカップを犯人だけが使える手がかりにしたいです。ただし、露骨に怪しく見せたくありません。どの程度描写すべきでしょうか？"
+    },
+    {
+      "id": "sample-msg-2",
+      "session_id": "sample-session-1",
+      "role": "assistant",
+      "content": "色と欠けだけを一度具体的に書き、誰が注いだかを同じ段落に置くのが公平です。『宗一郎だけが使う』という説明は会話で自然に出し、毒や薬には触れません。読者は後から標的を限定できたと気づけます。"
+    },
+    {
+      "id": "sample-msg-3",
+      "session_id": "sample-session-1",
+      "role": "user",
+      "content": "三枝が注いだ事実まで同じ段落に置くと強すぎませんか？"
+    },
+    {
+      "id": "sample-msg-4",
+      "session_id": "sample-session-1",
+      "role": "assistant",
+      "content": "単独なら強いですが、夕食の給仕として当然の行動に見せれば埋もれます。澪が席を立つ、椿が顔色を見る、といった別の疑わしい動作を直後に並べ、視線を分散させてください。"
+    },
+    {
+      "id": "sample-msg-5",
+      "session_id": "sample-session-2",
+      "role": "user",
+      "content": "四人とも嘘をついていますが、全員が犯人候補に見えるようにしつつ、嘘の質を分けたいです。"
+    },
+    {
+      "id": "sample-msg-6",
+      "session_id": "sample-session-2",
+      "role": "assistant",
+      "content": "嘘の対象を分けると整理できます。澪は『場所』、椿は『管理責任』、真帆は『館の過去』、三枝は『時刻』を偽る。真相に直結するのは時刻だけですが、どの嘘も本人には隠す価値があります。"
+    },
+    {
+      "id": "sample-msg-7",
+      "session_id": "sample-session-2",
+      "role": "user",
+      "content": "Matrixで各証言者とシーンの関係も見えるようにします。"
+    },
+    {
+      "id": "sample-msg-8",
+      "session_id": "sample-session-2",
+      "role": "assistant",
+      "content": "五章を四つのBeatに分け、各BeatのPOVまたは対象人物を割り当てると、本文構造とMatrixの交差が一致します。証言整理そのものが機能デモになります。"
+    },
+    {
+      "id": "sample-msg-9",
+      "session_id": "sample-session-3",
+      "role": "user",
+      "content": "毒を食堂で入れて、被害者が自分で密室に入る構成は、密室ものとして弱くないでしょうか？"
+    },
+    {
+      "id": "sample-msg-10",
+      "session_id": "sample-session-3",
+      "role": "assistant",
+      "content": "むしろ『犯人が密室から出た』という前提を読者に誤らせる古典的な反転になります。鍵の物証を赤い鰊として置きつつ、扉がばね錠であること、被害者が自分で施錠したことを早めに示せば、解決は後出しになりません。"
+    },
+    {
+      "id": "sample-msg-11",
+      "session_id": "sample-session-3",
+      "role": "user",
+      "content": "鐘の録音はいつ提示すべきでしょう。"
+    },
+    {
+      "id": "sample-msg-12",
+      "session_id": "sample-session-3",
+      "role": "assistant",
+      "content": "蓄音機の存在は第一部、蝋管の内容は終章まで伏せるのがよいです。『鐘は鳴らない』という不能条件を先に確定し、音源の正体だけを遅らせると、読者が代替音源を推理できます。"
+    }
+  ],
+  "foreshadows": [
+    {
+      "id": "sample-foreshadow-rope",
+      "title": "切られた鐘綱",
+      "intent": "本物の鐘が鳴らない物理条件を最初に提示し、終章で録音による偽装を証明する。",
+      "notes": "一章の真帆の台詞。終章で回収。",
+      "payoff_scene_id": "sample-scene-8"
+    },
+    {
+      "id": "sample-foreshadow-cup",
+      "title": "青磁のカップ",
+      "intent": "宗一郎だけを狙って薬を混ぜられた食器を、夕食の自然な給仕描写に埋め込む。",
+      "notes": "二章で設置。終章で毒の経路として回収。",
+      "payoff_scene_id": "sample-scene-8"
+    },
+    {
+      "id": "sample-foreshadow-watch",
+      "title": "停まった懐中時計",
+      "intent": "十一時四十七分という実際の倒れた時刻を示し、偽の零時と衝突させる。",
+      "notes": "三章の死体発見。終章で犯行時刻を確定。",
+      "payoff_scene_id": "sample-scene-8"
+    },
+    {
+      "id": "sample-foreshadow-key",
+      "title": "真鍮の予備鍵",
+      "intent": "密室の鍵に見せる赤い鰊。澪の別の嘘を説明し、犯行手段からは除外する。",
+      "notes": "四章で設置。終章で非使用を確認。",
+      "payoff_scene_id": "sample-scene-8"
+    },
+    {
+      "id": "sample-foreshadow-bell",
+      "title": "十一時五十分の鐘",
+      "intent": "全員が聞いた音を死亡時刻の証明に見せ、実際は蓄音機による時刻偽装だったと反転する。",
+      "notes": "事件の中心となるcritical clue。",
+      "payoff_scene_id": "sample-scene-8"
+    }
+  ],
+  "snippets": [
+    {
+      "id": "sample-snippet-1",
+      "title": "十一時五十分の鐘",
+      "content": "<p>十一時五十分。館のどこかで、低い鐘の音が十二回鳴った。</p><p>音の方向を言い切ったのは三枝だけだった。</p>",
+      "content_source": "ai"
+    },
+    {
+      "id": "sample-snippet-2",
+      "title": "律の観察原則",
+      "content": "<p>事実は番号付きで書く。推測には疑問符を付ける。</p><p>同じ証言が同じ言葉で繰り返されたときは、記憶ではなく誘導を疑う。</p>",
+      "content_source": "human"
+    },
+    {
+      "id": "sample-snippet-3",
+      "title": "青磁のカップ",
+      "content": "<p>白いカップが五客。宗一郎の席にだけ、縁の欠けた青磁のカップ。</p><p>誰が飲んだかではなく、誰だけが飲めたかを見る。</p>",
+      "content_source": "human"
+    }
+  ],
+  "foreshadow_setups": [
+    {
+      "id": "sample-setup-rope",
+      "foreshadow_id": "sample-foreshadow-rope",
+      "scene_id": "sample-scene-1",
+      "from_pos": 170,
+      "to_pos": 180,
+      "kind": "designated_existing",
+      "strength": "overt",
+      "attribution": "human"
+    },
+    {
+      "id": "sample-setup-cup",
+      "foreshadow_id": "sample-foreshadow-cup",
+      "scene_id": "sample-scene-2",
+      "from_pos": 142,
+      "to_pos": 153,
+      "kind": "designated_existing",
+      "strength": "moderate",
+      "attribution": "human"
+    },
+    {
+      "id": "sample-setup-watch",
+      "foreshadow_id": "sample-foreshadow-watch",
+      "scene_id": "sample-scene-3",
+      "from_pos": 144,
+      "to_pos": 160,
+      "kind": "designated_existing",
+      "strength": "overt",
+      "attribution": "human"
+    },
+    {
+      "id": "sample-setup-key",
+      "foreshadow_id": "sample-foreshadow-key",
+      "scene_id": "sample-scene-5",
+      "from_pos": 77,
+      "to_pos": 83,
+      "kind": "designated_existing",
+      "strength": "moderate",
+      "attribution": "human"
+    },
+    {
+      "id": "sample-setup-bell",
+      "foreshadow_id": "sample-foreshadow-bell",
+      "scene_id": "sample-scene-3",
+      "from_pos": 222,
+      "to_pos": 230,
+      "kind": "designated_existing",
+      "strength": "overt",
+      "attribution": "human"
+    }
+  ],
+  "authorship_spans": [
+    {
+      "id": "sample-auth-ja-1",
+      "node_id": "sample-scene-1",
+      "from_pos": 1,
+      "to_pos": 53,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-2",
+      "node_id": "sample-scene-1",
+      "from_pos": 55,
+      "to_pos": 120,
+      "source": "ai",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-3",
+      "node_id": "sample-scene-1",
+      "from_pos": 163,
+      "to_pos": 181,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-4",
+      "node_id": "sample-scene-1",
+      "from_pos": 183,
+      "to_pos": 246,
+      "source": "unknown",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-5",
+      "node_id": "sample-scene-2",
+      "from_pos": 1,
+      "to_pos": 59,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-6",
+      "node_id": "sample-scene-2",
+      "from_pos": 115,
+      "to_pos": 158,
+      "source": "ai",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-7",
+      "node_id": "sample-scene-2",
+      "from_pos": 160,
+      "to_pos": 202,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-8",
+      "node_id": "sample-scene-2",
+      "from_pos": 204,
+      "to_pos": 258,
+      "source": "ai",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-9",
+      "node_id": "sample-scene-3",
+      "from_pos": 1,
+      "to_pos": 28,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-10",
+      "node_id": "sample-scene-3",
+      "from_pos": 58,
+      "to_pos": 126,
+      "source": "unknown",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-11",
+      "node_id": "sample-scene-3",
+      "from_pos": 128,
+      "to_pos": 161,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-12",
+      "node_id": "sample-scene-3",
+      "from_pos": 207,
+      "to_pos": 249,
+      "source": "ai",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-13",
+      "node_id": "sample-scene-8",
+      "from_pos": 1,
+      "to_pos": 44,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-14",
+      "node_id": "sample-scene-8",
+      "from_pos": 46,
+      "to_pos": 101,
+      "source": "ai",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-15",
+      "node_id": "sample-scene-8",
+      "from_pos": 103,
+      "to_pos": 164,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-16",
+      "node_id": "sample-scene-8",
+      "from_pos": 285,
+      "to_pos": 363,
+      "source": "ai",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-ja-17",
+      "node_id": "sample-scene-8",
+      "from_pos": 365,
+      "to_pos": 418,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

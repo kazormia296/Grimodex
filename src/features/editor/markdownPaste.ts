@@ -1,5 +1,12 @@
 import type { Editor } from "@tiptap/core";
-import { DOMParser as PMDOMParser, Fragment, Slice } from "@tiptap/pm/model";
+import {
+  DOMParser as PMDOMParser,
+  Fragment,
+  Slice,
+  type Mark,
+} from "@tiptap/pm/model";
+import { transformAozoraNotationInSlice } from "@/features/editor/aozoraNotation";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 
 /**
  * 貼り付けた Markdown を本文に取り込むためのユーティリティ。
@@ -46,10 +53,13 @@ export function parseMarkdownToSlice(
   if (!parser) return null;
   try {
     const html = parser.parse(text, { inline: true });
-    return PMDOMParser.fromSchema(editor.schema).parseSlice(
+    const slice = PMDOMParser.fromSchema(editor.schema).parseSlice(
       elementFromString(html),
       { preserveWhitespace: true, context: editor.state.selection.$from },
     );
+    return useSettingsStore.getState().getBoolean("editor.aozoraInput", true)
+      ? transformAozoraNotationInSlice(slice, editor.schema)
+      : slice;
   } catch {
     return null;
   }
@@ -156,10 +166,31 @@ export function insertPlainTextAsUnknown(
 }
 
 /**
- * 現在の選択位置が verbatim (コードブロック等 `spec.code` ノード) 内かどうか。
- * code ノードは inline mark を許可せず、Markdown 変換も不適切 (コードは逐語)。
+ * 現在の選択が verbatim (`spec.code` ノード / inline code mark) 内かどうか。
+ * code コンテキストでは Markdown / 青空記法を変換せず逐語貼り付けする。
  */
+function hasCodeMark(marks: readonly Mark[]): boolean {
+  return marks.some((mark) => mark.type.spec.code === true);
+}
+
+function isCodeMarkedSelection(editor: Editor): boolean {
+  const { doc, selection, storedMarks } = editor.state;
+  const { $from, from, to, empty } = selection;
+  const activeMarks = storedMarks ?? $from.marks();
+  if (empty) return hasCodeMark(activeMarks);
+
+  let hasSelectedInline = false;
+  let allSelectedInlineIsCode = true;
+  doc.nodesBetween(from, to, (node, pos) => {
+    if (!node.isInline || pos >= to || pos + node.nodeSize <= from) return;
+    hasSelectedInline = true;
+    if (!hasCodeMark(node.marks)) allSelectedInlineIsCode = false;
+  });
+  return hasSelectedInline && allSelectedInlineIsCode;
+}
+
 function isVerbatimContext(editor: Editor): boolean {
+  if (isCodeMarkedSelection(editor)) return true;
   const { $from } = editor.state.selection;
   for (let depth = $from.depth; depth > 0; depth--) {
     if ($from.node(depth).type.spec.code) return true;

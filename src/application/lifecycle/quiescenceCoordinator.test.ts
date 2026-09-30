@@ -10,6 +10,11 @@ import {
   resetIpcQueueForTests,
 } from "@/lib/ipcQueue";
 import {
+  createQuiescenceProviderId,
+  QuiescenceProviderStageError,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
+import {
   LIFECYCLE_TRACE_OPT_IN_KEY,
   beginLifecycleTransition,
   subscribeLifecycleTrace,
@@ -46,6 +51,59 @@ function dependencies(
 }
 
 describe("flushStrictQuiescence", () => {
+  it("preserves the exact message for one ordinary Error failure", () => {
+    const failure = new Error("single persistence failure");
+    const error = new StrictQuiescenceError([
+      {
+        stage: "autosave",
+        error: failure,
+        originalError: failure,
+      },
+    ]);
+
+    expect(error.message).toBe("single persistence failure");
+  });
+
+  it("falls back to the generic message for empty, throwing, proxy, and non-Error values", () => {
+    const throwingMessage = new Error();
+    Object.defineProperty(throwingMessage, "message", {
+      configurable: true,
+      get() {
+        throw new Error("message getter must not escape");
+      },
+    });
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    const cases: unknown[] = [
+      new Error(),
+      throwingMessage,
+      revoked.proxy,
+      "not an Error",
+    ];
+
+    for (const originalError of cases) {
+      const error = new StrictQuiescenceError([
+        {
+          stage: "autosave",
+          error: originalError,
+          originalError,
+        },
+      ]);
+      expect(error.message).toBe("Document lifecycle did not reach quiescence");
+    }
+  });
+
+  it("uses the generic message when multiple failures are present", () => {
+    const first = new Error("first");
+    const second = new Error("second");
+    const error = new StrictQuiescenceError([
+      { stage: "autosave", error: first, originalError: first },
+      { stage: "timelapse", error: second, originalError: second },
+    ]);
+
+    expect(error.message).toBe("Document lifecycle did not reach quiescence");
+  });
+
   it("attempts every stage and reports all failures", async () => {
     const lateNativeFailure = vi
       .fn<() => Promise<void>>()
@@ -78,9 +136,98 @@ describe("flushStrictQuiescence", () => {
     expect(deps.flushTimelapse).toHaveBeenCalledOnce();
   });
 
+  it("retains provider identities and original reasons while later stages still run", async () => {
+    const first = new Error("first provider failed");
+    const second = { kind: "non-error rejection" };
+    const deps = dependencies({
+      awaitScopedMutations: vi.fn(async () => {
+        throw new QuiescenceProviderStageError([
+          {
+            stage: "scoped-mutations",
+            providerId: createQuiescenceProviderId("coordinator-first"),
+            originalError: first,
+          },
+          {
+            stage: "scoped-mutations",
+            providerId: createQuiescenceProviderId("coordinator-second"),
+            originalError: second,
+          },
+        ]);
+      }),
+    });
+
+    const caught = await flushStrictQuiescence(deps).catch(
+      (error: unknown) => error,
+    );
+
+    expect(caught).toBeInstanceOf(StrictQuiescenceError);
+    const error = caught as StrictQuiescenceError;
+    expect(error.providerFailures).toEqual([
+      {
+        stage: "scoped-mutations",
+        providerId: "coordinator-first",
+        originalError: first,
+      },
+      {
+        stage: "scoped-mutations",
+        providerId: "coordinator-second",
+        originalError: second,
+      },
+    ]);
+    expect(error.failures.map((failure) => failure.originalError)).toEqual([
+      first,
+      second,
+    ]);
+    expect(deps.awaitSceneWrites).toHaveBeenCalledOnce();
+    expect(deps.flushTimelapse).toHaveBeenCalledOnce();
+    expect(deps.awaitIpcActualTasks).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains a revoked rejection and continues every later stage", async () => {
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    const deps = dependencies({
+      awaitScopedMutations: vi.fn(async () => {
+        throw revoked.proxy;
+      }),
+    });
+
+    const caught = await flushStrictQuiescence(deps).catch(
+      (error: unknown) => error,
+    );
+
+    expect(caught).toBeInstanceOf(StrictQuiescenceError);
+    const error = caught as StrictQuiescenceError;
+    expect(error.failures).toHaveLength(1);
+    expect(error.failures[0]?.error).toBe(revoked.proxy);
+    expect(error.failures[0]?.originalError).toBe(revoked.proxy);
+    expect(deps.awaitSceneWrites).toHaveBeenCalledOnce();
+    expect(deps.flushTimelapse).toHaveBeenCalledOnce();
+    expect(deps.awaitIpcActualTasks).toHaveBeenCalledTimes(2);
+  });
+
   it("resolves only after every persistence stage succeeds", async () => {
     const deps = dependencies();
     await expect(flushStrictQuiescence(deps)).resolves.toBeUndefined();
+  });
+
+  it("passes a preexisting permit to scoped provider drains", async () => {
+    let received: { preexistingDraft?: boolean } | undefined;
+    const unregister = registerQuiescenceProvider({
+      id: createQuiescenceProviderId("coordinator-preexisting-draft"),
+      stage: "scoped-mutations",
+      flush: async (options) => {
+        received = options;
+      },
+    });
+
+    try {
+      await flushStrictQuiescence();
+    } finally {
+      unregister();
+    }
+
+    expect(received).toEqual({ preexistingDraft: true });
   });
 
   it("waits audited executions before flushing writes they may produce", async () => {

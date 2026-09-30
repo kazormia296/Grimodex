@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "chronicle-judge-case-contract/1",
+  "suiteId": "chronicle-transfer-v1",
+  "fixtures": [
+    { "caseId": "transfer-actual-001", "file": "transfer-actual-001.json" },
+    { "caseId": "transfer-plan-001", "file": "transfer-plan-001.json" },
+    { "caseId": "transfer-hearsay-001", "file": "transfer-hearsay-001.json" },
+    { "caseId": "transfer-dream-001", "file": "transfer-dream-001.json" }
+  ]
+}

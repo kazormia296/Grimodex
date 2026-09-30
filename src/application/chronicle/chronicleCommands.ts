@@ -19,11 +19,21 @@ export interface ChronicleVersionedWriteResult {
   version: number;
 }
 
+/** Context carried only by a draft that was queued before lifecycle quiescence. */
+export interface ChronicleWriteOptions {
+  preexistingDraft?: boolean;
+}
+
+export interface ChroniclePatchOptions extends ChronicleWriteOptions {
+  baseVersion?: number;
+}
+
 export interface ChronicleCommandPorts {
   event: {
     create(input: ChronicleCreateInput): Promise<ChronicleCreatedEvent>;
     update(
       input: { eventId: string; baseVersion?: number } & Partial<EventRow>,
+      options?: ChronicleWriteOptions,
     ): Promise<ChronicleVersionedWriteResult>;
     delete(
       eventId: string,
@@ -40,11 +50,31 @@ export interface ChronicleCommandPorts {
     unlinkScene(sceneId: string, eventId: string): Promise<void>;
   };
   scene: {
-    updateTitle(sceneId: string, title: string): Promise<void>;
-    updateSynopsis(sceneId: string, synopsis: string): Promise<void>;
-    updatePov(sceneId: string, codexId: string | null): Promise<void>;
-    updateLocation(sceneId: string, codexId: string | null): Promise<void>;
-    updateDate(sceneId: string, patch: ChronicleDatePatch): Promise<void>;
+    updateTitle(
+      sceneId: string,
+      title: string,
+      options?: ChronicleWriteOptions,
+    ): Promise<void>;
+    updateSynopsis(
+      sceneId: string,
+      synopsis: string,
+      options?: ChronicleWriteOptions,
+    ): Promise<void>;
+    updatePov(
+      sceneId: string,
+      codexId: string | null,
+      options?: ChronicleWriteOptions,
+    ): Promise<void>;
+    updateLocation(
+      sceneId: string,
+      codexId: string | null,
+      options?: ChronicleWriteOptions,
+    ): Promise<void>;
+    updateDate(
+      sceneId: string,
+      patch: ChronicleDatePatch,
+      options?: ChronicleWriteOptions,
+    ): Promise<void>;
   };
 }
 
@@ -76,29 +106,63 @@ export async function patchChronicleItem(
   target: { kind: "event" | "scene"; id: string },
   patch: Partial<EventRow>,
   ports: ChronicleCommandPorts,
-  options?: { baseVersion?: number },
+  options?: ChroniclePatchOptions,
 ): Promise<ChronicleVersionedWriteResult | void> {
   if (target.kind === "event") {
-    return ports.event.update({
+    const input = {
       eventId: target.id,
       ...patch,
       ...(options?.baseVersion === undefined
         ? {}
         : { baseVersion: options.baseVersion }),
-    });
+    };
+    return options?.preexistingDraft === true
+      ? ports.event.update(input, { preexistingDraft: true })
+      : ports.event.update(input);
   }
 
-  if (patch.title != null)
-    await ports.scene.updateTitle(target.id, patch.title);
-  if ("note" in patch)
-    await ports.scene.updateSynopsis(target.id, patch.note ?? "");
-  if ("primaryCodexId" in patch)
-    await ports.scene.updatePov(target.id, patch.primaryCodexId ?? null);
-  if ("locationCodexId" in patch)
-    await ports.scene.updateLocation(target.id, patch.locationCodexId ?? null);
+  if (patch.title != null) {
+    if (options?.preexistingDraft === true)
+      await ports.scene.updateTitle(target.id, patch.title, {
+        preexistingDraft: true,
+      });
+    else await ports.scene.updateTitle(target.id, patch.title);
+  }
+  if ("note" in patch) {
+    if (options?.preexistingDraft === true)
+      await ports.scene.updateSynopsis(target.id, patch.note ?? "", {
+        preexistingDraft: true,
+      });
+    else await ports.scene.updateSynopsis(target.id, patch.note ?? "");
+  }
+  if ("primaryCodexId" in patch) {
+    if (options?.preexistingDraft === true)
+      await ports.scene.updatePov(target.id, patch.primaryCodexId ?? null, {
+        preexistingDraft: true,
+      });
+    else await ports.scene.updatePov(target.id, patch.primaryCodexId ?? null);
+  }
+  if ("locationCodexId" in patch) {
+    if (options?.preexistingDraft === true)
+      await ports.scene.updateLocation(
+        target.id,
+        patch.locationCodexId ?? null,
+        { preexistingDraft: true },
+      );
+    else
+      await ports.scene.updateLocation(
+        target.id,
+        patch.locationCodexId ?? null,
+      );
+  }
   const datePatch = sceneDatePatch(patch);
-  if (Object.keys(datePatch).length > 0)
-    await ports.scene.updateDate(target.id, datePatch);
+  if (Object.keys(datePatch).length > 0) {
+    if (options?.preexistingDraft === true)
+      await ports.scene.updateDate(target.id, datePatch, {
+        preexistingDraft: true,
+      });
+    else await ports.scene.updateDate(target.id, datePatch);
+  }
 }
 
 export async function clearChronicleDate(

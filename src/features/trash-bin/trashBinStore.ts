@@ -3,7 +3,6 @@ import { toast } from "sonner";
 import i18next from "i18next";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { readRuntimeSettingBoolean } from "@/features/settings/runtimeSettings";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
 import * as trashApi from "./api";
 import {
   isInterestingStructureItem,
@@ -17,6 +16,7 @@ import type {
 } from "./types";
 import { UNDO_ABSORB_WINDOW_MS } from "./types";
 import { isCreateResultEntityPresent } from "@/lib/createResultMetadata";
+import { isD2aEgressDenied } from "@/lib/tauri";
 import {
   captureMutationAuthority,
   isCurrentMutationAuthority,
@@ -25,7 +25,11 @@ import {
   type MutationOutcome,
 } from "@/features/concurrency/mutationAuthority";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+  type QuiescenceProviderFlushOptions,
+} from "@/lib/quiescenceProviders";
 
 interface EnqueueOptions {
   /** Backspace バッファのフラッシュ起源など、識別子に使う一時 ID */
@@ -189,8 +193,10 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
         isCurrentMutationAuthority(authority)
       ) {
         set({ isLoading: false });
-        toast.error(i18next.t("trashBin.loadFailed"));
-        debugLog.error("TrashBinStore", "loadItems", errorDetail(e));
+        if (!isD2aEgressDenied(e)) {
+          toast.error(i18next.t("trashBin.loadFailed"));
+          debugLog.error("TrashBinStore", "loadItems", errorDetail(e));
+        }
       }
       throw e;
     }
@@ -326,24 +332,21 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
         }
         if (!result.ok) return result;
 
-        // The delete side was already recorded (grid.node.delete etc.); the
-        // restore is a distinct durable event that would otherwise be
-        // invisible. Metadata domain — no rebaseline (the restored body
-        // re-enters via its own path).
-        recordChangeEvent({
-          domain: "trash",
-          opType: "restore",
-          entityType: "trash_item",
-          entityId: itemId,
-          payload: { itemId, kind: item.kind },
-        });
-
-        // 復元成功 → trash 側から削除 (DB + store)。失敗時は trash に残す。
-        try {
-          await trashApi.deleteTrashItem(itemId);
-        } catch (e) {
-          debugLog.error("TrashBinStore", "pickup/delete", errorDetail(e));
-          // 復元自体は成功しているので呼び出し側には ok を返す
+        // Structural restore consumes the Trash row inside its Native
+        // aggregate transaction. Text fragments are editor-local, so only
+        // that path needs the separate Trash delete; a failed delete must keep
+        // the store row and report failure instead of pretending atomicity.
+        if (item.kind === "text-fragment") {
+          try {
+            await trashApi.deleteTrashItem(itemId);
+          } catch (e) {
+            debugLog.error("TrashBinStore", "pickup/delete", errorDetail(e));
+            return {
+              ok: false,
+              reason: "internal-error",
+              message: e instanceof Error ? e.message : String(e),
+            } satisfies PickupResult;
+          }
         }
         return result;
       });
@@ -377,7 +380,10 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
 /**
  * 保留キューから tempId を取り出し、DB に書き込む。
  */
-async function performFlushPending(tempId: string): Promise<void> {
+async function performFlushPending(
+  tempId: string,
+  options: QuiescenceProviderFlushOptions = {},
+): Promise<void> {
   const store = useTrashBinStore.getState();
   const target = store.pendingQueue.find((p) => p.tempId === tempId);
   if (!target) return;
@@ -412,6 +418,7 @@ async function performFlushPending(tempId: string): Promise<void> {
     charCount,
     isInteresting,
     id: target.tempId,
+    ...(options.preexistingDraft ? { preexistingDraft: true } : {}),
   });
 
   // Remove only after the durable create resolves. A rejection remains queued
@@ -431,10 +438,13 @@ async function performFlushPending(tempId: string): Promise<void> {
   });
 }
 
-function flushPending(tempId: string): Promise<void> {
+function flushPending(
+  tempId: string,
+  options: QuiescenceProviderFlushOptions = {},
+): Promise<void> {
   const existing = inFlightFlushes.get(tempId);
   if (existing) return existing;
-  const pending = performFlushPending(tempId).finally(() => {
+  const pending = performFlushPending(tempId, options).finally(() => {
     if (inFlightFlushes.get(tempId) === pending) {
       inFlightFlushes.delete(tempId);
     }
@@ -448,7 +458,9 @@ function flushPending(tempId: string): Promise<void> {
  * Project/Workspace/window boundary. A failed create stays queued and rejects
  * the boundary; it is retried only by a later strict-quiescence attempt.
  */
-export async function flushPendingTrashItemsStrict(): Promise<void> {
+export async function flushPendingTrashItemsStrict(
+  options: QuiescenceProviderFlushOptions = {},
+): Promise<void> {
   const failures: unknown[] = [];
   const failedIds = new Set<string>();
 
@@ -474,7 +486,7 @@ export async function flushPendingTrashItemsStrict(): Promise<void> {
     for (const id of ids) clearFlushTimer(id);
     const attempts = [...ids].map(async (id) => {
       try {
-        await flushPending(id);
+        await flushPending(id, options);
       } catch (error) {
         failures.push(error);
         failedIds.add(id);
@@ -487,7 +499,7 @@ export async function flushPendingTrashItemsStrict(): Promise<void> {
 }
 
 registerQuiescenceProvider({
-  id: "trash-bin-pending-captures",
+  id: createQuiescenceProviderId("trash-bin-pending-captures"),
   stage: "scoped-mutations",
   flush: flushPendingTrashItemsStrict,
   discard: discardPendingTrashCaptures,

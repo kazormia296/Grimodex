@@ -18,6 +18,7 @@ function makeF(over: Partial<ForeshadowRow> = {}): ForeshadowRow {
     abandoned: false,
     secret: true,
     loadBearing: null,
+    version: 0,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...over,

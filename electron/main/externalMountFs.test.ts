@@ -286,16 +286,22 @@ describe("scanRoot", () => {
     expect(result.dirs.length).toBe(0);
   });
 
-  it("深さ上限で reject（Rust scan_errors_when_depth_exceeded）", async () => {
-    const dir = tempDir("scan-depth");
-    let nested = dir;
-    for (let i = 0; i <= MAX_SCAN_DEPTH; i += 1) {
-      nested = path.join(nested, `level-${i}`);
-      mkdirSync(nested);
-    }
-    writeFileSync(path.join(nested, "deep.md"), "deep");
-    await expect(scanRoot(dir)).rejects.toThrow(/scan depth exceeded/);
-  });
+  it(
+    "深さ上限で reject（Rust scan_errors_when_depth_exceeded）",
+    async () => {
+      const dir = tempDir("scan-depth");
+      let nested = dir;
+      for (let i = 0; i <= MAX_SCAN_DEPTH; i += 1) {
+        nested = path.join(nested, `level-${i}`);
+        mkdirSync(nested);
+      }
+      writeFileSync(path.join(nested, "deep.md"), "deep");
+      await expect(scanRoot(dir)).rejects.toThrow(/scan depth exceeded/);
+    },
+    // Windows hosted runners occasionally need more than Vitest's 5s default
+    // for creating and walking the 65-directory boundary fixture.
+    15_000,
+  );
 });
 
 describe("rejectUnsafeMountPath (PIO-1)", () => {

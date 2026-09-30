@@ -1,0 +1,110 @@
+{
+  "whitespaceValues": [
+    { "id": "tab", "codePoint": "U+0009", "value": "\u0009" },
+    { "id": "line-feed", "codePoint": "U+000A", "value": "\u000A" },
+    { "id": "vertical-tab", "codePoint": "U+000B", "value": "\u000B" },
+    { "id": "form-feed", "codePoint": "U+000C", "value": "\u000C" },
+    { "id": "carriage-return", "codePoint": "U+000D", "value": "\u000D" },
+    { "id": "space", "codePoint": "U+0020", "value": "\u0020" },
+    { "id": "next-line", "codePoint": "U+0085", "value": "\u0085" },
+    { "id": "no-break-space", "codePoint": "U+00A0", "value": "\u00A0" },
+    { "id": "ogham-space-mark", "codePoint": "U+1680", "value": "\u1680" },
+    { "id": "en-quad", "codePoint": "U+2000", "value": "\u2000" },
+    { "id": "em-quad", "codePoint": "U+2001", "value": "\u2001" },
+    { "id": "en-space", "codePoint": "U+2002", "value": "\u2002" },
+    { "id": "em-space", "codePoint": "U+2003", "value": "\u2003" },
+    { "id": "three-per-em-space", "codePoint": "U+2004", "value": "\u2004" },
+    { "id": "four-per-em-space", "codePoint": "U+2005", "value": "\u2005" },
+    { "id": "six-per-em-space", "codePoint": "U+2006", "value": "\u2006" },
+    { "id": "figure-space", "codePoint": "U+2007", "value": "\u2007" },
+    { "id": "punctuation-space", "codePoint": "U+2008", "value": "\u2008" },
+    { "id": "thin-space", "codePoint": "U+2009", "value": "\u2009" },
+    { "id": "hair-space", "codePoint": "U+200A", "value": "\u200A" },
+    { "id": "line-separator", "codePoint": "U+2028", "value": "\u2028" },
+    { "id": "paragraph-separator", "codePoint": "U+2029", "value": "\u2029" },
+    { "id": "narrow-no-break-space", "codePoint": "U+202F", "value": "\u202F" },
+    { "id": "medium-mathematical-space", "codePoint": "U+205F", "value": "\u205F" },
+    { "id": "ideographic-space", "codePoint": "U+3000", "value": "\u3000" },
+    { "id": "zero-width-no-break-space", "codePoint": "U+FEFF", "value": "\uFEFF" }
+  ],
+  "unicodeContents": [
+    { "id": "japanese-astral-nul", "value": "日本語😀\u0000識別子" },
+    { "id": "internal-contract-whitespace", "value": "日本\uFEFF語😀\u0085識別子" },
+    { "id": "control-adjacent", "value": "\u0001日本語😀識別子\u001F" }
+  ],
+  "asciiNormalizerVersion": "gdx-canonical-text/1",
+  "operations": [
+    {
+      "id": "scope-exact-ref",
+      "kind": "scope-exact-ref",
+      "edgeWhitespaceExpected": true,
+      "unicodeContentExpected": true
+    },
+    {
+      "id": "scope-unresolved-constraint-id",
+      "kind": "scope-unresolved-constraint-id",
+      "edgeWhitespaceExpected": true,
+      "unicodeContentExpected": true
+    },
+    {
+      "id": "scope-interval-boundary",
+      "kind": "scope-interval-boundary",
+      "edgeWhitespaceExpected": true,
+      "unicodeContentExpected": true
+    },
+    {
+      "id": "narrative-ir-assertion-id",
+      "kind": "narrative-ir-assertion-id",
+      "edgeWhitespaceExpected": true,
+      "unicodeContentExpected": true
+    },
+    {
+      "id": "narrative-ir-context-id",
+      "kind": "narrative-ir-context-id",
+      "edgeWhitespaceExpected": true,
+      "unicodeContentExpected": true
+    },
+    {
+      "id": "narrative-ir-component-contract-id",
+      "kind": "narrative-ir-component-contract-id",
+      "edgeWhitespaceExpected": false,
+      "unicodeContentExpected": false
+    },
+    {
+      "id": "d0-field-path-object-identity",
+      "kind": "d0-field-path-object-identity",
+      "edgeWhitespaceExpected": false,
+      "unicodeContentExpected": true
+    },
+    {
+      "id": "d0-field-path",
+      "kind": "d0-field-path",
+      "edgeWhitespaceExpected": false,
+      "unicodeContentExpected": true
+    },
+    {
+      "id": "d0-exact-object-set",
+      "kind": "d0-exact-object-set",
+      "edgeWhitespaceExpected": false,
+      "unicodeContentExpected": true
+    },
+    {
+      "id": "d0-component-contract-id",
+      "kind": "d0-component-contract-id",
+      "edgeWhitespaceExpected": false,
+      "unicodeContentExpected": true
+    },
+    {
+      "id": "d0-normalizer-version",
+      "kind": "d0-normalizer-version",
+      "edgeWhitespaceExpected": false,
+      "unicodeContentExpected": false
+    },
+    {
+      "id": "dependency-effect-rule-id",
+      "kind": "dependency-effect-rule-id",
+      "edgeWhitespaceExpected": false,
+      "unicodeContentExpected": true
+    }
+  ]
+}

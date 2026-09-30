@@ -5,6 +5,7 @@ import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtens
 import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { BeatsHeader } from "@/features/editor/BeatsHeader";
 import { ScenePropertyGrid } from "@/features/editor/sceneMeta/ScenePropertyGrid";
+import { SceneScopeEditor } from "@/features/editor/sceneMeta/SceneScopeEditor";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 
@@ -64,6 +65,7 @@ export function SceneMetaPanel({
         )}
       </div>
       {isScene && node && <ScenePropertyGrid node={node} />}
+      {isScene && node && <SceneScopeEditor node={node} />}
       <SynopsisHeader sceneId={sceneId} editor={editor} />
       <BeatsHeader
         sceneId={sceneId}

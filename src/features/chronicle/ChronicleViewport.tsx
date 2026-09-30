@@ -816,7 +816,10 @@ export function ChronicleViewport({
           if (scrollEl)
             scrollEl.scrollTop = startScrollTop - (ev.clientY - startY);
         },
-        () => {
+        (ev) => {
+          // Linux の中ボタン貼り付けは mouseup 側でも抑止する。
+          // mousedown だけの取消しでは clipboard IPC 待ちがパン終了を塞ぐ。
+          ev.preventDefault();
           measurePerfSync("chronicle.pan.commit", () => {
             stopContinuousPreview();
             pendingPreviewViewRef.current = pendingView;

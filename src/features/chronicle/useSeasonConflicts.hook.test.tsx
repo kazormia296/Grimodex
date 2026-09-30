@@ -12,6 +12,7 @@ import {
 } from "@/lib/sceneBodyCommitRegistry";
 import type { ChronicleCalendar } from "./chronicleTime";
 import type { ChronicleScope } from "./chronicleScope";
+import { ProjectCalendarVersionConflictError } from "./calendarOcc";
 
 const mocks = vi.hoisted(() => ({
   loadSceneContents: vi.fn(),
@@ -118,8 +119,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   clearExternalDocumentReloadRegistry();
   _resetSceneBodyCommitRegistryForTests();
-  mocks.getProjectCalendar.mockResolvedValue(calendar);
-  mocks.upsertProjectCalendar.mockResolvedValue(undefined);
+  mocks.getProjectCalendar.mockResolvedValue({ ...calendar, version: 4 });
+  mocks.upsertProjectCalendar.mockImplementation(
+    async (
+      data: ChronicleCalendar,
+      options: { baseVersion: number | null },
+    ) => ({
+      ...data,
+      version: options.baseVersion === null ? 0 : options.baseVersion + 1,
+    }),
+  );
   mocks.loadSceneContents.mockResolvedValue(summerScene);
 });
 
@@ -130,6 +139,79 @@ afterEach(() => {
 });
 
 describe("useSeasonConflicts persisted-body invalidation", () => {
+  it("passes the loaded Calendar version through consecutive CAS saves", async () => {
+    const currentScope = scope();
+    const { result } = renderHook(() => useConflictHarness(currentScope));
+    await settleCalendarAndCheck();
+
+    await act(async () => {
+      await result.current.saveCalendar(calendar);
+      await result.current.saveCalendar(calendar);
+    });
+
+    expect(mocks.upsertProjectCalendar.mock.calls[0]?.[1]).toEqual({
+      baseVersion: 4,
+    });
+    expect(mocks.upsertProjectCalendar.mock.calls[1]?.[1]).toEqual({
+      baseVersion: 5,
+    });
+    expect(result.current.calendarSaveError).toBeNull();
+  });
+
+  it("does not let a stale initial load overwrite a successfully saved version", async () => {
+    const initialLoad = deferred<ChronicleCalendar & { version: number }>();
+    mocks.getProjectCalendar
+      .mockReturnValueOnce(initialLoad.promise)
+      .mockResolvedValueOnce({ ...calendar, version: 4 });
+    const currentScope = scope();
+    const { result } = renderHook(() => useConflictHarness(currentScope));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await result.current.saveCalendar({ ...calendar, daysPerYear: 400 });
+    });
+    await act(async () => {
+      initialLoad.resolve({ ...calendar, daysPerYear: 360, version: 4 });
+      await initialLoad.promise;
+    });
+    await act(async () => {
+      await result.current.saveCalendar({ ...calendar, daysPerYear: 401 });
+    });
+
+    expect(mocks.upsertProjectCalendar.mock.calls[0]?.[1]).toEqual({
+      baseVersion: 4,
+    });
+    expect(mocks.upsertProjectCalendar.mock.calls[1]?.[1]).toEqual({
+      baseVersion: 5,
+    });
+    expect(result.current.calendar?.daysPerYear).toBe(401);
+  });
+
+  it("rejects a Calendar OCC conflict, publishes it, and reloads the current scope", async () => {
+    const currentScope = scope();
+    const { result } = renderHook(() => useConflictHarness(currentScope));
+    await settleCalendarAndCheck();
+
+    mocks.upsertProjectCalendar.mockRejectedValueOnce(
+      new ProjectCalendarVersionConflictError("project-1"),
+    );
+    mocks.getProjectCalendar.mockResolvedValueOnce({ ...calendar, version: 9 });
+
+    await act(async () => {
+      await expect(
+        result.current.saveCalendar(calendar),
+      ).rejects.toBeInstanceOf(ProjectCalendarVersionConflictError);
+      await Promise.resolve();
+    });
+
+    expect(result.current.calendarSaveError).toBeInstanceOf(
+      ProjectCalendarVersionConflictError,
+    );
+    expect(mocks.getProjectCalendar).toHaveBeenCalledTimes(2);
+  });
+
   it("does no calendar or body work while disabled, then performs one current-scope load", async () => {
     let enabled = false;
     const currentScope = scope();

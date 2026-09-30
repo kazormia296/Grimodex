@@ -2,6 +2,7 @@
   "name": "grimodex-node",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "napi": {
     "name": "grimodex-node"
   },

@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schemas/narrative/chronicle-event-proposal-v1.schema.json",
+  "title": "CreateChronicleEventProposalPayloadV1",
+  "description": "The complete client Proposal payload for chronicle.create-event@1.",
+  "$comment": "Source type: src/features/narrative-extraction/proposals/chronicleEventProposal.ts",
+  "type": "object",
+  "required": [
+    "eventId",
+    "title",
+    "note",
+    "actuality",
+    "significance",
+    "evidenceAnchorIds",
+    "evidenceDocumentRefs",
+    "disclosure",
+    "unresolvedMetadata"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "actuality": {
+      "enum": [
+        "actual",
+        "attempted",
+        "prevented"
+      ]
+    },
+    "significance": {
+      "enum": [
+        "major",
+        "scene-level"
+      ]
+    },
+    "semanticType": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidenceAnchorIds": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "evidenceDocumentRefs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "disclosure": {
+      "type": "object",
+      "required": [
+        "secret",
+        "revealDocumentRef"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "secret": {
+          "type": "boolean"
+        },
+        "revealDocumentRef": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "unresolvedMetadata": {
+      "type": "object",
+      "required": [
+        "participantSurfaces",
+        "locationSurface",
+        "temporalExpressions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "participantSurfaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "locationSurface": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "temporalExpressions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

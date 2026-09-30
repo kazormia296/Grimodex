@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schema/narrative/narrative-artifact-authority-v1.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contract",
+    "adr",
+    "requirementIds",
+    "lifecycleClasses",
+    "authorityKinds",
+    "artifacts",
+    "rawResponsePolicy",
+    "authorityRules",
+    "interpreterBoundary",
+    "fixtures",
+    "implementationStatus"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "contract": {"const": "narrative-artifact-authority"},
+    "adr": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "requirementIds": {
+      "const": [
+        "GDX-NARR-SEMANTIC-CONTRACT-001",
+        "GDX-ARTIFACT-001",
+        "GDX-TRACE-001"
+      ]
+    },
+    "lifecycleClasses": {
+      "const": ["durable", "ephemeral", "rebuildable"]
+    },
+    "authorityKinds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "lifecycle",
+          "authority",
+          "authoritative",
+          "storage",
+          "retention"
+        ],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+          "lifecycle": {"enum": ["durable", "ephemeral", "rebuildable"]},
+          "authority": {"type": "string", "minLength": 1},
+          "authoritative": {"type": "boolean"},
+          "storage": {"type": "string", "minLength": 1},
+          "retention": {
+            "type": "object",
+            "required": ["default", "scope"],
+            "properties": {
+              "default": {
+                "enum": ["retained", "not-retained", "reconstructable"]
+              },
+              "scope": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "rawResponsePolicy": {
+      "type": "object",
+      "required": [
+        "artifactId",
+        "defaultLifecycle",
+        "defaultRetention",
+        "digestArtifactId",
+        "parsedResultArtifactId",
+        "fullRetentionRequiresContract"
+      ],
+      "properties": {
+        "artifactId": {"const": "raw-model-response"},
+        "defaultLifecycle": {"const": "ephemeral"},
+        "defaultRetention": {"const": "not-retained"},
+        "digestArtifactId": {"const": "response-digest"},
+        "parsedResultArtifactId": {"const": "extraction-artifact"},
+        "fullRetentionRequiresContract": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "authorityRules": {
+      "type": "object",
+      "required": [
+        "secondaryFreshnessAuthority",
+        "rendererFreshnessAuthority",
+        "featureLocalFreshnessAuthority",
+        "semanticIndexAuthority",
+        "interpreterDomainMutation"
+      ],
+      "properties": {
+        "secondaryFreshnessAuthority": {"const": "forbid"},
+        "rendererFreshnessAuthority": {"const": "forbid"},
+        "featureLocalFreshnessAuthority": {"const": "forbid"},
+        "semanticIndexAuthority": {"const": "rebuildable-acceleration-only"},
+        "interpreterDomainMutation": {"const": "forbid"}
+      },
+      "additionalProperties": false
+    },
+    "interpreterBoundary": {
+      "type": "object",
+      "required": [
+        "interpreterRoots",
+        "allowlist",
+        "forbiddenDependencies",
+        "forbiddenFreshnessAuthorityPatterns",
+        "fixtures"
+      ],
+      "properties": {
+        "interpreterRoots": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "allowlist": {
+          "type": "object",
+          "required": ["files", "imports"],
+          "properties": {
+            "files": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "imports": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["id", "pattern", "mode"],
+                "properties": {
+                  "id": {"type": "string", "minLength": 1},
+                  "pattern": {"type": "string", "minLength": 1},
+                  "mode": {"enum": ["type-only", "exact-file"]}
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "forbiddenDependencies": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["id", "patterns"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "patterns": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1}
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "forbiddenFreshnessAuthorityPatterns": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["id", "pattern"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "pattern": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        },
+        "fixtures": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "additionalProperties": false
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "implementationStatus": {
+      "type": "object",
+      "required": ["state", "productionEntryPoints", "scanRoots", "productionMarkers"],
+      "properties": {
+        "state": {"enum": ["declared", "shadow", "wired"]},
+        "productionEntryPoints": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "scanRoots": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "productionMarkers": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -19,16 +19,22 @@ vi.mock("@/db/client", () => ({
 import {
   _resetRecorderForTests,
   beginWorkspaceSwitch,
+  claimTimelapseDocStepCoverage,
   endWorkspaceSwitch,
   flushNow,
   flushStrict,
   getRecorderChainHead,
   getRecorderSessionId,
-  initRecorderForProject,
+  initRecorderForProject as initRecorderForProjectImpl,
+  pauseWorkspaceBindingForLifecycle,
   recordChangeEvent,
   resetRecorderChain,
+  resumeWorkspaceBindingAfterExplicitOpen,
+  resumeWorkspaceBindingAfterLifecycleUnchanged,
   setRecorderEnabled,
 } from "./recorder";
+import { acquireTimelapseReplacementFence } from "./documentCoverage";
+import { isExclusiveDocumentLeaseActive } from "@/features/editor/document/documentSaveCoordinator";
 import { reserveChatMessageAdds } from "./captureChat";
 import { debugLog } from "@/lib/debugLog";
 import { collectQuiescenceProviderRecovery } from "@/lib/quiescenceProviders";
@@ -40,6 +46,33 @@ import {
   verifyChain,
   type EventForVerify,
 } from "./hashChain";
+import { beginTimelapseGenesisBarrier } from "./genesisBarrier";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import {
+  getCurrentWorkspaceIdentity,
+  setCurrentWorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
+
+/**
+ * Recorder flushes are authority-bound. Keep the legacy unit cases focused on
+ * queue semantics while still publishing the Project/workspace identity that
+ * production receives before a flush is allowed to reach Native. Individual
+ * race cases that need a specific workspace publish it before this helper.
+ */
+async function initRecorderForProject(projectId: string): Promise<boolean> {
+  publishCurrentProjectId(projectId);
+  if (getCurrentWorkspaceIdentity() === null) {
+    setCurrentWorkspaceIdentity({
+      path: "/workspace/recorder-test.gdx",
+      openRevision: 1,
+    });
+  }
+  return initRecorderForProjectImpl(projectId);
+}
 
 interface CommandEvent {
   eventUid: string;
@@ -187,7 +220,10 @@ describe("recorder", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetRecorderForTests();
+    _resetQuiescenceLeasesForTests();
     setRecorderEnabled(true);
+    publishCurrentProjectId(null);
+    setCurrentWorkspaceIdentity(null);
   });
 
   it("flushes queued events through the Rust allocator command", async () => {
@@ -212,6 +248,45 @@ describe("recorder", () => {
     expect((await verifyChain(toVerifyEvents(rows))).ok).toBe(true);
     expect(getRecorderChainHead()).toBe(3);
   });
+
+  it.each(["audit-export", "narrative-snapshot"] as const)(
+    "retains editor steps during the stable %s read lease",
+    async (reason) => {
+      const { rows } = setupAppendCommand();
+      await initRecorderForProject("p-read-only");
+      const lease = acquireQuiescenceLease(reason);
+
+      recordChangeEvent({
+        domain: "editor",
+        opType: "doc.step",
+        projectId: "p-read-only",
+        payload: { steps: [{ stepType: "replace" }] },
+      });
+      lease.release();
+      await flushNow();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.opType).toBe("doc.step");
+    },
+  );
+
+  it.each(["project-load", "workspace-open", "data-delete"] as const)(
+    "suppresses editor steps during the destructive %s lease",
+    async (reason) => {
+      const { rows } = setupAppendCommand();
+      await initRecorderForProject("p-destructive");
+      const lease = acquireQuiescenceLease(reason);
+      recordChangeEvent({
+        domain: "editor",
+        opType: "doc.step",
+        projectId: "p-destructive",
+        payload: { steps: [{ stepType: "replace" }] },
+      });
+      lease.release();
+      await flushNow();
+      expect(rows).toHaveLength(0);
+    },
+  );
 
   it("retains an original mutation timestamp when persistence is retried later", async () => {
     const { rows } = setupAppendCommand();
@@ -635,6 +710,84 @@ describe("recorder", () => {
     expect(invokeMock).toHaveBeenCalledTimes(1);
   });
 
+  it("lifecycle Transition の reversible pause は queue を保持し、Unchanged 後に再開する", async () => {
+    setupTail({ value: null });
+    setupAppendCommand();
+    await initRecorderForProject("p-lifecycle-pause");
+    recordChangeEvent({
+      domain: "editor",
+      opType: "step",
+      payload: { i: 1 },
+    });
+
+    pauseWorkspaceBindingForLifecycle();
+    await flushNow();
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(collectQuiescenceProviderRecovery()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "timelapse-event",
+          projectId: "p-lifecycle-pause",
+        }),
+      ]),
+    );
+
+    expect(resumeWorkspaceBindingAfterLifecycleUnchanged()).toBe(true);
+    await flushNow();
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
+  it("explicit Open proof retires a raced lifecycle pause without claiming Unchanged", async () => {
+    await initRecorderForProject("p-explicit-open-resume");
+    pauseWorkspaceBindingForLifecycle();
+
+    expect(resumeWorkspaceBindingAfterExplicitOpen()).toBe(true);
+    // The explicit-open path has a distinct proof and must not be conflated
+    // with the old-authority Unchanged operation.  A second call is an
+    // idempotent no-op after the pause has been retired.
+    expect(resumeWorkspaceBindingAfterExplicitOpen()).toBe(true);
+    await expect(flushStrict()).resolves.toBeUndefined();
+  });
+
+  it("in-flight flush は Transition が始まっても reversible pause 中は batch を保持する", async () => {
+    let rejectAppend!: (error: unknown) => void;
+    const appendInFlight = new Promise<never>((_resolve, reject) => {
+      rejectAppend = reject;
+    });
+    invokeMock
+      .mockReturnValueOnce(appendInFlight)
+      .mockResolvedValueOnce({ tailSequence: 1 });
+    await initRecorderForProject("p-inflight-lifecycle-pause");
+    recordChangeEvent({
+      domain: "editor",
+      opType: "step",
+      payload: { i: 1 },
+    });
+
+    const flush = flushNow();
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledOnce());
+    pauseWorkspaceBindingForLifecycle();
+    rejectAppend(
+      Object.assign(
+        new Error("workspace is switching; DB access is temporarily rejected"),
+        { code: "WORKSPACE_SWITCHING" },
+      ),
+    );
+
+    await expect(flush).rejects.toMatchObject({ code: "WORKSPACE_SWITCHING" });
+    expect(collectQuiescenceProviderRecovery()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "timelapse-event",
+          projectId: "p-inflight-lifecycle-pause",
+        }),
+      ]),
+    );
+    expect(resumeWorkspaceBindingAfterLifecycleUnchanged()).toBe(true);
+    await flushNow();
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
   it("strict flush は WORKSPACE_SWITCHING batch を保持して lifecycle を拒否する", async () => {
     setupTail({ value: null });
     invokeMock
@@ -842,5 +995,330 @@ describe("recorder", () => {
     // 旧 tail(42) が新 workspace の seed snapshot に焼かれてしまう。
     expect(getRecorderChainHead()).toBe(0);
     expect(getRecorderSessionId()).not.toBe(oldSession);
+  });
+
+  it("captures the new Project while the old recorder is still bound and flushes only after genesis", async () => {
+    setupAppendCommand();
+    await initRecorderForProject("p-old");
+    publishCurrentProjectId("p-new");
+    setCurrentWorkspaceIdentity({ path: "/workspace.gdx", openRevision: 1 });
+    const genesis = beginTimelapseGenesisBarrier("p-new");
+
+    recordChangeEvent({
+      domain: "editor",
+      opType: "doc.step",
+      projectId: "p-new",
+      payload: { steps: [{ stepType: "replace" }] },
+    });
+    const flush = flushNow();
+    await Promise.resolve();
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    await initRecorderForProject("p-new");
+    genesis.complete();
+    await flush;
+
+    const [, args] = invokeMock.mock.calls[0] as [string, AppendArgs];
+    expect(args.projectId).toBe("p-new");
+    expect(args.events).toHaveLength(1);
+  });
+
+  it("retains same-path reopen capture across an invalidated same-id rebind", async () => {
+    setupAppendCommand();
+    await initRecorderForProject("default-project");
+    beginWorkspaceSwitch();
+    endWorkspaceSwitch();
+    publishCurrentProjectId("default-project");
+    setCurrentWorkspaceIdentity({ path: "/workspace.gdx", openRevision: 2 });
+    const genesis = beginTimelapseGenesisBarrier("default-project");
+
+    recordChangeEvent({
+      domain: "editor",
+      opType: "doc.step",
+      projectId: "default-project",
+      payload: { steps: ["same-path"] },
+    });
+    await initRecorderForProject("default-project");
+    const flush = flushNow();
+    await Promise.resolve();
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    genesis.complete();
+    await flush;
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a captured step through failed genesis and flushes it after retry", async () => {
+    setupAppendCommand();
+    publishCurrentProjectId("p-retry");
+    setCurrentWorkspaceIdentity({ path: "/workspace.gdx", openRevision: 3 });
+    const first = beginTimelapseGenesisBarrier("p-retry");
+    recordChangeEvent({
+      domain: "editor",
+      opType: "doc.step",
+      projectId: "p-retry",
+      payload: { steps: ["retry"] },
+    });
+    await initRecorderForProject("p-retry");
+    const rejectedFlush = flushNow();
+    first.fail(new Error("native genesis failed"));
+    await expect(rejectedFlush).rejects.toThrow("initialization failed");
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    const retry = beginTimelapseGenesisBarrier("p-retry");
+    const recoveredFlush = flushNow();
+    await Promise.resolve();
+    expect(invokeMock).not.toHaveBeenCalled();
+    retry.complete();
+    await recoveredFlush;
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
+  it("wakes a retained queued step after same-Project genesis retry without a manual flush", async () => {
+    vi.useFakeTimers();
+    try {
+      setupAppendCommand();
+      await initRecorderForProject("p-liveness");
+      publishCurrentProjectId("p-liveness");
+      setCurrentWorkspaceIdentity({ path: "/workspace.gdx", openRevision: 4 });
+      const failed = beginTimelapseGenesisBarrier("p-liveness");
+      recordChangeEvent({
+        domain: "editor",
+        opType: "doc.step",
+        projectId: "p-liveness",
+        entityType: "scene",
+        entityId: "scene-queued",
+        payload: { steps: ["queued"] },
+      });
+
+      await vi.advanceTimersByTimeAsync(100);
+      failed.fail(new Error("genesis E1"));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(invokeMock).not.toHaveBeenCalled();
+
+      const retry = beginTimelapseGenesisBarrier("p-liveness");
+      await expect(initRecorderForProject("p-liveness")).resolves.toBe(true);
+      retry.complete();
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(invokeMock).toHaveBeenCalledExactlyOnceWith(
+        "timelapse_append_batch",
+        expect.objectContaining({
+          projectId: "p-liveness",
+          events: [expect.objectContaining({ entityId: "scene-queued" })],
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("explicitly discards activation capture when the target setting is OFF", async () => {
+    setupAppendCommand();
+    publishCurrentProjectId("p-off");
+    setCurrentWorkspaceIdentity({ path: "/workspace.gdx", openRevision: 4 });
+    const genesis = beginTimelapseGenesisBarrier("p-off");
+    recordChangeEvent({
+      domain: "editor",
+      opType: "doc.step",
+      projectId: "p-off",
+      payload: { steps: ["off"] },
+    });
+    setRecorderEnabled(false);
+    await initRecorderForProject("p-off");
+    genesis.complete();
+    await flushNow();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("returns a document capability only for an actually accepted doc.step", async () => {
+    setupAppendCommand();
+    await initRecorderForProject("p-capability");
+
+    const accepted = recordChangeEvent({
+      domain: "editor",
+      opType: "doc.step",
+      projectId: "p-capability",
+      entityType: "scene",
+      entityId: "scene-1",
+      payload: { steps: [{ stepType: "replace" }] },
+    });
+    const wrongProject = recordChangeEvent({
+      domain: "editor",
+      opType: "doc.step",
+      projectId: "other-project",
+      entityType: "scene",
+      entityId: "scene-1",
+      payload: { steps: [{ stepType: "replace" }] },
+    });
+    const metadata = recordChangeEvent({
+      domain: "editor",
+      opType: "selection.move",
+      projectId: "p-capability",
+      entityType: "scene",
+      entityId: "scene-1",
+      payload: {},
+    });
+
+    expect(accepted?.document).toBeDefined();
+    expect(wrongProject).toBeNull();
+    expect(metadata).not.toBeNull();
+    expect(metadata?.document).toBeUndefined();
+  });
+
+  it.each(["project-load", "workspace-open", "data-delete"] as const)(
+    "does not mint coverage during the destructive %s lifecycle",
+    async (reason) => {
+      setupAppendCommand();
+      await initRecorderForProject("p-lifecycle-capability");
+      const lease = acquireQuiescenceLease(reason);
+
+      const rejected = recordChangeEvent({
+        domain: "editor",
+        opType: "doc.step",
+        projectId: "p-lifecycle-capability",
+        entityType: "scene",
+        entityId: "scene-1",
+        payload: { steps: [{ stepType: "replace" }] },
+      });
+      lease.release();
+
+      expect(rejected).toBeNull();
+    },
+  );
+
+  it("materializes an exact durable prefix and holds post-seal steps until commit", async () => {
+    const { rows } = setupAppendCommand();
+    publishCurrentProjectId("p-prefix");
+    await initRecorderForProject("p-prefix");
+    const first = recordChangeEvent({
+      domain: "editor",
+      opType: "doc.step",
+      projectId: "p-prefix",
+      entityType: "scene",
+      entityId: "scene-1",
+      payload: { steps: ["s1"] },
+    });
+    expect(first?.document).toBeDefined();
+    const claim = claimTimelapseDocStepCoverage(first!.document!);
+    expect(claim).not.toBeNull();
+
+    const suffix = recordChangeEvent({
+      domain: "editor",
+      opType: "doc.step",
+      projectId: "p-prefix",
+      entityType: "scene",
+      entityId: "scene-1",
+      payload: { steps: ["s2"] },
+    });
+    expect(suffix?.document).toBe(first?.document);
+
+    const proof = await claim!.materialize('{"body":"B"}');
+    expect(proof).toEqual({
+      eventUid: expect.any(String),
+      sessionId: getRecorderSessionId(),
+      contentDigest:
+        "sha256:b382fd2fd635fbe6663bd5c3aa2e6a71de98108e89d047cb090025fcc3cc4495",
+    });
+    expect(rows.map(({ opType }) => opType)).toEqual([
+      "doc.step",
+      "doc.step.coverage",
+    ]);
+    expect(JSON.parse(rows[1]!.payload)).toEqual({
+      resultContentDigest: proof.contentDigest,
+    });
+
+    await flushNow();
+    expect(rows).toHaveLength(2);
+    claim!.commit();
+    await flushNow();
+    expect(rows.map(({ opType }) => opType)).toEqual([
+      "doc.step",
+      "doc.step.coverage",
+      "doc.step",
+    ]);
+
+    const suffixClaim = claimTimelapseDocStepCoverage(suffix!.document!);
+    expect(suffixClaim).not.toBeNull();
+    suffixClaim!.cancel();
+  });
+
+  it("keeps a canceled materialized prefix retryable for an OCC retry", async () => {
+    const { rows } = setupAppendCommand();
+    publishCurrentProjectId("p-occ");
+    await initRecorderForProject("p-occ");
+    const receipt = recordChangeEvent({
+      domain: "snippet",
+      opType: "doc.step",
+      projectId: "p-occ",
+      entityType: "snippet",
+      entityId: "snippet-1",
+      payload: { steps: ["s1"] },
+    });
+    const firstClaim = claimTimelapseDocStepCoverage(receipt!.document!);
+    await firstClaim!.materialize("first body");
+    firstClaim!.cancel();
+
+    const retry = claimTimelapseDocStepCoverage(receipt!.document!);
+    expect(retry).not.toBeNull();
+    const proof = await retry!.materialize("retry body");
+    retry!.commit();
+
+    expect(
+      rows.filter(({ opType }) => opType === "doc.step.coverage"),
+    ).toHaveLength(2);
+    expect(proof.eventUid).not.toBe(
+      rows.find(({ opType }) => opType === "doc.step.coverage")?.eventUid,
+    );
+  });
+
+  it("publishes a synchronous replacement admission fence and rejects fence-time steps", async () => {
+    const { rows } = setupAppendCommand();
+    publishCurrentProjectId("p-fence");
+    await initRecorderForProject("p-fence");
+    recordChangeEvent({
+      domain: "editor",
+      opType: "doc.step",
+      projectId: "p-fence",
+      entityType: "scene",
+      entityId: "scene-1",
+      payload: { steps: ["before"] },
+    });
+    const fence = acquireTimelapseReplacementFence({
+      projectId: "p-fence",
+      document: {
+        projectId: "p-fence",
+        domain: "editor",
+        entityType: "scene",
+        entityId: "scene-1",
+        storage: "database",
+      },
+    });
+
+    expect(
+      isExclusiveDocumentLeaseActive({
+        kind: "tree",
+        id: "scene-1",
+        storage: "database",
+      }),
+    ).toBe(true);
+    const duringFence = recordChangeEvent({
+      domain: "editor",
+      opType: "doc.step",
+      projectId: "p-fence",
+      entityType: "scene",
+      entityId: "scene-1",
+      payload: { steps: ["rejected"] },
+    });
+    expect(duringFence).toBeNull();
+
+    await flushStrict();
+    fence.commit();
+    fence.release();
+    await flushNow();
+    expect(rows.map(({ payload }) => payload)).not.toEqual(
+      expect.arrayContaining([expect.stringContaining("rejected")]),
+    );
   });
 });

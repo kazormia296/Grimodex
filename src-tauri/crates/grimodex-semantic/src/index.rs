@@ -508,12 +508,9 @@ pub fn project_language_for_scene(db: &Database, scene_id: &str) -> Result<Strin
 mod tests {
     use super::*;
     use rusqlite::params;
-    use std::path::Path;
 
     fn mem_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open mem db");
-        db.migrate().expect("migrate");
-        db
+        crate::test_support::current_schema_memory().expect("current-schema fixture")
     }
 
     fn seed_project(db: &Database) {
