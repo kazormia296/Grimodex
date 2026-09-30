@@ -11302,7 +11302,7 @@ express Statement of Purpose.
 ```
 </details>
 
-### framer-motion (12.40.0)
+### framer-motion (13.1.0)
 
 - License: MIT
 - Repository: https://github.com/motiondivision/motion/
@@ -14648,7 +14648,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 </details>
 
-### motion (12.40.0)
+### motion (13.0.0)
 
 - License: MIT
 - Repository: https://github.com/motiondivision/motion
@@ -14682,7 +14682,7 @@ SOFTWARE.
 ```
 </details>
 
-### motion-dom (12.40.0)
+### motion-dom (13.0.0)
 
 - License: MIT
 - Repository: https://github.com/motiondivision/motion
@@ -14716,7 +14716,7 @@ SOFTWARE.
 ```
 </details>
 
-### motion-utils (12.39.0)
+### motion-utils (13.0.0)
 
 - License: MIT
 - Repository: https://github.com/motiondivision/motion
