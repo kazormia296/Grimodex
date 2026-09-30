@@ -1,0 +1,4 @@
+interface:
+  display_name: "Adversarial Review"
+  short_description: "Run evidence-backed multidimensional code reviews"
+  default_prompt: "Use $adversarial-review to review the current diff with model=inherit effort=high fast=inherit."

@@ -1,0 +1,127 @@
+{
+  "schemaVersion": "nir1-g01/1",
+  "status": "predeclared-design-fixture",
+  "fixtureId": "nir1-g01-explicit-pin-design/1",
+  "sourceDocument": "docs/plans/nir1-c-scene-connection-candidate.md",
+  "sourceSection": "§7 G-01 fixture proposal",
+  "observationPolicy": "Do not change query, corpus, seed, Gold, ordering, or metrics after observing a runtime result.",
+  "language": "en",
+  "query": {
+    "sceneId": "g01-query",
+    "readingOrder": 100,
+    "body": "Which earlier scene contains the key recipient identified by the selected courier's handover?"
+  },
+  "scenes": [
+    {
+      "id": "g01-review",
+      "readingOrder": 0,
+      "title": "Ledger",
+      "body": "The ledger lay shut on the shelf.",
+      "gold": 0
+    },
+    {
+      "id": "g01-weather",
+      "readingOrder": 10,
+      "title": "Rain",
+      "body": "Rain rattled against the shutters. A loose gutter tapped the brick wall until dawn.",
+      "gold": 0
+    },
+    {
+      "id": "g01-mira",
+      "readingOrder": 20,
+      "title": "Blue cloth",
+      "body": "Mira folded the blue cloth into a square and placed it beneath the brass bowl.",
+      "gold": 3
+    },
+    {
+      "id": "g01-question",
+      "readingOrder": 30,
+      "title": "Unanswered question",
+      "body": "The clerk copied a question: Which earlier scene contains the key recipient identified by the selected courier's handover? No recipient was identified on the page.",
+      "gold": 0
+    }
+  ],
+  "eligibleSceneIds": [
+    "g01-review",
+    "g01-weather",
+    "g01-mira",
+    "g01-question"
+  ],
+  "entitySeed": {
+    "id": "g01-orin",
+    "kind": "character",
+    "label": "Orin",
+    "summary": "Orin is a courier.",
+    "manualSeed": true
+  },
+  "targetEntity": {
+    "id": "g01-mira-entity",
+    "kind": "character",
+    "label": "Mira",
+    "summary": "Mira keeps the brass bowl."
+  },
+  "relation": {
+    "id": "g01-handover",
+    "fromEntityId": "g01-orin",
+    "toEntityId": "g01-mira-entity",
+    "type": "delivered-key-to",
+    "direction": "directed",
+    "authorDeclared": true
+  },
+  "pins": [
+    {
+      "sceneId": "g01-mira",
+      "entryId": "g01-mira-entity",
+      "source": "scene_codex_pins"
+    }
+  ],
+  "qualifiedIr": [
+    {
+      "sceneId": "g01-question",
+      "summary": "The clerk copied a question about a key recipient but identified nobody.",
+      "actuality": "actual",
+      "attribution": "narrator",
+      "narrativeFrame": "story-world"
+    }
+  ],
+  "expectations": {
+    "raw": ["g01-question"],
+    "rPlusIr": ["g01-question"],
+    "graphPath": {
+      "seedEntityId": "g01-orin",
+      "edgeId": "g01-handover",
+      "targetEntityId": "g01-mira-entity",
+      "sceneId": "g01-mira",
+      "hop": 1
+    },
+    "rPlusIrPlusGraph": ["g01-question", "g01-mira"],
+    "sceneExcerpt": {
+      "sceneId": "g01-mira",
+      "body": "Mira folded the blue cloth into a square and placed it beneath the brass bowl.",
+      "canonicalUtf16Range": {
+        "start": 0,
+        "end": 78
+      }
+    },
+    "metrics": {
+      "raw": {
+        "recallAt8": 0,
+        "ndcgAt8": 0
+      },
+      "rPlusIr": {
+        "recallAt8": 0,
+        "ndcgAt8": 0
+      },
+      "rPlusIrPlusGraph": {
+        "recallAt8": 1,
+        "ndcgAt8": 0.6309297535714574
+      }
+    }
+  },
+  "measurementBoundary": {
+    "contractBaseline": "The isolated harness may measure fixed R/R+IR fusion and scorer arithmetic from these predeclared boundary rows.",
+    "runtimeSetup": "Requires normal Scene/Scope/Entity/Relation/pin writers and normal Chronicle provider/Proposal/child/Decision setup.",
+    "graphConnection": "Graph path to scene pin/body source remains a separate C-query/C-product measurement.",
+    "goldOrigin": "Copied from the predeclared candidate; not selected from observed output."
+  }
+}

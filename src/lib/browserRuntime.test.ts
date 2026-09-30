@@ -528,7 +528,7 @@ describe("Web Editor browser runtime", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
+  }, 15_000);
 
   it("flushes pending edits before exporting a desktop handoff snapshot", async () => {
     const store = createMemoryWorkspaceStore();

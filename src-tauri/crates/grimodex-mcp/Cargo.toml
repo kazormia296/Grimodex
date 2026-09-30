@@ -2,6 +2,8 @@
 name = "grimodex-mcp"
 version = "0.1.0"
 edition = "2021"
+license-file.workspace = true
+publish.workspace = true
 
 [lib]
 name = "grimodex_mcp"
@@ -18,6 +20,7 @@ licensing = []
 
 [dependencies]
 grimodex-core = { path = "../grimodex-core" }
+grimodex-db = { path = "../grimodex-db" }
 rmcp = { version = "2.1", features = ["server", "transport-io", "macros"] }
 schemars = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
@@ -26,13 +29,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 dirs = "6"
 chrono = "0.4"
-
-[dev-dependencies]
-grimodex-db = { path = "../grimodex-db" }

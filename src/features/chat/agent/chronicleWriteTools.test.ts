@@ -102,7 +102,10 @@ describe("createEventTool", () => {
   });
 
   it("不正 kind は generic に丸める", async () => {
-    await createEventTool({ title: "x", kind: "bogus" });
+    await createEventTool(
+      { title: "x", kind: "bogus" },
+      "event-invalid-kind-request",
+    );
     expect(m.agentCreateEvent).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "generic" }),
     );
@@ -110,9 +113,31 @@ describe("createEventTool", () => {
 
   it("agentCreateEvent の例外は error として返す（throw しない）", async () => {
     m.agentCreateEvent.mockRejectedValueOnce(new Error("policy off"));
-    const r = await createEventTool({ title: "x" });
+    const r = await createEventTool({ title: "x" }, "event-error-request");
     expect(r.error).toBe("policy off");
     expect(r.content).toBeNull();
+  });
+});
+
+describe("durable Chronicle request identity", () => {
+  it("全 mutating tool は Executor 由来 requestId 欠落時に writer を呼ばない", async () => {
+    const results = await Promise.all([
+      createEventTool({ title: "x" }),
+      updateEventTool({ eventId: "e1", title: "x" }),
+      deleteEventTool({ eventId: "e1" }),
+      stampSceneEventTool({ sceneId: "s1", eventId: "e1" }),
+      unstampSceneEventTool({ sceneId: "s1", eventId: "e1" }),
+      setEventParticipantsTool({ eventId: "e1", codexEntryIds: [] }),
+      addEventRelationTool({ causeEventId: "a", effectEventId: "b" }),
+      removeEventRelationTool({ causeEventId: "a", effectEventId: "b" }),
+    ]);
+
+    for (const result of results) {
+      expect(result.error).toBe("request identity is required");
+    }
+    for (const writer of Object.values(m)) {
+      expect(writer).not.toHaveBeenCalled();
+    }
   });
 });
 
@@ -121,19 +146,24 @@ describe("update/delete", () => {
     expect((await updateEventTool({})).error).toBe("eventId is required");
   });
   it("update_event は可視性確認時の version を CAS base に渡す", async () => {
-    await updateEventTool({ eventId: "e1", title: "updated" });
+    await updateEventTool(
+      { eventId: "e1", title: "updated" },
+      "event-update-request",
+    );
     expect(m.agentUpdateEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventId: "e1",
         baseVersion: 4,
         title: "updated",
       }),
+      { requestId: "event-update-request" },
     );
   });
   it("delete_event は agentDeleteEvent を呼ぶ", async () => {
-    await deleteEventTool({ eventId: "e1" });
+    await deleteEventTool({ eventId: "e1" }, "event-delete-request");
     expect(m.agentDeleteEvent).toHaveBeenCalledWith("e1", {
       baseVersion: 4,
+      requestId: "event-delete-request",
     });
   });
 });
@@ -145,46 +175,80 @@ describe("scene stamp/unstamp", () => {
     );
   });
   it("stamp/unstamp が対応関数を呼ぶ", async () => {
-    await stampSceneEventTool({ sceneId: "s1", eventId: "e1" });
-    expect(m.agentLinkSceneEvent).toHaveBeenCalledWith("s1", "e1");
-    await unstampSceneEventTool({ sceneId: "s1", eventId: "e1" });
-    expect(m.agentUnlinkSceneEvent).toHaveBeenCalledWith("s1", "e1");
+    await stampSceneEventTool(
+      { sceneId: "s1", eventId: "e1" },
+      "event-stamp-request",
+    );
+    expect(m.agentLinkSceneEvent).toHaveBeenCalledWith("s1", "e1", {
+      requestId: "event-stamp-request",
+    });
+    await unstampSceneEventTool(
+      { sceneId: "s1", eventId: "e1" },
+      "event-unstamp-request",
+    );
+    expect(m.agentUnlinkSceneEvent).toHaveBeenCalledWith("s1", "e1", {
+      requestId: "event-unstamp-request",
+    });
   });
 });
 
 describe("participants / relations", () => {
   it("set_event_participants は codex 配列を渡す", async () => {
-    await setEventParticipantsTool({
-      eventId: "e1",
-      codexEntryIds: ["c1", "c2"],
-    });
+    await setEventParticipantsTool(
+      {
+        eventId: "e1",
+        codexEntryIds: ["c1", "c2"],
+      },
+      "event-participants-request",
+    );
     expect(m.agentSetEventParticipants).toHaveBeenCalledWith(
       "e1",
       ["c1", "c2"],
-      { baseVersion: 4 },
+      { baseVersion: 4, requestId: "event-participants-request" },
     );
   });
   it("relation add/remove は cause+effect 必須＋呼び出し", async () => {
     expect((await addEventRelationTool({ causeEventId: "a" })).error).toContain(
       "required",
     );
-    await addEventRelationTool({ causeEventId: "a", effectEventId: "b" });
-    expect(m.agentAddEventRelation).toHaveBeenCalledWith("a", "b");
-    await removeEventRelationTool({ causeEventId: "a", effectEventId: "b" });
-    expect(m.agentRemoveEventRelation).toHaveBeenCalledWith("a", "b");
+    await addEventRelationTool(
+      { causeEventId: "a", effectEventId: "b" },
+      "event-relation-add-request",
+    );
+    expect(m.agentAddEventRelation).toHaveBeenCalledWith("a", "b", {
+      requestId: "event-relation-add-request",
+    });
+    await removeEventRelationTool(
+      { causeEventId: "a", effectEventId: "b" },
+      "event-relation-remove-request",
+    );
+    expect(m.agentRemoveEventRelation).toHaveBeenCalledWith("a", "b", {
+      requestId: "event-relation-remove-request",
+    });
   });
 });
 
 describe("ターン内共有キャッシュ", () => {
   it("relation add は cause/effect 2 回の可視性チェックで listEvents を 1 回に畳む", async () => {
-    await addEventRelationTool({ causeEventId: "a", effectEventId: "b" });
-    expect(m.agentAddEventRelation).toHaveBeenCalledWith("a", "b");
+    await addEventRelationTool(
+      { causeEventId: "a", effectEventId: "b" },
+      "event-relation-cache-request",
+    );
+    expect(m.agentAddEventRelation).toHaveBeenCalledWith("a", "b", {
+      requestId: "event-relation-cache-request",
+    });
     expect(apiMock.listEvents).toHaveBeenCalledTimes(1);
   });
 
   it("write 後はキャッシュを破棄し、次のチェックで再ロードする", async () => {
-    await updateEventTool({ eventId: "e1", title: "x" });
-    await updateEventTool({ eventId: "e1", title: "y" });
+    await updateEventTool(
+      { eventId: "e1", title: "x" },
+      "event-update-cache-request-1",
+    );
+    await updateEventTool(
+      { eventId: "e1", title: "y" },
+      "event-update-cache-request-2",
+    );
     expect(m.agentUpdateEvent).toHaveBeenCalledTimes(2);
     expect(apiMock.listEvents).toHaveBeenCalledTimes(2);
   });

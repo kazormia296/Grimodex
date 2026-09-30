@@ -190,6 +190,22 @@ AI が「アリス = 真犯人」を **知らない** 状態で scene-7 を書�
 - `src/features/codex/components/TimelineTab.tsx` — モード表示バッジ + Popover
 - `src/db/schema.ts` の `projects.phaseResolutionMode` カラム — DB 永続化
 
+## Amendment — Semantic Retrieval disclosure inheritance
+
+Narrative IR Retrieval inherits `PhaseResolutionMode` and the disclosure
+policy defined by this ADR. Semantic relevance does not grant disclosure
+authority. Candidate admission must apply the same reading/story/auto temporal
+resolution before ranking and must additionally enforce spoiler, secret,
+viewpoint, knowledge-holder, audience, Worldline, Timeline, and Narrative
+Layer scope.
+
+In particular, Reader Knowledge must not be silently reused as Character
+Knowledge, and a future Phase or unreached story-time assertion must not enter
+the candidate set merely because its embedding score is high. The machine-
+readable C1.5 contract is
+`policies/narrative/retrieval-disclosure.json`; C1.5 defines and tests the
+policy without wiring it into the Retrieval runtime.
+
 ## 関連メモリ
 
 - `project_codex_phase_scene_context.md` — Scene context が Scene タブ専属である件

@@ -210,12 +210,16 @@ function EditForm({ definition, onSave, onCancel }: EditFormProps) {
     if (!name.trim()) return;
     const fieldConfig = optionsToFieldConfig(fieldType, optionsText);
     if (fieldConfig === undefined) return;
-    const updated = await updateDefinition(definition.id, {
-      name: name.trim(),
-      fieldType,
-      fieldConfig,
-      includeInContext: includeInContext ? 1 : 0,
-    });
+    const updated = await updateDefinition(
+      definition.id,
+      {
+        name: name.trim(),
+        fieldType,
+        fieldConfig,
+        includeInContext: includeInContext ? 1 : 0,
+      },
+      { baseVersion: definition.version },
+    );
     if (updated) onSave(updated);
   };
 

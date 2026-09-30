@@ -1,44 +1,84 @@
 import type { CodexDetailDefinition } from "./detailApi";
 import { createDefinition, listDefinitionsByType } from "./detailApi";
 import type { GenreValue } from "@/features/project/genreOptions";
+import type {
+  DetailProjectionKind,
+  DetailTemporalPolicy,
+  StateFacet,
+} from "./details/semanticBindingTypes";
+
+export interface DetailFieldPresetSemantic {
+  readonly facetKey: StateFacet;
+  readonly projectionKind: DetailProjectionKind;
+  readonly temporalPolicy: DetailTemporalPolicy;
+}
 
 export interface DetailFieldPreset {
-  name: string;
-  fieldType: "text" | "dropdown";
+  readonly name: string;
+  readonly fieldType: "text" | "dropdown";
   /** dropdown のみ。fieldConfig JSON の options に展開される */
-  options?: readonly string[];
-  includeInContext: boolean;
+  readonly options?: readonly string[];
+  readonly includeInContext: boolean;
+  readonly semantic?: DetailFieldPresetSemantic;
 }
 
 export type DetailPresetsByType = Readonly<
   Record<string, readonly DetailFieldPreset[]>
 >;
 
-const text = (name: string): DetailFieldPreset => ({
+const ROLE_CURRENT_SEMANTIC = Object.freeze({
+  facetKey: "role.current",
+  projectionKind: "enum",
+  temporalPolicy: "base-and-phase",
+} as const satisfies DetailFieldPresetSemantic);
+
+const IDENTITY_AGE_SEMANTIC = Object.freeze({
+  facetKey: "identity.age",
+  projectionKind: "scalar-text",
+  temporalPolicy: "derived",
+} as const satisfies DetailFieldPresetSemantic);
+
+const GOAL_ACTIVE_SEMANTIC = Object.freeze({
+  facetKey: "goal.active",
+  projectionKind: "summary-text",
+  temporalPolicy: "phase-on-durable-change",
+} as const satisfies DetailFieldPresetSemantic);
+
+const text = (
+  name: string,
+  semantic?: DetailFieldPresetSemantic,
+): DetailFieldPreset => ({
   name,
   fieldType: "text",
   includeInContext: true,
+  ...(semantic ? { semantic } : {}),
 });
 
 const dropdown = (
   name: string,
   options: readonly string[],
+  semantic?: DetailFieldPresetSemantic,
 ): DetailFieldPreset => ({
   name,
   fieldType: "dropdown",
   options,
   includeInContext: true,
+  ...(semantic ? { semantic } : {}),
 });
 
 /** 全ジャンル共通の基本セット（組み込み4タイプ別） */
 export const BASE_DETAIL_PRESETS: DetailPresetsByType = {
   character: [
-    dropdown("役割", ["主人公", "主要人物", "脇役", "敵対者", "モブ"]),
-    text("年齢"),
+    dropdown(
+      "役割",
+      ["主人公", "主要人物", "脇役", "敵対者", "モブ"],
+      ROLE_CURRENT_SEMANTIC,
+    ),
+    text("年齢", IDENTITY_AGE_SEMANTIC),
     text("外見"),
     text("性格"),
     text("口調・一人称"),
-    text("動機・目的"),
+    text("動機・目的", GOAL_ACTIVE_SEMANTIC),
   ],
   location: [
     dropdown("重要度", ["主要舞台", "サブ舞台", "言及のみ"]),
@@ -123,18 +163,22 @@ export const GENRE_DETAIL_PRESETS: Readonly<
  */
 export const BASE_DETAIL_PRESETS_EN: DetailPresetsByType = {
   character: [
-    dropdown("Role", [
-      "Protagonist",
-      "Major character",
-      "Supporting",
-      "Antagonist",
-      "Background",
-    ]),
-    text("Age"),
+    dropdown(
+      "Role",
+      [
+        "Protagonist",
+        "Major character",
+        "Supporting",
+        "Antagonist",
+        "Background",
+      ],
+      ROLE_CURRENT_SEMANTIC,
+    ),
+    text("Age", IDENTITY_AGE_SEMANTIC),
     text("Appearance"),
     text("Personality"),
     text("Voice & speech style"),
-    text("Motivation & goals"),
+    text("Motivation & goals", GOAL_ACTIVE_SEMANTIC),
   ],
   location: [
     dropdown("Importance", [
@@ -271,6 +315,7 @@ export interface ApplyDetailPresetResult {
 /**
  * プリセットのフィールド定義を一括追加する。
  * 既存と同名のフィールドはスキップ（(project, type, name) UNIQUE 準拠の冪等適用）。
+ * semantic 付きフィールドは Definition と同じ transaction で Binding を書く。
  */
 export async function applyDetailPreset(
   projectId: string,
@@ -285,37 +330,41 @@ export async function applyDetailPreset(
 
   const added: CodexDetailDefinition[] = [];
   let skipped = 0;
+
   for (const field of fields) {
     if (existingNames.has(field.name)) {
       skipped += 1;
       continue;
     }
     sortOrder += 1.0;
-    let def: CodexDetailDefinition;
-    try {
-      def = await createDefinition({
-        id: crypto.randomUUID(),
-        projectId,
-        typeSlug,
-        name: field.name,
-        fieldType: field.fieldType,
-        fieldConfig: field.options
-          ? JSON.stringify({ options: field.options })
-          : null,
-        sortOrder,
-        includeInContext: field.includeInContext ? 1 : 0,
-      });
-    } catch (err) {
-      // 並行ライター (別ウィンドウ/MCP) との TOCTOU で UNIQUE に
-      // 当たったら冪等スキップに畳む。それ以外は失敗として伝播。
-      if (String(err).includes("UNIQUE")) {
-        skipped += 1;
-        continue;
-      }
-      throw err;
-    }
-    added.push(def);
+    const id = crypto.randomUUID();
+    const definition = await createDefinition({
+      id,
+      projectId,
+      typeSlug,
+      name: field.name,
+      fieldType: field.fieldType,
+      fieldConfig: field.options
+        ? JSON.stringify({ options: field.options })
+        : null,
+      sortOrder,
+      includeInContext: field.includeInContext ? 1 : 0,
+      ...(field.semantic
+        ? {
+            semanticBinding: {
+              id: crypto.randomUUID(),
+              facetKey: field.semantic.facetKey,
+              projectionKind: field.semantic.projectionKind,
+              temporalPolicy: field.semantic.temporalPolicy,
+              source: "preset" as const,
+              confirmed: false,
+            },
+          }
+        : {}),
+    });
+    added.push(definition);
     existingNames.add(field.name);
   }
+
   return { added, skipped };
 }

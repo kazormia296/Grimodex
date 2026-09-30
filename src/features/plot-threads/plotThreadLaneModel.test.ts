@@ -43,6 +43,8 @@ const link = (
   phaseType,
   note: null,
   sortOrder: null,
+  semanticKey: "",
+  version: 0,
   createdAt: "",
   updatedAt: "",
 });

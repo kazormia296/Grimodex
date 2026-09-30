@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { execFile, execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -16,6 +9,28 @@ import { load } from "js-yaml";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(import.meta.dirname, "..");
+
+function resolveBashExecutable() {
+  if (process.platform !== "win32") return "bash";
+  const gitExecPath = execFileSync("git", ["--exec-path"], {
+    encoding: "utf8",
+  }).trim();
+  return path.resolve(gitExecPath, "..", "..", "..", "bin", "bash.exe");
+}
+
+const bashExecutable = resolveBashExecutable();
+
+function toBashPath(filePath) {
+  const normalized = filePath.replaceAll("\\", "/");
+  const drivePath = /^([A-Za-z]):(\/.*)$/.exec(normalized);
+  return drivePath
+    ? `/${drivePath[1].toLowerCase()}${drivePath[2]}`
+    : normalized;
+}
+
+function quoteBashArgument(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
 
 async function read(relativePath) {
   return readFile(path.join(repoRoot, relativePath), "utf8");
@@ -35,17 +50,14 @@ async function runInlineGuard(
     path.join(tmpdir(), "grimodex-deploy-guard-"),
   );
   try {
-    const binDirectory = path.join(temporaryRoot, "bin");
-    const fakeGit = path.join(binDirectory, "git");
     const outputPath = path.join(temporaryRoot, "github-output");
-    await mkdir(binDirectory);
-    await writeFile(
-      fakeGit,
-      `#!/usr/bin/env bash
+    const bashTemporaryRoot = quoteBashArgument(toBashPath(temporaryRoot));
+    const bashOutputPath = quoteBashArgument(toBashPath(outputPath));
+    const fakeGitFunction = `git() {
 set -euo pipefail
 case "\${1:-}" in
   fetch)
-    exit 0
+    return 0
     ;;
   rev-parse)
     printf '%s\\n' "\${FAKE_CURRENT_MASTER_SHA:?}"
@@ -55,29 +67,36 @@ case "\${1:-}" in
     exit 2
     ;;
 esac
-`,
-      "utf8",
-    );
-    await chmod(fakeGit, 0o755);
+}`;
 
-    await execFileAsync("bash", ["-c", script], {
-      cwd: temporaryRoot,
-      env: {
-        ...process.env,
-        PATH: `${binDirectory}:${process.env.PATH ?? ""}`,
-        CF_PAGES_ENVIRONMENT: environment,
-        DEPLOY_CANDIDATE_SHA: candidateSha,
-        FAKE_CURRENT_MASTER_SHA: currentMasterSha,
-        GITHUB_OUTPUT: outputPath,
+    await execFileAsync(
+      bashExecutable,
+      [
+        "-c",
+        `cd -- ${bashTemporaryRoot}\nexport GITHUB_OUTPUT=${bashOutputPath}\n${fakeGitFunction}\n${script}`,
+      ],
+      {
+        cwd: temporaryRoot,
+        env: {
+          ...process.env,
+          CF_PAGES_ENVIRONMENT: environment,
+          DEPLOY_CANDIDATE_SHA: candidateSha,
+          FAKE_CURRENT_MASTER_SHA: currentMasterSha,
+        },
       },
-    });
+    );
 
     const output = await readFile(outputPath, "utf8");
     const deploy = /^deploy=(true|false)$/m.exec(output)?.[1];
     assert.ok(deploy, `guard did not emit deploy output:\n${output}`);
     return deploy === "true";
   } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
+    await rm(temporaryRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 8,
+      retryDelay: 50,
+    });
   }
 }
 

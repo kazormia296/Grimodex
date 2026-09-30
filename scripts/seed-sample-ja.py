@@ -3114,8 +3114,9 @@ def seed(db_path: Path, scale: str = "default") -> None:
     def _stamp(scene_id, eid):
         # fabula イベント ↔ 読み順シーンの橋渡し
         conn.execute(
-            "INSERT OR IGNORE INTO scene_events (scene_id,event_id) VALUES (?,?)",
-            (scene_id, eid),
+            "INSERT OR IGNORE INTO scene_events"
+            " (scene_id,event_id,incarnation_token) VALUES (?,?,?)",
+            (scene_id, eid, uid()),
         )
 
     def _relate(cause_eid, effect_eid):

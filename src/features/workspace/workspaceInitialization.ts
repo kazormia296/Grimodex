@@ -1,6 +1,6 @@
 import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
 import { globalSettingsRepository } from "@/lib/globalSettings/repository";
-import type { WorkspaceState } from "./store";
+import type { WorkspaceState } from "./workspaceState";
 
 type WorkspaceStoreGetter = () => WorkspaceState;
 type WorkspaceStoreSetter = (partial: Partial<WorkspaceState>) => void;

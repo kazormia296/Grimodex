@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schema/narrative/narrative-dependency-producer-registry-v1.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contract",
+    "registryVersion",
+    "entries"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "contract": {
+      "const": "narrative-dependency-producer-generation-registry"
+    },
+    "registryVersion": {
+      "const": "narrative-producer-generation/v1"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": [
+        "id",
+        "writer",
+        "generation",
+        "consumerKind",
+        "declaration"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "writer": {
+          "type": "object",
+          "required": [
+            "module",
+            "symbol"
+          ],
+          "properties": {
+            "module": {
+              "type": "string",
+              "minLength": 1
+            },
+            "symbol": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "generation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "declarationSetGeneration": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "consumerKind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "declaration": {
+          "type": "string",
+          "minLength": 1
+        },
+        "consumerKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producerVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "supportedDeclarationSetGenerations": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "proposal-revision-source-basis"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "required": [
+              "declarationSetGeneration",
+              "supportedDeclarationSetGenerations"
+            ],
+            "properties": {
+              "declarationSetGeneration": {
+                "const": 1
+              },
+              "supportedDeclarationSetGenerations": {
+                "const": [
+                  1,
+                  2
+                ]
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "declarationSetGeneration"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": {
+                  "id": {
+                    "enum": [
+                      "nir1-reviewed-chronicle-v1",
+                      "nir1-reviewed-entity-relation-v1"
+                    ]
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              {
+                "properties": {
+                  "consumerKind": {
+                    "const": "semantic-index"
+                  }
+                },
+                "required": [
+                  "consumerKind"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "oneOf": [
+              {
+                "const": {
+                  "id": "nir1-reviewed-chronicle-v1",
+                  "writer": {
+                    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+                    "symbol": "publish_chronicle_index_build_in_tx"
+                  },
+                  "generation": "nir1-reviewed-chronicle/v1",
+                  "consumerKind": "semantic-index",
+                  "consumerKey": "nir1-reviewed-chronicle:v1",
+                  "producerVersion": "nir1-reviewed-chronicle/v1",
+                  "declaration": "NIR-1 reviewed Chronicle current eligibility Source and complete admitted Scene Source dependencies"
+                }
+              },
+              {
+                "const": {
+                  "id": "nir1-reviewed-entity-relation-v1",
+                  "writer": {
+                    "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+                    "symbol": "publish_nir1_entity_relation_index_in_tx"
+                  },
+                  "generation": "nir1-reviewed-entity-relation/v1",
+                  "consumerKind": "semantic-index",
+                  "consumerKey": "nir1-reviewed-entity-relation:v1",
+                  "producerVersion": "nir1-reviewed-entity-relation/v1",
+                  "declaration": "NIR-1 reviewed Entity/Relation qualified current revision roster and object-token dependencies"
+                }
+              }
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "consumerKey"
+                  ]
+                },
+                {
+                  "required": [
+                    "producerVersion"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

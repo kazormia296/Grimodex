@@ -1,10 +1,17 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import yaml from "js-yaml";
+
+import {
+  C2ZC_RUST_ACCEPTANCE_GATES,
+  C2ZC_RUST_ACCEPTANCE_LOCAL_CI_STAGE_ID,
+  C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND,
+} from "../c2zc-rust-acceptance-receipt.mjs";
 
 import {
   classifyChangedPaths,
@@ -24,6 +31,10 @@ export {
 export { compilePathRules } from "../impact/core.mjs";
 
 const DEFAULT_REPO_ROOT = path.resolve(import.meta.dirname, "../..");
+const DEFAULT_LOCAL_CI_REGISTRY_PATH = path.join(
+  DEFAULT_REPO_ROOT,
+  "scripts/local-ci-registry.json",
+);
 
 export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
   "quality-workflow": {
@@ -64,6 +75,7 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/chat/turn/resolveTurnRoute.test.ts",
       ],
       ["pnpm", "test:cloudflare-editor-deploy"],
+      ["pnpm", "test:electron", "--run", "electron/preload/index.test.ts"],
     ],
   },
   "tool-policy": {
@@ -101,7 +113,14 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
   "prompt-contract": {
     failureClasses: ["routing", "quality", "artifact"],
     commands: [
-      ["pnpm", "test:node", "--run", "src/prompts", "src/features/post-effect"],
+      [
+        "pnpm",
+        "test:node",
+        "--run",
+        "src/prompts",
+        "src/features/post-effect",
+        "src/features/chat/contextBuilder.test.ts",
+      ],
     ],
   },
   "retrieval-grounding": {
@@ -128,7 +147,448 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/related-scenes/selectRelatedScenes.test.ts",
       ],
       ["node", "scripts/quality/validate-retrieval-fixtures.mjs"],
+      [
+        "node",
+        "--test",
+        "scripts/quality/nir1-retrieval/contract.test.mjs",
+        "scripts/quality/nir1-retrieval/standard-build.test.mjs",
+      ],
+      [
+        "node",
+        "scripts/quality/validate-nir1-retrieval.mjs",
+        "--require-freeze",
+      ],
     ],
+  },
+  "narrative-runtime": {
+    failureClasses: ["policy", "quality"],
+    commands: [
+      ["pnpm", "test:narrative:run-kind-policy"],
+      ["pnpm", "test:narrative:execution-state"],
+      ["pnpm", "test:narrative:writers"],
+      [
+        "pnpm",
+        "test:electron",
+        "--run",
+        "electron/main/narrativeFreshness.test.ts",
+      ],
+      ["pnpm", "exec", "tsc", "-p", "electron/tsconfig.json", "--noEmit"],
+      [
+        "pnpm",
+        "test:node",
+        "--run",
+        "src/features/narrative-extraction/runtime",
+        "src/features/narrative-extraction/maintenance",
+      ],
+      [
+        "node",
+        "--test",
+        "scripts/product-journey-phase1.test.mjs",
+        "scripts/c2-5b-product-journeys.test.mjs",
+        "scripts/c2zc-product-journeys.test.mjs",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_runtime_authority",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_incremental_freshness_runtime",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_change_feed",
+        "fresh_schema_22_contains_the_canonical_writer_origin_contract",
+        "--",
+        "--exact",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "execute::tests::renderer_v40_chat_insert_allows_only_canonical_capture_state_retirement",
+        "--",
+        "--exact",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "execute::tests::renderer_parent_deletes_cleanup_captures_through_native_triggers",
+        "--",
+        "--exact",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "check",
+        "--manifest-path",
+        "electron/native/grimodex-node/Cargo.toml",
+      ],
+    ],
+  },
+  "narrative-semantic-contract": {
+    failureClasses: ["policy", "quality", "artifact"],
+    commands: [
+      ["pnpm", "test:narrative:semantic-contract"],
+      [
+        "pnpm",
+        "test",
+        "--run",
+        "src/features/narrative-extraction/source/scopeAuthorityBasisV2.contract.test.ts",
+        "src/features/tree/api.listProjection.test.ts",
+        "src/application/narrative-extraction/projectSnapshotAdapter.test.ts",
+        "src/application/narrative-extraction/extractionCoordinator.test.ts",
+        "src/db/schema.contract.test.ts",
+      ],
+      ["pnpm", "test:electron", "--run", "electron/shared/ipcContract.test.ts"],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-core",
+        "--test",
+        "narrative_scope_authority_basis",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::execution_state::tests::run_transition_persists_millisecond_rfc3339_timestamps",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::repository::unit_tests::every_generic_public_task_api_rejects_runtime_owned_automatic_runs",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::repository::unit_tests::list_resumable_runs_orders_mixed_legacy_and_rfc3339_instants",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::legacy_backfill::tests::backfill_owner_finalizer_survives_generic_cancel_phase_gap",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::restore_rebuild::tests::rebuild_finalization_after_epoch_rotation_is_failed_and_returns_error",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_terminal_failure_projection",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_scope_authority_runtime",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/crates/grimodex-db/Cargo.toml",
+        "--lib",
+        "migrate::tests::schema_40_adds_session_scoped_human_capture_retirement_without_backfill",
+        "--",
+        "--exact",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "migrate::tests::schema_41_migrates_v39_and_v40_capture_rows_without_losing_tombstones",
+        "--",
+        "--exact",
+        "--test-threads=1",
+      ],
+    ],
+  },
+  "nir1-entity-relation-review": {
+    failureClasses: ["policy", "quality", "artifact"],
+    commands: [
+      [
+        "pnpm",
+        "test:node",
+        "--run",
+        "src/features/codex/CodexEntityRelationReviewDialog.test.tsx",
+        "src/features/codex/CodexEntityRelationReviewDialog.integration.test.tsx",
+        "src/features/codex/CodexEntityRelationRevisionReviewPanel.test.tsx",
+        "src/features/codex/codexEntityRelationReviewApi.test.ts",
+        "src/features/codex/useCodexEntityRelationReview.test.tsx",
+        "src/features/codex/components/CodexTypedRelationsSection.test.tsx",
+        "src/features/codex/context/nir1PhaseParity.test.ts",
+        "src/features/codex/context/nir1RevealParity.test.ts",
+        "src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.test.ts",
+        "src/features/narrative-semantic-core/nir1PackingApi.test.ts",
+        "src/features/ai-context/nir1Packing.test.ts",
+        "src/features/ai-context/finalizeTurnPayload.test.ts",
+        "src/features/related-scenes/nir1G01Feasibility.test.ts",
+        "src/features/related-scenes/nir1RelatedScenesFusion.test.ts",
+        "src/lib/tauri.electron.test.ts",
+      ],
+      [
+        "pnpm",
+        "test:electron",
+        "--run",
+        "electron/main/ipc.test.ts",
+        "electron/main/profileEgress.test.ts",
+        "electron/shared/ipcContract.test.ts",
+        "electron/shared/nir1GraphIpcContract.test.ts",
+        "electron/shared/nir1EntityRelationIpcContract.test.ts",
+      ],
+      ["pnpm", "exec", "tsc", "-p", "electron/tsconfig.json", "--noEmit"],
+      [
+        "node",
+        "--test",
+        "scripts/quality/nir1-packing/contract.test.mjs",
+        "scripts/quality/nir1-packing/runner.test.mjs",
+        "scripts/quality/nir1-packing/scorer.test.mjs",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-core",
+        "--test",
+        "narrative_nir1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-core",
+        "--test",
+        "narrative_nir1_receipt",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::nir1_entity_relation",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::nir1_graph",
+        "--",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "electron/native/grimodex-node/Cargo.toml",
+        "--lib",
+        "nir1_generation::tests",
+        "--",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "electron/native/grimodex-node/Cargo.toml",
+        "--lib",
+        "nir1_prepared_request::tests",
+        "--",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "narrative_extraction::nir1_packing",
+        "--",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "nir1_generation::tests",
+        "--",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--lib",
+        "nir1_generation_history::tests",
+        "--",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_nir1_retrieval_admission",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "release_schema_migration",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "workspace_migration_supervisor",
+      ],
+      [
+        "node",
+        "--test",
+        "scripts/codex-entity-relation-product-journey.test.mjs",
+        "scripts/product-journey-backlog.test.mjs",
+        "scripts/product-journey-impact.test.mjs",
+        "electron/scripts/product-journey-shards.test.mjs",
+      ],
+    ],
+  },
+  "nir1-capacity-diagnostics": {
+    failureClasses: ["quality", "artifact"],
+    commands: [
+      ["node", "--test", "scripts/nir1-material-capacity-probe.test.mjs", "scripts/nir1-material-capacity-probe.review-fixes.test.mjs"],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--features",
+        "nir1-material-diagnostics",
+        "--lib",
+        "narrative_extraction::nir1_capacity",
+      ],
+      ["cargo", "test", "--manifest-path", "src-tauri/Cargo.toml", "-p", "grimodex-db", "--features", "nir1-material-diagnostics", "--lib", "capacity_boundaries"],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--features",
+        "nir1-material-diagnostics",
+        "--test",
+        "nir1_capacity_binary",
+      ],
+    ],
+  },
+  "narrative-extraction": {
+    failureClasses: ["quality", "artifact"],
+    commands: [["pnpm", "eval:narrative"]],
   },
 });
 
@@ -141,6 +601,120 @@ function assertString(value, label) {
     throw new Error(`${label} must be a non-empty string`);
   }
   return value.trim();
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function normalizeAcceptanceGate(gate) {
+  return {
+    id: gate?.id,
+    argv: gate?.argv,
+    contract: gate?.contract,
+    source: gate?.source,
+    test: gate?.test,
+    fullTestName: gate?.fullTestName,
+    requiresReceipt: gate?.requiresReceipt,
+  };
+}
+
+function assertStructuredAcceptanceGates(rawGates, ruleId) {
+  if (!Array.isArray(rawGates)) {
+    throw new Error(`rule ${ruleId} acceptanceGates must be an array`);
+  }
+  if (rawGates.length !== C2ZC_RUST_ACCEPTANCE_GATES.length) {
+    throw new Error(
+      `rule ${ruleId} acceptanceGates must contain the ${C2ZC_RUST_ACCEPTANCE_GATES.length} ordered Rust gates`,
+    );
+  }
+  for (const [index, rawGate] of rawGates.entries()) {
+    const expectedKeys = Object.keys(
+      normalizeAcceptanceGate(C2ZC_RUST_ACCEPTANCE_GATES[index]),
+    ).sort();
+    const observedKeys = Object.keys(rawGate ?? {}).sort();
+    if (canonicalJson(observedKeys) !== canonicalJson(expectedKeys)) {
+      throw new Error(
+        `rule ${ruleId} acceptanceGates[${index}] has an invalid structured shape`,
+      );
+    }
+    if (
+      canonicalJson(normalizeAcceptanceGate(rawGate)) !==
+      canonicalJson(normalizeAcceptanceGate(C2ZC_RUST_ACCEPTANCE_GATES[index]))
+    ) {
+      throw new Error(
+        `rule ${ruleId} acceptanceGates[${index}] does not match the exported Rust gate definition`,
+      );
+    }
+  }
+  return rawGates.map((gate) => ({
+    id: gate.id,
+    argv: {
+      command: gate.argv.command,
+      args: [...gate.argv.args],
+      cwd: gate.argv.cwd,
+    },
+    contract: { ...gate.contract },
+    source: gate.source,
+    test: gate.test,
+    fullTestName: gate.fullTestName,
+    requiresReceipt: gate.requiresReceipt,
+  }));
+}
+
+function readDefaultLocalCiRegistry() {
+  return JSON.parse(readFileSync(DEFAULT_LOCAL_CI_REGISTRY_PATH, "utf8"));
+}
+
+export function validateAcceptanceGateRegistration({
+  map,
+  localCiRegistry = readDefaultLocalCiRegistry(),
+} = {}) {
+  if (!map || !Array.isArray(map.rules)) {
+    throw new Error("Impact map is required for acceptance gate validation");
+  }
+  const acceptanceRules = map.rules.filter((rule) =>
+    Object.hasOwn(rule, "acceptanceGates"),
+  );
+  if (acceptanceRules.length !== 1) {
+    throw new Error(
+      "Impact map must contain exactly one structured C2-ZC acceptance gate rule",
+    );
+  }
+  const [rule] = acceptanceRules;
+  assertStructuredAcceptanceGates(rule.acceptanceGates, rule.id);
+  if (Object.hasOwn(rule, "acceptanceGate")) {
+    throw new Error("Legacy free-text acceptanceGate is not allowed");
+  }
+  const stage =
+    localCiRegistry?.stages?.[C2ZC_RUST_ACCEPTANCE_LOCAL_CI_STAGE_ID];
+  if (!stage || !Array.isArray(stage.commands) || stage.commands.length !== 1) {
+    throw new Error(
+      "Local-CI Rust acceptance registry must expose one exact runner command",
+    );
+  }
+  const registeredCommand = stage.commands[0];
+  const normalizedRegisteredCommand = {
+    command: registeredCommand.command,
+    args: registeredCommand.args,
+    cwd: registeredCommand.cwd ?? ".",
+  };
+  if (
+    canonicalJson(normalizedRegisteredCommand) !==
+    canonicalJson(C2ZC_RUST_ACCEPTANCE_RUNNER_COMMAND)
+  ) {
+    throw new Error(
+      "Local-CI Rust acceptance registry runner command does not match the exported receipt runner",
+    );
+  }
+  return true;
 }
 
 export function parseImpactMap(source, options = {}) {
@@ -226,7 +800,23 @@ export function parseImpactMap(source, options = {}) {
         throw new Error(`Unknown suite: ${suite}`);
       }
     }
-    return { id, reason, paths, matchers, requirements, suites };
+    if (Object.hasOwn(rawRule, "acceptanceGate")) {
+      throw new Error(
+        `rule ${id} must use structured acceptanceGates, not acceptanceGate`,
+      );
+    }
+    const acceptanceGates = Object.hasOwn(rawRule, "acceptanceGates")
+      ? assertStructuredAcceptanceGates(rawRule.acceptanceGates, id)
+      : undefined;
+    return {
+      id,
+      reason,
+      paths,
+      matchers,
+      requirements,
+      suites,
+      ...(acceptanceGates ? { acceptanceGates } : {}),
+    };
   });
   if (allowedRequirements) {
     const mappedRequirements = new Set(
@@ -242,7 +832,14 @@ export function parseImpactMap(source, options = {}) {
     }
   }
   if (parsed.default !== "all") throw new Error('default must be "all"');
-  return { version: 1, allSuites, rules, default: "all" };
+  const map = { version: 1, allSuites, rules, default: "all" };
+  if (rules.some((rule) => Object.hasOwn(rule, "acceptanceGates"))) {
+    validateAcceptanceGateRegistration({
+      map,
+      localCiRegistry: options.localCiRegistry,
+    });
+  }
+  return map;
 }
 
 function isInvariantAllPath(candidate) {
@@ -507,14 +1104,11 @@ function formatRunContext(comparison, environment) {
 function runCommand(command, args, cwd, { routeStdoutToStderr = false } = {}) {
   return new Promise((resolve) => {
     const started = performance.now();
-    const usesWindowsCommandShell =
-      process.platform === "win32" && command === "pnpm";
-    const executable = usesWindowsCommandShell
-      ? (process.env.ComSpec ?? "cmd.exe")
-      : command;
-    const commandArgs = usesWindowsCommandShell
-      ? ["/d", "/s", "/c", command, ...args]
-      : args;
+    // Invoke the Windows package-manager shim directly; never pass frozen
+    // argv through caller-controlled ComSpec/cmd.exe meta-character parsing.
+    const executable =
+      process.platform === "win32" && command === "pnpm" ? "pnpm.cmd" : command;
+    const commandArgs = args;
     const child = spawn(executable, commandArgs, {
       cwd,
       stdio: routeStdoutToStderr ? ["inherit", "pipe", "inherit"] : "inherit",

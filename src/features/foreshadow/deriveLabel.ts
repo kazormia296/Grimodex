@@ -1,5 +1,11 @@
 import type { DerivedLabel, ForeshadowRow } from "./types";
 
+/**
+ * Legacy UI label derivation (unchanged for backward compatibility).
+ * New extraction pipeline lifecycle/quality axes live in
+ * `extraction/lifecycle.ts` — e.g. critical_weak ≈ seeded + too-subtle
+ * + loadBearing critical via deriveLabelFromLifecycle().
+ */
 export function deriveLabel(
   f: ForeshadowRow,
   setupCount: number,

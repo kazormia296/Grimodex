@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": 8,
+  "gateId": "gate-b2",
+  "assuranceScope": {
+    "engineeringSafety": "certified",
+    "liveProviderExecution": "excluded",
+    "modelQuality": "excluded",
+    "externalCredentialsUsed": false
+  },
+  "freezeId": "5062b80e-2804-41ac-8603-ee8681e3239b",
+  "certificationRunId": null,
+  "candidateCommitSha": "bf3f7cf63137078ef2339bf1336a2a06b9912251",
+  "candidateTreeSha": "30a4ffc5feb912f4a1b3960f71fa0f4dd7117f6b",
+  "baseMasterSha": "f2c6293ba499ffa10322ad0bef4fe170b3ea280c",
+  "attemptAuthority": {
+    "provider": "github-actions",
+    "configDigest": "sha256:39b3a55cbcff45c94872f485c0f1bd7d965dc4e9ed8d21a2068c43b3524bb1d4",
+    "repository": "kazormia296/Grimodex",
+    "workflowPath": ".github/workflows/gate-b2-certification.yml",
+    "event": "workflow_dispatch",
+    "runId": null,
+    "runAttempt": null
+  },
+  "schemaVersionProduct": 20,
+  "verdict": "INCOMPLETE",
+  "reasons": [
+    "Candidate frozen; required credential-free Engineering evidence is not yet attached.",
+    "Live provider/model qualification is explicitly outside Gate B2 scope."
+  ],
+  "suiteSummaries": {
+    "requiredLight": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 6
+    },
+    "requiredHeavy": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 1
+    },
+    "requiredJourneys": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 7
+    }
+  },
+  "digests": {
+    "writerRegistryDigest": "sha256:fa40567d7eab3ded70970ba4140e9898fd2f9f734467623d7b673a42ada028dd",
+    "aiPathRegistryDigest": "sha256:117548ba25c5dd322e2ac6d6fd1506e5b44b39e7279c65f3e4f9da76cd46d478",
+    "qualityManifestDigest": "sha256:ffaf2abfdf749296e1366a55c9fda3815e111aa4684bdb59144240c5e7cca2f0",
+    "narrativeEvalManifestDigest": "sha256:ffb66b17712dddf947b716ddfa8af7177d461feb4835068f005b4e3629bfefec",
+    "adrChecklistDigest": "sha256:d6304008d12c629e5c6646aad261cd44acfa69897b46e359636db3e241287096",
+    "classificationDigest": "sha256:f1a98cf1470eb6cf57e464b49f635f7084f7ab3aa0071deaff3b27a3bbe8dc08",
+    "reportDigest": null
+  },
+  "suiteAttempts": [],
+  "generatedAt": "2026-08-12T19:33:59.065Z",
+  "notes": "Provisional freeze decision only. The dedicated Gate B2 workflow produces the formal Decision for this candidate."
+}

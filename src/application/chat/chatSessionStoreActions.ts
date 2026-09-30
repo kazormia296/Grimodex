@@ -16,17 +16,15 @@ import {
   type SessionListLoadAuthority,
 } from "./chatSessionAuthority";
 import { flushStrictQuiescence } from "@/application/lifecycle/quiescenceCoordinator";
-import {
-  acquireQuiescenceLease,
-  canScheduleQuiescenceMutation,
-} from "@/application/lifecycle/quiescenceLease";
+import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import { acquireQuiescenceLeaseAfterTimelapseGenesis } from "@/features/timelapse/genesisQuiescence";
 import type {
   ChatMessage,
   ChatSession,
   ChatSummary,
 } from "@/features/chat/chatTypes";
 import { scopeSessionKeysEqual } from "@/features/chat/chatScope";
-import { isIpcLifecycleCancellation } from "@/lib/tauri";
+import { isD2aEgressDenied, isIpcLifecycleCancellation } from "@/lib/tauri";
 import { isTreeNavigationLeaseActive } from "@/lib/chatNavigationGuard";
 
 interface ChatSessionRepository {
@@ -106,13 +104,19 @@ export function createChatSessionStoreActions(
       // Admission must close synchronously with the confirmed user action.
       // Otherwise a new turn can start before the first await and recreate a
       // session that the destructive DELETE is about to remove.
-      const quiescenceLease = acquireQuiescenceLease("data-delete");
+      const quiescenceLeasePromise =
+        acquireQuiescenceLeaseAfterTimelapseGenesis("data-delete");
+      // The serialized session queue may not invoke our callback until a later
+      // turn. Mark an immediate genesis rejection handled while preserving the
+      // original promise for operation-level propagation below.
+      void quiescenceLeasePromise.catch(() => {});
       const authority = captureSessionMutationAuthority(get());
       const failStaleAuthority = (): never => {
         throw new Error("Chat history clear authority changed");
       };
 
       const operation = enqueueSessionMutation(async () => {
+        const quiescenceLease = await quiescenceLeasePromise;
         try {
           if (
             authority.projectId !== projectId ||
@@ -155,8 +159,9 @@ export function createChatSessionStoreActions(
 
       // The lease belongs to this operation even if the session queue itself
       // unexpectedly rejects before invoking it.
-      return operation.catch((error: unknown) => {
-        quiescenceLease.release();
+      return operation.catch(async (error: unknown) => {
+        const quiescenceLease = await quiescenceLeasePromise.catch(() => null);
+        quiescenceLease?.release();
         throw error;
       });
     },
@@ -321,7 +326,9 @@ export function createChatSessionStoreActions(
           return false;
         }
         set({ isLoadingSessions: false });
-        if (isIpcLifecycleCancellation(error)) return false;
+        if (isIpcLifecycleCancellation(error) || isD2aEgressDenied(error)) {
+          return false;
+        }
         runtime.notifyError(runtime.translate("chat.loadSessionsFailed"));
         runtime.reportError("loadSessions", error);
         return false;

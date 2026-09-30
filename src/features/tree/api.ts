@@ -1,20 +1,59 @@
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
-import { eq, and, isNull, isNotNull, inArray, lt, sql } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, inArray, lt } from "drizzle-orm";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/placedBeatPreview";
 import {
   trackSceneContentWrite,
   awaitPendingSceneContentWrite,
+  awaitPendingSceneWriteStrict,
   serializeSceneWrite,
 } from "@/features/tree/pendingSceneWrites";
 import { debugLog } from "@/lib/debugLog";
+import { invoke } from "@/lib/tauri";
 import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import {
   nextTreeNodeMutationTimestamp,
   publishTreeNodeMutation,
 } from "@/lib/treeNodeMutationRegistry";
+import type { ProjectNarrativeSourceRow } from "@/features/narrative-extraction/source/types";
 import type { WorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import {
+  createCanonicalHistoryWriteLease,
+  createCanonicalWriteContext,
+  type CanonicalHistoryWriteLease,
+  type CanonicalWriteContext,
+  type CanonicalWriteLineage,
+  type CanonicalWriteOrigin,
+  type CanonicalWriteReceipt,
+} from "@/features/native-writes/writeContext";
+import {
+  runTimelapseBodyReplacement,
+  runTimelapseBodyWrite,
+  runTimelapseMutation,
+  type TimelapseDocumentIdentity,
+} from "@/features/timelapse/bodyWriteMode";
+import type {
+  TimelapseCoverageProof,
+  TimelapseDocumentRef,
+} from "@/features/timelapse/documentCoverage";
+
+const historyWriteLeases = new WeakMap<
+  CanonicalWriteReceipt,
+  Partial<Record<"undo" | "redo", CanonicalHistoryWriteLease>>
+>();
+const activeHistoryWriteContexts = new WeakMap<
+  CanonicalWriteContext,
+  CanonicalHistoryWriteLease
+>();
+
+function commitHistoryWriteContext(context: CanonicalWriteContext): void {
+  const lease = activeHistoryWriteContexts.get(context);
+  if (!lease) return;
+  lease.committed();
+  activeHistoryWriteContexts.delete(context);
+}
 
 function publishPersistedTreeNodeMutation(
   persisted:
@@ -59,6 +98,91 @@ function derivePlacedPreview(contentJsonStr: string): string | null {
 export type TreeNode = typeof treeNodes.$inferSelect;
 export type NewTreeNode = typeof treeNodes.$inferInsert;
 export type NodeType = "folder" | "scene" | "note";
+
+export interface TreeNodeUpdateOptions {
+  writeContext?: CanonicalWriteContext;
+  /** Permit only a draft that was queued before lifecycle quiescence. */
+  preexistingDraft?: boolean;
+}
+
+export type TreeNodeWriteResult = TreeNode & {
+  __writeReceipt?: CanonicalWriteReceipt;
+};
+
+function hideTreeWriteReceipt(
+  result: TreeNodeWriteResult,
+): TreeNodeWriteResult {
+  const receipt = result.__writeReceipt;
+  if (!receipt) return result;
+  delete result.__writeReceipt;
+  Object.defineProperty(result, "__writeReceipt", {
+    value: receipt,
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  return result;
+}
+
+type LegacyTreeRestoreWriteContext = {
+  requestId: string;
+  sessionId: string;
+  eventUid: string;
+  timestamp: number;
+  origin: "restore";
+  sourceDomain: "revision";
+  opType: "content.restore";
+};
+
+function isLegacyTreeRestoreWriteContext(
+  value: CanonicalWriteContext | LegacyTreeRestoreWriteContext,
+): value is LegacyTreeRestoreWriteContext {
+  return "sourceDomain" in value;
+}
+
+export function treeWriteReceipt(
+  result: TreeNodeWriteResult | CanonicalWriteReceipt | null | undefined,
+): CanonicalWriteReceipt | undefined {
+  if (!result) return undefined;
+  const candidate: CanonicalWriteReceipt | undefined =
+    "__writeReceipt" in result
+      ? result.__writeReceipt
+      : "changeEventUid" in result && "maintenanceTransactionId" in result
+        ? result
+        : undefined;
+  if (
+    typeof candidate?.changeEventUid !== "string" ||
+    typeof candidate.maintenanceTransactionId !== "string"
+  ) {
+    return undefined;
+  }
+  return candidate;
+}
+
+export function historyWriteContext(
+  origin: Extract<CanonicalWriteOrigin, "undo" | "redo">,
+  receipt: CanonicalWriteReceipt | undefined,
+): CanonicalWriteContext {
+  const undoJournalId = receipt?.undoJournalId;
+  if (!receipt || typeof undoJournalId !== "string" || !undoJournalId) {
+    throw new Error("Tree history write is missing its Undo Journal lineage");
+  }
+  const lineage: CanonicalWriteLineage = {
+    originalTransactionId: receipt.maintenanceTransactionId,
+    undoJournalId,
+  };
+  let leases = historyWriteLeases.get(receipt);
+  if (!leases) {
+    leases = {};
+    historyWriteLeases.set(receipt, leases);
+  }
+  const lease =
+    leases[origin] ??
+    (leases[origin] = createCanonicalHistoryWriteLease(origin, lineage));
+  const context = lease.acquire();
+  activeHistoryWriteContexts.set(context, lease);
+  return context;
+}
 
 /**
  * list 系 (listNodes / listAllNodes) の軽量行 (H4 projection)。
@@ -209,6 +333,69 @@ export async function listProjectSceneDocuments(
     );
 }
 
+/**
+ * Load the persisted Scene rows used to build an immutable narrative corpus.
+ *
+ * The caller supplies the already-resolved DFS order. One Project-scoped
+ * SELECT provides a single SQLite statement snapshot and the function fails
+ * closed instead of splitting a corpus above its safe parameter bound.
+ * `sortOrder` is only meaningful among siblings, so requested rows are
+ * reassembled against the input order here. Missing, foreign-Project,
+ * non-Scene, and archived IDs are omitted.
+ */
+export async function loadProjectNarrativeSourceRows(
+  projectId: string,
+  orderedSceneIds: readonly string[],
+): Promise<ProjectNarrativeSourceRow[]> {
+  if (orderedSceneIds.length === 0) return [];
+  // Keep one statement below SQLite's historical 999-bound-variable limit.
+  // Larger corpora fail closed until the native snapshot reader lands.
+  const MAX_SINGLE_SNAPSHOT_SCENES = 900;
+  if (orderedSceneIds.length > MAX_SINGLE_SNAPSHOT_SCENES) {
+    throw new RangeError(
+      `Narrative corpus exceeds the ${MAX_SINGLE_SNAPSHOT_SCENES}-Scene single-read limit`,
+    );
+  }
+
+  await Promise.all(
+    orderedSceneIds.map((sceneId) => awaitPendingSceneWriteStrict(sceneId)),
+  );
+
+  const rows = await db
+    .select({
+      nodeId: treeNodes.id,
+      parentId: treeNodes.parentId,
+      title: treeNodes.title,
+      content: treeNodes.content,
+      sortOrder: treeNodes.sortOrder,
+      storyTimeOrder: treeNodes.storyTimeOrder,
+      version: treeNodes.version,
+      updatedAt: treeNodes.updatedAt,
+      sourceUri: treeNodes.sourceUri,
+    })
+    .from(treeNodes)
+    .where(
+      and(
+        eq(treeNodes.projectId, projectId),
+        eq(treeNodes.nodeType, "scene"),
+        isNull(treeNodes.archivedAt),
+        inArray(treeNodes.id, [...orderedSceneIds]),
+      ),
+    );
+  const rowsById = new Map<
+    string,
+    Omit<ProjectNarrativeSourceRow, "orderIndex">
+  >();
+  for (const row of rows) rowsById.set(row.nodeId, row);
+
+  const orderedRows: ProjectNarrativeSourceRow[] = [];
+  orderedSceneIds.forEach((nodeId, orderIndex) => {
+    const row = rowsById.get(nodeId);
+    if (row) orderedRows.push({ ...row, orderIndex });
+  });
+  return orderedRows;
+}
+
 export async function getNode(id: string): Promise<TreeNode | undefined> {
   const rows = await db.select().from(treeNodes).where(eq(treeNodes.id, id));
   return rows[0];
@@ -230,13 +417,141 @@ export async function createNode(
         | "content"
       >
     >,
-): Promise<TreeNode> {
-  const now = nextTreeNodeMutationTimestamp();
-  const rows = await db
-    .insert(treeNodes)
-    .values({ ...data, createdAt: now, updatedAt: now })
-    .returning();
-  return rows[0];
+  options: {
+    writeContext?: CanonicalWriteContext;
+    /** Scene storage identity used by external-file replacement fences. */
+    timelapseDocumentIdentity?: TimelapseDocumentIdentity;
+  } = {},
+): Promise<TreeNodeWriteResult> {
+  const writeContext = options.writeContext ?? createCanonicalWriteContext();
+  const write = async (): Promise<TreeNodeWriteResult> => {
+    const result = await invoke<TreeNodeWriteResult>("tree_node_create", {
+      payload: Object.fromEntries(
+        Object.entries({
+          ...data,
+          ...writeContext,
+          canonicalPayload: {
+            parentId: data.parentId ?? null,
+            sortOrder: data.sortOrder,
+            title: data.title,
+          },
+        }).filter(([, value]) => value !== undefined),
+      ),
+    });
+    commitHistoryWriteContext(writeContext);
+    return hideTreeWriteReceipt(result);
+  };
+  if (!Object.prototype.hasOwnProperty.call(data, "content")) {
+    return runTimelapseMutation(data.projectId, write);
+  }
+  const documentIdentity: TimelapseDocumentIdentity | undefined =
+    options.timelapseDocumentIdentity ??
+    (data.nodeType === "scene"
+      ? {
+          projectId: data.projectId,
+          domain: "editor",
+          entityType: "scene",
+          entityId: data.id,
+          storage: "database",
+        }
+      : undefined);
+  return runTimelapseBodyReplacement(
+    {
+      projectId: data.projectId,
+      ...(documentIdentity ? { documentIdentity } : {}),
+    },
+    {
+      commit: write,
+      project: async (committed) => committed,
+    },
+  );
+}
+
+async function patchTreeNodeNative(
+  id: string,
+  projectId: string,
+  patch: Record<string, unknown>,
+  options: {
+    baseVersion?: number;
+    bumpVersion: boolean;
+    updatedAt?: string;
+    writeContext?: LegacyTreeRestoreWriteContext | CanonicalWriteContext;
+    timelapseDocStepCoverage?: TimelapseCoverageProof;
+  },
+): Promise<TreeNodeWriteResult> {
+  const auditBefore = await getNode(id);
+  const legacyRestoreContext =
+    options.writeContext &&
+    isLegacyTreeRestoreWriteContext(options.writeContext)
+      ? options.writeContext
+      : undefined;
+  let canonicalContext: CanonicalWriteContext;
+  if (legacyRestoreContext) {
+    const authorityContext = createCanonicalWriteContext(
+      "restore",
+      undefined,
+      legacyRestoreContext.requestId,
+      { caller: "restore-controller" },
+    );
+    canonicalContext = {
+      ...authorityContext,
+      requestId: legacyRestoreContext.requestId,
+      sessionId: legacyRestoreContext.sessionId,
+      eventUid: legacyRestoreContext.eventUid,
+      origin: legacyRestoreContext.origin,
+      originalTransactionId: null,
+      undoJournalId: null,
+    };
+  } else if (options.writeContext) {
+    canonicalContext = options.writeContext as CanonicalWriteContext;
+  } else {
+    canonicalContext = createCanonicalWriteContext();
+  }
+  const payload = {
+    ...canonicalContext,
+    projectId,
+    nodeId: id,
+    canonicalPayload: {
+      fields: Object.keys(patch).sort(),
+      before: Object.fromEntries(
+        Object.keys(patch).map((key) => [
+          key,
+          (auditBefore as unknown as Record<string, unknown> | undefined)?.[
+            key
+          ] ?? null,
+        ]),
+      ),
+      after: patch,
+    },
+    patch: Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    ),
+    bumpVersion: options.bumpVersion,
+    updatedAt: options.updatedAt ?? nextTreeNodeMutationTimestamp(),
+    ...(options.baseVersion === undefined
+      ? {}
+      : { baseVersion: options.baseVersion }),
+    ...(options.timelapseDocStepCoverage
+      ? { timelapseDocStepCoverage: options.timelapseDocStepCoverage }
+      : {}),
+    ...(legacyRestoreContext
+      ? {
+          origin: legacyRestoreContext.origin,
+          sourceDomain: legacyRestoreContext.sourceDomain,
+          opType: legacyRestoreContext.opType,
+          changeEvent: {
+            eventUid: legacyRestoreContext.eventUid,
+            sessionId: legacyRestoreContext.sessionId,
+            timestamp: legacyRestoreContext.timestamp,
+          },
+        }
+      : {}),
+  };
+  const result = await invoke<TreeNodeWriteResult>("tree_node_patch", {
+    payload,
+  });
+  commitHistoryWriteContext(canonicalContext);
+  return hideTreeWriteReceipt(result);
 }
 
 export function updateNode(
@@ -270,39 +585,220 @@ export function updateNode(
       | "excludedAliases"
     >
   >,
-): Promise<TreeNode | undefined> {
+  options: TreeNodeUpdateOptions = {},
+): Promise<TreeNodeWriteResult | undefined> {
   const workspaceIdentity = getCurrentWorkspaceIdentity();
   // Metadata, Chronicle, preview, and content all share one tree_nodes row.
   // Keep generic metadata writes on the same per-scene issue-order chain as
   // content writes so their returned updatedAt token cannot arrive out of
   // order and poison a later Chronicle bulk OCC request.
-  return serializeSceneWrite(id, async () => {
-    const updatedAt = nextTreeNodeMutationTimestamp();
-    const rows = await db
-      .update(treeNodes)
-      .set({ ...data, updatedAt })
-      .where(eq(treeNodes.id, id))
-      .returning();
-    const persisted = rows[0];
-    publishPersistedTreeNodeMutation(persisted, workspaceIdentity);
-    return persisted;
+  const write = () =>
+    serializeSceneWrite(id, async () => {
+      const current = await getNode(id);
+      if (!current) return undefined;
+      const temporalKeys = new Set([
+        "storyTimeOrder",
+        "storyTimeLabel",
+        "chronicleStartTime",
+        "chronicleStartMinute",
+        "chronicleStartGranularity",
+        "chronicleEndTime",
+        "chronicleEndMinute",
+        "chronicleEndGranularity",
+        "chroniclePrecision",
+      ]);
+      if (Object.keys(data).some((key) => temporalKeys.has(key))) {
+        const value = <K extends keyof typeof data, T>(
+          key: K,
+          fallback: T,
+        ): T => (data[key] === undefined ? fallback : (data[key] as T));
+        const temporalResult = await updateTemporalScene(
+          current.projectId,
+          id,
+          {
+            storyTimeOrder: value(
+              "storyTimeOrder",
+              current.storyTimeOrder ?? null,
+            ),
+            storyTimeLabel: value(
+              "storyTimeLabel",
+              current.storyTimeLabel ?? null,
+            ),
+            chronicleStartTime: value(
+              "chronicleStartTime",
+              current.chronicleStartTime ?? null,
+            ),
+            chronicleStartMinute: value(
+              "chronicleStartMinute",
+              current.chronicleStartMinute ?? null,
+            ),
+            chronicleStartGranularity: value(
+              "chronicleStartGranularity",
+              current.chronicleStartGranularity ?? "none",
+            ),
+            chronicleEndTime: value(
+              "chronicleEndTime",
+              current.chronicleEndTime ?? null,
+            ),
+            chronicleEndMinute: value(
+              "chronicleEndMinute",
+              current.chronicleEndMinute ?? null,
+            ),
+            chronicleEndGranularity: value(
+              "chronicleEndGranularity",
+              current.chronicleEndGranularity ?? "none",
+            ),
+            chroniclePrecision: value(
+              "chroniclePrecision",
+              current.chroniclePrecision ?? "exact",
+            ),
+            baseVersion: current.version,
+          },
+          { writeContext: options.writeContext },
+        );
+        const persisted = hideTreeWriteReceipt({
+          ...current,
+          ...data,
+          version: temporalResult.version,
+          updatedAt: temporalResult.updatedAt,
+          __writeReceipt: {
+            changeEventUid: temporalResult.changeEventUid,
+            maintenanceTransactionId: temporalResult.maintenanceTransactionId,
+            undoJournalId: temporalResult.undoJournalId,
+          },
+        });
+        publishPersistedTreeNodeMutation(persisted, workspaceIdentity);
+        return persisted;
+      }
+      const persisted = await patchTreeNodeNative(id, current.projectId, data, {
+        bumpVersion: false,
+        writeContext: options.writeContext,
+      });
+      publishPersistedTreeNodeMutation(persisted, workspaceIdentity);
+      return persisted;
+    });
+  const projectId = getCurrentProjectId();
+  if (data.content === undefined) {
+    return options.preexistingDraft === true
+      ? runTimelapseMutation(projectId, write, { preexistingDraft: true })
+      : runTimelapseMutation(projectId, write);
+  }
+  const documentIdentity: TimelapseDocumentIdentity = {
+    projectId,
+    domain: "editor",
+    entityType: "scene",
+    entityId: id,
+    storage: "database",
+  };
+  return runTimelapseBodyReplacement(
+    {
+      projectId,
+      documentIdentity,
+      ...(options.preexistingDraft === true ? { preexistingDraft: true } : {}),
+    },
+    {
+      commit: write,
+      didCommit: (committed) => committed !== undefined,
+      project: async (committed) => committed,
+    },
+  );
+}
+
+export async function deleteNode(
+  id: string,
+  projectId?: string,
+  options: { writeContext?: CanonicalWriteContext } = {},
+): Promise<CanonicalWriteReceipt | undefined> {
+  const current = await getNode(id);
+  const scopedProjectId = projectId ?? current?.projectId;
+  if (!scopedProjectId) return;
+  return runTimelapseMutation(scopedProjectId, async () => {
+    const writeContext = options.writeContext ?? createCanonicalWriteContext();
+    const result = await invoke<CanonicalWriteReceipt>("tree_node_delete", {
+      payload: {
+        projectId: scopedProjectId,
+        nodeId: id,
+        ...writeContext,
+        canonicalPayload: { id },
+      },
+    });
+    commitHistoryWriteContext(writeContext);
+    return treeWriteReceipt(result);
   });
 }
 
-export async function deleteNode(id: string): Promise<void> {
-  await db.delete(treeNodes).where(eq(treeNodes.id, id));
+export interface TemporalScenePatch {
+  storyTimeOrder: string | null;
+  storyTimeLabel: string | null;
+  chronicleStartTime: number | null;
+  chronicleStartMinute: number | null;
+  chronicleStartGranularity: string;
+  chronicleEndTime: number | null;
+  chronicleEndMinute: number | null;
+  chronicleEndGranularity: string;
+  chroniclePrecision: string;
+  baseVersion: number;
+}
+
+export interface TemporalScenePatchResult {
+  sceneId: string;
+  version: number;
+  updatedAt: string;
+  changeEventUid: string;
+  maintenanceTransactionId: string;
+  undoJournalId: string;
+}
+
+export async function updateTemporalScene(
+  projectId: string,
+  sceneId: string,
+  patch: TemporalScenePatch,
+  options: { writeContext?: CanonicalWriteContext } = {},
+): Promise<TemporalScenePatchResult> {
+  const writeContext = options.writeContext ?? createCanonicalWriteContext();
+  const result = await invoke<TemporalScenePatchResult>(
+    "temporal_scene_patch",
+    {
+      payload: {
+        ...writeContext,
+        projectId,
+        targetId: sceneId,
+        baseVersion: patch.baseVersion,
+        storyTimeOrder: patch.storyTimeOrder,
+        storyTimeLabel: patch.storyTimeLabel,
+        startTime: patch.chronicleStartTime,
+        startMinute: patch.chronicleStartMinute,
+        startGranularity: patch.chronicleStartGranularity,
+        endTime: patch.chronicleEndTime,
+        endMinute: patch.chronicleEndMinute,
+        endGranularity: patch.chronicleEndGranularity,
+        precision: patch.chroniclePrecision,
+      },
+    },
+  );
+  commitHistoryWriteContext(writeContext);
+  return result;
 }
 
 // --- Scene content operations ---
 
 export interface SaveScenePayload {
   content: string;
+  /** Optional explicit Project authority for callers outside the loaded UI. */
+  projectId?: string;
+  /** Accepted doc.step capability for the body represented by `content`. */
+  timelapseDocument?: TimelapseDocumentRef;
+  /** Structural identity used when a replacement fence is required. */
+  timelapseDocumentIdentity?: TimelapseDocumentIdentity;
+  /** Proof materialized by the central body runner immediately before commit. */
+  timelapseDocStepCoverage?: TimelapseCoverageProof;
   unplacedBeatsDoc?: string;
   charCount?: number;
   /** Loaded scene version for editor OCC. Omit for authoritative headless writers. */
   baseVersion?: number;
   /** Renderer-wide monotonic tree token shared with the native bundle. */
   updatedAt?: string;
+  writeContext?: CanonicalWriteContext | LegacyTreeRestoreWriteContext;
 }
 
 export class SceneContentConflictError extends Error {
@@ -337,13 +833,53 @@ export async function saveSceneContent(
   sceneId: string,
   payloadOrContent: string | SaveScenePayload,
 ): Promise<DerivedPreviews> {
-  // serializeSceneWrite で同一シーンの先行 write の後ろにチェーンし、
-  // 「発行順 = コミット順」を保証する（M3 async 化で UPDATE 同士が並行しうる）。
-  // チェーン entry は同期登録されるので、unmount cleanup からの fire-and-forget
-  // flush でも直後の load が pending を見える (awaitPendingSceneContentWrite は
-  // writeChains も待つ)。
-  return serializeSceneWrite(sceneId, () =>
-    saveSceneContentInner(sceneId, payloadOrContent),
+  const payload: SaveScenePayload =
+    typeof payloadOrContent === "string"
+      ? { content: payloadOrContent }
+      : payloadOrContent;
+  const projectId =
+    payload.projectId ??
+    payload.timelapseDocumentIdentity?.projectId ??
+    getCurrentProjectId();
+  const documentIdentity: TimelapseDocumentIdentity =
+    payload.timelapseDocumentIdentity ?? {
+      projectId,
+      domain: "editor",
+      entityType: "scene",
+      entityId: sceneId,
+      storage: "database",
+    };
+  const commit = (
+    coverage: TimelapseCoverageProof | undefined,
+  ): Promise<DerivedPreviews> =>
+    serializeSceneWrite(sceneId, () =>
+      saveSceneContentInner(
+        sceneId,
+        coverage ? { ...payload, timelapseDocStepCoverage: coverage } : payload,
+      ),
+    );
+
+  if (payload.timelapseDocument) {
+    return runTimelapseBodyWrite(
+      {
+        projectId,
+        coverageReceipt: payload.timelapseDocument,
+        documentIdentity,
+        content: payload.content,
+      },
+      {
+        commit,
+        project: async (committed) => committed,
+      },
+    );
+  }
+
+  return runTimelapseBodyReplacement(
+    { projectId, documentIdentity },
+    {
+      commit: () => commit(undefined),
+      project: async (committed) => committed,
+    },
   );
 }
 
@@ -383,12 +919,13 @@ export async function saveSceneContentInner(
 
   const contentUpdatedAt = payload.updatedAt ?? nextTreeNodeMutationTimestamp();
 
-  // Promise.resolve で drizzle の thenable を即 1 回だけ実行に固定してから
-  // track する（thenable のまま 2 箇所で await すると UPDATE が二重実行される）。
-  const write = Promise.resolve(
-    db
-      .update(treeNodes)
-      .set({
+  const write = (async () => {
+    const current = await getNode(sceneId);
+    if (!current) return [];
+    const persisted = await patchTreeNodeNative(
+      sceneId,
+      current.projectId,
+      {
         content: payload.content,
         ...(payload.unplacedBeatsDoc !== undefined && {
           unplacedBeatsDoc: payload.unplacedBeatsDoc,
@@ -398,27 +935,26 @@ export async function saveSceneContentInner(
           charCount: payload.charCount,
         }),
         placedBeatPreview,
-        // Editor saves provide the version observed at load time. Headless
-        // authoritative writers omit it and intentionally retain the legacy
-        // unconditional write contract.
-        version: sql`${treeNodes.version} + 1`,
+      },
+      {
+        baseVersion:
+          payload.baseVersion ??
+          (payload.writeContext ? current.version : undefined),
+        bumpVersion: true,
         updatedAt: contentUpdatedAt,
-      })
-      .where(
-        payload.baseVersion === undefined
-          ? eq(treeNodes.id, sceneId)
-          : and(
-              eq(treeNodes.id, sceneId),
-              eq(treeNodes.version, payload.baseVersion),
-            ),
-      )
-      .returning({
-        id: treeNodes.id,
-        projectId: treeNodes.projectId,
-        contentVersion: treeNodes.version,
-        contentUpdatedAt: treeNodes.updatedAt,
-      }),
-  );
+        writeContext: payload.writeContext,
+        timelapseDocStepCoverage: payload.timelapseDocStepCoverage,
+      },
+    );
+    return [
+      {
+        id: persisted.id,
+        projectId: persisted.projectId,
+        contentVersion: persisted.version,
+        contentUpdatedAt: persisted.updatedAt,
+      },
+    ];
+  })();
   trackSceneContentWrite(sceneId, write);
   const rows = await write;
   const persisted = rows[0];
@@ -499,31 +1035,28 @@ export async function saveSceneBeatsOnly(
   const unplacedBeatPreview = deriveUnplacedPreview(payload.unplacedBeatsDoc);
   const workspaceIdentity = getCurrentWorkspaceIdentity();
   // 同一 tree_nodes 行を書くため saveSceneContent と同じ per-scene チェーンに載せる。
-  const rows = await serializeSceneWrite(sceneId, () =>
-    Promise.resolve(
-      db
-        .update(treeNodes)
-        .set({
-          unplacedBeatsDoc: payload.unplacedBeatsDoc,
-          unplacedBeatPreview,
-          version: sql`${treeNodes.version} + 1`,
-          updatedAt: nextTreeNodeMutationTimestamp(),
-        })
-        .where(
-          and(
-            eq(treeNodes.id, sceneId),
-            eq(treeNodes.projectId, payload.projectId),
-            eq(treeNodes.version, payload.baseVersion),
-          ),
-        )
-        .returning({
-          id: treeNodes.id,
-          projectId: treeNodes.projectId,
-          contentVersion: treeNodes.version,
-          contentUpdatedAt: treeNodes.updatedAt,
-        }),
-    ),
-  );
+  const rows = await serializeSceneWrite(sceneId, async () => {
+    const persisted = await patchTreeNodeNative(
+      sceneId,
+      payload.projectId,
+      {
+        unplacedBeatsDoc: payload.unplacedBeatsDoc,
+        unplacedBeatPreview,
+      },
+      {
+        baseVersion: payload.baseVersion,
+        bumpVersion: true,
+      },
+    );
+    return [
+      {
+        id: persisted.id,
+        projectId: persisted.projectId,
+        contentVersion: persisted.version,
+        contentUpdatedAt: persisted.updatedAt,
+      },
+    ];
+  });
   const persisted = rows[0];
   if (!persisted) {
     throw new SceneContentConflictError(sceneId);
@@ -563,30 +1096,25 @@ export async function savePlacedBeatPreviewOnly(
 }> {
   const workspaceIdentity = getCurrentWorkspaceIdentity();
   // 同一 tree_nodes 行を書くため saveSceneContent と同じ per-scene チェーンに載せる。
-  const rows = await serializeSceneWrite(sceneId, () =>
-    Promise.resolve(
-      db
-        .update(treeNodes)
-        .set({
-          placedBeatPreview: payload.placedBeatPreview,
-          version: sql`${treeNodes.version} + 1`,
-          updatedAt: nextTreeNodeMutationTimestamp(),
-        })
-        .where(
-          and(
-            eq(treeNodes.id, sceneId),
-            eq(treeNodes.projectId, payload.projectId),
-            eq(treeNodes.version, payload.baseVersion),
-          ),
-        )
-        .returning({
-          id: treeNodes.id,
-          projectId: treeNodes.projectId,
-          contentVersion: treeNodes.version,
-          contentUpdatedAt: treeNodes.updatedAt,
-        }),
-    ),
-  );
+  const rows = await serializeSceneWrite(sceneId, async () => {
+    const persisted = await patchTreeNodeNative(
+      sceneId,
+      payload.projectId,
+      { placedBeatPreview: payload.placedBeatPreview },
+      {
+        baseVersion: payload.baseVersion,
+        bumpVersion: true,
+      },
+    );
+    return [
+      {
+        id: persisted.id,
+        projectId: persisted.projectId,
+        contentVersion: persisted.version,
+        contentUpdatedAt: persisted.updatedAt,
+      },
+    ];
+  });
   const persisted = rows[0];
   if (!persisted) {
     throw new SceneContentConflictError(sceneId);

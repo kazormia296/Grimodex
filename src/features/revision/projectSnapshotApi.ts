@@ -12,12 +12,10 @@ import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { createRevision } from "./api";
 import type { EntityType } from "./api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
-import {
-  rebaselineEntitiesAtTail,
-  type EntityBaselineRef,
-} from "@/features/timelapse/toggle";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
+import { runTimelapseBodyReplacement } from "@/features/timelapse/bodyWriteMode";
 import {
   emptySkipReport,
   fullRestoreScopeSet,
@@ -111,8 +109,14 @@ export async function createProjectSnapshot(params: {
   name: string;
   description?: string;
 }): Promise<{ id: string; entryCount: number }> {
+  return createProjectSnapshotForProject(params, getCurrentProjectId());
+}
+
+async function createProjectSnapshotForProject(
+  params: { name: string; description?: string },
+  projectId: string,
+): Promise<{ id: string; entryCount: number }> {
   const { name, description } = params;
-  const PROJECT_ID = getCurrentProjectId();
   const snapshotId = crypto.randomUUID();
   const now = new Date().toISOString();
 
@@ -121,7 +125,7 @@ export async function createProjectSnapshot(params: {
   const nodes = await db
     .select()
     .from(treeNodes)
-    .where(eq(treeNodes.projectId, PROJECT_ID));
+    .where(eq(treeNodes.projectId, projectId));
 
   const treeNodeRows: RawRow[] = [];
   const versionIds: string[] = [];
@@ -171,7 +175,7 @@ export async function createProjectSnapshot(params: {
   const codexRows = await db
     .select()
     .from(codexEntries)
-    .where(eq(codexEntries.projectId, PROJECT_ID));
+    .where(eq(codexEntries.projectId, projectId));
 
   const codexSnapRows: RawRow[] = [];
   for (const entry of codexRows) {
@@ -207,7 +211,7 @@ export async function createProjectSnapshot(params: {
   const snippetRows = await db
     .select()
     .from(snippets)
-    .where(eq(snippets.projectId, PROJECT_ID));
+    .where(eq(snippets.projectId, projectId));
 
   const snippetSnapRows: RawRow[] = [];
   for (const snippet of snippetRows) {
@@ -233,7 +237,7 @@ export async function createProjectSnapshot(params: {
   }
 
   await createNativeProjectSnapshot({
-    projectId: PROJECT_ID,
+    projectId,
     snapshotId,
     name,
     description: description ?? null,
@@ -310,67 +314,27 @@ export async function deleteProjectSnapshot(snapshotId: string): Promise<void> {
 
 export interface RestoreOptions {
   scopes?: ReadonlySet<RestoreScope>;
+  /** Reuse this operation id only when retrying the exact same restore. */
+  requestId?: string;
 }
 
-/**
- * Legacy path: only UPDATEs `content` for entities whose ID is still present.
- * Used for snapshots predating the structural-snapshot schema, and for the
- * regression test fixtures that pre-date this change.
- */
-async function restoreLegacyContentOnly(snapshotId: string): Promise<number> {
-  const entries = await db
-    .select({ versionId: projectSnapshotEntries.versionId })
-    .from(projectSnapshotEntries)
-    .where(eq(projectSnapshotEntries.snapshotId, snapshotId));
-  const versionIds = entries.map((e) => e.versionId);
-  if (versionIds.length === 0) return 0;
-
-  const versions = await db
-    .select()
-    .from(contentVersions)
-    .where(inArray(contentVersions.id, versionIds));
-
-  const now = new Date().toISOString();
-  let restored = 0;
-  for (const v of versions) {
-    if (v.entityType === "scene" || v.entityType === "note") {
-      await db
-        .update(treeNodes)
-        .set({
-          content: v.content,
-          // 権威的復元も scene 本文の writer — version を進めて pending prose
-          // proposal の stale 検知 (autoApplyProse) を働かせる。OCC 検査は
-          // 付けない (復元を version 衝突で失敗させてはいけない)。
-          // codex/snippet 側は bump しない: 両 store は in-memory に version
-          // 在庫を持つため、store 外から version を動かすと次の OCC 保存が
-          // 偽衝突する (scene は在庫を持たないのでこの問題がない)。
-          version: sql`${treeNodes.version} + 1`,
-          updatedAt: now,
-        })
-        .where(eq(treeNodes.id, v.entityId));
-    } else if (v.entityType === "codex_entry") {
-      await db
-        .update(codexEntries)
-        .set({ content: v.content, updatedAt: now })
-        .where(eq(codexEntries.id, v.entityId));
-    } else if (v.entityType === "snippet") {
-      await db
-        .update(snippets)
-        .set({ content: v.content, updatedAt: now })
-        .where(eq(snippets.id, v.entityId));
-    }
-    restored++;
-  }
-  return restored;
+interface RestoreAuthority {
+  requestId: string;
+  sessionId: string;
 }
 
 /** Build the dependency-safe insert plan; Rust owns wipe + transaction SQL. */
 async function restoreStructural(
+  projectId: string,
   snapshotId: string,
   scopes: ReadonlySet<RestoreScope>,
   context: ProjectSnapshotRestoreContext,
-): Promise<{ restoredCount: number; skipped: SkipReport }> {
-  const PROJECT_ID = getCurrentProjectId();
+  authority: RestoreAuthority,
+): Promise<{
+  restoredCount: number;
+  skipped: SkipReport;
+  canonicalSequence: number;
+}> {
   const skipped = emptySkipReport();
   const inserts: SnapshotInsertPlan[] = [];
 
@@ -429,7 +393,7 @@ async function restoreStructural(
       pushStmt(
         buildInsert("codex_entries", {
           id: row.entry_id as string,
-          project_id: PROJECT_ID,
+          project_id: projectId,
           parent_id: (row.parent_id as string | null) ?? null,
           type: row.type as string,
           name: row.name as string,
@@ -455,6 +419,9 @@ async function restoreStructural(
     for (const row of auxByScope.get("codex_detail_definitions") ?? []) {
       pushStmt(buildInsert("codex_detail_definitions", row));
     }
+    for (const row of auxByScope.get("codex_detail_semantic_bindings") ?? []) {
+      pushStmt(buildInsert("codex_detail_semantic_bindings", row));
+    }
     for (const row of auxByScope.get("codex_entry_tags") ?? []) {
       pushStmt(buildInsert("codex_entry_tags", row));
     }
@@ -472,6 +439,9 @@ async function restoreStructural(
     }
     for (const row of auxByScope.get("codex_dismissed_relations") ?? []) {
       pushStmt(buildInsert("codex_dismissed_relations", row));
+    }
+    for (const row of auxByScope.get("codex_relations") ?? []) {
+      pushStmt(buildInsert("codex_relations", row));
     }
   }
 
@@ -497,7 +467,7 @@ async function restoreStructural(
       pushStmt(
         buildInsert("tree_nodes", {
           id: row.node_id as string,
-          project_id: PROJECT_ID,
+          project_id: projectId,
           parent_id: (row.parent_id as string | null) ?? null,
           node_type: row.node_type as string,
           title: row.title as string,
@@ -640,7 +610,15 @@ async function restoreStructural(
       );
     }
     for (const row of auxByScope.get("scene_events") ?? []) {
-      pushStmt(buildInsert("scene_events", row));
+      pushStmt(
+        buildInsert("scene_events", {
+          ...row,
+          // A structural restore is a new physical association incarnation.
+          // Never revive the captured token: an older journal could otherwise
+          // mistake the restored row for the association it originally owned.
+          incarnation_token: crypto.randomUUID(),
+        }),
+      );
     }
     for (const row of auxByScope.get("event_participants") ?? []) {
       // codex_entry_id is NOT NULL FK. Codex unselected and entry missing → skip.
@@ -658,7 +636,10 @@ async function restoreStructural(
       pushStmt(buildInsert("event_relations", row));
     }
     for (const row of auxByScope.get("project_calendar") ?? []) {
-      pushStmt(buildInsert("project_calendar", row));
+      // The restore backend replaces this placeholder with a generation
+      // derived from trusted live/snapshot DB state. Snapshot versions are
+      // history, not valid write tokens for the restored Calendar.
+      pushStmt(buildInsert("project_calendar", { ...row, version: 0 }));
     }
   }
 
@@ -677,7 +658,7 @@ async function restoreStructural(
       pushStmt(
         buildInsert("snippets", {
           id: row.snippet_id as string,
-          project_id: PROJECT_ID,
+          project_id: projectId,
           title: row.title as string,
           scene_id: safeScene,
           source_chat_message_id:
@@ -730,6 +711,8 @@ async function restoreStructural(
 
   // foreshadow
   if (scopes.has("foreshadow")) {
+    const restoredSetupIds = new Set<string>();
+    const restoredPayoffIds = new Set<string>();
     for (const row of auxByScope.get("foreshadows") ?? []) {
       let payoffSceneId = (row.payoff_scene_id as string | null) ?? null;
       if (
@@ -755,6 +738,30 @@ async function restoreStructural(
         continue;
       }
       pushStmt(buildInsert("foreshadow_setups", row));
+      if (typeof row.id === "string") restoredSetupIds.add(row.id);
+    }
+    for (const row of auxByScope.get("foreshadow_payoffs") ?? []) {
+      if (
+        !scopes.has("body") &&
+        typeof row.scene_id === "string" &&
+        !liveTreeNodeIds.has(row.scene_id)
+      ) {
+        skipped.foreshadowPayoffs++;
+        continue;
+      }
+      pushStmt(buildInsert("foreshadow_payoffs", row));
+      if (typeof row.id === "string") restoredPayoffIds.add(row.id);
+    }
+    for (const row of auxByScope.get("foreshadow_setup_payoff_links") ?? []) {
+      if (
+        typeof row.setup_id !== "string" ||
+        typeof row.payoff_id !== "string" ||
+        !restoredSetupIds.has(row.setup_id) ||
+        !restoredPayoffIds.has(row.payoff_id)
+      ) {
+        continue;
+      }
+      pushStmt(buildInsert("foreshadow_setup_payoff_links", row));
     }
     for (const row of auxByScope.get("foreshadow_codex_links") ?? []) {
       // codex_entry_id is NOT NULL FK. Codex unselected and missing → skip.
@@ -866,143 +873,107 @@ async function restoreStructural(
     }
   }
 
-  await applyNativeProjectSnapshotRestore({
-    projectId: PROJECT_ID,
+  const applyResult = await applyNativeProjectSnapshotRestore({
+    requestId: authority.requestId,
+    sessionId: authority.sessionId,
+    projectId,
     snapshotId,
     scopes: [...scopes],
     inserts,
   });
-  return { restoredCount, skipped };
+  return {
+    restoredCount,
+    skipped,
+    canonicalSequence: applyResult.canonicalSequence,
+  };
 }
 
 /**
  * Restore a project snapshot. Saves a safety snapshot first so the user can
  * always undo. New (structural) snapshots restore tree structure + content
- * + ancillary tables; legacy snapshots fall back to content-only UPDATE.
+ * + ancillary tables through one Native aggregate. Legacy content-only
+ * snapshots are read-only until they gain the same atomic authority.
  *
  * `options.scopes` selects which scopes to restore (default: all). For
- * legacy snapshots `options.scopes` is ignored because legacy snapshots
- * only capture content.
+ * Legacy snapshots are listed and retained, but restore fails closed before
+ * creating a safety snapshot or dispatching any domain write.
  */
-/**
- * A project-snapshot restore rewrites tree_nodes/codex_entries/snippets content
- * directly in the DB — the editor never issues the corresponding doc.steps, so
- * the timelapse chain has NO record of the jump and the genesis baseline goes
- * stale (a subsequent doc.step then replays on the pre-restore doc and throws
- * `RangeError: Position out of range`). Fix: record the restore as a
- * `revision`/`snapshot.restore` event and re-anchor every scene's editor
- * baseline at the new chain tail so post-restore edits replay on the restored
- * doc. Runs BEFORE the caller's `window.location.reload()` while the recorder
- * is still bound to this project. Only touches editor baselines when body was
- * actually restored.
- */
-async function recordRestoreAndRebaseline(
-  snapshotId: string,
-  format: "legacy" | "structural",
-  restoredCount: number,
-  scopes: Set<RestoreScope>,
-): Promise<void> {
-  const projectId = getCurrentProjectId();
-  if (!projectId) return;
-  recordChangeEvent({
-    domain: "revision",
-    opType: "snapshot.restore",
-    entityType: "project_snapshot",
-    entityId: snapshotId,
-    payload: { snapshotId, format, restoredCount, scopes: [...scopes] },
-  });
-  // Re-anchor the baseline of every entity whose body this restore rewrote.
-  // A LEGACY restore replays content_versions for ALL entity types
-  // (restoreLegacyContentOnly writes scene/note/codex_entry/snippet bodies), so
-  // it must rebaseline codex/snippet too — not just scenes. A STRUCTURAL restore
-  // only rewrites a scope's body when that scope is selected (scene→"body",
-  // codex→"codex", snippet→"snippet"). A stale codex/snippet baseline throws the
-  // same post-restore RangeError as scenes once the entity is edited again.
-  const refs: EntityBaselineRef[] = [];
-  if (format === "legacy" || scopes.has("body")) {
-    const sceneRows = await db
-      .select({ id: treeNodes.id })
-      .from(treeNodes)
-      .where(
-        and(
-          eq(treeNodes.projectId, projectId),
-          eq(treeNodes.nodeType, "scene"),
-        ),
-      );
-    refs.push(...sceneRows.map((r) => ({ kind: "scene" as const, id: r.id })));
-  }
-  if (format === "legacy" || scopes.has("codex")) {
-    const codexRows = await db
-      .select({ id: codexEntries.id })
-      .from(codexEntries)
-      .where(eq(codexEntries.projectId, projectId));
-    refs.push(...codexRows.map((r) => ({ kind: "codex" as const, id: r.id })));
-  }
-  if (format === "legacy" || scopes.has("snippet")) {
-    const snippetRows = await db
-      .select({ id: snippets.id })
-      .from(snippets)
-      .where(eq(snippets.projectId, projectId));
-    refs.push(
-      ...snippetRows.map((r) => ({ kind: "snippet" as const, id: r.id })),
-    );
-  }
-  await rebaselineEntitiesAtTail(projectId, refs);
-}
-
 export async function restoreProjectSnapshot(
   snapshotId: string,
   snapshotName: string,
   options: RestoreOptions = {},
 ): Promise<RestoreResult> {
+  const projectId = getCurrentProjectId();
+  // Capture the authority tuple before the first await. Every dispatch made
+  // by this operation (including an exact retry supplied via options) uses
+  // one immutable request/session identity.
+  const authority: RestoreAuthority = {
+    requestId: options.requestId ?? crypto.randomUUID(),
+    sessionId: getRecorderSessionId(),
+  };
+  return runTimelapseBodyReplacement(
+    { projectId },
+    {
+      commit: () =>
+        runTreeTopologyMutation(() =>
+          restoreProjectSnapshotWithAuthority(
+            snapshotId,
+            snapshotName,
+            options,
+            authority,
+            projectId,
+          ),
+        ),
+      project: async (result) => result,
+    },
+  );
+}
+
+async function restoreProjectSnapshotWithAuthority(
+  snapshotId: string,
+  snapshotName: string,
+  options: RestoreOptions,
+  authority: RestoreAuthority,
+  projectId: string,
+): Promise<RestoreResult> {
   const scopes = options.scopes
     ? new Set<RestoreScope>(options.scopes)
     : fullRestoreScopeSet();
 
-  // 1. Safety snapshot (always full). The ISO timestamp suffix keeps the
-  // name unique per UNIQUE(project_id, name).
-  const safety = await createProjectSnapshot({
-    name: `Before restore to '${snapshotName}' (${new Date().toISOString()})`,
-  });
-
-  // 2. Load the project-scoped restore context through the typed native
+  // 1. Load the project-scoped restore context through the typed native
   // repository. The backend rejects snapshots owned by another project.
   const context = await loadNativeProjectSnapshotRestoreContext(
-    getCurrentProjectId(),
+    projectId,
     snapshotId,
     scopes,
   );
 
   if (!context.structural) {
-    const restoredCount = await restoreLegacyContentOnly(snapshotId);
-    await recordRestoreAndRebaseline(
-      snapshotId,
-      "legacy",
-      restoredCount,
-      scopes,
+    throw new Error(
+      "PROJECT_SNAPSHOT_LEGACY_RESTORE_REQUIRES_NATIVE_AGGREGATE",
     );
-    return {
-      restoredCount,
-      safetySnapshotId: safety.id,
-      format: "legacy",
-      skipped: emptySkipReport(),
-    };
   }
 
+  // 2. Safety snapshot (always full). The ISO timestamp suffix keeps the
+  // name unique per UNIQUE(project_id, name). This happens only after the
+  // target has proven eligible for the atomic Native restore path.
+  const safety = await createProjectSnapshotForProject(
+    {
+      name: `Before restore to '${snapshotName}' (${new Date().toISOString()})`,
+    },
+    projectId,
+  );
+
   const { restoredCount, skipped } = await restoreStructural(
+    projectId,
     snapshotId,
     scopes,
     context,
+    authority,
   );
   if (scopes.has("codex")) {
-    scheduleImeExportRefresh(getCurrentProjectId());
+    scheduleImeExportRefresh(projectId);
   }
-  await recordRestoreAndRebaseline(
-    snapshotId,
-    "structural",
-    restoredCount,
-    scopes,
-  );
   return {
     restoredCount,
     safetySnapshotId: safety.id,

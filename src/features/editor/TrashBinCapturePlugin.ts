@@ -139,12 +139,15 @@ export function createTrashBinCapturePlugin(): Plugin<TrashBinCaptureState> {
   let buffer: BackspaceBuffer | null = null;
   const participantId = nextTempId().replace("trash-pending", "trash-capture");
 
-  const flushCurrentBuffer = (preexistingDraft = false): void => {
+  const flushCurrentBuffer = (): void => {
     const current = buffer;
     if (!current) return;
-    flushBuffer(current, {
-      preexistingDraft: preexistingDraft && current.preexistingDraft,
-    });
+    if (isQuiescenceLeaseActive() && !current.preexistingDraft) {
+      throw new Error(
+        `Trash capture started during lifecycle lease: ${current.tempId}`,
+      );
+    }
+    flushBuffer(current, { preexistingDraft: current.preexistingDraft });
     if (buffer === current) buffer = null;
   };
 
@@ -237,6 +240,12 @@ export function createTrashBinCapturePlugin(): Plugin<TrashBinCaptureState> {
         //  パターンで Replace 判定に委ねる。今回は Replace 規則に任せる)
 
         for (const tr of transactions) {
+          // TipTap marks `setContent(..., { emitUpdate: false })` with
+          // preventUpdate. Whole-document projection can contain an empty
+          // paragraph replacement, which looks like a deletion to a
+          // ReplaceStep but is not user-authored text removal. Inline AI
+          // rollback uses the same marker for its programmatic cleanup.
+          if (tr.getMeta("preventUpdate") === true) continue;
           if (tr.getMeta("programmaticDelete") === true) continue;
           if (tr.getMeta(META_SKIP) === true) continue;
 
@@ -336,11 +345,11 @@ export function createTrashBinCapturePlugin(): Plugin<TrashBinCaptureState> {
       let unregister = () => {};
       const participant = {
         id: participantId,
-        flush: async (options?: { preexistingDraft?: boolean }) => {
+        flush: async () => {
           // participant stage precedes the trash store's scoped-mutations
           // provider, so the latter can durably drain this newly transferred
           // pre-lease deletion in the same strict lifecycle.
-          flushCurrentBuffer(options?.preexistingDraft === true);
+          flushCurrentBuffer();
           if (!mounted && !buffer) unregister();
         },
         discard: () => {

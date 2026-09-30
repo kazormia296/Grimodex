@@ -1,0 +1,324 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-scope-relation-contract",
+  "adr": "docs/adr/009-narrative-scope-relation-contract.md",
+  "scopeSchemaVersion": 2,
+  "registryVersion": "narrative-scope/2",
+  "historicalAuthorityBasis": {
+    "contractId": "narrative-scope-authority-basis/2",
+    "schema": "policies/narrative/schemas/narrative-scope-authority-basis-v2.schema.json",
+    "futureCarrierArtifactKind": "source.snapshot@2",
+    "basisKind": "historical-run-snapshot",
+    "sourceKind": "snapshot-document",
+    "sourceKeyPattern": "snapshot:<runId>",
+    "currentOracle": false,
+    "runtimeStopCode": "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE",
+    "v1Compatibility": {
+      "implicitUpgrade": "forbidden",
+      "rebuildRequired": true
+    },
+    "implementationStatus": {
+      "state": "shadow",
+      "productionEntryPoints": [
+        "runChronicleExtractionCoordinator",
+        "persist_historical_scope_authority_basis_in_tx",
+        "load_historical_scope_authority_basis"
+      ],
+      "blockedOn": ["c2b-scope-override-wiring"]
+    }
+  },
+  "liveProjectAuthority": {
+    "contractId": "narrative-project-scope-authority-revision/1",
+    "basisKind": "computed-live-project-tree",
+    "sourceKind": "project-scope-authority",
+    "sourceKeyPattern": "project:scope-authority:<projectId>",
+    "persistence": "computed-no-table-or-head",
+    "scopeOverrideActive": true,
+    "runtimeStopCode": "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE",
+    "implementationStatus": {
+      "state": "wired",
+      "productionEntryPoints": [
+        "build_narrative_project_scope_authority_v1",
+        "load_live_project_scope_authority",
+        "create_human_derived_revision_with_c2b_projection_materialization_auto",
+        "run_incremental_freshness_cycle",
+        "rebuild_narrative_derived_state_for_project"
+      ],
+      "blockedOn": []
+    }
+  },
+  "implementationStatus": {
+    "state": "declared",
+    "productionEntryPoints": [],
+    "scanRoots": [
+      "src/features/narrative-semantic-core",
+      "src/features/narrative-extraction",
+      "src-tauri/crates/grimodex-db/src/narrative_extraction"
+    ],
+    "productionMarkers": [
+      "NARRATIVE_SCOPE_V2_SCHEMA_VERSION",
+      "compareNarrativeScopeV2",
+      "compare_narrative_scope_v2"
+    ],
+    "blockedOn": [
+      "scope-v2-contract-adapter",
+      "scope-order-oracle",
+      "disclosure-shadow-wiring"
+    ],
+    "capabilities": {
+      "structuralValidation": {
+        "state": "declared",
+        "productionEntryPoints": [],
+        "blockedOn": ["scope-v2-contract-adapter"]
+      },
+      "relationComparison": {
+        "state": "declared",
+        "productionEntryPoints": [],
+        "blockedOn": ["scope-order-oracle"]
+      },
+      "disclosureAdmission": {
+        "state": "declared",
+        "productionEntryPoints": [],
+        "blockedOn": ["disclosure-shadow-wiring"]
+      }
+    }
+  },
+  "adoptionTrack": {
+    "id": "scope-disclosure-adoption",
+    "owner": "adr-009-scope-contract",
+    "independentFrom": "narrative-ir-contract",
+    "states": ["declared", "shadow", "wired"],
+    "lifecycleAuthority": "adr-009-scope-contract",
+    "firstLikelyConsumer": "NIR-1 pre-ranking disclosure",
+    "nir1OwnsLifecycle": false,
+    "productionEntryPointPolicy": "declared-is-empty-entry-points"
+  },
+  "axes": [
+    {
+      "id": "timeline",
+      "axisKind": "reference",
+      "allowedKinds": ["any", "exact", "unresolved"]
+    },
+    {
+      "id": "worldline",
+      "axisKind": "reference",
+      "allowedKinds": ["any", "exact", "unresolved"]
+    },
+    {
+      "id": "scene",
+      "axisKind": "reference",
+      "allowedKinds": ["any", "exact", "unresolved"]
+    },
+    {
+      "id": "viewpoint",
+      "axisKind": "reference",
+      "allowedKinds": ["any", "exact", "unresolved"]
+    },
+    {
+      "id": "knowledgeHolder",
+      "axisKind": "reference",
+      "allowedKinds": ["any", "exact", "unresolved"]
+    },
+    {
+      "id": "audience",
+      "axisKind": "reference",
+      "allowedKinds": ["any", "exact", "unresolved"],
+      "reservedRefs": ["reader"]
+    },
+    {
+      "id": "narrativeLayer",
+      "axisKind": "reference",
+      "allowedKinds": ["any", "exact", "unresolved"]
+    },
+    {
+      "id": "storyTime",
+      "axisKind": "temporal",
+      "allowedKinds": ["any", "interval", "unresolved"]
+    },
+    {
+      "id": "readingOrder",
+      "axisKind": "temporal",
+      "allowedKinds": ["any", "interval", "unresolved"]
+    }
+  ],
+  "unresolvedReasons": [
+    "not-provided",
+    "ambiguous",
+    "missing-reference",
+    "unsupported-axis",
+    "legacy-axis-unknown"
+  ],
+  "unresolvedSemantics": {
+    "meaning": "constrained-but-specific-value-unresolved",
+    "futureAnyPolicy": "scope-revision-required",
+    "equalityPolicy": "same-scope-revision-or-stable-constraint-id",
+    "reasonAloneEstablishesIdentity": false
+  },
+  "legalScope": {
+    "allAxesRequired": true,
+    "constraintsRepresentNonEmptySets": true,
+    "emptyResolutionOutcome": "validation-failure",
+    "intervalRequiresBoundary": true,
+    "emptyReferencePolicy": "forbid"
+  },
+  "relations": [
+    "equal",
+    "contains",
+    "contained-by",
+    "overlaps",
+    "disjoint",
+    "unknown"
+  ],
+  "relationSemantics": {
+    "classification": "strongest-established-knowledge",
+    "containsIsStrict": false,
+    "containedByIsStrict": false,
+    "overlapsRequiresEstablishedNonEmptyIntersection": true,
+    "conflictingProofPolicy": "fail-closed-contract-error"
+  },
+  "basicRelationFixtures": [
+    {
+      "id": "any-vs-any-is-equal",
+      "leftKind": "any",
+      "rightKind": "any",
+      "expected": "equal"
+    },
+    {
+      "id": "any-vs-exact-is-contains",
+      "leftKind": "any",
+      "rightKind": "exact",
+      "expected": "contains"
+    },
+    {
+      "id": "any-vs-unresolved-is-contains",
+      "leftKind": "any",
+      "rightKind": "unresolved",
+      "expected": "contains"
+    },
+    {
+      "id": "unresolved-vs-any-is-contained-by",
+      "leftKind": "unresolved",
+      "rightKind": "any",
+      "expected": "contained-by"
+    },
+    {
+      "id": "same-unresolved-reason-is-not-identity",
+      "leftKind": "unresolved",
+      "rightKind": "unresolved",
+      "sameReason": true,
+      "sameConstraintIdentity": false,
+      "expected": "unknown"
+    },
+    {
+      "id": "same-unresolved-constraint-id-is-equal",
+      "leftKind": "unresolved",
+      "rightKind": "unresolved",
+      "sameReason": true,
+      "sameConstraintIdentity": true,
+      "expected": "equal"
+    }
+  ],
+  "compositionPrecedence": [
+    "any-axis-disjoint=>disjoint",
+    "no-disjoint-and-any-axis-unknown=>unknown",
+    "all-axes-equal=>equal",
+    "all-equal-or-contains-and-at-least-one-contains=>contains",
+    "all-equal-or-contained-by-and-at-least-one-contained-by=>contained-by",
+    "all-intersections-non-empty-and-neither-whole-containment=>overlaps",
+    "otherwise=>unknown"
+  ],
+  "canonicalization": {
+    "digestAlgorithm": "sha256-canonical-json",
+    "includes": [
+      "json-key-order",
+      "all-required-axis-fields",
+      "explicit-inclusive-flags",
+      "at-least-one-interval-boundary",
+      "non-empty-references",
+      "axis-kind-constraint-kind-consistency"
+    ],
+    "excludes": [
+      "from-before-until-order",
+      "worldline-containment-or-exclusion",
+      "narrative-layer-parentage",
+      "cross-reference-equivalence"
+    ]
+  },
+  "oracleContract": {
+    "orderAxes": ["storyTime", "readingOrder"],
+    "compareResults": [-1, 0, 1, "unresolved"],
+    "revisionTokenRequired": true,
+    "basisRequiredWheneverOracleOrRegistryUsed": true,
+    "basisRequiredRelations": [
+      "equal",
+      "contains",
+      "contained-by",
+      "overlaps",
+      "disjoint",
+      "unknown"
+    ],
+    "structuralResultMayPersistWithoutBasis": true
+  },
+  "assertionScopeProfiles": [
+    {
+      "assertionKind": "character-state",
+      "axes": {
+        "scene": {
+          "axisKind": "reference",
+          "allowedKinds": ["any", "unresolved"]
+        },
+        "storyTime": {
+          "axisKind": "temporal",
+          "allowedKinds": ["interval", "unresolved"],
+          "resolutionRequiredBy": "before-apply"
+        }
+      }
+    },
+    {
+      "assertionKind": "scene-event",
+      "axes": {
+        "scene": {
+          "axisKind": "reference",
+          "allowedKinds": ["exact", "unresolved"],
+          "resolutionRequiredBy": "before-review"
+        }
+      }
+    }
+  ],
+  "consumerPolicies": [
+    {
+      "consumer": "retrieval-disclosure",
+      "automaticRelations": ["equal", "contains"],
+      "unknownPolicy": "reject-before-ranking"
+    },
+    {
+      "consumer": "review-reuse",
+      "automaticRelations": ["equal"],
+      "unknownPolicy": "review-only"
+    },
+    {
+      "consumer": "correction-memory",
+      "automaticRelations": ["equal", "contains"],
+      "additionalBasisRequired": true,
+      "unknownPolicy": "review-only"
+    },
+    {
+      "consumer": "contradiction-diagnostic",
+      "automaticRelations": ["equal", "contains", "contained-by", "overlaps"],
+      "unknownPolicy": "scope-unresolved-conflict-candidate"
+    }
+  ],
+  "v1Compatibility": {
+    "currentType": "src/features/narrative-semantic-core/contracts/scope.ts#NarrativeScope",
+    "migrationRequiredNow": false,
+    "adapterPurpose": "short-lived-code-and-fixture-compatibility",
+    "ambiguousTemporalAxisPolicy": "map-both-story-time-and-reading-order-to-unresolved",
+    "implicitGlobalPolicy": "forbid"
+  },
+  "nonEffects": [
+    "truth-verdict",
+    "automatic-retraction",
+    "automatic-merge-or-split",
+    "automatic-domain-mutation"
+  ]
+}

@@ -102,6 +102,44 @@ describe("chronicle commands", () => {
     });
   });
 
+  it("carries the preexisting-draft permit only for an explicit real-event save", async () => {
+    const commandPorts = ports();
+
+    await patchChronicleItem(
+      { kind: "event", id: "event-1" },
+      { detail: "queued detail" },
+      commandPorts,
+      { baseVersion: 7, preexistingDraft: true },
+    );
+
+    expect(commandPorts.event.update).toHaveBeenCalledWith(
+      {
+        eventId: "event-1",
+        detail: "queued detail",
+        baseVersion: 7,
+      },
+      { preexistingDraft: true },
+    );
+  });
+
+  it("carries the preexisting-draft permit through a scene synopsis save", async () => {
+    const commandPorts = ports();
+
+    await patchChronicleItem(
+      { kind: "scene", id: "scene-1" },
+      { note: "queued synopsis" },
+      commandPorts,
+      { preexistingDraft: true },
+    );
+
+    expect(commandPorts.scene.updateSynopsis).toHaveBeenCalledWith(
+      "scene-1",
+      "queued synopsis",
+      { preexistingDraft: true },
+    );
+    expect(commandPorts.event.update).not.toHaveBeenCalled();
+  });
+
   it("clears scene dates instead of deleting the scene", async () => {
     const commandPorts = ports();
     await deleteChronicleItem({ kind: "scene", id: "scene-1" }, commandPorts);

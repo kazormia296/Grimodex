@@ -28,6 +28,7 @@ describe("exportRecoveryDrafts", () => {
       {
         stage: "external-write-back",
         error: new Error("secret prose in SQL params"),
+        originalError: new Error("secret prose in SQL params"),
       },
     ]);
 

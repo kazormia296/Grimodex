@@ -37,7 +37,7 @@ export interface ChronicleToolbarProps {
   disabled?: boolean;
   onNew: () => void;
   onExtract: () => void;
-  onSaveCalendar: (cal: ChronicleCalendar) => void;
+  onSaveCalendar: (cal: ChronicleCalendar) => void | Promise<void>;
   onToggleLock: () => void;
   onGotoConflict: () => void;
   onToggleEdges: () => void;
@@ -75,8 +75,12 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
   const { t } = useTranslation();
   const calBtnRef = useRef<HTMLButtonElement>(null);
   const [calOpen, setCalOpen] = useState(false);
+  const [calendarSaving, setCalendarSaving] = useState(false);
   useEffect(() => {
-    if (props.disabled) setCalOpen(false);
+    if (props.disabled) {
+      setCalendarSaving(false);
+      setCalOpen(false);
+    }
   }, [props.disabled]);
   const nextDensity = () =>
     props.onSetDensity(
@@ -123,9 +127,12 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
         <div className="mx-0.5 h-5 w-px bg-border" />
         <button
           type="button"
+          data-testid="toolbar-calendar"
           ref={calBtnRef}
-          onClick={() => setCalOpen((o) => !o)}
-          disabled={props.disabled}
+          onClick={() => {
+            if (!calendarSaving) setCalOpen((open) => !open);
+          }}
+          disabled={props.disabled || calendarSaving}
           className={toggleCls(calOpen)}
           title={
             hasCalendar
@@ -145,7 +152,11 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
           open={calOpen}
           initial={props.calendar}
           onSave={props.onSaveCalendar}
-          onClose={() => setCalOpen(false)}
+          onClose={() => {
+            setCalendarSaving(false);
+            setCalOpen(false);
+          }}
+          onSavingChange={setCalendarSaving}
         />
         <button
           type="button"

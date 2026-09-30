@@ -8,12 +8,16 @@ const {
   mockRemoveCodexLink,
   mockListCodexEntriesByForeshadow,
   mockListCodexEntries,
+  mockGetForeshadowState,
+  mockPublishAuthoritativeForeshadowRows,
 } = vi.hoisted(() => ({
   mockUpdate: vi.fn().mockResolvedValue(undefined),
-  mockAddCodexLink: vi.fn().mockResolvedValue(undefined),
-  mockRemoveCodexLink: vi.fn().mockResolvedValue(undefined),
+  mockAddCodexLink: vi.fn(),
+  mockRemoveCodexLink: vi.fn(),
   mockListCodexEntriesByForeshadow: vi.fn().mockResolvedValue([]),
   mockListCodexEntries: vi.fn().mockResolvedValue([]),
+  mockGetForeshadowState: vi.fn(),
+  mockPublishAuthoritativeForeshadowRows: vi.fn(),
 }));
 
 vi.mock("./api", () => ({
@@ -27,7 +31,10 @@ vi.mock("@/features/codex/api", () => ({
 }));
 
 vi.mock("./foreshadowStore", () => ({
-  useForeshadowStore: () => ({ update: mockUpdate }),
+  useForeshadowStore: Object.assign(() => ({ update: mockUpdate }), {
+    getState: mockGetForeshadowState,
+  }),
+  publishAuthoritativeForeshadowRows: mockPublishAuthoritativeForeshadowRows,
 }));
 
 vi.mock("./foreshadowNavStore", () => ({
@@ -74,6 +81,7 @@ function makeItem(
     abandoned: false,
     secret: true,
     loadBearing: null,
+    version: 0,
     createdAt: new Date(),
     updatedAt: new Date(),
     label: "planned",
@@ -109,8 +117,12 @@ describe("EditForeshadowDialog", () => {
     mockUpdate.mockClear();
     mockAddCodexLink.mockClear();
     mockRemoveCodexLink.mockClear();
+    mockPublishAuthoritativeForeshadowRows.mockClear();
     mockListCodexEntriesByForeshadow.mockResolvedValue([]);
     mockListCodexEntries.mockResolvedValue([]);
+    mockGetForeshadowState.mockReturnValue({ items: [makeItem()] });
+    mockAddCodexLink.mockResolvedValue(makeItem({ version: 1 }));
+    mockRemoveCodexLink.mockResolvedValue(makeItem({ version: 1 }));
   });
 
   it("open=false のとき何も表示しない", () => {
@@ -336,7 +348,10 @@ describe("EditForeshadowDialog", () => {
       fireEvent.click(screen.getByTestId("edit-foreshadow-unlink-codex-c-1"));
       fireEvent.click(screen.getByTestId("edit-foreshadow-save"));
       await waitFor(() => expect(onClose).toHaveBeenCalled());
-      expect(mockRemoveCodexLink).toHaveBeenCalledWith("f-1", "c-1");
+      expect(mockRemoveCodexLink).toHaveBeenCalledWith("f-1", "c-1", 0);
+      expect(mockPublishAuthoritativeForeshadowRows).toHaveBeenCalledWith([
+        expect.objectContaining({ id: "f-1", version: 1 }),
+      ]);
       expect(mockUpdate).not.toHaveBeenCalled();
     });
 
@@ -365,7 +380,10 @@ describe("EditForeshadowDialog", () => {
       fireEvent.click(screen.getByTestId("edit-foreshadow-codex-option-c-2"));
       fireEvent.click(screen.getByTestId("edit-foreshadow-save"));
       await waitFor(() => expect(onClose).toHaveBeenCalled());
-      expect(mockAddCodexLink).toHaveBeenCalledWith("f-1", "c-2");
+      expect(mockAddCodexLink).toHaveBeenCalledWith("f-1", "c-2", 0);
+      expect(mockPublishAuthoritativeForeshadowRows).toHaveBeenCalledWith([
+        expect.objectContaining({ id: "f-1", version: 1 }),
+      ]);
       expect(mockUpdate).not.toHaveBeenCalled();
     });
 
@@ -418,7 +436,7 @@ describe("EditForeshadowDialog", () => {
       fireEvent.click(screen.getByTestId("edit-foreshadow-save"));
       await waitFor(() => expect(onClose).toHaveBeenCalled());
       expect(mockUpdate).not.toHaveBeenCalled();
-      expect(mockAddCodexLink).toHaveBeenCalledWith("f-1", "c-3");
+      expect(mockAddCodexLink).toHaveBeenCalledWith("f-1", "c-3", 0);
     });
   });
 });

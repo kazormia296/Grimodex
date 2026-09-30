@@ -9,6 +9,7 @@
  * 実ブラウザで getBoundingClientRect() を測って assert し、CI で恒久ガードする。
  */
 import { describe, it, expect } from "vitest";
+import { page } from "vitest/browser";
 import { useMemo, useState } from "react";
 import { act, fireEvent, render } from "@testing-library/react";
 import { ChronicleViewport } from "./ChronicleViewport";
@@ -290,6 +291,39 @@ async function settleBrowserLayout() {
 }
 
 describe("ChronicleViewport geometry (real Chromium)", () => {
+  it("実際の中ボタン release を取消し、パンで既定の paste を起動しない", async () => {
+    const mounted = mount();
+    await settleBrowserLayout();
+    const track = document.getElementById("chronicle-track")!;
+    const releases: MouseEvent[] = [];
+    const pastes: Event[] = [];
+    const onUp = (event: MouseEvent) => releases.push(event);
+    const onPaste = (event: Event) => pastes.push(event);
+    document.addEventListener("mouseup", onUp);
+    document.addEventListener("paste", onPaste);
+    try {
+      await act(async () => {
+        await page.elementLocator(track).click({
+          button: "middle",
+          position: { x: 100, y: 100 },
+        });
+      });
+      expect(releases).toHaveLength(1);
+      expect(releases[0].isTrusted).toBe(true);
+      expect(releases[0].button).toBe(1);
+      expect(releases[0].defaultPrevented).toBe(true);
+      expect(pastes).toHaveLength(0);
+      expect(
+        mounted.getByTestId("chronicle-middle-pan-cursor-overlay").hidden,
+      ).toBe(true);
+    } finally {
+      document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("paste", onPaste);
+      mounted.unmount();
+      mounted.host.remove();
+    }
+  });
+
   it("長距離pan中にoverscan境界前で再投影し、新viewportのmarkerをmouseup前に描く", async () => {
     const host = document.createElement("div");
     host.style.width = `${800 + densitySpacing("standard").gutterX}px`;

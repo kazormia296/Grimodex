@@ -1,8 +1,9 @@
 /**
  * セキュリティポリシー（設計書 §5.1）。
  *
- * - will-navigate 全拒否（dev URL の同一 origin リロードのみ許可 —
- *   dragDropEnabled:false 相当のファイルドロップ航行防止を兼ねる）
+ * - will-navigate は trusted renderer の同一 origin リロードだけ許可
+ *   （production の app://bundle と dev URL — dragDropEnabled:false 相当の
+ *   ファイルドロップ航行防止を兼ねる）
  * - setWindowOpenHandler は deny（http/https のみ scheme 検証後 shell.openExternal）
  * - permission は trusted renderer の notification / clipboard write のみ許可
  */
@@ -17,12 +18,36 @@ const ALLOWED_RENDERER_PERMISSIONS = new Set([
   "clipboard-sanitized-write",
 ]);
 
+let assertExternalEgressAllowed: () => void = () => {
+  throw new Error("D2A_EGRESS_DENIED: startup gate unavailable");
+};
+
+/** Main startup supplies the Native-backed D2a URL publication gate. */
+export function setExternalEgressGate(
+  assertion: (() => void) | null | undefined,
+): void {
+  assertExternalEgressAllowed =
+    assertion ??
+    (() => {
+      throw new Error("D2A_EGRESS_DENIED: startup gate unavailable");
+    });
+}
+
 /** dev サーバー URL と同一 origin か（リロード / HMR フルリロード用の例外）。 */
 export function isAllowedNavigation(url: string): boolean {
   const rendererUrl = process.env.ELECTRON_RENDERER_URL;
-  if (!rendererUrl) return false;
   try {
-    return new URL(url).origin === new URL(rendererUrl).origin;
+    const parsed = new URL(url);
+    if (!rendererUrl) {
+      return (
+        parsed.protocol === `${APP_PROTOCOL_SCHEME}:` &&
+        parsed.host === APP_BUNDLE_HOST &&
+        parsed.username === "" &&
+        parsed.password === "" &&
+        parsed.pathname === "/index.html"
+      );
+    }
+    return parsed.origin === new URL(rendererUrl).origin;
   } catch {
     return false;
   }
@@ -69,6 +94,7 @@ export function isAllowedRendererPermission(options: {
 
 function openExternalIfAllowed(url: string): void {
   try {
+    assertExternalEgressAllowed?.();
     if (ALLOWED_EXTERNAL_PROTOCOLS.has(new URL(url).protocol)) {
       void shell.openExternal(url);
     }

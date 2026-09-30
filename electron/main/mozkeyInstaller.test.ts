@@ -5,6 +5,11 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("electron", () => ({
+  app: { getPath: vi.fn(() => "mock-user-data") },
+  shell: { openPath: vi.fn().mockResolvedValue("") },
+}));
+
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
 
 const roots: string[] = [];

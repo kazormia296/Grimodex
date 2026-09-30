@@ -6,7 +6,8 @@ import {
   type CodexEntryPhase,
   type CodexPhaseDetailOverride,
 } from "@/db/schema";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
+import { invoke } from "@/lib/tauri";
 import {
   clearImpactBaselinePhaseDeletion,
   markImpactBaselinePhasesRestricted,
@@ -14,11 +15,28 @@ import {
   markImpactBaselinePhaseVisibleDeleted,
 } from "./impactBaselineVisibility";
 import { PhaseVersionConflictError } from "./phaseOcc";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+} from "@/features/native-writes/writeContext";
+import { runTimelapseMutation } from "@/features/timelapse/bodyWriteMode";
 
 export type { CodexEntryPhase, CodexPhaseDetailOverride };
 
 function isAiVisibleMode(mode: unknown): boolean {
   return mode === "always" || mode === "mentioned";
+}
+
+async function resolveEntryProjectId(
+  entryId: string,
+): Promise<string | undefined> {
+  return (
+    await db
+      .select({ projectId: codexEntries.projectId })
+      .from(codexEntries)
+      .where(eq(codexEntries.id, entryId))
+      .limit(1)
+  )[0]?.projectId;
 }
 
 async function entryPhaseSetIsProvablyVisible(
@@ -87,44 +105,60 @@ type CreatePhaseData = {
 
 export async function createPhase(
   data: CreatePhaseData,
+  options: { writeContext?: CanonicalWriteContext } = {},
 ): Promise<CodexEntryPhase> {
-  const contextMode = data.contextModeOverride ?? null;
-  if (contextMode !== null && !isAiVisibleMode(contextMode)) {
-    // Restriction inheritance can affect every later baseline phase. Persist
-    // the fail-closed marker before the row becomes active.
-    await markImpactBaselinePhasesRestricted(data.entryId);
+  let projectId = await resolveEntryProjectId(data.entryId);
+  if (!projectId) {
+    throw new Error(`Codex entry '${data.entryId}' not found`);
   }
-  const now = new Date().toISOString();
-  const createdAt = data.createdAt ?? now;
-  let rows: CodexEntryPhase[];
-  try {
-    rows = await db
-      .insert(codexEntryPhases)
-      .values({
-        id: data.id,
-        entryId: data.entryId,
-        anchorNodeId: data.anchorNodeId ?? null,
-        label: data.label,
-        summaryOverride: data.summaryOverride ?? null,
-        contentOverride: data.contentOverride ?? null,
-        contextModeOverride: data.contextModeOverride ?? null,
-        version: data.version ?? 0,
-        createdAt,
-        updatedAt: data.updatedAt ?? createdAt,
-      })
-      .returning();
-  } catch (error) {
-    // History resurrection must never overwrite/reuse an id that appeared
-    // after the original row was deleted. Preserve unrelated DB errors.
-    const existing = await getPhase(data.id).catch(() => undefined);
-    if (existing) throw new PhaseVersionConflictError(data.id);
-    throw error;
-  }
-  const created = rows[0];
-  if (!created) {
-    throw new Error(`Failed to create Phase '${data.id}'`);
-  }
-  if (created) {
+  return runTimelapseMutation(projectId, async () => {
+    if (Object.prototype.hasOwnProperty.call(data, "contentOverride")) {
+      const recheckedProjectId = await resolveEntryProjectId(data.entryId);
+      if (!recheckedProjectId || recheckedProjectId !== projectId) {
+        throw new Error(
+          `Codex entry '${data.entryId}' changed Project while Phase creation waited`,
+        );
+      }
+      projectId = recheckedProjectId;
+    }
+    const contextMode = data.contextModeOverride ?? null;
+    if (contextMode !== null && !isAiVisibleMode(contextMode)) {
+      // Restriction inheritance can affect every later baseline phase. Persist
+      // the fail-closed marker before the row becomes active.
+      await markImpactBaselinePhasesRestricted(data.entryId);
+    }
+    const createdAt = data.createdAt ?? new Date().toISOString();
+    let rows: CodexEntryPhase[];
+    try {
+      await invoke("codex_mutate", {
+        payload: {
+          operation: "phase.create",
+          projectId,
+          ...(options.writeContext ?? createCanonicalWriteContext()),
+          surface: "manual",
+          phaseId: data.id,
+          entryId: data.entryId,
+          anchorNodeId: data.anchorNodeId ?? null,
+          label: data.label,
+          summaryOverride: data.summaryOverride ?? null,
+          contentOverride: data.contentOverride ?? null,
+          contextModeOverride: data.contextModeOverride ?? null,
+          version: data.version ?? 0,
+          createdAt,
+          detailOverrides: [],
+        },
+      });
+      const created = await getPhase(data.id);
+      rows = created ? [created] : [];
+    } catch (error) {
+      const existing = await getPhase(data.id).catch(() => undefined);
+      if (existing) throw new PhaseVersionConflictError(data.id);
+      throw error;
+    }
+    const created = rows[0];
+    if (!created) {
+      throw new Error(`Failed to create Phase '${data.id}'`);
+    }
     if (isAiVisibleMode(contextMode)) {
       // Failure only leaves a conservative stale restriction marker.
       await markImpactBaselinePhaseVisible(data.entryId, data.id).catch(
@@ -135,8 +169,8 @@ export async function createPhase(
         () => {},
       );
     }
-  }
-  return created;
+    return created;
+  });
 }
 
 export async function updatePhase(
@@ -151,48 +185,76 @@ export async function updatePhase(
       | "contextModeOverride"
     >
   >,
-  opts: { baseVersion: number },
+  opts: { baseVersion: number; preexistingDraft?: boolean },
 ): Promise<CodexEntryPhase | undefined> {
   const changesContextMode = Object.prototype.hasOwnProperty.call(
     data,
     "contextModeOverride",
   );
-  const current = changesContextMode ? await getPhase(id) : undefined;
-  if (changesContextMode && !current) return undefined;
-  const nextContextMode = data.contextModeOverride;
-  if (current && changesContextMode && !isAiVisibleMode(nextContextMode)) {
-    // null is inherited and therefore not proof of visibility.
-    await markImpactBaselinePhasesRestricted(current.entryId);
-  }
-  const rows = await db
-    .update(codexEntryPhases)
-    .set({
-      ...data,
-      version: opts.baseVersion + 1,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(
-      and(
-        eq(codexEntryPhases.id, id),
-        eq(codexEntryPhases.version, opts.baseVersion),
-      ),
-    )
-    .returning();
-  const updated = rows[0];
-  if (!updated) {
-    const exists = await db
-      .select({ id: codexEntryPhases.id })
-      .from(codexEntryPhases)
-      .where(eq(codexEntryPhases.id, id))
-      .limit(1);
-    if (exists[0]) throw new PhaseVersionConflictError(id);
-    return undefined;
-  }
-  if (updated && changesContextMode && isAiVisibleMode(nextContextMode)) {
-    // Post-write failure remains fail-closed: Impact will keep redacting.
-    await markImpactBaselinePhaseVisible(updated.entryId, id).catch(() => {});
-  }
-  return updated;
+  let current = await getPhase(id);
+  if (!current) return undefined;
+  const projectId = (
+    await db
+      .select({ projectId: codexEntries.projectId })
+      .from(codexEntries)
+      .where(eq(codexEntries.id, current.entryId))
+      .limit(1)
+  )[0]?.projectId;
+  if (!projectId) return undefined;
+  return runTimelapseMutation(
+    projectId,
+    async () => {
+      if (data.contentOverride !== undefined) {
+        current = await getPhase(id);
+        if (!current) return undefined;
+      }
+      const nextContextMode = data.contextModeOverride;
+      if (current && changesContextMode && !isAiVisibleMode(nextContextMode)) {
+        // null is inherited and therefore not proof of visibility.
+        await markImpactBaselinePhasesRestricted(current.entryId);
+      }
+      try {
+        await invoke("codex_mutate", {
+          payload: {
+            operation: "phase.update",
+            projectId,
+            ...createCanonicalWriteContext(),
+            surface: "manual",
+            phaseId: id,
+            baseVersion: opts.baseVersion,
+            ...(data.label !== undefined ? { label: data.label } : {}),
+            ...(data.anchorNodeId !== undefined
+              ? { anchorNodeId: data.anchorNodeId }
+              : {}),
+            ...(data.summaryOverride !== undefined
+              ? { summaryOverride: data.summaryOverride }
+              : {}),
+            ...(data.contentOverride !== undefined
+              ? { contentOverride: data.contentOverride }
+              : {}),
+            ...(data.contextModeOverride !== undefined
+              ? { contextModeOverride: data.contextModeOverride }
+              : {}),
+          },
+        });
+      } catch (error) {
+        if (String(error).toLowerCase().includes("version conflict")) {
+          throw new PhaseVersionConflictError(id);
+        }
+        throw error;
+      }
+      const updated = await getPhase(id);
+      if (!updated) return undefined;
+      if (changesContextMode && isAiVisibleMode(nextContextMode)) {
+        // Post-write failure remains fail-closed: Impact will keep redacting.
+        await markImpactBaselinePhaseVisible(updated.entryId, id).catch(
+          () => {},
+        );
+      }
+      return updated;
+    },
+    opts.preexistingDraft ? { preexistingDraft: true } : undefined,
+  );
 }
 
 export async function deletePhase(
@@ -221,33 +283,37 @@ export async function deletePhase(
     // failed DELETE only causes an extra redaction and cannot expose content.
     await markImpactBaselinePhasesRestricted(phase.entryId);
   }
-  const deleted = await db
-    .delete(codexEntryPhases)
-    .where(
-      opts?.expectedVersion === undefined
-        ? eq(codexEntryPhases.id, id)
-        : and(
-            eq(codexEntryPhases.id, id),
-            eq(codexEntryPhases.version, opts.expectedVersion),
-          ),
-    )
-    .returning({ id: codexEntryPhases.id });
-  if (!deleted[0]) {
-    if (opts?.expectedVersion !== undefined) {
-      throw new PhaseVersionConflictError(id);
+  const projectId = await resolveEntryProjectId(phase.entryId);
+  if (!projectId) return false;
+  return runTimelapseMutation(projectId, async () => {
+    try {
+      await invoke("codex_mutate", {
+        payload: {
+          operation: "phase.delete",
+          projectId,
+          ...createCanonicalWriteContext(),
+          surface: "manual",
+          phaseId: id,
+          expectedVersion: opts?.expectedVersion ?? null,
+        },
+      });
+    } catch (error) {
+      if (opts?.expectedVersion !== undefined) {
+        throw new PhaseVersionConflictError(id);
+      }
+      throw error;
     }
-    return false;
-  }
-  if (provablyVisible) {
-    // The row is already gone. If this best-effort marker fails, missing
-    // provenance makes runImpactReview redact the deletion fail-closed.
-    await markImpactBaselinePhaseVisibleDeleted(
-      phase.entryId,
-      phase.id,
-      true,
-    ).catch(() => {});
-  }
-  return true;
+    if (provablyVisible) {
+      // The row is already gone. If this best-effort marker fails, missing
+      // provenance makes runImpactReview redact the deletion fail-closed.
+      await markImpactBaselinePhaseVisibleDeleted(
+        phase.entryId,
+        phase.id,
+        true,
+      ).catch(() => {});
+    }
+    return true;
+  });
 }
 
 export async function listDetailOverridesByPhase(
@@ -269,56 +335,186 @@ export async function listDetailOverridesByPhaseIds(
     .where(inArray(codexPhaseDetailOverrides.phaseId, phaseIds));
 }
 
+export type PhaseDetailOverrideExactAfter = {
+  definitionId: string;
+  value: string | null;
+};
+
+export type PatchPhaseAggregateInput = {
+  phaseId: string;
+  baseVersion: number;
+  label?: string;
+  anchorNodeId?: string | null;
+  summary?: string | null;
+  content?: string | null;
+  contextMode?: string | null;
+  /** Exact-after override collection (missing definitions are deleted). */
+  detailOverrides: readonly PhaseDetailOverrideExactAfter[];
+};
+
+export type PatchPhaseAggregateResult = {
+  phase: CodexEntryPhase;
+  overrides: CodexPhaseDetailOverride[];
+};
+
+/**
+ * Atomically update Phase root fields and replace detail overrides, bumping
+ * `codex_entry_phases.version` exactly once under OCC.
+ */
+export async function patchPhaseAggregate(
+  input: PatchPhaseAggregateInput,
+): Promise<PatchPhaseAggregateResult> {
+  let current = await getPhase(input.phaseId);
+  if (!current) {
+    throw new Error(`Phase '${input.phaseId}' not found`);
+  }
+  let projectId = await resolveEntryProjectId(current.entryId);
+  if (!projectId) {
+    throw new Error(`Codex entry '${current.entryId}' not found`);
+  }
+  return runTimelapseMutation(projectId, async () => {
+    if (Object.prototype.hasOwnProperty.call(input, "content")) {
+      const rechecked = await getPhase(input.phaseId);
+      if (!rechecked) {
+        throw new Error(
+          `Phase '${input.phaseId}' not found after genesis wait`,
+        );
+      }
+      const recheckedProjectId = await resolveEntryProjectId(rechecked.entryId);
+      if (!recheckedProjectId || recheckedProjectId !== projectId) {
+        throw new Error(
+          `Phase '${input.phaseId}' changed Project while update waited`,
+        );
+      }
+      current = rechecked;
+      projectId = recheckedProjectId;
+    }
+
+    const changesContextMode = Object.prototype.hasOwnProperty.call(
+      input,
+      "contextMode",
+    );
+    const currentPhase = current;
+    if (!currentPhase) {
+      throw new Error(`Phase '${input.phaseId}' not found after genesis wait`);
+    }
+    const nextContextMode = changesContextMode
+      ? (input.contextMode ?? null)
+      : currentPhase.contextModeOverride;
+    if (changesContextMode && !isAiVisibleMode(nextContextMode)) {
+      await markImpactBaselinePhasesRestricted(currentPhase.entryId);
+    }
+
+    try {
+      await invoke("codex_mutate", {
+        payload: {
+          operation: "phase.aggregate",
+          projectId,
+          ...createCanonicalWriteContext(),
+          surface: "manual",
+          phaseId: input.phaseId,
+          baseVersion: input.baseVersion,
+          ...(input.label !== undefined ? { label: input.label } : {}),
+          ...(Object.prototype.hasOwnProperty.call(input, "anchorNodeId")
+            ? { anchorNodeId: input.anchorNodeId }
+            : {}),
+          ...(Object.prototype.hasOwnProperty.call(input, "summary")
+            ? { summaryOverride: input.summary ?? null }
+            : {}),
+          ...(Object.prototype.hasOwnProperty.call(input, "content")
+            ? { contentOverride: input.content ?? null }
+            : {}),
+          ...(Object.prototype.hasOwnProperty.call(input, "contextMode")
+            ? { contextModeOverride: input.contextMode ?? null }
+            : {}),
+          detailOverrides: input.detailOverrides,
+        },
+      });
+    } catch (error) {
+      const message = String(error);
+      if (
+        message.includes("Phase version conflict") ||
+        message.includes("version conflict")
+      ) {
+        throw new PhaseVersionConflictError(input.phaseId);
+      }
+      throw error;
+    }
+    const phase = await getPhase(input.phaseId);
+    if (!phase || phase.version !== input.baseVersion + 1) {
+      throw new PhaseVersionConflictError(input.phaseId);
+    }
+    const overrides = await listDetailOverridesByPhase(input.phaseId);
+
+    if (changesContextMode && isAiVisibleMode(nextContextMode)) {
+      await markImpactBaselinePhaseVisible(phase.entryId, phase.id).catch(
+        () => {},
+      );
+    }
+
+    return { phase, overrides };
+  });
+}
+
+/**
+ * @deprecated Product path should use {@link patchPhaseAggregate}. This wrapper
+ * loads the current Phase version and exact-after collection then delegates.
+ */
 export async function upsertDetailOverride(
   phaseId: string,
   definitionId: string,
   value: string | null,
 ): Promise<CodexPhaseDetailOverride> {
-  const existing = await db
-    .select()
-    .from(codexPhaseDetailOverrides)
-    .where(
-      and(
-        eq(codexPhaseDetailOverrides.phaseId, phaseId),
-        eq(codexPhaseDetailOverrides.definitionId, definitionId),
-      ),
-    );
-
-  if (existing.length > 0) {
-    const rows = await db
-      .update(codexPhaseDetailOverrides)
-      .set({ value })
-      .where(
-        and(
-          eq(codexPhaseDetailOverrides.phaseId, phaseId),
-          eq(codexPhaseDetailOverrides.definitionId, definitionId),
-        ),
-      )
-      .returning();
-    return rows[0];
-  } else {
-    const rows = await db
-      .insert(codexPhaseDetailOverrides)
-      .values({
-        phaseId,
-        definitionId,
-        value,
-      })
-      .returning();
-    return rows[0];
+  const phase = await getPhase(phaseId);
+  if (!phase) {
+    throw new Error(`Phase '${phaseId}' not found`);
   }
+  const existing = await listDetailOverridesByPhase(phaseId);
+  const detailOverrides = [
+    ...existing
+      .filter((row) => row.definitionId !== definitionId)
+      .map((row) => ({
+        definitionId: row.definitionId,
+        value: row.value ?? null,
+      })),
+    { definitionId, value },
+  ];
+  const { overrides } = await patchPhaseAggregate({
+    phaseId,
+    baseVersion: phase.version,
+    detailOverrides,
+  });
+  const updated = overrides.find((row) => row.definitionId === definitionId);
+  if (!updated) {
+    throw new Error(
+      `Failed to upsert detail override for phase '${phaseId}' definition '${definitionId}'`,
+    );
+  }
+  return updated;
 }
 
+/**
+ * @deprecated Product path should use {@link patchPhaseAggregate}. This wrapper
+ * loads the current Phase version and exact-after collection then delegates.
+ */
 export async function deleteDetailOverride(
   phaseId: string,
   definitionId: string,
 ): Promise<void> {
-  await db
-    .delete(codexPhaseDetailOverrides)
-    .where(
-      and(
-        eq(codexPhaseDetailOverrides.phaseId, phaseId),
-        eq(codexPhaseDetailOverrides.definitionId, definitionId),
-      ),
-    );
+  const phase = await getPhase(phaseId);
+  if (!phase) {
+    throw new Error(`Phase '${phaseId}' not found`);
+  }
+  const existing = await listDetailOverridesByPhase(phaseId);
+  const detailOverrides = existing
+    .filter((row) => row.definitionId !== definitionId)
+    .map((row) => ({
+      definitionId: row.definitionId,
+      value: row.value ?? null,
+    }));
+  await patchPhaseAggregate({
+    phaseId,
+    baseVersion: phase.version,
+    detailOverrides,
+  });
 }

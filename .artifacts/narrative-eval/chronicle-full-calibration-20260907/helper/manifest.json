@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "helperVersion": "chronicle-llm-judge-live-helper/2",
+  "state": "frozen",
+  "sourceRoot": "/home/grimodex/Grimodex",
+  "runtimeRoot": "/home/grimodex/Grimodex/.artifacts/chronicle-source-support-v2-worktree",
+  "candidate": {
+    "head": "96473b56c3db879043ce879fc1e686d7f7061c9d",
+    "tree": "a13a7f74f392f8cbc11fec5bf6023cba6658a4bb",
+    "clean": false,
+    "trackedDiffSha256": "91cc5873c1244cb2434dc9b1e060aaff705817247cb5fd9e4746ba0554c2072c"
+  },
+  "sourceCandidateSha256": "sha256:9875b0110768beecf400c5b90426d3865266b8b103e5300b9a12f05c97586773",
+  "sourceLockSha256": "sha256:447498e63184c54bdbfc32d4702a084e9dbf120438527a89eb35fbc2abc013bc",
+  "sourceInstalledLockSha256": "sha256:9681b5452647d2b454943289fa41f40e9966004371dc722e1d795b6e87b28f2a",
+  "runtimeInstalledLockSha256": "sha256:447498e63184c54bdbfc32d4702a084e9dbf120438527a89eb35fbc2abc013bc",
+  "contractPath": "/home/grimodex/Grimodex/.artifacts/narrative-eval/chronicle-full-calibration-20260907/execution-contract-approved-v6.md",
+  "contractSha256": "sha256:3b99f76ccdb8e04fb39e1a432d459ad22384036dde99d5f023615648521b5c14",
+  "contractJsonPath": "evals/narrative/contracts/chronicle-v2/actual-gate-collapse.json",
+  "contractJsonSha256": "sha256:51a8106e45d04768fbbf0b803f6391ef2211024376e0f6b7b468dee8fd38e55b",
+  "rubricBindingPath": "/home/grimodex/Grimodex/.artifacts/narrative-eval/chronicle-full-calibration-20260907/rubric-binding.json",
+  "rubricBindingSha256": "sha256:1f996727d3f2b6b0fdaab7cebece3d9934df6ae41950e6dca254185b30eeadaf",
+  "rubricVersion": "chronicle-llm-judge-rubric/2",
+  "rubricDigest": "sha256:79691d1c4f35e5c511cd4bcba3f284cceecb6887cbffc0e482c86458b924f3e1",
+  "fixturePath": "/home/grimodex/Grimodex/evals/narrative/calibration/chronicle-llm-judge-v1.json",
+  "fixtureSha256": "sha256:a763b2c589a939b27f8679a379ba7f223c062b52d19c1a8eff3f469aec577510",
+  "calibrationReviewPath": "/home/grimodex/Grimodex/evals/narrative/calibration/chronicle-llm-judge-v1.review.md",
+  "calibrationReviewSha256": "sha256:c00c8b6283a7e6bf8cc4d37102016eb60a93c751e0fa62275eb2474526c8f91c",
+  "caseId": "chronicle.micro.actual-gate-collapse-001",
+  "suiteId": "chronicle-micro-v1",
+  "provider": {
+    "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+    "model": "openai/gpt-5.6-luna",
+    "reasoningEffort": "max",
+    "evidenceMode": "citation-id-v2",
+    "maxTokens": 32768,
+    "maxRequests": 18,
+    "maxCalibrationRequests": 12,
+    "maxNorthGateExtractionRequests": 5,
+    "maxNorthGateJudgeRequests": 1,
+    "maxInputTokens": 65536,
+    "inputPricePerMillion": 0.25,
+    "outputPricePerMillion": 1.5,
+    "maxCostUsd": 3,
+    "redirect": "error",
+    "only": [
+      "openai"
+    ],
+    "allowFallbacks": false,
+    "requireParameters": true
+  },
+  "authorization": {
+    "humanLabelsApproved": true,
+    "apiExecutionAuthorized": true
+  },
+  "sourceFiles": [
+    {
+      "path": ".keep",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": 384
+    },
+    {
+      "path": "README.md",
+      "sha256": "cfe88c23d1fea963dfe005f132c55dd076a8f00586baafcc3b3cfb4ad31d1a24",
+      "mode": 384
+    },
+    {
+      "path": "binding-preflight.test.ts",
+      "sha256": "148d7fa96e402abaa49cfea85e2185e0fee708e27dd5434ae1c2e2d7aba01447",
+      "mode": 420
+    },
+    {
+      "path": "calibration-driver.test.ts",
+      "sha256": "ba83f133f0552612d8a71d1c0fe261aee46cb7a429a34774c934c2e69eda285b",
+      "mode": 420
+    },
+    {
+      "path": "controls.test.ts",
+      "sha256": "77685d72049c730e987ef8e9c219c19379cd2e18b09ac54a28d773f504d259c3",
+      "mode": 448
+    },
+    {
+      "path": "north-gate-driver.test.ts",
+      "sha256": "c4b408bbd94b24806d198f7246984eb175ee7eb0d91ff5dd083e27055515f708",
+      "mode": 420
+    },
+    {
+      "path": "key-reader.mjs",
+      "sha256": "18b2e1533d7ef0b80f8d27fe8ed91c6161ad9bcf0834036570cd95294d07685a",
+      "mode": 420
+    },
+    {
+      "path": "key-reader.test.ts",
+      "sha256": "5bed4af5bdc9967a6f95db5f92b1d4d4beaabf02798dc226c397dc102545946b",
+      "mode": 420
+    },
+    {
+      "path": "launcher-summary.test.ts",
+      "sha256": "1214cd013d8891d26bb9b82d2ef948f309a21183c5f1b5193e63c70fe75c9ab8",
+      "mode": 420
+    },
+    {
+      "path": "live-driver.mjs",
+      "sha256": "d29496f46e10a67c92843af718879b8349480739b12c7dc9cd06fdc4e50c7d30",
+      "mode": 420
+    },
+    {
+      "path": "live-runner.test.ts",
+      "sha256": "a82a6cbdee58f05c143795751a281bbc527556c85baef3c240e7f1b69f068863",
+      "mode": 420
+    },
+    {
+      "path": "openrouter-fetch-guard.mjs",
+      "sha256": "391078d0f404ef47bfd4894b0506060af1b3dee1356413528c85e4f53856aa8d",
+      "mode": 420
+    },
+    {
+      "path": "openrouter-fetch-guard.test.ts",
+      "sha256": "9e54a4c7e1cb869a57f7aacb82e0fe29ada2d9fe6fc81db14c117defce0751db",
+      "mode": 420
+    },
+    {
+      "path": "production-runtime.ts",
+      "sha256": "39b2054932909a0209fe090d4c00b9c5c0789f5d319cafb914c79ad64e24f12b",
+      "mode": 420
+    },
+    {
+      "path": "run-live.sh",
+      "sha256": "58b222cd20096fbb992563de130185bd5b8de434773d7fd09b27a2a77ecb9032",
+      "mode": 448
+    },
+    {
+      "path": "run-offline.sh",
+      "sha256": "bd443692dc3f814bf8d85e2ac31a9de6df337f09e8d30552834e63bfd1e035ce",
+      "mode": 448
+    },
+    {
+      "path": "vitest.config.ts",
+      "sha256": "d37cb96eaf2e67e4d92c160695957b819db8e02adb87cf9a9d5ca29de17351e7",
+      "mode": 420
+    }
+  ],
+  "commandDigest": "sha256:5c1438bb006f0b0f23e4a940b6f8205c72c4fd430970b6ddfe8bc4b915b39c71",
+  "offlineCommand": "./run-offline.sh",
+  "liveCommand": "./run-live.sh",
+  "offlineTests": [
+    "./binding-preflight.test.ts",
+    "./calibration-driver.test.ts",
+    "./controls.test.ts",
+    "./key-reader.test.ts",
+    "./launcher-summary.test.ts",
+    "./openrouter-fetch-guard.test.ts",
+    "./north-gate-driver.test.ts"
+  ],
+  "liveTests": [
+    "./live-runner.test.ts"
+  ],
+  "vitestArgs": [
+    "--pool=threads",
+    "--maxWorkers=1",
+    "--no-file-parallelism",
+    "--testTimeout=3600000"
+  ]
+}

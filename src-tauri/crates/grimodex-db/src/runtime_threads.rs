@@ -176,13 +176,11 @@ impl Database {
 mod tests {
     use super::*;
     use crate::Database;
-    use std::path::Path;
     use std::sync::{Arc, Barrier};
     use std::thread;
 
     fn fixture() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("db");
-        db.migrate().expect("migrate");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES ('p1', 'Project')",

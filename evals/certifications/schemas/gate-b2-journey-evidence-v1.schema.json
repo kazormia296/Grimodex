@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.local/evals/certifications/schemas/gate-b2-journey-evidence-v1.schema.json",
+  "title": "Gate B2 Journey Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "journeyId",
+    "candidateCommitSha",
+    "candidateTreeSha",
+    "runnerId",
+    "runnerVersion",
+    "environmentDigest",
+    "assertions",
+    "result",
+    "startedAt",
+    "completedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "journeyId": { "type": "string", "minLength": 1 },
+    "candidateCommitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "candidateTreeSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "runnerId": { "type": "string", "minLength": 1 },
+    "runnerVersion": { "type": "string", "minLength": 1 },
+    "environmentDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "assertions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "passed"],
+        "properties": {
+          "id": { "type": "string" },
+          "passed": { "type": "boolean" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "result": { "type": "string", "enum": ["passed", "failed", "blocked", "hold"] },
+    "startedAt": { "type": "string" },
+    "completedAt": { "type": "string" },
+    "message": { "type": "string" },
+    "artifactDigests": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+    }
+  }
+}

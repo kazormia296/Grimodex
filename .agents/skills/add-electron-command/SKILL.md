@@ -1,9 +1,8 @@
 ---
 name: add-electron-command
 description: >
-  Electron IPC コマンドを追加する。renderer から main / Rust N-API backend を
-  呼び出す機能が必要なとき、共有契約・実装・preload 境界・テストを一括更新する。
-  「Electronコマンド追加」「IPC追加」「Rust連携」で発火。
+  Grimodex に新しい Electron IPC コマンドを追加し、共有契約、main／N-API 実装、
+  preload 境界とテストを揃える。既存コマンドの不具合修正は debug-issue を使う。
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, MultiEdit
 argument-hint: [command-name-and-description]
 disable-model-invocation: true

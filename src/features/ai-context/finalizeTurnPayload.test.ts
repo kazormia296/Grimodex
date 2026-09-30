@@ -1,4 +1,12 @@
 import { describe, expect, it } from "vitest";
+import localChatFixture from "../../../test-fixtures/nir1-df06-plain-chat.json";
+import {
+  estimateMessageEnvelopeTokens,
+  TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
+} from "@/application/chat/chatTurnPayload";
+import { estimateTokens } from "@/features/chat/contextBuilder";
+import { JA_CHAT_SYSTEM } from "@/prompts/ja/chatSystem";
+import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
 import {
   ContextWindowExceededError,
   finalizeTurnPayload,
@@ -343,6 +351,163 @@ describe("finalizeTurnPayload", () => {
     expect(result.systemDelivery).toEqual({ kind: "plain", text: "short" });
     expect(result.cacheDowngradeReason).toBe("budget");
     expect(result.transport.systemCacheSegments).toBeUndefined();
+  });
+
+  it("matches the Native fallback estimator for local plain-chat JA/EN/emoji/JSON usage", () => {
+    const model = "fixture-local-model";
+    const outputTokens = localChatFixture.outputTokens;
+    const unconfigured = resolveModelCapabilities(model, {
+      provider: "openai-compatible",
+      activeOpenaiCompatibleEndpointId: "fixture-local",
+      openaiCompatibleEndpoints: [{ id: "fixture-local" }],
+    });
+    expect(unconfigured).toMatchObject({
+      contextWindowIsEffective: false,
+      contextWindowSource: "default",
+    });
+
+    const measurements = localChatFixture.cases.map((testCase) => {
+      const systemText =
+        `${JA_CHAT_SYSTEM.baseText}\n\n<current_scene>\n${testCase.raw}` +
+        `\n</current_scene>\n\n<codex_entries>\n${testCase.codex}` +
+        `\n</codex_entries>\n\n${JA_CHAT_SYSTEM.dataBoundaryReminder}`;
+      const fixedSystemText =
+        `${JA_CHAT_SYSTEM.baseText}\n\n<current_scene>\n\n</current_scene>` +
+        `\n\n<codex_entries>\n\n</codex_entries>\n\n` +
+        JA_CHAT_SYSTEM.dataBoundaryReminder;
+      const messages = [
+        { role: "system", content: systemText },
+        { role: "user", content: testCase.user },
+      ];
+      const envelopeTokens = estimateMessageEnvelopeTokens(messages);
+      expect(envelopeTokens).toBe(10);
+
+      const finalInput = input({
+        route: route({
+          provider: "openai-compatible",
+          model,
+          contextWindow: Number.MAX_SAFE_INTEGER,
+          wireOutputTokens: outputTokens,
+        }),
+        system: { fallback: systemText },
+        messages,
+        envelopeTokens,
+        safetyMarginTokens: TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
+      });
+      const measured = finalizeTurnPayload(finalInput, estimateTokens);
+      const fixedSystemTokens = estimateTokens(fixedSystemText);
+      const selectedContextTokens =
+        estimateTokens(testCase.raw) + estimateTokens(testCase.codex);
+      const userTokens = estimateTokens(testCase.user);
+      expect(systemText).toContain(testCase.raw);
+      expect(systemText).toContain(testCase.codex);
+      expect(fixedSystemTokens).toBeGreaterThan(0);
+      expect(selectedContextTokens).toBeGreaterThan(0);
+      expect(measured.usage).toMatchObject({
+        systemTokens: estimateTokens(systemText),
+        conversationTokens: userTokens,
+        toolTokens: 0,
+        envelopeTokens,
+        safetyMarginTokens: TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
+        outputReservedTokens: outputTokens,
+      });
+      const exactUsage =
+        measured.usage.systemTokens +
+        userTokens +
+        envelopeTokens +
+        outputTokens +
+        TURN_PAYLOAD_SAFETY_MARGIN_TOKENS;
+      expect(measured.usage.reservedTotalTokens).toBe(exactUsage);
+
+      const configured = resolveModelCapabilities(model, {
+        provider: "openai-compatible",
+        activeOpenaiCompatibleEndpointId: "fixture-local",
+        openaiCompatibleEndpoints: [
+          {
+            id: "fixture-local",
+            customMaxContext: exactUsage,
+            customMaxOutput: outputTokens,
+          },
+        ],
+      });
+      expect(configured).toMatchObject({
+        contextWindow: exactUsage,
+        contextWindowIsEffective: true,
+        contextWindowSource: "hardcoded",
+      });
+      const atLimit = finalizeTurnPayload(
+        {
+          ...finalInput,
+          route: {
+            ...finalInput.route,
+            contextWindow: configured.contextWindow,
+          },
+        },
+        estimateTokens,
+      );
+      expect(atLimit.usage.remainingTokens).toBe(0);
+
+      try {
+        finalizeTurnPayload(
+          {
+            ...finalInput,
+            route: {
+              ...finalInput.route,
+              contextWindow: exactUsage - 1,
+            },
+          },
+          estimateTokens,
+        );
+        throw new Error("expected N-1 context failure");
+      } catch (error) {
+        expect(error).toBeInstanceOf(ContextWindowExceededError);
+        expect(error).toMatchObject({
+          code: "AI_CONTEXT_WINDOW_EXCEEDED",
+          overflowTokens: 1,
+        });
+      }
+      try {
+        finalizeTurnPayload(
+          {
+            ...finalInput,
+            route: {
+              ...finalInput.route,
+              contextWindow: exactUsage,
+              wireOutputTokens: outputTokens + 1,
+            },
+          },
+          estimateTokens,
+        );
+        throw new Error("expected N+1 output reservation failure");
+      } catch (error) {
+        expect(error).toMatchObject({
+          code: "AI_CONTEXT_WINDOW_EXCEEDED",
+          overflowTokens: 1,
+        });
+      }
+
+      return {
+        locale: testCase.name,
+        fixedSystemTokens,
+        userTokens,
+        selectedContextTokens,
+        framingTokens: envelopeTokens,
+        outputTokens,
+        safetyTokens: TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
+        finalSystemTokens: measured.usage.systemTokens,
+        reservedTotalTokens: exactUsage,
+      };
+    });
+
+    expect(measurements).toEqual(
+      localChatFixture.cases.map((testCase) => ({
+        locale: testCase.name,
+        ...testCase.expected,
+        framingTokens: 10,
+        outputTokens,
+        safetyTokens: TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
+      })),
+    );
   });
 
   it("rejects invalid route and budget numbers before measuring", () => {
