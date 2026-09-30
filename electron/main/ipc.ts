@@ -2374,6 +2374,14 @@ export function registerIpcRouter(
             }
           }
         }
+        if (cmd === "open_workspace" && envelope.ok && "path" in dispatchArgs) {
+          // Consume Native's exact terminal proof before renderer hydration;
+          // the nonblocking Opened/Ready callbacks may still be queued.
+          profileEgress?.observeWorkspaceOpenResult?.(
+            envelope.value,
+            dispatchArgs.path as string,
+          );
+        }
         if (cmd === "restore_backup" && envelope.ok) {
           // The renderer also consumes this operation-scoped result, but the
           // main profile gate must see the trusted Native proof first.  A
