@@ -1,20 +1,22 @@
 ---
 name: explore-codebase
 description: >
-  コードベースを探索し、構造と実装を理解する。コードは書かない。
-  Use when: 「調べて」「調査して」「構造を教えて」「どうなってる？」
-  と言われたとき。新しいコード領域に入る前の事前調査に使う。
+  Grimodex の構造、実装、データフロー、境界の振る舞いを、コード変更なしで調査する。
+  実装や修正も依頼されている場合は、その作業の skill を主フローにする。
 allowed-tools: Read, Grep, Glob
 argument-hint: [exploration-target]
 context: fork
 agent: Explore
 ---
 
-「$1」について調査してください。
+# Explore Codebase
 
-1. 関連ファイルを特定する
-2. データフロー・依存関係を把握する
-3. Electron IPC境界（renderer↔preload↔main↔N-API）がある場合、全層を確認する
-4. 発見事項を構造化して報告する
+依頼された構造や振る舞いを、実在するコードと仕様を根拠に説明する。コード、設定、Git state は
+変更しない。調査・レビューだけの依頼では
+[検証と公開範囲](../../../policies/quality/iron-laws.md#agent-validation) に従い、CI を開始しない。
 
-**コードの変更は一切行わないこと。**
+結論に必要な entry point、consumer、データフローと責務を追う。Electron IPC を通る振る舞いは
+renderer／preload／main／N-API の関連する境界まで確認する。
+
+報告には、質問への回答、根拠となるファイルと箇所、確認できた事実と未確認事項を含める。
+不具合が見つかった場合も、調査の依頼を修正の許可として扱わない。

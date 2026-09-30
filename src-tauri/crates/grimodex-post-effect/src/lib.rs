@@ -222,6 +222,9 @@ fn append_post_effect_scene_non_execution<R: PostEffectRuntime>(
 #[derive(Default)]
 struct PostEffectAbortState {
     aborted: HashSet<String>,
+    /// Set while the process-wide startup stop is being applied. A run that
+    /// binds after `abort_all` has taken its snapshot must still be cancelled.
+    abort_all_pending: bool,
     /// start 時の pinned DB。workspace switch 後の abort command も開始元 run を
     /// cancel できるよう run_id と一緒に保持する。
     databases: HashMap<String, PinnedWorkspaceDb>,
@@ -247,7 +250,11 @@ impl PostEffectAbortRegistry {
     }
 
     pub fn bind_database(&self, run_id: &str, db: PinnedWorkspaceDb) {
-        self.lock().databases.insert(run_id.to_string(), db);
+        let mut state = self.lock();
+        state.databases.insert(run_id.to_string(), db);
+        if state.abort_all_pending {
+            state.aborted.insert(run_id.to_string());
+        }
     }
 
     /// lock を保持したまま DB ownership/running CAS を実行し、成功したときだけ
@@ -266,6 +273,25 @@ impl PostEffectAbortRegistry {
 
     pub fn is_aborted(&self, run_id: &str) -> bool {
         self.lock().aborted.contains(run_id)
+    }
+
+    /// Request cancellation for every run still owned by this process. The
+    /// dispatch barrier waits for the corresponding Native permits to drop;
+    /// this registry only publishes the scoped cancellation flags.
+    pub fn abort_all(&self) -> usize {
+        let mut state = self.lock();
+        state.abort_all_pending = true;
+        let run_ids: Vec<String> = state.databases.keys().cloned().collect();
+        let count = run_ids.len();
+        state.aborted.extend(run_ids);
+        count
+    }
+
+    /// Finish the process-wide stop barrier after every Native dispatch lease
+    /// has drained. Admissions are already closed, so no run can bind between
+    /// this reset and the next startup publication.
+    pub fn clear_abort_all(&self) {
+        self.lock().abort_all_pending = false;
     }
 
     pub fn clear(&self, run_id: &str) {
@@ -5101,6 +5127,39 @@ mod abort_registry_tests {
     }
 
     #[test]
+    fn abort_all_marks_only_live_bound_runs() {
+        use grimodex_db::WorkspaceAuthority;
+
+        let reg = super::PostEffectAbortRegistry::new();
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-post-effect-abort-all-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("database directory");
+        let db = grimodex_db::Database::new(&root.join("grimodex.db")).expect("database");
+        let authority =
+            WorkspaceAuthority::from_database_for_test(db, root.clone()).expect("authority");
+        reg.bind_database("live-a", authority.clone());
+        reg.bind_database("live-b", authority.clone());
+        reg.request("unbound");
+
+        assert_eq!(reg.abort_all(), 2);
+        assert!(reg.is_aborted("live-a"));
+        assert!(reg.is_aborted("live-b"));
+        assert!(reg.is_aborted("unbound"));
+        reg.bind_database("late", authority.clone());
+        assert!(reg.is_aborted("late"), "late binds inherit the stop latch");
+        reg.clear_abort_all();
+        reg.bind_database("after", authority);
+        assert!(
+            !reg.is_aborted("after"),
+            "new runs resume after the barrier"
+        );
+        drop(reg);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn request_if_holds_registry_lock_until_abort_flag_is_visible() {
         use std::sync::mpsc;
         use std::time::Duration;
@@ -6701,13 +6760,24 @@ mod runtime_contract_tests {
         }
     }
 
+    fn current_schema_runtime() -> FakeRuntime {
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
+        FakeRuntime {
+            db: seed_and_pin_database(db),
+            events: Arc::new(Mutex::new(Vec::new())),
+            aborts: PostEffectAbortRegistry::new(),
+        }
+    }
+
     fn seeded_db() -> PinnedWorkspaceDb {
-        let path = std::env::temp_dir().join(format!(
-            "grimodex-post-effect-{}",
-            uuid::Uuid::new_v4()
-        ));
         let db = Database::new(Path::new(":memory:")).expect("in-memory db");
         db.migrate().expect("migrate");
+        seed_and_pin_database(db)
+    }
+
+    fn seed_and_pin_database(db: Database) -> PinnedWorkspaceDb {
+        let path =
+            std::env::temp_dir().join(format!("grimodex-post-effect-{}", uuid::Uuid::new_v4()));
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title, language, created_at, updated_at)
@@ -6937,7 +7007,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn single_cross_project_target_rejects_before_insert_or_ai() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         let error = start_post_effect_run(
             runtime.clone(),
@@ -6954,7 +7024,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn live_pseudo_comment_is_persisted_with_live_metadata_before_partial() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let prov = RoleProviderOverride::default();
         runtime
             .with_db(|db| {
@@ -7021,7 +7091,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn single_impact_run_is_rejected_without_the_guarded_multi_contract() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         let mut args = single_args("scene-own", "impact-single");
         args.effect_type = "impact_review".to_string();
@@ -7040,7 +7110,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn multi_cross_project_scene_rejects_before_insert_or_ai() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         let error =
             start_post_effect_run_multi(runtime.clone(), ai.clone(), multi_args("scene-other"))
@@ -7054,7 +7124,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn source_guard_is_rejected_for_non_impact_multi_run() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         let mut args = multi_args("scene-own");
         args.source_guard = Some(source_guard(runtime.db.db()));
@@ -7072,7 +7142,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn source_guard_is_required_for_impact_multi_run() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         let mut args = multi_args("scene-own");
         args.effect_type = "impact_review".to_string();
@@ -7091,7 +7161,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn completed_cache_hit_does_not_call_ai_or_emit() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         insert_run(&runtime, "cached", "completed", "cache-hash");
         let result = start_post_effect_run(
@@ -7129,7 +7199,7 @@ mod runtime_contract_tests {
 
     #[tokio::test]
     async fn empty_multi_scene_is_audited_as_skipped_without_dispatch() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         let ai = FakeAi::default();
         let mut args = multi_args("scene-own");
         args.scenes[0].scene_text = "  \n".to_string();
@@ -7268,8 +7338,9 @@ mod runtime_contract_tests {
         ));
         let db = Database::new(&path).expect("file database");
         db.migrate().expect("migrate file database");
-        let db = WorkspaceAuthority::from_database_for_test(db, path.parent().unwrap().to_path_buf())
-            .expect("authority");
+        let db =
+            WorkspaceAuthority::from_database_for_test(db, path.parent().unwrap().to_path_buf())
+                .expect("authority");
         let runtime = FakeRuntime {
             db: Arc::clone(&db),
             events: Arc::new(Mutex::new(Vec::new())),
@@ -7486,7 +7557,7 @@ mod runtime_contract_tests {
 
     #[test]
     fn finish_success_missing_run_emits_persistence_error_not_done() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         finish_success(&runtime, "missing", 2, None);
         let events = runtime.events.lock().expect("events");
         assert_eq!(events.len(), 1);
@@ -7499,7 +7570,7 @@ mod runtime_contract_tests {
 
     #[test]
     fn finish_partial_already_terminal_emits_persistence_error_not_done() {
-        let runtime = runtime();
+        let runtime = current_schema_runtime();
         insert_run(&runtime, "already", "completed", "already-hash");
         finish_partial(&runtime, "already", 1, "partial".to_string());
         let events = runtime.events.lock().expect("events");
@@ -7565,3 +7636,7 @@ mod runtime_contract_tests {
         assert_eq!(event_channels(&runtime), vec!["post_effect:done"]);
     }
 }
+
+#[cfg(test)]
+#[path = "../../grimodex-db/test-support/adapter.rs"]
+mod test_support;

@@ -2,7 +2,10 @@ import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowRight, X } from "lucide-react";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
-import { useForeshadowStore } from "./foreshadowStore";
+import {
+  publishAuthoritativeForeshadowRows,
+  useForeshadowStore,
+} from "./foreshadowStore";
 import { useForeshadowNavStore } from "./foreshadowNavStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -143,8 +146,22 @@ export function EditForeshadowDialog({
 
       const hasPatch = Object.keys(patch).length > 0;
       if (hasPatch) await update(item.id, patch, item.projectId);
-      for (const id of linksToAdd) await addCodexLink(item.id, id);
-      for (const id of linksToRemove) await removeCodexLink(item.id, id);
+      const currentVersion = () => {
+        const current = useForeshadowStore
+          .getState()
+          .items.find((row) => row.id === item.id);
+        if (!current)
+          throw new Error("Foreshadow must be reloaded before editing links");
+        return current.version;
+      };
+      for (const id of linksToAdd) {
+        const row = await addCodexLink(item.id, id, currentVersion());
+        publishAuthoritativeForeshadowRows([row]);
+      }
+      for (const id of linksToRemove) {
+        const row = await removeCodexLink(item.id, id, currentVersion());
+        publishAuthoritativeForeshadowRows([row]);
+      }
       onClose();
     } finally {
       setIsSaving(false);

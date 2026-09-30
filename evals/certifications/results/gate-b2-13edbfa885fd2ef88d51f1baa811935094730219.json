@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "gateId": "gate-b2",
+  "freezeId": "3f38ea06-51db-49f9-a138-e48fdb5ad664",
+  "certificationRunId": null,
+  "candidateCommitSha": "13edbfa885fd2ef88d51f1baa811935094730219",
+  "candidateTreeSha": "5257f019516e66b7d4fabdd069a2ae35ed1e6517",
+  "baseMasterSha": "f2c6293ba499ffa10322ad0bef4fe170b3ea280c",
+  "attemptAuthority": {
+    "provider": "github-actions",
+    "configDigest": "sha256:39b3a55cbcff45c94872f485c0f1bd7d965dc4e9ed8d21a2068c43b3524bb1d4",
+    "repository": "kazormia296/Grimodex",
+    "workflowPath": ".github/workflows/gate-b2-certification.yml",
+    "event": "workflow_dispatch",
+    "runId": null,
+    "runAttempt": null
+  },
+  "schemaVersionProduct": 20,
+  "verdict": "INCOMPLETE",
+  "reasons": [
+    "Candidate frozen; required Light/Heavy/Journey evidence not yet attached to this freeze.",
+    "ADR checklist still contains FAIL items that block Engineering PASS until remediated.",
+    "Billed Heavy suites and journey evidence must be recorded against this tree SHA."
+  ],
+  "suiteSummaries": {
+    "requiredLight": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 6
+    },
+    "requiredHeavy": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 6
+    },
+    "requiredJourneys": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 7
+    }
+  },
+  "digests": {
+    "writerRegistryDigest": "sha256:fa40567d7eab3ded70970ba4140e9898fd2f9f734467623d7b673a42ada028dd",
+    "aiPathRegistryDigest": "sha256:117548ba25c5dd322e2ac6d6fd1506e5b44b39e7279c65f3e4f9da76cd46d478",
+    "qualityManifestDigest": "sha256:07dde219b44bd2369e463e88dfa653c3486cf171904d958413744379407583cd",
+    "narrativeEvalManifestDigest": "sha256:ffb66b17712dddf947b716ddfa8af7177d461feb4835068f005b4e3629bfefec",
+    "adrChecklistDigest": "sha256:d6304008d12c629e5c6646aad261cd44acfa69897b46e359636db3e241287096",
+    "classificationDigest": "sha256:f1a98cf1470eb6cf57e464b49f635f7084f7ab3aa0071deaff3b27a3bbe8dc08",
+    "reportDigest": null
+  },
+  "suiteAttempts": [],
+  "generatedAt": "2026-08-12T17:55:23.103Z",
+  "notes": "Provisional freeze decision only. The dedicated Gate B2 workflow produces the formal Decision for this candidate."
+}

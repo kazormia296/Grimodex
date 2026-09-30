@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.local/evals/narrative/contracts/chronicle-transfer-v1/contract.schema.json",
+  "title": "Chronicle transfer judge case contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "contractVersion",
+    "caseId",
+    "authorship",
+    "coverage",
+    "sourceDocuments",
+    "observationGold",
+    "temporalGold",
+    "proposalPolicy",
+    "scopeExclusions"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "contractVersion": { "const": "chronicle-judge-case-contract/1" },
+    "caseId": { "type": "string", "minLength": 1 },
+    "authorship": { "$ref": "#/$defs/authorship" },
+    "coverage": { "$ref": "#/$defs/coverage" },
+    "sourceDocuments": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/sourceDocument" }
+    },
+    "observationGold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claims"],
+      "properties": {
+        "claims": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/claim" }
+        }
+      }
+    },
+    "temporalGold": { "$ref": "#/$defs/temporalGold" },
+    "proposalPolicy": { "$ref": "#/$defs/proposalPolicy" },
+    "scopeExclusions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/scopeExclusion" }
+    }
+  },
+  "$defs": {
+    "region": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documentId", "start", "end"],
+      "properties": {
+        "documentId": { "type": "string", "minLength": 1 },
+        "start": { "type": "integer", "minimum": 0 },
+        "end": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "sourceDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "text", "textSha256"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "text": { "type": "string" },
+        "textSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity", "role"],
+      "properties": {
+        "entity": { "type": "string", "minLength": 1 },
+        "role": { "type": "string", "minLength": 1 }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "predicate",
+        "participants",
+        "actuality",
+        "attribution",
+        "narrativeFrame",
+        "requiredDirectRegions",
+        "allowedContextRegions",
+        "granularity"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "predicate": { "type": "string", "minLength": 1 },
+        "participants": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/participant" }
+        },
+        "actuality": { "type": "string", "minLength": 1 },
+        "attribution": { "type": "string", "minLength": 1 },
+        "narrativeFrame": { "type": "string", "minLength": 1 },
+        "requiredDirectRegions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/region" }
+        },
+        "allowedContextRegions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/region" }
+        },
+        "granularity": { "const": "atomic" }
+      }
+    },
+    "scopeExclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "meaning",
+        "requiredDirectRegions",
+        "allowedContextRegions"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "meaning": { "type": "string", "minLength": 1 },
+        "requiredDirectRegions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/region" }
+        },
+        "allowedContextRegions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/region" }
+        },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "reviewScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceAndGoldReviewed",
+        "eventObservationPolicy",
+        "atomicObservationClaimIds",
+        "temporalScope",
+        "temporalRelationIds",
+        "excludedTemporalScopes",
+        "scopeExclusionIds"
+      ],
+      "properties": {
+        "sourceAndGoldReviewed": { "const": true },
+        "eventObservationPolicy": {
+          "const": "case-atomic-claims-user-approved"
+        },
+        "atomicObservationClaimIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "temporalScope": { "const": "all-relations-unscored" },
+        "temporalRelationIds": { "const": [] },
+        "excludedTemporalScopes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "scopeExclusionIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "authorship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "derivation",
+        "independentSourceAnnotation",
+        "candidateOutputContamination",
+        "reviewRequired",
+        "formalCertification",
+        "semanticGoldStatus",
+        "runtimeCapability",
+        "ordinaryQualityRun",
+        "reviewScope",
+        "excludedInputs"
+      ],
+      "properties": {
+        "status": { "const": "draft-for-human-review" },
+        "derivation": { "const": "source-text-only" },
+        "independentSourceAnnotation": { "const": true },
+        "candidateOutputContamination": { "const": false },
+        "reviewRequired": { "const": true },
+        "formalCertification": { "const": false },
+        "semanticGoldStatus": { "const": "user-approved" },
+        "runtimeCapability": {
+          "enum": ["supported", "representation-gap"]
+        },
+        "ordinaryQualityRun": { "enum": ["enabled", "disabled"] },
+        "reviewScope": { "$ref": "#/$defs/reviewScope" },
+        "excludedInputs": {
+          "const": [
+            "deleted-provider-response",
+            "candidate-observation-wording",
+            "v1-scorer-decision"
+          ]
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation", "temporal", "proposal"],
+      "properties": {
+        "observation": { "enum": ["exhaustive", "targeted"] },
+        "temporal": { "const": "targeted" },
+        "proposal": { "const": "targeted" }
+      }
+    },
+    "temporalGold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coverage", "relations", "unscoredClaimIds"],
+      "properties": {
+        "coverage": { "const": "targeted" },
+        "relations": { "const": [] },
+        "unscoredClaimIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "proposalPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "scoredClaimIds", "reason"],
+      "properties": {
+        "mode": { "const": "unscored" },
+        "scoredClaimIds": { "const": [] },
+        "reason": { "const": "importance-not-annotated" }
+      }
+    }
+  }
+}

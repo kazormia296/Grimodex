@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-dependency-producer-generation-registry",
+  "registryVersion": "narrative-producer-generation/v1",
+  "entries": [
+    {
+      "id": "proposal-revision-source-basis",
+      "writer": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+        "symbol": "record_revision_dependency_edges_in_tx"
+      },
+      "generation": "proposal-revision-dependency/v1",
+      "declarationSetGeneration": 1,
+      "consumerKind": "proposal-revision",
+      "declaration": "validated reconciliation-envelope sourceBasis rows; generation 1 legacy, generation 2 binds Native Scope dependency projection /1; projection-only inherits material contract",
+      "supportedDeclarationSetGenerations": [
+        1,
+        2
+      ]
+    },
+    {
+      "id": "legacy-application-projection-dependency",
+      "writer": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+        "symbol": "record_legacy_dependency_edges_in_tx_with_control"
+      },
+      "generation": "legacy-dependency-backfill:v3",
+      "consumerKind": "application",
+      "declaration": "legacy projection dependency rows"
+    },
+    {
+      "id": "post-cutover-application-dependency",
+      "writer": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_canonical_cutover.rs",
+        "symbol": "write_application_dependencies_in_tx"
+      },
+      "generation": "c2zc-application-dependency/v1",
+      "consumerKind": "application",
+      "declaration": "post-cutover Apply-path Application Generic Edge rows"
+    },
+    {
+      "id": "nir1-reviewed-chronicle-v1",
+      "writer": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+        "symbol": "publish_chronicle_index_build_in_tx"
+      },
+      "generation": "nir1-reviewed-chronicle/v1",
+      "consumerKind": "semantic-index",
+      "consumerKey": "nir1-reviewed-chronicle:v1",
+      "producerVersion": "nir1-reviewed-chronicle/v1",
+      "declaration": "NIR-1 reviewed Chronicle current eligibility Source and complete admitted Scene Source dependencies"
+    },
+    {
+      "id": "nir1-reviewed-entity-relation-v1",
+      "writer": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+        "symbol": "publish_nir1_entity_relation_index_in_tx"
+      },
+      "generation": "nir1-reviewed-entity-relation/v1",
+      "consumerKind": "semantic-index",
+      "consumerKey": "nir1-reviewed-entity-relation:v1",
+      "producerVersion": "nir1-reviewed-entity-relation/v1",
+      "declaration": "NIR-1 reviewed Entity/Relation qualified current revision roster and object-token dependencies"
+    }
+  ]
+}

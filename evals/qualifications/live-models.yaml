@@ -1,0 +1,37 @@
+schemaVersion: 1
+id: grimodex-live-model-qualification
+
+executionPolicy:
+  location: maintainer-local
+  allowGitHubActions: false
+  requiredForGateB2: false
+  requiredForMerge: false
+
+provider: openrouter
+allowedReasoningEfforts: [minimal, low, medium, high]
+
+defaultProfile:
+  - heavy-agent-tool-loop
+  - heavy-single-shot-surfaces
+  - heavy-rust-post-effect-live
+  - heavy-codex-prompt-surfaces
+  - heavy-narrative-chronicle-production
+
+qualificationSuites:
+  - id: heavy-agent-tool-loop
+    resultPolicy: exit-code
+  - id: heavy-single-shot-surfaces
+    resultPolicy: exit-code
+  - id: heavy-rust-post-effect-live
+    resultPolicy: exit-code
+  - id: heavy-codex-prompt-surfaces
+    resultPolicy: exit-code
+  - id: heavy-narrative-chronicle-production
+    resultPolicy: chronicle-semantic
+
+requiredEnvironment:
+  - OPENROUTER_API_KEY
+
+qualityManifest: evals/quality-manifest.yaml
+reportSchema: evals/qualifications/schemas/live-model-qualification-v1.schema.json
+artifactRoot: .artifacts/live-model-qualification

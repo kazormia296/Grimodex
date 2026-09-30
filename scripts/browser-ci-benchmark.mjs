@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   access,
   mkdir,
@@ -16,7 +17,15 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const VALID_SUITES = new Set(["browser", "storybook", "webgl"]);
-const DEFAULT_SAMPLE_INTERVAL_MS = 100;
+export const DEFAULT_SAMPLE_INTERVAL_MS = 2_000;
+export const DEFAULT_TIMEOUT_MS = 300_000;
+const TERM_GRACE_MS = 1_000;
+const TERMINATION_GRACE_MS = 5_000;
+export const FINAL_SAMPLE_TIMEOUT_MS = 5_000;
+const SUPERVISOR_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "browser-ci-supervisor.mjs",
+);
 
 function positiveInteger(value, label) {
   const parsed = Number(value);
@@ -67,12 +76,18 @@ export function buildVitestCommand({
 }
 
 export function buildBenchmarkConfiguration(options) {
+  const sampleIntervalMs = positiveInteger(
+    options.sampleIntervalMs ?? DEFAULT_SAMPLE_INTERVAL_MS,
+    "sampleIntervalMs",
+  );
   return {
     fileParallelism: options.fileParallelism ?? "auto",
     maxWorkers: options.maxWorkers ?? "auto",
     shard: options.shard ?? null,
     retry: 0,
     collectPss: options.collectPss ?? false,
+    sampleIntervalMs,
+    timeoutMs: DEFAULT_TIMEOUT_MS,
   };
 }
 
@@ -125,11 +140,13 @@ function parseProcStat(contents) {
   const systemTicks = Number(fields[12]);
   return {
     pid,
+    state: fields[0],
     ppid: Number(fields[1]),
     pgrp: Number(fields[2]),
     userTicks,
     systemTicks,
     cpuTicks: userTicks + systemTicks,
+    startTimeTicks: Number(fields[19]),
     rssPages: Number(fields[21]),
   };
 }
@@ -230,6 +247,259 @@ async function readGnuTimeMetrics(timeOutput) {
   }
 }
 
+const serializeError = (error) => ({
+  name: error instanceof Error ? error.name : "Error",
+  message: error instanceof Error ? error.message : String(error),
+  stack: error instanceof Error ? error.stack : null,
+});
+const remainingMs = (deadlineNs, cap = Number.POSITIVE_INFINITY) =>
+  Math.max(
+    0,
+    Math.min(
+      cap,
+      Math.ceil(Number(deadlineNs - process.hrtime.bigint()) / 1_000_000),
+    ),
+  );
+
+async function bounded(operation, deadlineNs, cap = Number.POSITIVE_INFINITY) {
+  const timeoutMs = remainingMs(deadlineNs, cap);
+  if (timeoutMs <= 0) return { timedOut: true, value: null, error: null };
+  let timer;
+  const pending = Promise.resolve()
+    .then(operation)
+    .then(
+      (value) => ({ timedOut: false, value, error: null }),
+      (error) => ({ timedOut: false, value: null, error }),
+    );
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(
+      () => resolve({ timedOut: true, value: null, error: null }),
+      timeoutMs,
+    );
+  });
+  const result = await Promise.race([pending, timeout]);
+  clearTimeout(timer);
+  return result;
+}
+
+const processToken = (record) =>
+  record &&
+  Number.isSafeInteger(record.pid) &&
+  Number.isSafeInteger(record.startTimeTicks)
+    ? { pid: record.pid, startTimeTicks: record.startTimeTicks }
+    : null;
+const sameIdentity = (left, right) =>
+  left?.pid === right?.pid && left?.startTimeTicks === right?.startTimeTicks;
+
+async function readProcessIdentity(pid, platform) {
+  if (platform !== "linux") return { state: "unsupported", identity: null };
+  try {
+    const record = parseProcStat(await readFile(`/proc/${pid}/stat`, "utf8"));
+    if (record === undefined || processToken(record) === null) {
+      return {
+        state: "unverified",
+        identity: null,
+        error: new Error("invalid process identity"),
+      };
+    }
+    return {
+      state: record.state === "Z" ? "gone" : "alive",
+      identity: processToken(record),
+      pgrp: record.pgrp,
+    };
+  } catch (error) {
+    return error?.code === "ENOENT" || error?.code === "ESRCH"
+      ? { state: "gone", identity: null }
+      : { state: "unverified", identity: null, error };
+  }
+}
+
+function runtimeFor({
+  runtime = {},
+  platform,
+  spawnImpl,
+  killImpl,
+  watchdogTimeoutMs,
+}) {
+  const selectedPlatform = runtime.platform ?? platform ?? process.platform;
+  return {
+    platform: selectedPlatform,
+    spawn: runtime.spawn ?? spawnImpl ?? spawn,
+    kill: runtime.kill ?? killImpl ?? process.kill,
+    readProcRecords: runtime.readProcRecords ?? readProcRecords,
+    readIdentity:
+      runtime.readIdentity ??
+      runtime.readProcessIdentity ??
+      ((pid) => readProcessIdentity(pid, selectedPlatform)),
+    supervisorPath: runtime.supervisorPath ?? SUPERVISOR_PATH,
+    watchdogMs:
+      runtime.watchdogTimeoutMs ?? watchdogTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+    cleanupMs: runtime.cleanupTimeoutMs ?? TERMINATION_GRACE_MS,
+  };
+}
+
+async function signalLinuxGroup(root, signal, runtime, deadlineNs) {
+  const result = {
+    signal,
+    target: "supervisor-process-group",
+    pid: root?.pid ?? null,
+    identityVerified: false,
+    delivered: false,
+    error: null,
+  };
+  if (root === null) {
+    result.error = serializeError(
+      new Error("supervisor identity unavailable; refusing signal"),
+    );
+    return result;
+  }
+  const current = await bounded(
+    () => runtime.readIdentity(root.pid),
+    deadlineNs,
+  );
+  if (current.value?.state === "gone") {
+    result.identityVerified = true;
+    return result;
+  }
+  if (
+    current.timedOut ||
+    current.error !== null ||
+    current.value?.state !== "alive"
+  ) {
+    result.error = serializeError(
+      current.error ??
+        current.value?.error ??
+        new Error("supervisor identity unavailable"),
+    );
+    return result;
+  }
+  const currentIdentity = processToken(current.value.identity);
+  if (
+    currentIdentity === null ||
+    !sameIdentity(root, currentIdentity) ||
+    current.value.pgrp !== root.pid
+  ) {
+    result.error = serializeError(
+      new Error("supervisor PID/PGID identity changed; refusing signal"),
+    );
+    return result;
+  }
+  try {
+    runtime.kill(-root.pid, signal);
+    result.identityVerified = true;
+    result.delivered = true;
+  } catch (error) {
+    result.error = serializeError(error);
+  }
+  return result;
+}
+
+async function terminateProcess({
+  child,
+  childClose,
+  root,
+  runtime,
+  initialSignal = "SIGTERM",
+}) {
+  const deadlineNs =
+    process.hrtime.bigint() + BigInt(runtime.cleanupMs) * 1_000_000n;
+  const result = {
+    attempted: true,
+    pid: child.pid ?? null,
+    platform: runtime.platform,
+    termSignal: initialSignal,
+    killSignal: null,
+    escalated: false,
+    actions: [],
+    childCloseAfterTerm: false,
+    childCloseAfterKill: false,
+    closeTimedOut: false,
+    terminationVerified: false,
+    survivingPids: [],
+    errors: [],
+  };
+  const send = async (signal) => {
+    if (runtime.platform === "linux") {
+      result.actions.push(
+        await signalLinuxGroup(root, signal, runtime, deadlineNs),
+      );
+      return;
+    }
+    const action = {
+      signal,
+      target: "direct-child",
+      identityVerified: false,
+      delivered: false,
+      error: null,
+    };
+    try {
+      action.delivered = child.kill(signal) !== false;
+    } catch (error) {
+      action.error = serializeError(error);
+    }
+    result.actions.push(action);
+  };
+  await send(initialSignal);
+  let close = await bounded(() => childClose, deadlineNs, TERM_GRACE_MS);
+  result.childCloseAfterTerm = close.value?.observed === true;
+  if (!result.childCloseAfterTerm) {
+    result.escalated = true;
+    result.killSignal = "SIGKILL";
+    await send("SIGKILL");
+    close = await bounded(() => childClose, deadlineNs);
+    result.childCloseAfterKill = close.value?.observed === true;
+  }
+  result.closeTimedOut = !close.value?.observed;
+  if (runtime.platform === "linux") {
+    const scan = await bounded(() => runtime.readProcRecords(), deadlineNs);
+    if (scan.timedOut || scan.error !== null || !Array.isArray(scan.value)) {
+      result.errors.push(
+        serializeError(
+          scan.error ?? new Error("process group scan unavailable"),
+        ),
+      );
+    } else {
+      const groupPid = root?.pid;
+      result.survivingPids = scan.value
+        .filter(
+          (record) => record.pid !== child.pid && record.pgrp === groupPid,
+        )
+        .map((record) => record.pid);
+    }
+  }
+  result.errors.push(
+    ...result.actions.map((action) => action.error).filter(Boolean),
+  );
+  result.terminationVerified =
+    close.value?.observed === true &&
+    runtime.platform === "linux" &&
+    result.survivingPids.length === 0 &&
+    result.errors.length === 0;
+  return { terminationResult: result, close: close.value ?? null };
+}
+
+function noTermination(pid, platform, completion = null) {
+  const observed = completion?.observed === true;
+  const clean =
+    observed && completion.exitCode === 0 && completion.signal === null;
+  return {
+    attempted: false,
+    pid: pid ?? null,
+    platform,
+    termSignal: null,
+    killSignal: null,
+    escalated: false,
+    actions: [],
+    childCloseAfterTerm: false,
+    childCloseAfterKill: false,
+    closeTimedOut: false,
+    supervisorEnforced: platform === "linux" && observed && !clean,
+    terminationVerified: clean,
+    survivingPids: [],
+    errors: [],
+  };
+}
+
 export async function measureCommand(
   executable,
   args,
@@ -237,32 +507,166 @@ export async function measureCommand(
     cwd = process.cwd(),
     env = process.env,
     sampleIntervalMs = DEFAULT_SAMPLE_INTERVAL_MS,
+    runtime: runtimeOptions = {},
+    platform,
+    timeoutMs,
+    spawn: spawnImpl,
+    kill: killImpl,
     stdio = "inherit",
     collectPss = false,
   } = {},
 ) {
-  positiveInteger(sampleIntervalMs, "sampleIntervalMs");
+  sampleIntervalMs = positiveInteger(sampleIntervalMs, "sampleIntervalMs");
   if (typeof collectPss !== "boolean") {
     throw new Error("collectPss must be a boolean");
   }
+  if (timeoutMs !== undefined) positiveInteger(timeoutMs, "timeoutMs");
+  const runtime = runtimeFor({
+    runtime: runtimeOptions,
+    platform,
+    spawnImpl,
+    killImpl,
+    watchdogTimeoutMs: timeoutMs,
+  });
+  const watchdogMs = positiveInteger(runtime.watchdogMs, "watchdogMs");
   const startedAt = new Date();
   const startedNs = process.hrtime.bigint();
   const pageSize = sysconf("PAGESIZE", 4096);
   const clockTicks = sysconf("CLK_TCK", 100);
   const invocation = await commandInvocation(executable, args);
-  const child = spawn(invocation.executable, invocation.args, {
-    cwd,
-    env,
-    stdio,
-    detached: process.platform === "linux",
+  const linux = runtime.platform === "linux";
+  const child = runtime.spawn(
+    linux ? process.execPath : invocation.executable,
+    linux
+      ? [runtime.supervisorPath, invocation.executable, ...invocation.args]
+      : invocation.args,
+    { cwd, env, stdio, detached: linux },
+  );
+  const deadlineNs = process.hrtime.bigint() + BigInt(watchdogMs) * 1_000_000n;
+  let root = null;
+  let identityPending = linux && child.pid !== undefined;
+  let timedOut = false;
+  let firstFailure = null;
+  let finalSampleTimedOut = false;
+  const rememberFailure = (error) => {
+    if (firstFailure !== null) return;
+    firstFailure =
+      error &&
+      typeof error === "object" &&
+      typeof error.name === "string" &&
+      typeof error.message === "string"
+        ? {
+            name: error.name,
+            message: error.message,
+            stack: typeof error.stack === "string" ? error.stack : null,
+          }
+        : serializeError(error);
+  };
+  let resolveWatchdog;
+  const watchdog = new Promise((resolve) => {
+    resolveWatchdog = resolve;
   });
-  // Subscribe before the initial /proc sample. A very short command can close
-  // while that asynchronous scan is still running; attaching afterward misses
-  // the event and leaves the benchmark Promise pending forever.
-  const childCompletion = new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (exitCode, signal) => resolve({ exitCode, signal }));
+  let terminationPromise = null;
+  let resolveClose;
+  let childError = null;
+  const childClose = new Promise((resolve) => {
+    resolveClose = resolve;
   });
+  const onError = (error) => {
+    childError = error;
+    resolveClose({ observed: false, exitCode: null, signal: null, error });
+  };
+  const onClose = (exitCode, signal) => {
+    resolveClose({ observed: true, exitCode, signal });
+  };
+  child.once("error", onError);
+  child.once("close", onClose);
+  let terminationRequestedSignal = null;
+  function beginTermination(
+    initialSignal = "SIGTERM",
+    { allowUnverified = false } = {},
+  ) {
+    terminationRequestedSignal ??= initialSignal;
+    if (terminationPromise !== null) return;
+    // An external signal may arrive while the initial identity read is still
+    // pending. Defer termination so a later verified identity can still make
+    // the group cleanup safe. The watchdog uses allowUnverified only once its
+    // bounded deadline has expired, producing a fail-closed result instead of
+    // hanging forever.
+    if (linux && root === null && identityPending && !allowUnverified) return;
+    terminationPromise = terminateProcess({
+      child,
+      childClose,
+      root,
+      runtime,
+      initialSignal: terminationRequestedSignal,
+    }).catch((error) => ({
+      terminationResult: {
+        ...noTermination(child.pid, runtime.platform),
+        attempted: true,
+        terminationVerified: false,
+        errors: [serializeError(error)],
+      },
+      close: null,
+    }));
+    terminationPromise.then(resolveWatchdog);
+  }
+  let forwardedSignal = null;
+  const forwardSignal = (signal) => {
+    forwardedSignal = signal;
+    rememberFailure(
+      Object.assign(new Error(`benchmark interrupted by ${signal}`), {
+        name: "InterruptedError",
+      }),
+    );
+    beginTermination(signal === "SIGINT" ? "SIGINT" : "SIGTERM");
+  };
+  const forwardInterrupt = () => forwardSignal("SIGINT");
+  const forwardTermination = () => forwardSignal("SIGTERM");
+  process.once("SIGINT", forwardInterrupt);
+  process.once("SIGTERM", forwardTermination);
+  // Arm synchronously after spawn; every later measurement/identity operation
+  // is bounded by this fixed deadline.
+  const watchdogTimer = setTimeout(() => {
+    timedOut = true;
+    rememberFailure(
+      Object.assign(
+        new Error(`benchmark child exceeded ${watchdogMs}ms watchdog`),
+        {
+          name: "TimeoutError",
+        },
+      ),
+    );
+    beginTermination(undefined, { allowUnverified: true });
+  }, watchdogMs);
+
+  if (linux && child.pid !== undefined) {
+    const identity = await bounded(
+      () => runtime.readIdentity(child.pid),
+      deadlineNs,
+    );
+    const value = identity.value;
+    const identityToken = processToken(value?.identity);
+    if (
+      !identity.timedOut &&
+      identity.error === null &&
+      value?.state === "alive" &&
+      identityToken?.pid === child.pid &&
+      value.pgrp === child.pid
+    ) {
+      root = { ...identityToken, pgrp: value.pgrp };
+    } else if (value?.state !== "gone") {
+      rememberFailure(
+        identity.error ??
+          value?.error ??
+          new Error("supervisor identity unavailable"),
+      );
+    }
+    identityPending = false;
+  }
+  if (terminationRequestedSignal !== null) {
+    beginTermination(terminationRequestedSignal);
+  }
 
   let peakRssBytes = 0;
   let peakPssBytes = 0;
@@ -275,15 +679,33 @@ export async function measureCommand(
     if (sampleInFlight !== undefined) return sampleInFlight;
     if (child.pid === undefined) return Promise.resolve();
     const currentSample = (async () => {
-      const records = await readProcRecords();
-      const selected = selectProcessTree(records, child.pid);
-      const aggregate = aggregateProcessTree(records, child.pid, pageSize);
+      const result = await bounded(
+        async () => {
+          const records = await runtime.readProcRecords();
+          const selected = selectProcessTree(records, child.pid);
+          const aggregate = aggregateProcessTree(records, child.pid, pageSize);
+          const pssValues = collectPss
+            ? (
+                await Promise.all(
+                  selected.map((record) => readPssBytes(record.pid)),
+                )
+              ).filter((value) => value !== null)
+            : null;
+          return { selected, aggregate, pssValues };
+        },
+        deadlineNs,
+        FINAL_SAMPLE_TIMEOUT_MS,
+      );
+      if (result.timedOut || result.error !== null || result.value === null) {
+        rememberFailure(
+          result.error ?? new Error("process measurement timed out"),
+        );
+        return;
+      }
+      const { selected, aggregate, pssValues } = result.value;
       peakRssBytes = Math.max(peakRssBytes, aggregate.rssBytes);
       peakProcessCount = Math.max(peakProcessCount, aggregate.processCount);
       if (collectPss) {
-        const pssValues = (
-          await Promise.all(selected.map((record) => readPssBytes(record.pid)))
-        ).filter((value) => value !== null);
         peakPssBytes = Math.max(
           peakPssBytes,
           pssValues.reduce((total, value) => total + value, 0),
@@ -309,45 +731,58 @@ export async function measureCommand(
   };
 
   const finalSample = async () => {
-    if (sampleInFlight !== undefined) await sampleInFlight;
-    await sample();
+    const result = await bounded(
+      async () => {
+        if (sampleInFlight !== undefined) await sampleInFlight;
+        await sample();
+      },
+      deadlineNs,
+      FINAL_SAMPLE_TIMEOUT_MS,
+    );
+    if (result.timedOut) finalSampleTimedOut = true;
+    if (result.error !== null) rememberFailure(result.error);
   };
 
-  await sample();
-  const interval = setInterval(() => {
-    void sample();
-  }, sampleIntervalMs);
-  let forwardedSignal = null;
-  const forwardSignal = (signal) => {
-    forwardedSignal = signal;
-    try {
-      if (process.platform === "linux" && child.pid !== undefined) {
-        process.kill(-child.pid, signal);
-      } else {
-        child.kill(signal);
-      }
-    } catch {
-      // The measured process may have exited between signal delivery and here.
-    }
-  };
-  const forwardInterrupt = () => forwardSignal("SIGINT");
-  const forwardTermination = () => forwardSignal("SIGTERM");
-  process.once("SIGINT", forwardInterrupt);
-  process.once("SIGTERM", forwardTermination);
-
-  let completion;
+  const initialSample = await bounded(() => sample(), deadlineNs);
+  if (initialSample.timedOut)
+    rememberFailure(new Error("initial process sample timed out"));
+  const interval = initialSample.timedOut
+    ? null
+    : setInterval(() => {
+        void sample();
+      }, sampleIntervalMs);
+  const outcome = await Promise.race([
+    childClose.then((value) => ({ source: "child", value })),
+    watchdog.then((value) => ({ source: "watchdog", value })),
+  ]);
+  let completion = outcome.value;
+  let watchdogResult = null;
+  if (terminationPromise !== null) {
+    watchdogResult = await terminationPromise;
+    completion = watchdogResult.close ?? {
+      observed: false,
+      exitCode: null,
+      signal: null,
+      error: new Error("child close was not observed"),
+    };
+  } else if (outcome.source === "watchdog") {
+    watchdogResult = outcome.value;
+    completion = watchdogResult.close ?? {
+      observed: false,
+      exitCode: null,
+      signal: null,
+      error: new Error("child close was not observed"),
+    };
+  }
+  clearTimeout(watchdogTimer);
+  clearInterval(interval);
   try {
-    completion = await childCompletion;
-  } catch (error) {
-    if (invocation.temporaryDirectory !== null) {
-      await rm(invocation.temporaryDirectory, { recursive: true, force: true });
-    }
-    throw error;
-  } finally {
-    clearInterval(interval);
     await finalSample();
+  } finally {
     process.off("SIGINT", forwardInterrupt);
     process.off("SIGTERM", forwardTermination);
+    child.off("error", onError);
+    child.off("close", onClose);
   }
 
   const endedNs = process.hrtime.bigint();
@@ -365,10 +800,34 @@ export async function measureCommand(
     await rm(invocation.temporaryDirectory, { recursive: true, force: true });
   }
 
+  const terminationResult =
+    watchdogResult?.terminationResult ??
+    noTermination(child.pid, runtime.platform, completion);
+  for (const error of terminationResult.errors) rememberFailure(error);
+  if (!completion.observed) {
+    rememberFailure(
+      completion.error ?? new Error("child close was not observed"),
+    );
+  }
+  if (
+    runtime.platform === "linux" &&
+    completion.observed &&
+    (completion.exitCode !== 0 || completion.signal !== null)
+  ) {
+    rememberFailure(
+      new Error("supervisor enforced cleanup after a non-clean child exit"),
+    );
+  }
+  const failed =
+    timedOut ||
+    finalSampleTimedOut ||
+    firstFailure !== null ||
+    !completion.observed ||
+    childError !== null;
   return {
     executable,
     args,
-    exitCode: completion.exitCode ?? 1,
+    exitCode: failed ? 1 : (completion.exitCode ?? 1),
     signal: completion.signal,
     startedAt: startedAt.toISOString(),
     endedAt: new Date().toISOString(),
@@ -381,12 +840,23 @@ export async function measureCommand(
     singleProcessMaxRssBytes: gnuTime?.maxRssBytes ?? null,
     peakProcessCount,
     peakPssProcessCount: collectPss ? peakPssProcessCount : null,
-    resourceMetricsAvailable: process.platform === "linux",
+    resourceMetricsAvailable: runtime.platform === "linux",
     memoryMetricDefinition: collectPss
       ? "peakRssBytes sums sampled process RSS and may double-count shared pages; peakPssBytes sums sampled process PSS"
       : "peakRssBytes sums sampled process RSS and may double-count shared pages; pass --collect-pss for sampled PSS",
     forwardedSignal,
     sampleIntervalMs,
+    timeoutMs: watchdogMs,
+    timedOut,
+    finalSampleTimedOut,
+    firstFailure,
+    childClose: {
+      observed: completion.observed === true,
+      exitCode: completion.exitCode ?? null,
+      signal: completion.signal ?? null,
+      error: completion.error ? serializeError(completion.error) : null,
+    },
+    terminationResult,
   };
 }
 
@@ -418,7 +888,18 @@ function distribution(values) {
 }
 
 export function summarizeRuns(runs) {
-  const passed = runs.filter((run) => run.exitCode === 0);
+  const passed = runs.filter(
+    (run) =>
+      run.exitCode === 0 &&
+      run.timedOut !== true &&
+      run.childClose?.observed === true &&
+      run.terminationResult?.terminationVerified === true &&
+      run.vitestReport?.status === "valid" &&
+      run.vitestReport.fresh === true &&
+      run.vitestReport.boundToRun === true &&
+      run.vitest?.success === true &&
+      run.vitest.allTestsPassed === true,
+  );
   const failedRuns = runs.length - passed.length;
   return {
     totalRuns: runs.length,
@@ -608,15 +1089,87 @@ function extractVitestEvidence(report) {
   if (!report || typeof report !== "object") return null;
   const testResults = Array.isArray(report.testResults)
     ? report.testResults
-    : [];
+    : null;
+  const countKeys = [
+    "numTotalTestSuites",
+    "numPassedTestSuites",
+    "numFailedTestSuites",
+    "numPendingTestSuites",
+    "numTotalTests",
+    "numPassedTests",
+    "numFailedTests",
+    "numPendingTests",
+    "numTodoTests",
+  ];
+  if (
+    typeof report.success !== "boolean" ||
+    testResults === null ||
+    !countKeys.every(
+      (key) => Number.isSafeInteger(report[key]) && report[key] >= 0,
+    ) ||
+    report.numPassedTestSuites +
+      report.numFailedTestSuites +
+      report.numPendingTestSuites !==
+      report.numTotalTestSuites ||
+    report.numPassedTests +
+      report.numFailedTests +
+      report.numPendingTests +
+      report.numTodoTests !==
+      report.numTotalTests
+  ) {
+    return null;
+  }
+  if (
+    testResults.length === 0 ||
+    testResults.some((result) => !Array.isArray(result.assertionResults))
+  ) {
+    return null;
+  }
+  const assertions = testResults.flatMap((result) => result.assertionResults);
+  const assertionCounts = assertions.reduce(
+    (counts, assertion) => {
+      if (assertion.status in counts) counts[assertion.status] += 1;
+      return counts;
+    },
+    { passed: 0, failed: 0, pending: 0, todo: 0 },
+  );
+  const assertionCount = assertions.length;
+  if (
+    assertionCount !== report.numTotalTests ||
+    report.numPassedTests !== assertionCounts.passed ||
+    report.numFailedTests !== assertionCounts.failed ||
+    report.numPendingTests !== assertionCounts.pending ||
+    report.numTodoTests !== assertionCounts.todo
+  ) {
+    return null;
+  }
+  const allTestsPassed =
+    testResults.every(
+      (result) =>
+        typeof result.name === "string" &&
+        result.status === "passed" &&
+        Array.isArray(result.assertionResults) &&
+        result.assertionResults.every(
+          (assertion) => assertion.status === "passed",
+        ),
+    ) &&
+    report.numFailedTestSuites === 0 &&
+    report.numPendingTestSuites === 0 &&
+    report.numFailedTests === 0 &&
+    report.numPendingTests === 0 &&
+    report.numTodoTests === 0;
   return {
-    numTotalTestSuites: report.numTotalTestSuites ?? null,
-    numPassedTestSuites: report.numPassedTestSuites ?? null,
-    numFailedTestSuites: report.numFailedTestSuites ?? null,
-    numTotalTests: report.numTotalTests ?? null,
-    numPassedTests: report.numPassedTests ?? null,
-    numFailedTests: report.numFailedTests ?? null,
-    success: report.success ?? null,
+    numTotalTestSuites: report.numTotalTestSuites,
+    numPassedTestSuites: report.numPassedTestSuites,
+    numFailedTestSuites: report.numFailedTestSuites,
+    numPendingTestSuites: report.numPendingTestSuites,
+    numTotalTests: report.numTotalTests,
+    numPassedTests: report.numPassedTests,
+    numFailedTests: report.numFailedTests,
+    numPendingTests: report.numPendingTests,
+    numTodoTests: report.numTodoTests,
+    success: report.success,
+    allTestsPassed,
     testFiles: testResults
       .map((result) => result.name)
       .filter((name) => typeof name === "string")
@@ -635,13 +1188,60 @@ function extractVitestEvidence(report) {
   };
 }
 
-async function readVitestEvidence(reportPath) {
+export async function preflightVitestReport(reportPath) {
   try {
-    return extractVitestEvidence(
-      JSON.parse(await readFile(reportPath, "utf8")),
-    );
-  } catch {
-    return null;
+    await access(reportPath);
+    await rm(reportPath, { force: true });
+    return {
+      existed: true,
+      removed: true,
+      status: "stale-removed",
+      stale: true,
+    };
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    return { existed: false, removed: false, status: "absent", stale: false };
+  }
+}
+
+export async function inspectVitestReport(reportPath, { run, preflight } = {}) {
+  const base = {
+    path: reportPath,
+    run,
+    reportRun: null,
+    evidence: null,
+    fresh: false,
+    stale: false,
+    boundToRun: false,
+  };
+  try {
+    const report = JSON.parse(await readFile(reportPath, "utf8"));
+    const evidence = extractVitestEvidence(report);
+    const reportRun = report?.run ?? null;
+    const preflightBound =
+      preflight?.status === "absent" || preflight?.status === "stale-removed";
+    if (evidence === null || (reportRun !== null && reportRun !== run)) {
+      return { ...base, status: "invalid", reportRun };
+    }
+    if (!preflightBound) {
+      return { ...base, status: "stale", stale: true, reportRun };
+    }
+    return {
+      ...base,
+      status:
+        evidence.success === true && evidence.allTestsPassed
+          ? "valid"
+          : "failed",
+      reportRun,
+      evidence,
+      fresh: true,
+      boundToRun: true,
+    };
+  } catch (error) {
+    return {
+      ...base,
+      status: error?.code === "ENOENT" ? "missing" : "invalid",
+    };
   }
 }
 
@@ -680,6 +1280,7 @@ async function main() {
     options.output ?? `.artifacts/browser-ci/${options.suite}.json`,
   );
   const vitestReportDirectory = path.join(path.dirname(output), "vitest");
+  const reportNonce = randomUUID();
   const report = {
     schemaVersion: 1,
     suite: options.suite,
@@ -693,7 +1294,7 @@ async function main() {
   for (let run = 1; run <= options.runs; run += 1) {
     const vitestReportPath = path.join(
       vitestReportDirectory,
-      `${safeFilename(candidate)}-run-${run}.json`,
+      `${safeFilename(candidate)}-run-${run}-${reportNonce}.json`,
     );
     await mkdir(path.dirname(vitestReportPath), { recursive: true });
     console.log(
@@ -705,17 +1306,28 @@ async function main() {
       "--reporter=json",
       `--outputFile.json=${vitestReportPath}`,
     ];
+    let preflight;
     try {
+      preflight = await preflightVitestReport(vitestReportPath);
       const measured = await measureCommand(command.executable, measuredArgs, {
         sampleIntervalMs: options.sampleIntervalMs,
         collectPss: options.collectPss ?? false,
       });
+      const vitestReport = await inspectVitestReport(vitestReportPath, {
+        run,
+        preflight,
+      });
       report.runs.push({
         run,
         ...measured,
-        vitest: await readVitestEvidence(vitestReportPath),
+        vitest: vitestReport.evidence,
+        vitestReport: { ...vitestReport, preflight },
       });
     } catch (error) {
+      const vitestReport = await inspectVitestReport(vitestReportPath, {
+        run,
+        preflight,
+      });
       report.runs.push({
         run,
         executable: command.executable,
@@ -727,7 +1339,8 @@ async function main() {
           message: error instanceof Error ? error.message : String(error),
           stack: error instanceof Error ? error.stack : null,
         },
-        vitest: await readVitestEvidence(vitestReportPath),
+        vitest: vitestReport.evidence,
+        vitestReport: { ...vitestReport, preflight },
       });
       await writeBenchmark(output, report);
       break;

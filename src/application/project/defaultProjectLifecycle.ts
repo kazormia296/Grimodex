@@ -38,6 +38,14 @@ import {
   type ProjectLifecycleParticipant,
 } from "./ProjectLifecycleRegistry";
 import { debugLog } from "@/lib/debugLog";
+import { isD2aEgressDenied } from "@/lib/tauri";
+
+const D2A_OPTIONAL_HYDRATION_PARTICIPANTS = new Set([
+  "chat-history-load",
+  "foreshadow-load",
+  "trash-load",
+  "plot-threads-load",
+]);
 
 /** Abort and clear project-scoped chat state before a Project boundary commit. */
 export function resetChatForProject(projectId: string): void {
@@ -224,6 +232,9 @@ export const projectLifecycleRegistry = createProjectLifecycleRegistry(
   participants,
   {
     optionalConcurrency: 3,
+    isExpectedOptionalFailure: (participant, error) =>
+      D2A_OPTIONAL_HYDRATION_PARTICIPANTS.has(participant.id) &&
+      isD2aEgressDenied(error),
     onOptionalFailure: (participant, _error) => {
       debugLog.warn("project-lifecycle", "optional hydration failed", {
         sensitivity: "safe",

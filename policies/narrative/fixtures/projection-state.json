@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "revisionId": "revision-1",
+  "projections": [
+    {
+      "projectionRef": "codex-relation:1",
+      "projectionKind": "codex-relation",
+      "applicationId": "application-1",
+      "state": "applied"
+    },
+    {
+      "projectionRef": "chronicle-event:1",
+      "projectionKind": "chronicle-event",
+      "applicationId": null,
+      "state": "unapplied"
+    },
+    {
+      "projectionRef": "semantic-index:1",
+      "projectionKind": "semantic-index",
+      "applicationId": "application-2",
+      "state": "stale"
+    },
+    {
+      "projectionRef": "chat-index:1",
+      "projectionKind": "chat-index",
+      "applicationId": "application-3",
+      "state": "compensated"
+    }
+  ]
+}

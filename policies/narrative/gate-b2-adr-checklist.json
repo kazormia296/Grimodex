@@ -1,0 +1,500 @@
+{
+  "schemaVersion": 1,
+  "gateId": "gate-b2",
+  "adr": "docs/adr/004-narrative-reconciliation-boundary.md",
+  "items": [
+    {
+      "id": "B2-X01",
+      "section": "cross-cutting",
+      "text": "Proposal Revision に source basis、read-set digest、evidence set、reconciler id/version、schema id/version がある",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_reconciliation_envelope.rs",
+          "name": "saves_canonical_envelope_and_normalized_source_basis"
+        }
+      ]
+    },
+    {
+      "id": "B2-X02",
+      "section": "cross-cutting",
+      "text": "Commit 時に source-basis/read-set precondition（TOCTOU 防止）がある",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "stale_source_invalidates_prepared_commit_without_domain_mutation"
+        },
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "actual_scene_writer_invalidates_prepared_commit_on_scene_body_change"
+        }
+      ]
+    },
+    {
+      "id": "B2-X03",
+      "section": "cross-cutting",
+      "text": "Reconciler-originated retract は補償 Proposal/Application であり、過去 Revision を変更せず Undo と分離される",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "semantic_retraction_appends_compensation_and_preserves_prior_history"
+        },
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/schema_contract.rs",
+          "name": "immutable_history_contract_contains_retraction_guards"
+        }
+      ]
+    },
+    {
+      "id": "B2-X04",
+      "section": "cross-cutting",
+      "text": "Provenance/Dependency は needs-reconciliation のみ伝播し、Domain delete/retract を伝播しない",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/narrative-extraction/reconciler/gateB2Negatives.test.ts",
+          "name": "rejects domain-delete and semantic-retract-cascade propagation"
+        }
+      ]
+    },
+    {
+      "id": "B2-X05",
+      "section": "cross-cutting",
+      "text": "Source/Evidence 削除から Domain への FK cascade がない",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/schema_contract.rs",
+          "name": "provenance_and_field_authority_rows_have_no_domain_cascade_foreign_keys"
+        },
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/src/execute.rs",
+          "name": "typed_project_delete_cascades_protected_rows_and_retains_ai_audit_events"
+        }
+      ]
+    },
+    {
+      "id": "B2-X06",
+      "section": "cross-cutting",
+      "text": "Locked/user-authored projection/field の override は Decision/actor context 由来で検証される",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "locked_field_invalidates_ai_apply_without_partial_mutation"
+        }
+      ]
+    },
+    {
+      "id": "B2-X07",
+      "section": "cross-cutting",
+      "text": "stale/needs-reconciliation Projection の自動コンテキスト投入・自動 Apply を抑止または注記する",
+      "status": "OUT-OF-SCOPE",
+      "reason": "自動 Context Assembly と Maintenance ReStack の freshness policy は Gate B2 の後続作業で扱う。",
+      "deferredTo": "#501",
+      "evidence": []
+    },
+    {
+      "id": "B2-X08",
+      "section": "cross-cutting",
+      "text": "Reconciler 公開型が SQL、DB Operation、Prepared Plan、Writer command に依存しない",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/narrative-extraction/reconciler/contract.test.ts",
+          "name": "does not expose SQL/DML strings or writer command types in public exports"
+        }
+      ]
+    },
+    {
+      "id": "B2-CH-I",
+      "section": "chronicle",
+      "text": "Invariant: Project 所属、Scene/participant 存在、時刻形式、version CAS、atomic child、read-set OCC",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "stale_source_invalidates_prepared_commit_without_domain_mutation"
+        },
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_extraction.rs",
+          "name": "apply_commit_rolls_back_all_on_failure"
+        }
+      ]
+    },
+    {
+      "id": "B2-CH-S",
+      "section": "chronicle",
+      "text": "Strategy: 同一 Event、嘘/回想/誤認、意味的重要度の判断を Reconciler/Candidate planner に置く",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/chronicle/extraction/proposalPlanner.test.ts",
+          "name": "skips planned / minor / unresolved-evidence / already-satisfied"
+        },
+        {
+          "kind": "test",
+          "path": "src/features/chronicle/extraction/existingEventMatcher.test.ts",
+          "name": "treats title-only matches as probable-duplicate and never auto-skips"
+        }
+      ]
+    },
+    {
+      "id": "B2-CH-G",
+      "section": "chronicle",
+      "text": "Signal: 時刻表現検出と候補共起を Apply authority から分離する",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/chronicle/extraction/temporalLiteralPrepass.test.ts",
+          "name": "runTemporalLiteralPrepass"
+        }
+      ]
+    },
+    {
+      "id": "B2-CX-I",
+      "section": "codex",
+      "text": "Invariant: exact ID/alias 参照、両端同一 Project、directionality enum、semantic key 一意、OCC",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/codex_narrative_commit.rs",
+          "name": "semantic_duplicate_relation_is_rejected"
+        },
+        {
+          "kind": "test",
+          "path": "src/lib/browser-mock.codex-occ.test.ts",
+          "name": "Codex OCC parity"
+        }
+      ]
+    },
+    {
+      "id": "B2-CX-S",
+      "section": "codex",
+      "text": "Strategy: Mention 同一性、関係の物語上の意味、Alias と別 Entity の判断を Writer から分離する",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/codex/extraction/relationInvariant.ts",
+          "name": "structural relation invariant boundary"
+        },
+        {
+          "kind": "test",
+          "path": "src/features/codex/extraction/relationStrategy.ts",
+          "name": "semantic relation strategy boundary"
+        },
+        {
+          "kind": "test",
+          "path": "src/features/codex/extraction/relationSynthesis.test.ts",
+          "name": "keeps structural validity separate from narrative strategy"
+        }
+      ]
+    },
+    {
+      "id": "B2-CX-G",
+      "section": "codex",
+      "text": "Signal: exact-name/alias を候補生成として扱う",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/codex/extraction/existingEntityMatcher.test.ts",
+          "name": "resolves a unique exact alias match"
+        }
+      ]
+    },
+    {
+      "id": "B2-PH-I",
+      "section": "phase",
+      "text": "Invariant: Entry/Anchor 参照、開始・終了順序の形式、Detail 型一致、OCC",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/codex_phase_detail_commit.rs",
+          "name": "phase_failure_rolls_back_entry_and_detail"
+        },
+        {
+          "kind": "test",
+          "path": "src/features/codex/phaseApi.patchAggregate.test.ts",
+          "name": "maps a typed aggregate CAS failure to PhaseVersionConflictError"
+        }
+      ]
+    },
+    {
+      "id": "B2-PH-S",
+      "section": "phase",
+      "text": "Strategy: major/moderate transition 件数、持続 Scene 数、State 変化回数による成立判断",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/codex/extraction/phaseDetailGates.test.ts",
+          "name": "persistence gate: single moderate → report-only; two moderate → proposal"
+        }
+      ]
+    },
+    {
+      "id": "B2-PH-G",
+      "section": "phase",
+      "text": "Signal: transition 語・State transition を候補として検出する",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/codex/extraction/phaseDetailGates.test.ts",
+          "name": "promotes durable injury/role change to Phase candidates"
+        }
+      ]
+    },
+    {
+      "id": "B2-TM-I",
+      "section": "temporal",
+      "text": "Invariant: 明示 Schema の日時形式、開始≦終了、同一 scope/timeline/worldline の hard constraint の形式的不整合のみ拒否する",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/narrative-extraction/temporal/constraints.test.ts",
+          "name": "rejects dangling endpoints, incompatible point endpoints, and invalid ranges"
+        },
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/temporal_constraint_commit.rs",
+          "name": "one_occ_failure_rolls_back_the_whole_temporal_commit"
+        }
+      ]
+    },
+    {
+      "id": "B2-TM-S",
+      "section": "temporal",
+      "text": "Strategy: Constraint 本文導出、相対時刻の付着、季節解釈、夢/現実/回想、soft/inferred 矛盾を Writer から分離する",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/chronicle/extraction/temporalLiteralPrepass.test.ts",
+          "name": "buildAttachmentCandidates stays ambiguous"
+        },
+        {
+          "kind": "test",
+          "path": "src/features/narrative-extraction/temporal/solver/solver.test.ts",
+          "name": "keeps soft constraints out of hardResolution conflicts"
+        }
+      ]
+    },
+    {
+      "id": "B2-TM-G",
+      "section": "temporal",
+      "text": "Signal: 時刻表現を候補として検出する",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/chronicle/extraction/temporalLiteralPrepass.test.ts",
+          "name": "parses relative 三日後"
+        }
+      ]
+    },
+    {
+      "id": "B2-PL-I",
+      "section": "plot",
+      "text": "Invariant: Thread/Marker/Branch Schema、Scene 参照、Graph/semantic key、atomic update",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/plot_thread_narrative_commit.rs",
+          "name": "plot_marker_failure_rolls_back_entire_commit"
+        }
+      ]
+    },
+    {
+      "id": "B2-PL-S",
+      "section": "plot",
+      "text": "Strategy: 二 Scene なら Thread、Goal 再出、完了判定、分類の物語判断",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/plot-threads/extraction/plotThreadGates.test.ts",
+          "name": "allows new threads with two scenes and material developments"
+        },
+        {
+          "kind": "test",
+          "path": "src/features/plot-threads/extraction/plotThreadGates.test.ts",
+          "name": "does not treat last marker as resolve without closure evidence"
+        }
+      ]
+    },
+    {
+      "id": "B2-PL-G",
+      "section": "plot",
+      "text": "Signal: Goal/Conflict/Question 形と material development を候補として検出する",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/plot-threads/extraction/signalIndex.test.ts",
+          "name": "groups material developments by resolved cluster key"
+        }
+      ]
+    },
+    {
+      "id": "B2-FS-I",
+      "section": "foreshadow",
+      "text": "Invariant: Setup/Payoff Evidence、多対多 link、Project/Scene、Reading order、Root CAS、Atomic Undo",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/foreshadow_narrative_commit.rs",
+          "name": "foreshadow_patch_child_edit_conflict_blocks_undo_without_partial_restore"
+        },
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/foreshadow_occ.rs",
+          "name": "stacked_update_and_delete_history_keeps_monotonic_tokens_and_children"
+        }
+      ]
+    },
+    {
+      "id": "B2-FS-S",
+      "section": "foreshadow",
+      "text": "Strategy: 機能的接続、object-use vs Q&A、misdirection 解消、resolved 判定、semantic retract",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "implementation",
+          "path": "src/features/foreshadow/extraction/foreshadowInvariant.ts",
+          "name": "structural foreshadow invariant boundary"
+        },
+        {
+          "kind": "implementation",
+          "path": "src/features/foreshadow/extraction/foreshadowStrategy.ts",
+          "name": "semantic foreshadow strategy boundary"
+        },
+        {
+          "kind": "test",
+          "path": "src/features/foreshadow/extraction/foreshadowGates.test.ts",
+          "name": "keeps structural order separate from semantic oddity"
+        }
+      ]
+    },
+    {
+      "id": "B2-FS-G",
+      "section": "foreshadow",
+      "text": "Signal: 同一語再登場と物品共起を候補として扱う",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/foreshadow/extraction/foreshadowGates.test.ts",
+          "name": "rejects person recurrence as mere repetition"
+        },
+        {
+          "kind": "test",
+          "path": "src/features/foreshadow/extraction/foreshadowGates.test.ts",
+          "name": "rejects object background callback as callback-only"
+        }
+      ]
+    },
+    {
+      "id": "B2-IM-I",
+      "section": "import-maintenance",
+      "text": "Invariant: Capture vs Apply runtime guard、sealed plan、参照整合、source-basis OCC",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "stale_source_invalidates_prepared_commit_without_domain_mutation"
+        },
+        {
+          "kind": "test",
+          "path": "src-tauri/crates/grimodex-db/tests/narrative_prepared_commit.rs",
+          "name": "apply_version_cas_rejects_stale_version_without_poisoning_prepared_commit"
+        }
+      ]
+    },
+    {
+      "id": "B2-IM-C",
+      "section": "import-maintenance",
+      "text": "Core は EvidenceFreshness（fresh/stale/source-missing 等）のみを決定論的に扱う",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/narrative-extraction/reconciler/contract.test.ts",
+          "name": "separates EvidenceFreshness (Core) from SemanticAssessment (Reconciler)"
+        }
+      ]
+    },
+    {
+      "id": "B2-IM-R",
+      "section": "import-maintenance",
+      "text": "Reconciler の SemanticAssessment は非権威的で unchanged/revision/retraction/conflict を表す",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/narrative-extraction/reconciler/contract.test.ts",
+          "name": "separates EvidenceFreshness (Core) from SemanticAssessment (Reconciler)"
+        }
+      ]
+    },
+    {
+      "id": "B2-IM-P",
+      "section": "import-maintenance",
+      "text": "親 stale から子 retract/Proposal 削除/Domain 自動削除/Evidence→Domain cascade を行わない",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/narrative-extraction/reconciler/gateB2Negatives.test.ts",
+          "name": "turns a stale parent into only a child needs-reconciliation signal"
+        }
+      ]
+    },
+    {
+      "id": "B2-IM-F",
+      "section": "import-maintenance",
+      "text": "Change Feed は needs-reconciliation までを伝播する",
+      "status": "PASS",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "src/features/narrative-extraction/reconciler/gateB2Negatives.test.ts",
+          "name": "allows only needs-reconciliation propagation"
+        }
+      ]
+    },
+    {
+      "id": "B2-IM-S",
+      "section": "import-maintenance",
+      "text": "stale Projection の自動コンテキスト投入を抑止する",
+      "status": "OUT-OF-SCOPE",
+      "reason": "Maintenance ReStack の Context Assembly freshness policy として後続実装する。",
+      "deferredTo": "#501",
+      "evidence": []
+    }
+  ]
+}

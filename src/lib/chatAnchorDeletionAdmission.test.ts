@@ -1,14 +1,33 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { deleteFromDb, scheduleImeExportRefresh } = vi.hoisted(() => ({
-  deleteFromDb: vi.fn(),
-  scheduleImeExportRefresh: vi.fn(),
-}));
+const {
+  deleteFromDb,
+  selectFromDb,
+  selectWhere,
+  invokeTypedWriter,
+  scheduleImeExportRefresh,
+} = vi.hoisted(() => {
+  const selectWhere = vi
+    .fn()
+    .mockResolvedValue([{ id: "codex-1", projectId: "project-1", version: 7 }]);
+  return {
+    deleteFromDb: vi.fn(),
+    selectFromDb: vi.fn(() => ({ where: selectWhere })),
+    selectWhere,
+    invokeTypedWriter: vi.fn(),
+    scheduleImeExportRefresh: vi.fn(),
+  };
+});
 
 vi.mock("@/db/client", () => ({
   db: {
     delete: deleteFromDb,
+    select: () => ({ from: selectFromDb }),
   },
+}));
+
+vi.mock("@/lib/tauri", () => ({
+  invoke: invokeTypedWriter,
 }));
 
 vi.mock("@/features/ime/scheduler", () => ({
@@ -24,6 +43,11 @@ import {
   ChatAnchorDeletionBlockedError,
   tryAcquireChatTurnAdmissionLease,
 } from "./chatNavigationGuard";
+import {
+  _resetTimelapseGenesisBarriersForTests,
+  beginTimelapseGenesisBarrier,
+} from "@/features/timelapse/genesisBarrier";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -41,29 +65,41 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-function deferNextDelete() {
-  const durableDelete = deferred<void>();
-  const where = vi.fn(() => durableDelete.promise);
-  deleteFromDb.mockReturnValueOnce({ where });
-  return { durableDelete, where };
+function deferNextTypedDelete() {
+  const durableDelete = deferred<{
+    changeEventUid: string;
+    maintenanceTransactionId: string;
+    undoJournalId: string;
+  }>();
+  invokeTypedWriter.mockReturnValueOnce(durableDelete.promise);
+  return { durableDelete };
 }
+
+const DELETE_RECEIPT = {
+  changeEventUid: "delete-change-event",
+  maintenanceTransactionId: "delete-maintenance-transaction",
+  undoJournalId: "delete-undo-journal",
+};
 
 describe("Chat anchor deletion admission", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetTimelapseGenesisBarriersForTests();
+    publishCurrentProjectId("project-1");
     __resetChatNavigationGuardForTests();
     registerCodexAnchorLifecycle({ onDeleted: () => {} });
     setSnippetDeletedHandler(() => {});
   });
 
   afterEach(() => {
+    _resetTimelapseGenesisBarriersForTests();
     __resetChatNavigationGuardForTests();
     registerCodexAnchorLifecycle({ onDeleted: () => {} });
     setSnippetDeletedHandler(() => {});
   });
 
   it("holds Codex deletion authority through DB deletion and scope reconciliation", async () => {
-    const { durableDelete, where } = deferNextDelete();
+    const { durableDelete } = deferNextTypedDelete();
     const notified = vi.fn();
     let admissionDuringNotification:
       | ReturnType<typeof tryAcquireChatTurnAdmissionLease>
@@ -76,10 +112,19 @@ describe("Chat anchor deletion admission", () => {
     });
 
     const deleting = deleteCodexEntry("project-1", "codex-1");
-    expect(where).toHaveBeenCalledOnce();
     expect(tryAcquireChatTurnAdmissionLease()).toBeNull();
+    await vi.waitFor(() => expect(invokeTypedWriter).toHaveBeenCalledOnce());
+    expect(selectFromDb).toHaveBeenCalledOnce();
+    expect(selectWhere).toHaveBeenCalledOnce();
+    expect(invokeTypedWriter).toHaveBeenCalledWith("codex_delete", {
+      payload: expect.objectContaining({
+        projectId: "project-1",
+        entryId: "codex-1",
+        baseVersion: 7,
+      }),
+    });
 
-    durableDelete.resolve(undefined);
+    durableDelete.resolve(DELETE_RECEIPT);
     await deleting;
 
     expect(notified).toHaveBeenCalledWith("codex-1");
@@ -98,12 +143,14 @@ describe("Chat anchor deletion admission", () => {
       deleteCodexEntry("project-1", "codex-1"),
     ).rejects.toBeInstanceOf(ChatAnchorDeletionBlockedError);
     expect(deleteFromDb).not.toHaveBeenCalled();
+    expect(selectFromDb).not.toHaveBeenCalled();
+    expect(invokeTypedWriter).not.toHaveBeenCalled();
 
     chatAdmission?.release();
   });
 
   it("holds Snippet deletion authority through DB deletion and scope reconciliation", async () => {
-    const { durableDelete, where } = deferNextDelete();
+    const { durableDelete } = deferNextTypedDelete();
     const notified = vi.fn();
     let admissionDuringNotification:
       | ReturnType<typeof tryAcquireChatTurnAdmissionLease>
@@ -114,10 +161,19 @@ describe("Chat anchor deletion admission", () => {
     });
 
     const deleting = deleteSnippet("project-1", "snippet-1");
-    expect(where).toHaveBeenCalledOnce();
     expect(tryAcquireChatTurnAdmissionLease()).toBeNull();
+    await vi.waitFor(() => expect(invokeTypedWriter).toHaveBeenCalledOnce());
+    expect(selectFromDb).toHaveBeenCalledOnce();
+    expect(selectWhere).toHaveBeenCalledOnce();
+    expect(invokeTypedWriter).toHaveBeenCalledWith("snippet_delete", {
+      payload: expect.objectContaining({
+        projectId: "project-1",
+        snippetId: "snippet-1",
+        baseVersion: 7,
+      }),
+    });
 
-    durableDelete.resolve(undefined);
+    durableDelete.resolve(DELETE_RECEIPT);
     await deleting;
 
     expect(notified).toHaveBeenCalledWith("snippet-1");
@@ -135,7 +191,27 @@ describe("Chat anchor deletion admission", () => {
       deleteSnippet("project-1", "snippet-1"),
     ).rejects.toBeInstanceOf(ChatAnchorDeletionBlockedError);
     expect(deleteFromDb).not.toHaveBeenCalled();
+    expect(selectFromDb).not.toHaveBeenCalled();
+    expect(invokeTypedWriter).not.toHaveBeenCalled();
 
     chatAdmission?.release();
+  });
+
+  it.each([
+    ["Codex", () => deleteCodexEntry("project-1", "codex-1")],
+    ["Snippet", () => deleteSnippet("project-1", "snippet-1")],
+  ])("holds %s Native deletion behind genesis", async (_kind, remove) => {
+    const genesis = beginTimelapseGenesisBarrier("project-1");
+    const deleting = remove();
+
+    await Promise.resolve();
+    expect(invokeTypedWriter).not.toHaveBeenCalled();
+
+    genesis.fail(new Error("genesis failed"));
+    await expect(deleting).rejects.toMatchObject({
+      name: "TimelapseGenesisBarrierError",
+    });
+    expect(selectFromDb).not.toHaveBeenCalled();
+    expect(invokeTypedWriter).not.toHaveBeenCalled();
   });
 });

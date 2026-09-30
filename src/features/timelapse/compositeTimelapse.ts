@@ -48,9 +48,25 @@ export interface BuildCompositePlanOptions {
   maxIdleMs?: number;
 }
 
+function batchSceneIds(event: ChangeEvent): string[] {
+  if (
+    event.domain !== "event" ||
+    (event.opType !== "event.stamp" && event.opType !== "event.unstamp")
+  ) {
+    return [];
+  }
+  const sceneIds = parseEventPayload(event).sceneIds;
+  if (!Array.isArray(sceneIds)) return [];
+  return sceneIds.filter(
+    (sceneId): sceneId is string =>
+      typeof sceneId === "string" && sceneId.length > 0,
+  );
+}
+
 function isSceneChromeEvent(event: ChangeEvent, sceneId: string): boolean {
   if (event.sceneId === sceneId) return true;
   if (event.sceneId != null) return false;
+  if (batchSceneIds(event).includes(sceneId)) return true;
   const chromeDomains = new Set([
     "chat",
     "layout",

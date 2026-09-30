@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "contract": "maintenance-attention-contract",
+  "storageClass": "durable-user-state",
+  "epochBinding": "none",
+  "backflowPolicy": "forbid",
+  "writerAuthority": "attention-typed-writer",
+  "concurrencyControl": "row-version-occ",
+  "requestIdentity": "request-id-plus-payload-digest",
+  "actorIdentity": "required",
+  "writerControls": [
+    "every set and clear carries expectedVersion; a mismatch fails with NEX_ATTENTION_VERSION_CONFLICT instead of overwriting",
+    "a repeated requestId carrying the same decision replays as a no-op; the same requestId carrying a different decision, or a different actor reusing it, fails with NEX_ATTENTION_REQUEST_CONFLICT",
+    "actorId is NOT NULL: an unattributed disposition cannot be stored",
+    "clear is never an unconditional DELETE"
+  ],
+  "applicationConditions": [
+    "finding-key-match",
+    "finding-identity-resolved",
+    "material-basis-digest-match",
+    "snooze-not-expired"
+  ],
+  "negativeFixture": "Attention rows are never mutated by Run publish, Finding Observation writes, or epoch rotation; only the typed Attention writer sets or clears them"
+}

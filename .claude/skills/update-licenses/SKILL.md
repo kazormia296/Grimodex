@@ -1,11 +1,8 @@
 ---
 name: update-licenses
 description: >
-  THIRD_PARTY_LICENSES.md を再生成して依存・同梱アセットの最新状態に揃える。
-  scripts/generate-licenses.ts を正本に root + public/ を生成し、新規バンドル
-  アセット(ONNX モデル/独自フォント/画像)の収録と branch + PR での commit まで行う。
-  Use when: 「ThirdPartyLicense 更新」「サードパーティライセンス更新」
-  「ライセンス一覧を再生成」「third party license を更新」と言われたとき。
+  Grimodex の THIRD_PARTY_LICENSES.md を再生成し、依存・再配布アセットの
+  ライセンス一覧を揃える。依存の更新や公開操作は依頼範囲に含まれる場合だけ行う。
 allowed-tools: Read, Edit, Grep, Bash, WebFetch
 ---
 
@@ -75,17 +72,14 @@ allowed-tools: Read, Edit, Grep, Bash, WebFetch
    - lock/package更新が同じブランチにある場合はversion置換による見出し削除も正常。
      `git diff` の増減と両Cargo lockを照合し、説明できない消失だけを調査する。
 
-5. **ブランチを切ってコミット**（master へ直接 commit しない）:
-   - `git switch -c chore/update-licenses`（既に作業ブランチ上ならそのまま使ってよい）。
-   - `git status` を確認。
-   - **作業ツリーに無関係な変更が混ざっていることがある**。`git add -A` は使わず、
-     ライセンス系ファイルだけを**明示パスで個別に** add する
+5. **依頼された段階で完了する**:
+   - 生成・更新だけの依頼では、変更した収録内容と検証結果を報告する。
+   - commit が依頼されている場合は [AGENTS.md](../../../AGENTS.md) の規約に従い、
+     ライセンス系ファイルだけを明示パスで add する
      （`THIRD_PARTY_LICENSES.md` / `public/THIRD_PARTY_LICENSES.md` /
-     generatorを変えた場合は `scripts/generate-licenses.ts` と回帰テスト）。
-   - メッセージ例: `chore(licenses): THIRD_PARTY_LICENSES を再生成 (<追加物> を収録)`
-   - 末尾に Co-Authored-By trailer を付ける。
-6. **push + PR**（push 前にユーザー確認・独断で push しない）:
-   `git push origin chore/update-licenses` → `gh pr create`。CI green を確認してマージする。
+     generator を変えた場合は `scripts/generate-licenses.ts` と回帰テスト）。
+   - push／PR／merge が依頼範囲に含まれる場合は、
+     [ship-branch](../../../.agents/skills/ship-branch/SKILL.md) の該当段階へ進む。
 
 ## 罠（過去に踏んだもの）
 

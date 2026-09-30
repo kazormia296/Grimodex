@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
-import { codexEntries, foreshadows, foreshadowCodexLinks } from "@/db/schema";
-import { eq, and, inArray, isNull } from "drizzle-orm";
+import { codexEntries } from "@/db/schema";
+import { eq, and, inArray } from "drizzle-orm";
+import { invoke } from "@/lib/tauri";
 import { enqueueRescan } from "./mentionRescanQueue";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
 import { CodexVersionConflictError } from "./occ";
@@ -13,6 +14,27 @@ import {
   tryAcquireChatAnchorDeletionLease,
 } from "@/lib/chatNavigationGuard";
 import { notifyCodexAnchorDeletedIfRegistered } from "@/application/codex/codexAnchorLifecycle";
+import { normalizeForeshadowRow } from "@/features/foreshadow/normalizeForeshadowRow";
+import { publishAuthoritativeForeshadowRows } from "@/features/foreshadow/authoritativeRows";
+import {
+  computeBodyDiff,
+  computeDocDiff,
+  type BodyDiff,
+} from "@/features/timelapse/bodyDiff";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+  type CanonicalWriteReceipt,
+} from "@/features/native-writes/writeContext";
+import {
+  runTimelapseBodyReplacement,
+  runTimelapseBodyWrite,
+  runTimelapseMutation,
+} from "@/features/timelapse/bodyWriteMode";
+import type {
+  TimelapseCoverageProof,
+  TimelapseDocumentRef,
+} from "@/features/timelapse/documentCoverage";
 
 export {
   listCodexMatchTargets,
@@ -33,36 +55,38 @@ function affectsImeExport(data: Record<string, unknown>): boolean {
   return Object.keys(data).some((key) => IME_EXPORT_FIELDS.has(key));
 }
 
-/**
- * impact-review: この Codex に紐づく伏線を「Codex 変更で再評価が必要」とマークする。
- * codexLinkDirtyAt を現在時刻にし、伏線パネルの stale 判定 (isSetupEvaluationStale) で
- * 拾わせる。リンク無しなら no-op。失敗は非致命（保存自体は妨げない）。
- */
-async function markLinkedForeshadowsDirty(
-  projectId: string,
-  entryId: string,
-): Promise<void> {
-  const links = await db
-    .select({ foreshadowId: foreshadowCodexLinks.foreshadowId })
-    .from(foreshadowCodexLinks)
-    .where(eq(foreshadowCodexLinks.codexEntryId, entryId));
-  if (links.length === 0) return;
-  await db
-    .update(foreshadows)
-    .set({ codexLinkDirtyAt: new Date() })
-    .where(
-      and(
-        eq(foreshadows.projectId, projectId),
-        inArray(
-          foreshadows.id,
-          links.map((l) => l.foreshadowId),
-        ),
-      ),
-    );
+function nativeNullable(value: string | null | undefined): string | undefined {
+  return value === null ? "" : value;
 }
 
 export type CodexEntry = typeof codexEntries.$inferSelect;
 export type NewCodexEntry = typeof codexEntries.$inferInsert;
+export type CodexEntryWriteResult = CodexEntry & {
+  __writeReceipt: CanonicalWriteReceipt;
+};
+
+function attachWriteReceipt(
+  entry: CodexEntry,
+  receipt: CanonicalWriteReceipt,
+): CodexEntryWriteResult {
+  // The receipt is control-plane metadata, not a persisted Codex field. Keep
+  // it directly accessible to history wiring without allowing object spreads,
+  // Drizzle updates, or JSON snapshots to leak it back into domain state.
+  Object.defineProperty(entry, "__writeReceipt", {
+    value: receipt,
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  return entry as CodexEntryWriteResult;
+}
+
+interface NativeCodexWriteResult extends CanonicalWriteReceipt {
+  entityId: string;
+  version: number;
+  undoJournalId: string;
+  relatedForeshadows?: unknown[];
+}
 export const BUILTIN_CODEX_TYPES = [
   "character",
   "location",
@@ -210,27 +234,83 @@ export async function createCodexEntry(
       Pick<
         NewCodexEntry,
         | "summary"
+        | "content"
         | "tagsCache"
         | "aliases"
         | "excludedAliases"
         | "readings"
         | "parentId"
+        | "contextMode"
+        | "icon"
+        | "childrenBudget"
+        | "notes"
         | "sourceChatMessageId"
       >
     >,
-  opts?: { suppressImeExport?: boolean },
-): Promise<CodexEntry> {
-  const now = new Date().toISOString();
-  const rows = await db
-    .insert(codexEntries)
-    .values({ ...data, createdAt: now, updatedAt: now })
-    .returning();
-  // 段階3: 新規エントリを semantic index へ (debounce + Rust 側 hash 再検証で冪等)。
-  if (rows[0]) {
-    scheduleCodexIndex(rows[0].id);
+  opts?: {
+    suppressImeExport?: boolean;
+    writeContext?: CanonicalWriteContext;
+  },
+): Promise<CodexEntryWriteResult> {
+  const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
+  const write = async (): Promise<CodexEntryWriteResult> => {
+    const result = await invoke<NativeCodexWriteResult>("codex_create", {
+      payload: {
+        ...writeContext,
+        canonicalPayload: {
+          type: data.type,
+          name: data.name,
+          parentId: data.parentId ?? null,
+        },
+        entryId: data.id,
+        projectId: data.projectId,
+        surface: "manual",
+        typeSlug: data.type,
+        name: data.name,
+        summary: data.summary ?? null,
+        content: data.content ?? null,
+        aliases: data.aliases ?? null,
+        excludedAliases: data.excludedAliases ?? null,
+        readings: data.readings ?? null,
+        tagsCache: data.tagsCache ?? null,
+        parentId: data.parentId ?? null,
+        contextMode: data.contextMode ?? null,
+        icon: data.icon ?? null,
+        childrenBudget: data.childrenBudget ?? null,
+        notes: data.notes ?? null,
+        sourceChatMessageId: data.sourceChatMessageId ?? null,
+        model: null,
+        chatMessageId: null,
+        traceId: null,
+        authorshipSpans: [],
+      },
+    });
+    const created = await getCodexEntry(data.projectId, result.entityId);
+    if (!created)
+      throw new Error(`Codex entry ${result.entityId} was not created`);
+    scheduleCodexIndex(created.id);
     if (!opts?.suppressImeExport) scheduleImeExportRefresh(data.projectId);
+    return attachWriteReceipt(created, {
+      changeEventUid: result.changeEventUid,
+      maintenanceTransactionId: result.maintenanceTransactionId,
+      undoJournalId: result.undoJournalId,
+    });
+  };
+  if (data.content === undefined) {
+    return runTimelapseMutation(data.projectId, write);
   }
-  return rows[0];
+  return runTimelapseBodyReplacement(
+    {
+      projectId: data.projectId,
+      documentIdentity: {
+        projectId: data.projectId,
+        domain: "codex",
+        entityType: "codex_entry",
+        entityId: data.id,
+      },
+    },
+    { commit: write, project: async (created) => created },
+  );
 }
 
 type CodexEntryUpdateData = Partial<
@@ -252,9 +332,31 @@ type CodexEntryUpdateData = Partial<
   >
 >;
 
+function codexUpdateCanonicalPayload(
+  current: CodexEntry,
+  data: CodexEntryUpdateData,
+): { fields: string[]; diffs?: Record<string, BodyDiff> } {
+  const fields = Object.keys(data).sort();
+  const diffs: Record<string, BodyDiff> = {};
+  if (data.content !== undefined) {
+    const diff = computeDocDiff(current.content ?? "", data.content ?? "");
+    if (diff) diffs.content = diff;
+  }
+  if (data.summary !== undefined) {
+    const diff = computeBodyDiff(current.summary ?? "", data.summary ?? "");
+    if (diff) diffs.summary = diff;
+  }
+  return Object.keys(diffs).length > 0 ? { fields, diffs } : { fields };
+}
+
 interface CodexEntryUpdateOptions {
   baseVersion?: number;
   suppressImeExport?: boolean;
+  writeContext?: CanonicalWriteContext;
+  /** Opaque proof source issued by the loaded TipTap document. */
+  timelapseDocument?: TimelapseDocumentRef;
+  /** Draft was admitted before a lifecycle lease began draining autosaves. */
+  preexistingDraft?: boolean;
   /**
    * 読み登録の read-modify-write で照合した取得時表記。指定された場合、version
    * を増やさない legacy writer による改名・alias・除外・読み変更も比較検出する。
@@ -265,12 +367,17 @@ interface CodexEntryUpdateOptions {
   >;
 }
 
-export async function updateCodexEntry(
+interface CodexUpdateCommit {
+  result: NativeCodexWriteResult;
+}
+
+async function commitCodexEntryUpdate(
   projectId: string,
   id: string,
   data: CodexEntryUpdateData,
-  opts?: CodexEntryUpdateOptions,
-): Promise<CodexEntry | undefined> {
+  opts: CodexEntryUpdateOptions | undefined,
+  coverage: TimelapseCoverageProof | undefined,
+): Promise<CodexUpdateCommit | null> {
   if (
     Object.prototype.hasOwnProperty.call(data, "contextMode") &&
     data.contextMode !== "always" &&
@@ -280,70 +387,98 @@ export async function updateCodexEntry(
     // before a hidden/suppressed/unknown mode can become observable.
     await markImpactBaselinePhasesRestricted(id);
   }
-  // OCC: baseVersion 指定時は version 照合 + インクリメント。
-  // baseSurface 指定時は取得時の表記関連列も比較し、version 非更新の既存 writer が
-  // 間に入った場合も read-modify-write で上書きしない。両方省略なら従来通り。
-  const useOcc = opts?.baseVersion !== undefined;
+  const current = await getCodexEntry(projectId, id);
+  if (!current) return null;
+  // Native writers always use OCC. Preserve the legacy surface comparison before
+  // crossing the boundary so a stale read-modify-write cannot overwrite a rename.
   const baseSurface = opts?.baseSurface;
-  const compareSurface = baseSurface !== undefined;
-  const useConditionalUpdate = useOcc || compareSurface;
-  const baseVersion = opts?.baseVersion ?? 0;
-  const rows = await db
-    .update(codexEntries)
-    .set(
-      useOcc
-        ? {
-            ...data,
-            version: baseVersion + 1,
-            updatedAt: new Date().toISOString(),
-          }
-        : { ...data, updatedAt: new Date().toISOString() },
-    )
-    .where(
-      and(
-        eq(codexEntries.id, id),
-        eq(codexEntries.projectId, projectId),
-        useOcc ? eq(codexEntries.version, baseVersion) : undefined,
-        compareSurface ? eq(codexEntries.name, baseSurface.name) : undefined,
-        compareSurface
-          ? baseSurface.aliases === null
-            ? isNull(codexEntries.aliases)
-            : eq(codexEntries.aliases, baseSurface.aliases)
-          : undefined,
-        compareSurface
-          ? baseSurface.excludedAliases === null
-            ? isNull(codexEntries.excludedAliases)
-            : eq(codexEntries.excludedAliases, baseSurface.excludedAliases)
-          : undefined,
-        compareSurface
-          ? baseSurface.readings === null
-            ? isNull(codexEntries.readings)
-            : eq(codexEntries.readings, baseSurface.readings)
-          : undefined,
-      ),
-    )
-    .returning();
-
-  // 0 件マッチ。version / baseSurface の条件付き更新時は「行が存在するのに
-  // 0 件」= 競合として CodexVersionConflictError を投げ、呼び出し側に
-  // 非破壊リロードを委ねる。
-  // 行が存在しないなら従来通り undefined (別プロジェクト等のスコープ miss)。
-  // OCC 無効時は従来通り undefined。
-  // どちらの 0 件でも後続の副作用 (rescan/index/伏線 dirty) は走らせない。
-  // 特に markLinkedForeshadowsDirty は projectId 非依存なので、ここで
-  // 早期 return しないと別プロジェクトの伏線を汚染しうる。
-  if (!rows[0]) {
-    if (useConditionalUpdate) {
-      const exists = await db
-        .select({ id: codexEntries.id })
-        .from(codexEntries)
-        .where(
-          and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)),
-        )
-        .limit(1);
-      if (exists[0]) throw new CodexVersionConflictError(id);
+  if (
+    baseSurface &&
+    (current.name !== baseSurface.name ||
+      current.aliases !== baseSurface.aliases ||
+      current.excludedAliases !== baseSurface.excludedAliases ||
+      current.readings !== baseSurface.readings)
+  ) {
+    throw new CodexVersionConflictError(id);
+  }
+  const baseVersion = opts?.baseVersion ?? current.version;
+  const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
+  let result: NativeCodexWriteResult;
+  try {
+    result = await invoke<NativeCodexWriteResult>("codex_update", {
+      payload: {
+        ...writeContext,
+        canonicalPayload: codexUpdateCanonicalPayload(current, data),
+        projectId,
+        surface: "manual",
+        entryId: id,
+        baseVersion,
+        ...(data.type !== undefined ? { typeSlug: data.type } : {}),
+        ...(data.name !== undefined ? { name: nativeNullable(data.name) } : {}),
+        ...(data.summary !== undefined
+          ? { summary: nativeNullable(data.summary) }
+          : {}),
+        ...(data.content !== undefined
+          ? {
+              content: nativeNullable(data.content),
+              ...(coverage ? { timelapseDocStepCoverage: coverage } : {}),
+            }
+          : {}),
+        ...(data.aliases !== undefined
+          ? { aliases: nativeNullable(data.aliases) }
+          : {}),
+        ...(data.excludedAliases !== undefined
+          ? { excludedAliases: nativeNullable(data.excludedAliases) }
+          : {}),
+        ...(data.readings !== undefined
+          ? { readings: nativeNullable(data.readings) }
+          : {}),
+        ...(data.tagsCache !== undefined
+          ? { tagsCache: nativeNullable(data.tagsCache) }
+          : {}),
+        ...(data.parentId !== undefined
+          ? { parentId: nativeNullable(data.parentId) }
+          : {}),
+        ...(data.contextMode !== undefined
+          ? { contextMode: nativeNullable(data.contextMode) }
+          : {}),
+        ...(data.icon !== undefined ? { icon: nativeNullable(data.icon) } : {}),
+        ...(data.childrenBudget !== undefined
+          ? { childrenBudget: nativeNullable(data.childrenBudget) }
+          : {}),
+        ...(data.notes !== undefined
+          ? { notes: nativeNullable(data.notes) }
+          : {}),
+        model: null,
+        chatMessageId: null,
+        traceId: null,
+        authorshipSpans: null,
+        authorshipSpanLanes: null,
+      },
+    });
+  } catch (error) {
+    if (String(error).toLowerCase().includes("version conflict")) {
+      throw new CodexVersionConflictError(id);
     }
-    return undefined;
+    throw error;
+  }
+  return { result };
+}
+
+async function projectCodexEntryUpdate(
+  projectId: string,
+  id: string,
+  data: CodexEntryUpdateData,
+  opts: CodexEntryUpdateOptions | undefined,
+  committed: CodexUpdateCommit | null,
+): Promise<CodexEntryWriteResult | undefined> {
+  if (!committed) return undefined;
+  const updated = await getCodexEntry(projectId, id);
+  if (!updated) return undefined;
+  if (committed.result.relatedForeshadows?.length) {
+    publishAuthoritativeForeshadowRows(
+      committed.result.relatedForeshadows.map(normalizeForeshadowRow),
+    );
   }
 
   // If name/aliases/excludedAliases changed, body-mention cache may be stale
@@ -364,36 +499,95 @@ export async function updateCodexEntry(
     data.content !== undefined
   ) {
     scheduleCodexIndex(id);
-    // impact-review: 埋め込みに効く変更＝伏線整合性にも効きうる変更。
-    // リンク伏線を再評価対象としてマーク（非致命なので失敗は飲み込む）。
-    try {
-      await markLinkedForeshadowsDirty(projectId, id);
-    } catch {
-      /* foreshadow dirty マークの失敗は保存を妨げない */
-    }
   }
 
   if (affectsImeExport(data) && !opts?.suppressImeExport)
     scheduleImeExportRefresh(projectId);
 
-  return rows[0];
+  return attachWriteReceipt(updated, {
+    changeEventUid: committed.result.changeEventUid,
+    maintenanceTransactionId: committed.result.maintenanceTransactionId,
+    undoJournalId: committed.result.undoJournalId,
+  });
+}
+
+export function updateCodexEntry(
+  projectId: string,
+  id: string,
+  data: CodexEntryUpdateData,
+  opts?: CodexEntryUpdateOptions,
+): Promise<CodexEntryWriteResult | undefined> {
+  const commit = (coverage: TimelapseCoverageProof | undefined) =>
+    commitCodexEntryUpdate(projectId, id, data, opts, coverage);
+  const project = (committed: CodexUpdateCommit | null) =>
+    projectCodexEntryUpdate(projectId, id, data, opts, committed);
+
+  if (data.content !== undefined) {
+    return runTimelapseBodyWrite(
+      {
+        projectId,
+        content: data.content ?? "",
+        documentIdentity: {
+          projectId,
+          domain: "codex",
+          entityType: "codex_entry",
+          entityId: id,
+        },
+        ...(opts?.timelapseDocument
+          ? { coverageReceipt: opts.timelapseDocument }
+          : {}),
+        ...(opts?.preexistingDraft ? { preexistingDraft: true } : {}),
+      },
+      {
+        commit,
+        didCommit: (committed) => committed !== null,
+        project,
+      },
+    );
+  }
+
+  return runTimelapseMutation(
+    projectId,
+    async () => project(await commit(undefined)),
+    opts?.preexistingDraft ? { preexistingDraft: true } : undefined,
+  );
 }
 
 export async function deleteCodexEntry(
   projectId: string,
   id: string,
-): Promise<void> {
+  opts?: { writeContext?: CanonicalWriteContext; baseVersion?: number },
+): Promise<CanonicalWriteReceipt | undefined> {
   const deletionAuthority = tryAcquireChatAnchorDeletionLease();
   if (!deletionAuthority) throw new ChatAnchorDeletionBlockedError();
   try {
-    chatPersistenceDeletionGuard.assertDeletionAllowed();
-    await db
-      .delete(codexEntries)
-      .where(
-        and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)),
-      );
-    notifyCodexAnchorDeletedIfRegistered(id);
-    scheduleImeExportRefresh(projectId);
+    return await runTimelapseMutation(projectId, async () => {
+      chatPersistenceDeletionGuard.assertDeletionAllowed();
+      const existing = await getCodexEntry(projectId, id);
+      const baseVersion = opts?.baseVersion ?? existing?.version;
+      if (baseVersion === undefined) return undefined;
+      const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
+      const result = await invoke<NativeCodexWriteResult>("codex_delete", {
+        payload: {
+          ...writeContext,
+          canonicalPayload: {
+            name: existing?.name ?? null,
+            type: existing?.type ?? null,
+          },
+          projectId,
+          surface: "manual",
+          entryId: id,
+          baseVersion,
+        },
+      });
+      notifyCodexAnchorDeletedIfRegistered(id);
+      scheduleImeExportRefresh(projectId);
+      return {
+        changeEventUid: result.changeEventUid,
+        maintenanceTransactionId: result.maintenanceTransactionId,
+        undoJournalId: result.undoJournalId,
+      };
+    });
   } finally {
     deletionAuthority.release();
   }

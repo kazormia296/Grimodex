@@ -1,6 +1,12 @@
 import { db } from "@/db/client";
 import { codexTypes } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
+import { invoke } from "@/lib/tauri";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+  type CanonicalWriteOrigin,
+} from "@/features/native-writes/writeContext";
 
 export type CodexType = typeof codexTypes.$inferSelect;
 
@@ -96,6 +102,9 @@ export function builtinLabelRelabel(
 export async function ensureBuiltinTypes(
   projectId: string,
   lang?: string | null,
+  options: {
+    origin?: Exclude<CanonicalWriteOrigin, "ai-apply">;
+  } = {},
 ): Promise<void> {
   const builtinTypes = builtinTypesForLang(lang);
   const existing = await db
@@ -108,16 +117,21 @@ export async function ensureBuiltinTypes(
 
   for (const bt of builtinTypes) {
     if (!existingSlugs.has(bt.slug)) {
-      await db.insert(codexTypes).values({
-        id: crypto.randomUUID(),
-        projectId,
-        slug: bt.slug,
-        label: bt.label,
-        color: bt.color,
-        paletteIndex: bt.paletteIndex,
-        isBuiltin: 1,
-        sortOrder: bt.sortOrder,
-        createdAt: new Date().toISOString(),
+      await invoke("codex_mutate", {
+        payload: {
+          operation: "type.create",
+          projectId,
+          ...createCanonicalWriteContext(options.origin ?? "human"),
+          surface: "manual",
+          typeId: crypto.randomUUID(),
+          slug: bt.slug,
+          label: bt.label,
+          color: bt.color,
+          paletteIndex: bt.paletteIndex,
+          isBuiltin: true,
+          sortOrder: bt.sortOrder,
+          createdAt: new Date().toISOString(),
+        },
       });
     } else {
       const existing_ = existingMap.get(bt.slug);
@@ -134,10 +148,16 @@ export async function ensureBuiltinTypes(
           if (relabel !== null) updates.label = relabel;
         }
         if (Object.keys(updates).length > 0) {
-          await db
-            .update(codexTypes)
-            .set(updates)
-            .where(eq(codexTypes.id, existing_.id));
+          await invoke("codex_mutate", {
+            payload: {
+              operation: "type.update",
+              projectId,
+              ...createCanonicalWriteContext(options.origin ?? "human"),
+              surface: "manual",
+              typeId: existing_.id,
+              ...updates,
+            },
+          });
         }
       }
     }
@@ -171,50 +191,80 @@ async function getNextPaletteIndex(projectId: string): Promise<number> {
   return next;
 }
 
-export async function createCodexType(data: {
-  projectId: string;
-  slug: string;
-  label: string;
-  color?: string;
-  paletteIndex?: number;
-  sortOrder?: number;
-}): Promise<CodexType> {
+export async function createCodexType(
+  data: {
+    id?: string;
+    projectId: string;
+    slug: string;
+    label: string;
+    color?: string;
+    paletteIndex?: number | null;
+    icon?: string | null;
+    isBuiltin?: boolean | number;
+    sortOrder?: number;
+  },
+  options: { writeContext?: CanonicalWriteContext } = {},
+): Promise<CodexType> {
   const paletteIndex =
     data.paletteIndex !== undefined
       ? data.paletteIndex
       : await getNextPaletteIndex(data.projectId);
-  const rows = await db
-    .insert(codexTypes)
-    .values({
-      id: crypto.randomUUID(),
+  const typeId = data.id ?? crypto.randomUUID();
+  await invoke("codex_mutate", {
+    payload: {
+      operation: "type.create",
       projectId: data.projectId,
+      ...(options.writeContext ?? createCanonicalWriteContext()),
+      surface: "manual",
+      typeId,
       slug: data.slug,
       label: data.label,
       color: data.color ?? "#888888",
       paletteIndex,
-      isBuiltin: 0,
+      icon: data.icon ?? null,
+      isBuiltin: Boolean(data.isBuiltin),
       sortOrder: data.sortOrder ?? 99.0,
       createdAt: new Date().toISOString(),
-    })
-    .returning();
+    },
+  });
+  const rows = await db
+    .select()
+    .from(codexTypes)
+    .where(eq(codexTypes.id, typeId));
+  if (!rows[0]) throw new Error(`Failed to create Codex type '${typeId}'`);
   return rows[0];
 }
 
 export async function updateCodexType(
   id: string,
   data: Partial<
-    Pick<CodexType, "label" | "color" | "sortOrder" | "paletteIndex">
+    Pick<CodexType, "label" | "color" | "sortOrder" | "paletteIndex" | "icon">
   >,
+  options: { writeContext?: CanonicalWriteContext } = {},
 ): Promise<CodexType | undefined> {
-  const rows = await db
-    .update(codexTypes)
-    .set(data)
-    .where(eq(codexTypes.id, id))
-    .returning();
+  const current = await db
+    .select()
+    .from(codexTypes)
+    .where(eq(codexTypes.id, id));
+  if (!current[0]) return undefined;
+  await invoke("codex_mutate", {
+    payload: {
+      operation: "type.update",
+      projectId: current[0].projectId,
+      ...(options.writeContext ?? createCanonicalWriteContext()),
+      surface: "manual",
+      typeId: id,
+      ...data,
+    },
+  });
+  const rows = await db.select().from(codexTypes).where(eq(codexTypes.id, id));
   return rows[0];
 }
 
-export async function deleteCodexType(id: string): Promise<void> {
+export async function deleteCodexType(
+  id: string,
+  options: { writeContext?: CanonicalWriteContext } = {},
+): Promise<void> {
   // Defense-in-depth: the UI hides delete for builtins, but a programmatic
   // call should still be rejected. Composite FK already blocks deletion when
   // entries reference the type, but does not protect builtin slugs themselves.
@@ -225,7 +275,20 @@ export async function deleteCodexType(id: string): Promise<void> {
   if (rows[0]?.isBuiltin === 1) {
     throw new Error("Cannot delete a builtin codex type");
   }
-  await db.delete(codexTypes).where(eq(codexTypes.id, id));
+  const current = await db
+    .select({ projectId: codexTypes.projectId })
+    .from(codexTypes)
+    .where(eq(codexTypes.id, id));
+  if (!current[0]) return;
+  await invoke("codex_mutate", {
+    payload: {
+      operation: "type.delete",
+      projectId: current[0].projectId,
+      ...(options.writeContext ?? createCanonicalWriteContext()),
+      surface: "manual",
+      typeId: id,
+    },
+  });
 }
 
 export async function codexTypeHasEntries(

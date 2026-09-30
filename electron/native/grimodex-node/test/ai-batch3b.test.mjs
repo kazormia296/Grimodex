@@ -598,6 +598,85 @@ test("testAiConnection はendpoint/model/key overrideを保ち、応答文字列
   }
 });
 
+test("restricted Native inline/agent/model/connection families reject before local HTTP", async () => {
+  let requestCount = 0;
+  const { server, baseUrl } = await startMockServer((_req, res) => {
+    requestCount += 1;
+    res.writeHead(500).end();
+  });
+  try {
+    const { backend, root } = makeBackend();
+    await backend.initializeProfileEgress();
+    const status = JSON.parse(await backend.activateProfileEgress());
+    const workspace = join(root, "workspace");
+    await backend.openWorkspace(workspace);
+    const expectedWorkspacePath = realpathSync(workspace);
+    const forgedIdentity = {
+      profileId: status.profileId,
+      callerId: "forged-ai-caller",
+      callerEpoch: status.callerEpoch,
+      senderId: 901,
+      workspaceId: expectedWorkspacePath,
+      sessionId: "forged-ai-session",
+    };
+    const settings = settingsWithEndpoints(
+      baseUrl,
+      baseUrl,
+      "openai-compatible",
+    );
+    const inlineArgs = await auditedArgs(
+      backend,
+      root,
+      { messages: [{ role: "user", content: "inline" }] },
+      "restricted-inline",
+      { stream: true },
+    );
+    inlineArgs.callerIdentity = forgedIdentity;
+    const agentArgs = await auditedArgs(
+      backend,
+      root,
+      { messages: [], tools: [], resolvedToolProtocol: "native" },
+      "restricted-agent",
+    );
+    agentArgs.callerIdentity = forgedIdentity;
+    const connectionArgs = await auditedArgs(
+      backend,
+      root,
+      { provider: "openai-compatible", model: "probe-model" },
+      "restricted-connection",
+    );
+    connectionArgs.callerIdentity = forgedIdentity;
+
+    await assert.rejects(
+      backend.sendInlineAiStream(inlineArgs, settings, "sk-injected"),
+      /D2A_EGRESS_DENIED:/,
+    );
+    await assert.rejects(
+      backend.sendAgentMessage(agentArgs, settings, "sk-injected"),
+      /D2A_EGRESS_DENIED:/,
+    );
+    await assert.rejects(
+      backend.listAiModels(
+        {
+          provider: "openai-compatible",
+          endpointId: "other",
+          callerIdentity: forgedIdentity,
+        },
+        settings,
+        "sk-injected",
+      ),
+      /D2A_EGRESS_DENIED:/,
+    );
+    await assert.rejects(
+      backend.testAiConnection(connectionArgs, settings, "sk-injected"),
+      /D2A_EGRESS_DENIED:/,
+    );
+    assert.equal(requestCount, 0, "Native gate must precede the local HTTP transport");
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("inline abortはinlineだけを停止し、同時実行chatを止めない", async () => {
   const responses = new Map();
   let markBothStarted;

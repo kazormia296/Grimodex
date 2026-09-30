@@ -28,6 +28,7 @@ const ITEMS = [
 ];
 
 vi.mock("./foreshadowStore", () => ({
+  publishAuthoritativeForeshadowRows: vi.fn(),
   useForeshadowStore: () => ({
     items: ITEMS,
     isLoading: false,

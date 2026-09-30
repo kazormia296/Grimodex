@@ -4,7 +4,7 @@
  *
  * 設計意図:
  * - これらの update イベントは replayEngine の canvas 再生対象ではなく、
- *   TimelapsePlayer のインスペクタ表示用 (payload JSON)。よってフォーマットは
+ *   変更履歴に保存する payload JSON。よってフォーマットは
  *   自由で、人が読める生テキストの diff を採用する (diff-match-patch の patch
  *   形式は日本語を %xx エンコードして読めなくなるため使わない)。
  * - 本文 (Codex content / Snippet content / Map sticky body) は ProseMirror

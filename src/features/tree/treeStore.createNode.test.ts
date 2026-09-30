@@ -34,6 +34,19 @@ vi.mock("./api", () => ({
     ),
   updateNode: vi.fn().mockResolvedValue(undefined),
   deleteNode: vi.fn().mockResolvedValue(undefined),
+  treeWriteReceipt: vi.fn(() => ({
+    changeEventUid: "tree-test-event",
+    maintenanceTransactionId: "tree-test-transaction",
+    undoJournalId: "tree-test-journal",
+  })),
+  historyWriteContext: vi.fn((origin: "undo" | "redo") => ({
+    requestId: `${origin}-request`,
+    sessionId: "tree-test-session",
+    eventUid: `${origin}-event`,
+    origin,
+    originalTransactionId: "tree-test-transaction",
+    undoJournalId: "tree-test-journal",
+  })),
 }));
 
 vi.mock("@/features/codex/phaseStore", () => ({
@@ -44,6 +57,7 @@ vi.mock("@/features/codex/phaseStore", () => ({
 
 vi.mock("@/features/timelapse/recorder", () => ({
   recordChangeEvent: mockRecordChangeEvent,
+  getRecorderSessionId: () => "tree-test-session",
 }));
 
 import {
@@ -338,7 +352,17 @@ describe("createNode interaction intent", () => {
 
     setChatNavigationBlocker(null);
     await command!.undo();
-    expect(mockDeletePersistedNode).toHaveBeenCalledWith(created!.id);
+    expect(mockDeletePersistedNode).toHaveBeenCalledWith(
+      created!.id,
+      "proj-1",
+      {
+        writeContext: expect.objectContaining({
+          origin: "undo",
+          originalTransactionId: "tree-test-transaction",
+          undoJournalId: "tree-test-journal",
+        }),
+      },
+    );
     expect(useTreeStore.getState().nodes).not.toContainEqual(
       expect.objectContaining({ id: created!.id }),
     );

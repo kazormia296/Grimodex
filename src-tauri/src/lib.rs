@@ -95,7 +95,8 @@ pub fn run() {
             // Workspace state starts empty — frontend will call open_workspace
             app.manage(WorkspaceState {
                 inner: Mutex::new(None),
-                switching: std::sync::atomic::AtomicBool::new(false),
+                safe_mode: grimodex_db::recovery::SafeModeState::default(),
+                switching: grimodex_db::WorkspaceLifecycleCompatibilityView::default(),
                 open_lock: Mutex::new(()),
             });
 
@@ -201,6 +202,11 @@ pub fn run() {
             commands::db::db_execute,
             commands::db::db_execute_batch,
             commands::timelapse::timelapse_append_batch,
+            commands::timelapse::timelapse_genesis_baselines_append,
+            commands::timelapse::timelapse_body_baselines_append,
+            commands::timelapse::timelapse_enabled_set,
+            commands::timelapse::timelapse_history_purge,
+            commands::timelapse::timelapse_layout_snapshot_record,
             commands::agent_writes::agent_codex_create,
             commands::agent_writes::agent_codex_update,
             commands::agent_writes::agent_write_bundle,
@@ -252,6 +258,7 @@ pub fn run() {
             commands::foreshadow::foreshadow_get,
             commands::foreshadow::foreshadow_link_codex,
             commands::foreshadow::foreshadow_unlink_codex,
+            commands::foreshadow::foreshadow_mark_linked_codex_dirty,
             commands::foreshadow::foreshadow_list_linked_codex,
             commands::foreshadow::foreshadow_set_setup_strength,
             commands::foreshadow::foreshadow_resolve_orphan,
@@ -281,6 +288,8 @@ pub fn run() {
             commands::plot_threads::plot_thread_link_delete,
             commands::plot_threads::plot_thread_list_links,
             commands::plot_threads::plot_thread_branch_create,
+            commands::plot_threads::plot_thread_branch_update,
+            commands::plot_threads::plot_thread_branch_delete,
             commands::plot_threads::plot_thread_move_marker_bundle,
             commands::plot_threads::plot_thread_restore_snapshot,
             commands::plot_threads::plot_thread_delete_snapshot,

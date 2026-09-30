@@ -1,13 +1,26 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { dbDelete, dbSelectWhere } = vi.hoisted(() => {
-  const dbWhere = vi.fn(() => Promise.resolve());
-  const dbDelete = vi.fn((_table: unknown) => ({ where: dbWhere }));
+interface GenesisBaselineMockInput {
+  expectedWorkspacePath: string;
+  projectId: string;
+  kind: "scene" | "codex" | "snippet";
+  entityIds: readonly string[];
+  anchorTimestamp: number;
+}
+
+interface GenesisBaselineMockResult {
+  insertedCount: number;
+  skippedExistingBaselineCount: number;
+  skippedExistingBodyStepCount: number;
+  completed: boolean;
+}
+
+const { dbSelectWhere } = vi.hoisted(() => {
   // Rows for the change_events probe (hasEditorSteps / countTimelapseEvents);
   // override per-test to simulate genesis (empty) vs recorded history.
   const dbSelectWhere = vi.fn(() => Promise.resolve([] as unknown[]));
-  return { dbDelete, dbSelectWhere };
+  return { dbSelectWhere };
 });
 const recorderMock = vi.hoisted(() => ({
   flushNow: vi.fn(() => Promise.resolve()),
@@ -16,21 +29,53 @@ const recorderMock = vi.hoisted(() => ({
   setRecorderEnabled: vi.fn(),
   isRecorderEnabled: vi.fn(() => true),
   getRecorderChainHead: vi.fn(() => 0),
+  readAuthoritativeChainTail: vi.fn(() => Promise.resolve(0)),
 }));
 const snapshotsMock = vi.hoisted(() => ({
-  recordStateSnapshot: vi.fn(() => Promise.resolve()),
-  loadLatestSnapshot: vi.fn(() => Promise.resolve<unknown>(null)),
+  appendGenesisBaselines: vi.fn<
+    (
+      input: GenesisBaselineMockInput,
+      isAuthoritative?: () => boolean,
+    ) => Promise<GenesisBaselineMockResult>
+  >(async () => ({
+    insertedCount: 0,
+    skippedExistingBaselineCount: 0,
+    skippedExistingBodyStepCount: 0,
+    completed: true,
+  })),
+  appendBodyBaselines: vi.fn(async () => ({
+    insertedCount: 1,
+    skippedExistingCount: 0,
+    anchorSequence: 0,
+    anchorTimestamp: 1,
+    completed: true,
+  })),
+  purgeTimelapseHistoryNative: vi.fn(() => Promise.resolve()),
 }));
 const settingsMock = vi.hoisted(() => ({
   getProjectSetting: vi.fn(() => Promise.resolve<string | null>(null)),
+  getTimelapseResetSequence: vi.fn(() => Promise.resolve(0)),
   setProjectSetting: vi.fn(() => Promise.resolve()),
+  setTimelapseEnabledSetting: vi.fn(() => Promise.resolve()),
 }));
+const workspaceMock = vi.hoisted(() => {
+  const state = { path: "/workspace/novel.gdx", openRevision: 1 };
+  return {
+    state,
+    getCurrentWorkspaceIdentity: vi.fn(() => ({ ...state })),
+    isCurrentWorkspaceIdentity: vi.fn(
+      (identity: { path: string; openRevision: number }) =>
+        identity.path === state.path &&
+        identity.openRevision === state.openRevision,
+    ),
+  };
+});
 const treeMock = vi.hoisted(() => {
   const loadSceneContent = vi.fn(() => Promise.resolve("{}"));
   return {
     listAllNodes: vi.fn(() => Promise.resolve([] as unknown[])),
     loadSceneContent,
-    // toggle.ts now batches scene bodies via loadScenesFull; delegate to the
+    // The admin path batches scene bodies via the typed Native writer; delegate to the
     // loadSceneContent mock so per-test content overrides still apply.
     loadScenesFull: vi.fn(async (ids: string[]) => {
       const out = new Map<
@@ -62,7 +107,6 @@ const snippetMock = vi.hoisted(() => ({
 
 vi.mock("@/db/client", () => ({
   db: {
-    delete: dbDelete,
     // `where()` is both awaitable (countTimelapseEvents) and chainable via
     // `.limit()` (hasEditorSteps); both resolve to the same rows array.
     select: () => ({
@@ -80,24 +124,26 @@ vi.mock("./seedSession", () => ({
   seedWorkspaceSnapshot: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("./snapshots", () => snapshotsMock);
+vi.mock("./baselineSnapshots", () => snapshotsMock);
 vi.mock("@/features/settings/api", () => settingsMock);
+vi.mock("@/runtime/workspaceIdentity", () => workspaceMock);
 vi.mock("@/features/tree/api", () => treeMock);
 vi.mock("@/features/codex/api", () => codexMock);
 vi.mock("@/features/snippets/api", () => snippetMock);
 
-import { changeEvents, stateSnapshots } from "@/db/schema";
 import {
+  countTimelapseEvents,
   setTimelapseEnabled,
   purgeTimelapseHistory,
   isTimelapseEnabled,
   ensureGenesisBaselines,
-  rebaselineScenesAtTail,
-  rebaselineEntitiesAtTail,
-} from "./toggle";
+} from "./timelapseAdmin";
+import { rebaselineScenesAtTail, rebaselineEntitiesAtTail } from "./rebaseline";
 
 beforeEach(() => {
   vi.clearAllMocks();
   settingsMock.getProjectSetting.mockResolvedValue(null);
+  settingsMock.getTimelapseResetSequence.mockResolvedValue(0);
   treeMock.listAllNodes.mockResolvedValue([]);
   treeMock.loadSceneContent.mockResolvedValue('{"type":"doc"}');
   codexMock.listCodexContentsForBaseline.mockResolvedValue([]);
@@ -105,9 +151,24 @@ beforeEach(() => {
   snippetMock.listSnippets.mockResolvedValue([]);
   snippetMock.getSnippet.mockResolvedValue({ content: '{"type":"doc"}' });
   dbSelectWhere.mockResolvedValue([]);
-  snapshotsMock.loadLatestSnapshot.mockResolvedValue(null);
+  workspaceMock.state.path = "/workspace/novel.gdx";
+  workspaceMock.state.openRevision = 1;
+  snapshotsMock.appendGenesisBaselines.mockResolvedValue({
+    insertedCount: 0,
+    skippedExistingBaselineCount: 0,
+    skippedExistingBodyStepCount: 0,
+    completed: true,
+  });
   recorderMock.isRecorderEnabled.mockReturnValue(true);
   recorderMock.getRecorderChainHead.mockReturnValue(0);
+  recorderMock.readAuthoritativeChainTail.mockResolvedValue(0);
+  snapshotsMock.appendBodyBaselines.mockResolvedValue({
+    insertedCount: 1,
+    skippedExistingCount: 0,
+    anchorSequence: 0,
+    anchorTimestamp: 1,
+    completed: true,
+  });
 });
 
 describe("setTimelapseEnabled", () => {
@@ -121,27 +182,31 @@ describe("setTimelapseEnabled", () => {
     await setTimelapseEnabled("p1", true);
 
     expect(recorderMock.flushNow).toHaveBeenCalled();
-    const deleted = dbDelete.mock.calls.map((c) => c[0]);
-    expect(deleted).toContain(changeEvents);
-    expect(deleted).toContain(stateSnapshots);
+    expect(snapshotsMock.purgeTimelapseHistoryNative).toHaveBeenCalledWith({
+      expectedWorkspacePath: "/workspace/novel.gdx",
+      projectId: "p1",
+    });
     expect(recorderMock.resetRecorderChain).toHaveBeenCalled();
     expect(recorderMock.setRecorderEnabled).toHaveBeenCalledWith(true);
     expect(recorderMock.initRecorderForProject).toHaveBeenCalledWith("p1");
-    // baseline only for the two scene nodes (note skipped)
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(2);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+    // Re-arm baselines are anchored at the authoritative post-purge tail;
+    // Native resolves the trusted body bytes from identity-only targets.
+    expect(snapshotsMock.appendBodyBaselines).toHaveBeenCalledWith(
       expect.objectContaining({
+        expectedWorkspacePath: "/workspace/novel.gdx",
         projectId: "p1",
-        domain: "editor",
-        entityType: "scene",
-        entityId: "s1",
-        anchorSequence: 0,
+        targets: [
+          { kind: "scene", id: "s1" },
+          { kind: "scene", id: "s2" },
+        ],
+        expectedAnchorSequence: 0,
       }),
+      expect.any(Function),
     );
-    expect(settingsMock.setProjectSetting).toHaveBeenCalledWith(
+    expect(settingsMock.setTimelapseEnabledSetting).toHaveBeenCalledWith(
       "p1",
-      "timelapse.enabled",
-      "true",
+      "/workspace/novel.gdx",
+      true,
     );
   });
 
@@ -156,23 +221,24 @@ describe("setTimelapseEnabled", () => {
 
     await setTimelapseEnabled("p1", true);
 
-    // scene + codex + snippet
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(3);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+    // scene + codex + snippet each use an independent typed identity batch at
+    // the authoritative post-purge tail.
+    expect(snapshotsMock.appendBodyBaselines).toHaveBeenCalledTimes(3);
+    expect(snapshotsMock.appendBodyBaselines).toHaveBeenNthCalledWith(
+      2,
       expect.objectContaining({
-        domain: "codex",
-        entityType: "codex_entry",
-        entityId: "c1",
-        anchorSequence: 0,
+        targets: [{ kind: "codex", id: "c1" }],
+        expectedAnchorSequence: 0,
       }),
+      expect.any(Function),
     );
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+    expect(snapshotsMock.appendBodyBaselines).toHaveBeenNthCalledWith(
+      3,
       expect.objectContaining({
-        domain: "snippet",
-        entityType: "snippet",
-        entityId: "sn1",
-        anchorSequence: 0,
+        targets: [{ kind: "snippet", id: "sn1" }],
+        expectedAnchorSequence: 0,
       }),
+      expect.any(Function),
     );
   });
 
@@ -181,12 +247,12 @@ describe("setTimelapseEnabled", () => {
 
     expect(recorderMock.flushNow).toHaveBeenCalled();
     expect(recorderMock.setRecorderEnabled).toHaveBeenCalledWith(false);
-    expect(dbDelete).not.toHaveBeenCalled();
-    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
-    expect(settingsMock.setProjectSetting).toHaveBeenCalledWith(
+    expect(snapshotsMock.purgeTimelapseHistoryNative).not.toHaveBeenCalled();
+    expect(snapshotsMock.appendGenesisBaselines).not.toHaveBeenCalled();
+    expect(settingsMock.setTimelapseEnabledSetting).toHaveBeenCalledWith(
       "p1",
-      "timelapse.enabled",
-      "false",
+      "/workspace/novel.gdx",
+      false,
     );
   });
 });
@@ -208,34 +274,43 @@ describe("isTimelapseEnabled", () => {
   });
 });
 
+describe("countTimelapseEvents", () => {
+  it("reads the post-reset count instead of resurrecting the old prefix", async () => {
+    settingsMock.getTimelapseResetSequence.mockResolvedValue(12);
+    dbSelectWhere.mockResolvedValue([{ n: 2 }]);
+
+    await expect(countTimelapseEvents("p1")).resolves.toBe(2);
+    expect(settingsMock.getTimelapseResetSequence).toHaveBeenCalledWith("p1");
+    expect(dbSelectWhere).toHaveBeenCalledOnce();
+  });
+});
+
 describe("ensureGenesisBaselines", () => {
-  it("genesis (no events, no baseline): bakes anchor=0 baselines for scenes only", async () => {
-    dbSelectWhere.mockResolvedValue([]); // 0 recorded events
-    snapshotsMock.loadLatestSnapshot.mockResolvedValue(null); // no baseline yet
+  it("delegates current scene ids to the atomic typed writer", async () => {
     treeMock.listAllNodes.mockResolvedValue([
       { id: "s1", nodeType: "scene" },
       { id: "n1", nodeType: "note" },
       { id: "s2", nodeType: "scene" },
     ]);
 
-    await ensureGenesisBaselines("p1");
+    await ensureGenesisBaselines("p1", "/workspace/novel.gdx");
 
-    // Scenes only (note skipped), anchored at genesis.
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(2);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({
+    expect(
+      snapshotsMock.appendGenesisBaselines,
+    ).toHaveBeenCalledExactlyOnceWith(
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
         projectId: "p1",
-        domain: "editor",
-        entityType: "scene",
-        entityId: "s1",
-        anchorSequence: 0,
-      }),
+        kind: "scene",
+        entityIds: ["s1", "s2"],
+        anchorTimestamp: expect.any(Number),
+      },
+      expect.any(Function),
     );
+    expect(snapshotsMock.appendBodyBaselines).not.toHaveBeenCalled();
   });
 
-  it("genesis: also bakes codex/snippet baselines (not just scenes)", async () => {
-    dbSelectWhere.mockResolvedValue([]);
-    snapshotsMock.loadLatestSnapshot.mockResolvedValue(null);
+  it("delegates scene/codex/snippet independently under one captured path", async () => {
     treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
     codexMock.listCodexContentsForBaseline.mockResolvedValue([
       { id: "c1", content: '{"type":"doc"}' },
@@ -244,89 +319,130 @@ describe("ensureGenesisBaselines", () => {
       { id: "sn1", content: '{"type":"doc"}' },
     ]);
 
-    await ensureGenesisBaselines("p1");
+    await ensureGenesisBaselines("p1", "/workspace/captured.gdx");
 
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(3);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ domain: "codex", entityId: "c1" }),
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenCalledTimes(3);
+    for (const [input] of snapshotsMock.appendGenesisBaselines.mock.calls) {
+      expect(input).toEqual(
+        expect.objectContaining({
+          expectedWorkspacePath: "/workspace/captured.gdx",
+          projectId: "p1",
+        }),
+      );
+    }
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ kind: "codex", entityIds: ["c1"] }),
+      expect.any(Function),
     );
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ domain: "snippet", entityId: "sn1" }),
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ kind: "snippet", entityIds: ["sn1"] }),
+      expect.any(Function),
     );
   });
 
-  it("baselines a codex added after the first genesis pass (scene already baked)", async () => {
-    dbSelectWhere.mockResolvedValue([]); // still genesis (no doc.step)
-    // Scene baseline already exists (editor domain); codex/snippet have none.
-    snapshotsMock.loadLatestSnapshot.mockImplementation((opts?: unknown) =>
-      Promise.resolve(
-        (opts as { domain: string }).domain === "editor"
-          ? { domain: "editor" }
-          : null,
-      ),
+  it("delegates partial/resume decisions per entity to Native", async () => {
+    treeMock.listAllNodes.mockResolvedValue([
+      { id: "s1", nodeType: "scene" },
+      { id: "s2", nodeType: "scene" },
+    ]);
+    codexMock.listCodexContentsForBaseline.mockResolvedValue([
+      { id: "c1", content: '{"ignored":"renderer-content"}' },
+    ]);
+    snapshotsMock.appendGenesisBaselines
+      .mockResolvedValueOnce({
+        insertedCount: 1,
+        skippedExistingBaselineCount: 1,
+        skippedExistingBodyStepCount: 0,
+        completed: true,
+      })
+      .mockResolvedValueOnce({
+        insertedCount: 0,
+        skippedExistingBaselineCount: 0,
+        skippedExistingBodyStepCount: 1,
+        completed: true,
+      });
+
+    await ensureGenesisBaselines("p1", "/workspace/novel.gdx");
+
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ kind: "scene", entityIds: ["s1", "s2"] }),
+      expect.any(Function),
     );
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ kind: "codex", entityIds: ["c1"] }),
+      expect.any(Function),
+    );
+  });
+
+  it("stops before another kind when mutation authority is lost", async () => {
+    let authoritative = true;
     treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
     codexMock.listCodexContentsForBaseline.mockResolvedValue([
       { id: "c1", content: "{}" },
     ]);
-
-    await ensureGenesisBaselines("p1");
-
-    // Scene skipped (already baked); the fresh codex is stamped.
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(1);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ domain: "codex", entityId: "c1" }),
-    );
-  });
-
-  it("past genesis (events exist): does NOT bake — avoids double-applying recorded steps", async () => {
-    dbSelectWhere.mockResolvedValue([{ id: 1 }]); // >=1 recorded event
-    treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
-    codexMock.listCodexContentsForBaseline.mockResolvedValue([{ id: "c1" }]);
-
-    await ensureGenesisBaselines("p1");
-
-    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
-  });
-
-  it("idempotent: genesis but an editor baseline already exists -> no re-bake", async () => {
-    dbSelectWhere.mockResolvedValue([]); // genesis
-    snapshotsMock.loadLatestSnapshot.mockResolvedValue({
-      domain: "editor",
-      entityId: "s1",
-      anchorSequence: 0,
-      payload: {},
+    snapshotsMock.appendGenesisBaselines.mockImplementation(async () => {
+      authoritative = false;
+      return {
+        insertedCount: 1,
+        skippedExistingBaselineCount: 0,
+        skippedExistingBodyStepCount: 0,
+        completed: false,
+      };
     });
+
+    await ensureGenesisBaselines(
+      "p1",
+      "/workspace/novel.gdx",
+      () => authoritative,
+    );
+
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts the pass after a live batch failure so the next load resumes", async () => {
     treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
+    codexMock.listCodexContentsForBaseline.mockResolvedValue([
+      { id: "c1", content: "{}" },
+    ]);
+    snapshotsMock.appendGenesisBaselines.mockResolvedValue({
+      insertedCount: 0,
+      skippedExistingBaselineCount: 0,
+      skippedExistingBodyStepCount: 0,
+      completed: false,
+    });
 
-    await ensureGenesisBaselines("p1");
+    await expect(
+      ensureGenesisBaselines("p1", "/workspace/novel.gdx"),
+    ).rejects.toThrow("did not complete for scene");
 
-    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
+    expect(snapshotsMock.appendGenesisBaselines).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("rebaselineScenesAtTail", () => {
-  it("flushes then stamps an editor baseline at the CURRENT tail (not genesis) for each scene", async () => {
-    recorderMock.getRecorderChainHead.mockReturnValue(87);
-    treeMock.loadSceneContent.mockResolvedValue('{"type":"doc","content":[]}');
+  it("flushes then sends editor identities to Native at the CURRENT tail", async () => {
+    recorderMock.readAuthoritativeChainTail.mockResolvedValue(87);
 
     await rebaselineScenesAtTail("p1", ["sceneA", "sceneB"]);
 
     // Must flush first so the caller's meta event is committed and the
     // in-memory head equals the DB tail.
     expect(recorderMock.flushNow).toHaveBeenCalled();
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(2);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({
+    expect(snapshotsMock.appendBodyBaselines).toHaveBeenCalledExactlyOnceWith(
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
         projectId: "p1",
-        domain: "editor",
-        entityType: "scene",
-        entityId: "sceneA",
-        anchorSequence: 87, // tail, NOT 0 — the whole point of the fix
-      }),
-    );
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ entityId: "sceneB", anchorSequence: 87 }),
+        targets: [
+          { kind: "scene", id: "sceneA" },
+          { kind: "scene", id: "sceneB" },
+        ],
+        expectedAnchorSequence: 87,
+      },
+      expect.any(Function),
     );
   });
 
@@ -336,36 +452,46 @@ describe("rebaselineScenesAtTail", () => {
     await rebaselineScenesAtTail("p1", ["sceneA"]);
 
     expect(recorderMock.flushNow).not.toHaveBeenCalled();
-    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
+    expect(snapshotsMock.appendBodyBaselines).not.toHaveBeenCalled();
   });
 
   it("no-op for an empty scene list", async () => {
     await rebaselineScenesAtTail("p1", []);
     expect(recorderMock.flushNow).not.toHaveBeenCalled();
-    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
+    expect(snapshotsMock.appendBodyBaselines).not.toHaveBeenCalled();
   });
 
-  it("best-effort: one scene's load failure does not abort the rest", async () => {
-    recorderMock.getRecorderChainHead.mockReturnValue(5);
-    treeMock.loadSceneContent
-      .mockRejectedValueOnce(new Error("boom"))
-      .mockResolvedValueOnce('{"type":"doc"}');
+  it("best-effort: a stale first identity does not abort the valid later identity", async () => {
+    recorderMock.readAuthoritativeChainTail.mockResolvedValue(5);
+    snapshotsMock.appendBodyBaselines
+      .mockRejectedValueOnce(new Error("stale entity"))
+      .mockResolvedValueOnce({
+        insertedCount: 1,
+        skippedExistingCount: 0,
+        anchorSequence: 5,
+        anchorTimestamp: 1,
+        completed: true,
+      });
 
     await rebaselineScenesAtTail("p1", ["bad", "good"]);
 
-    // "bad" threw during loadSceneContent -> skipped; "good" still stamped.
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(1);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ entityId: "good", anchorSequence: 5 }),
+    expect(snapshotsMock.appendBodyBaselines).toHaveBeenCalledTimes(3);
+    expect(snapshotsMock.appendBodyBaselines).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ targets: [{ kind: "scene", id: "bad" }] }),
+      expect.any(Function),
+    );
+    expect(snapshotsMock.appendBodyBaselines).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ targets: [{ kind: "scene", id: "good" }] }),
+      expect.any(Function),
     );
   });
 });
 
 describe("rebaselineEntitiesAtTail", () => {
-  it("stamps codex/snippet baselines at the tail with the matching domain", async () => {
-    recorderMock.getRecorderChainHead.mockReturnValue(42);
-    codexMock.getCodexEntry.mockResolvedValue({ content: '{"type":"doc"}' });
-    snippetMock.getSnippet.mockResolvedValue({ content: '{"type":"doc"}' });
+  it("sends codex/snippet identities at the tail with the matching kind", async () => {
+    recorderMock.readAuthoritativeChainTail.mockResolvedValue(42);
 
     await rebaselineEntitiesAtTail("p1", [
       { kind: "codex", id: "c1" },
@@ -373,22 +499,32 @@ describe("rebaselineEntitiesAtTail", () => {
     ]);
 
     expect(recorderMock.flushNow).toHaveBeenCalled();
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(2);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({
-        domain: "codex",
-        entityType: "codex_entry",
-        entityId: "c1",
-        anchorSequence: 42,
-      }),
+    expect(snapshotsMock.appendBodyBaselines).toHaveBeenCalledExactlyOnceWith(
+      {
+        expectedWorkspacePath: "/workspace/novel.gdx",
+        projectId: "p1",
+        targets: [
+          { kind: "codex", id: "c1" },
+          { kind: "snippet", id: "sn1" },
+        ],
+        expectedAnchorSequence: 42,
+      },
+      expect.any(Function),
     );
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+  });
+
+  it("uses the committed Native sequence instead of the stale renderer head", async () => {
+    recorderMock.readAuthoritativeChainTail.mockResolvedValue(9);
+
+    await rebaselineEntitiesAtTail("p1", [{ kind: "scene", id: "s1" }], 12);
+
+    expect(recorderMock.flushNow).toHaveBeenCalled();
+    expect(snapshotsMock.appendBodyBaselines).toHaveBeenCalledWith(
       expect.objectContaining({
-        domain: "snippet",
-        entityType: "snippet",
-        entityId: "sn1",
-        anchorSequence: 42,
+        targets: [{ kind: "scene", id: "s1" }],
+        expectedAnchorSequence: 12,
       }),
+      expect.any(Function),
     );
   });
 
@@ -400,24 +536,7 @@ describe("rebaselineEntitiesAtTail", () => {
     recorderMock.isRecorderEnabled.mockReturnValue(true);
     await rebaselineEntitiesAtTail("p1", []);
     expect(recorderMock.flushNow).not.toHaveBeenCalled();
-    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
-  });
-
-  it("skips a codex entry that no longer exists (undefined) but stamps the rest", async () => {
-    recorderMock.getRecorderChainHead.mockReturnValue(7);
-    codexMock.getCodexEntry
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce({ content: '{"type":"doc"}' });
-
-    await rebaselineEntitiesAtTail("p1", [
-      { kind: "codex", id: "gone" },
-      { kind: "codex", id: "here" },
-    ]);
-
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(1);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ entityId: "here", anchorSequence: 7 }),
-    );
+    expect(snapshotsMock.appendBodyBaselines).not.toHaveBeenCalled();
   });
 });
 
@@ -428,10 +547,13 @@ describe("purgeTimelapseHistory", () => {
 
     await purgeTimelapseHistory("p1");
 
-    expect(dbDelete).toHaveBeenCalled();
+    expect(snapshotsMock.purgeTimelapseHistoryNative).toHaveBeenCalledWith({
+      expectedWorkspacePath: "/workspace/novel.gdx",
+      projectId: "p1",
+    });
     expect(recorderMock.resetRecorderChain).toHaveBeenCalled();
     expect(recorderMock.setRecorderEnabled).toHaveBeenCalledWith(true);
-    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(1);
+    expect(snapshotsMock.appendBodyBaselines).toHaveBeenCalledTimes(1);
   });
 
   it("recording off: wipes only, no re-arm / no baseline", async () => {
@@ -439,9 +561,9 @@ describe("purgeTimelapseHistory", () => {
 
     await purgeTimelapseHistory("p1");
 
-    expect(dbDelete).toHaveBeenCalled();
+    expect(snapshotsMock.purgeTimelapseHistoryNative).toHaveBeenCalled();
     expect(recorderMock.resetRecorderChain).toHaveBeenCalled();
     expect(recorderMock.setRecorderEnabled).not.toHaveBeenCalled();
-    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
+    expect(snapshotsMock.appendGenesisBaselines).not.toHaveBeenCalled();
   });
 });

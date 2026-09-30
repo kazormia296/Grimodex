@@ -12,9 +12,7 @@ import { runLintNow } from "./useLinter";
 
 /**
  * lintActions.ts — lint diagnostic への操作（ジャンプ / Fix 適用 / 一括 Fix）を
- * モジュール関数へ抽出したもの。従来 LinterPanel の useCallback 内にあった実装を
- * そのまま移し、LinterPanel と校閲トリアージ（kouetsu/triage）の両方から呼ぶ。
- * 挙動は LinterPanel 時代と同一:
+ * 校閲トリアージ（kouetsu/triage）から呼ぶ共有モジュール。
  * - Fix は inline AI pending 中はガードで no-op
  * - Fix 前の doc で typo annotation の auto-resolve 候補を収集（適用後は
  *   textSnapshot がずれ resolveAnnotationRange が orphan になるため）

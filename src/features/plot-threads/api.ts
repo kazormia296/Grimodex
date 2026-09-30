@@ -8,6 +8,38 @@ import {
 import type { PlotPhaseType, PlotBranchKind } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { attachCreateResultMetadata } from "@/lib/createResultMetadata";
+import { attachNativeMutationMetadata } from "@/lib/nativeMutationMetadata";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
+
+export type PlotChangeOrigin =
+  | "human"
+  | "ai-apply"
+  | "import"
+  | "undo"
+  | "redo"
+  | "restore";
+
+export interface PlotMutationLineage {
+  requestId?: string;
+  origin?: PlotChangeOrigin;
+  originalTransactionId?: string;
+}
+
+function plotMutationIdentity(
+  projectId: string,
+  options: PlotMutationLineage = {},
+  stableRequestId?: string,
+): Record<string, unknown> {
+  const requestId = options.requestId ?? stableRequestId ?? crypto.randomUUID();
+  return {
+    projectId,
+    requestId,
+    sessionId: getRecorderSessionId(),
+    eventUid: requestId,
+    origin: options.origin ?? "human",
+    originalTransactionId: options.originalTransactionId ?? null,
+  };
+}
 
 /**
  * ネイティブホスト（Tauri or Electron/napi）では Rust コマンドへ invoke する。
@@ -42,6 +74,11 @@ export interface PlotThreadRow {
   /** 束ねレイアウトの生存スパン明示指定（NULL=最初/最後のマーカーから導出）。 */
   startNodeId: string | null;
   endNodeId: string | null;
+  /**
+   * OCC generation (SCHEMA_VERSION 10). Optional on in-memory fixtures /
+   * optimistic rows; `normalizeThread` always materializes a number.
+   */
+  version?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -53,6 +90,11 @@ export interface PlotThreadLinkRow {
   phaseType: PlotPhaseType;
   note: string | null;
   sortOrder: string | null;
+  /**
+   * `threadId|nodeId|phaseType`. Optional on fixtures; normalize fills it.
+   */
+  semanticKey?: string;
+  version?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -67,57 +109,72 @@ function nullable(v: unknown): string | null {
 /** DB 行（snake_case）/ invoke 戻り値（camelCase）の双方を PlotThreadRow へ正規化。 */
 export function normalizeThread(raw: unknown): PlotThreadRow {
   const r = (raw ?? {}) as Record<string, unknown>;
-  return attachCreateResultMetadata(
-    {
-      id: s(r.id),
-      projectId: s(r.projectId ?? r.project_id),
-      name: s(r.name),
-      color: nullable(r.color),
-      description: nullable(r.description),
-      sortOrder: s(r.sortOrder ?? r.sort_order, "a0"),
-      startNodeId: nullable(r.startNodeId ?? r.start_node_id),
-      endNodeId: nullable(r.endNodeId ?? r.end_node_id),
-      createdAt: s(r.createdAt ?? r.created_at),
-      updatedAt: s(r.updatedAt ?? r.updated_at),
-    },
+  return attachNativeMutationMetadata(
+    attachCreateResultMetadata(
+      {
+        id: s(r.id),
+        projectId: s(r.projectId ?? r.project_id),
+        name: s(r.name),
+        color: nullable(r.color),
+        description: nullable(r.description),
+        sortOrder: s(r.sortOrder ?? r.sort_order, "a0"),
+        startNodeId: nullable(r.startNodeId ?? r.start_node_id),
+        endNodeId: nullable(r.endNodeId ?? r.end_node_id),
+        version: Number(r.version ?? 0),
+        createdAt: s(r.createdAt ?? r.created_at),
+        updatedAt: s(r.updatedAt ?? r.updated_at),
+      },
+      raw,
+    ),
     raw,
   );
 }
 
 export function normalizeLink(raw: unknown): PlotThreadLinkRow {
   const r = (raw ?? {}) as Record<string, unknown>;
-  return attachCreateResultMetadata(
-    {
-      id: s(r.id),
-      threadId: s(r.threadId ?? r.thread_id),
-      nodeId: s(r.nodeId ?? r.node_id),
-      phaseType: s(r.phaseType ?? r.phase_type, "develop") as PlotPhaseType,
-      note: nullable(r.note),
-      sortOrder: nullable(r.sortOrder ?? r.sort_order),
-      createdAt: s(r.createdAt ?? r.created_at),
-      updatedAt: s(r.updatedAt ?? r.updated_at),
-    },
+  return attachNativeMutationMetadata(
+    attachCreateResultMetadata(
+      {
+        id: s(r.id),
+        threadId: s(r.threadId ?? r.thread_id),
+        nodeId: s(r.nodeId ?? r.node_id),
+        phaseType: s(r.phaseType ?? r.phase_type, "develop") as PlotPhaseType,
+        note: nullable(r.note),
+        sortOrder: nullable(r.sortOrder ?? r.sort_order),
+        semanticKey: s(
+          r.semanticKey ?? r.semantic_key,
+          `${s(r.threadId ?? r.thread_id)}|${s(r.nodeId ?? r.node_id)}|${s(r.phaseType ?? r.phase_type, "develop")}`,
+        ),
+        version: Number(r.version ?? 0),
+        createdAt: s(r.createdAt ?? r.created_at),
+        updatedAt: s(r.updatedAt ?? r.updated_at),
+      },
+      raw,
+    ),
     raw,
   );
 }
 
 // ───────── threads ─────────
 
-export async function createPlotThread(data: {
-  /** Reuse this domain ID when retrying the same logical create. */
-  id?: string;
-  projectId: string;
-  name: string;
-  color?: string | null;
-  description?: string | null;
-  sortOrder: string;
-}): Promise<PlotThreadRow> {
+export async function createPlotThread(
+  data: {
+    /** Reuse this domain ID when retrying the same logical create. */
+    id?: string;
+    projectId: string;
+    name: string;
+    color?: string | null;
+    description?: string | null;
+    sortOrder: string;
+  },
+  options: PlotMutationLineage = {},
+): Promise<PlotThreadRow> {
   const id = data.id ?? crypto.randomUUID();
   try {
     const created = await invoke("plot_thread_create", {
       payload: {
+        ...plotMutationIdentity(data.projectId, options, id),
         id,
-        projectId: data.projectId,
         name: data.name,
         color: data.color ?? null,
         description: data.description ?? null,
@@ -155,36 +212,31 @@ export async function updatePlotThread(
   id: string,
   patch: Partial<
     Pick<PlotThreadRow, "name" | "color" | "description" | "sortOrder">
-  >,
+  > & { baseVersion: number; projectId: string },
+  options: PlotMutationLineage = {},
 ): Promise<PlotThreadRow> {
-  if (nativeBackend()) {
-    const p: Record<string, unknown> = {};
-    if (patch.name !== undefined) p.name = patch.name;
-    if (patch.color !== undefined) p.color = patch.color;
-    if (patch.description !== undefined) p.description = patch.description;
-    if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
-    return normalizeThread(
-      await invoke("plot_thread_update", { id, patch: p }),
-    );
-  }
-  await db
-    .update(plotThreads)
-    .set({ ...patch, updatedAt: new Date().toISOString() })
-    .where(eq(plotThreads.id, id));
-  const [updated] = await db
-    .select()
-    .from(plotThreads)
-    .where(eq(plotThreads.id, id));
-  if (!updated) throw new Error(`plot thread not found after update: ${id}`);
-  return normalizeThread(updated);
+  const p: Record<string, unknown> = {};
+  if (patch.name !== undefined) p.name = patch.name;
+  if (patch.color !== undefined) p.color = patch.color;
+  if (patch.description !== undefined) p.description = patch.description;
+  if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
+  p.baseVersion = patch.baseVersion;
+  Object.assign(p, plotMutationIdentity(patch.projectId, options));
+  return normalizeThread(await invoke("plot_thread_update", { id, patch: p }));
 }
 
-export async function deletePlotThread(id: string): Promise<void> {
-  if (nativeBackend()) {
-    await invoke("plot_thread_delete", { id });
-    return;
-  }
-  await db.delete(plotThreads).where(eq(plotThreads.id, id));
+export async function deletePlotThread(
+  id: string,
+  options: { baseVersion: number; projectId: string } & PlotMutationLineage,
+): Promise<{ id: string; deleted: boolean; maintenanceTransactionId: string }> {
+  const raw = await invoke("plot_thread_delete", {
+    payload: {
+      ...plotMutationIdentity(options.projectId, options),
+      id,
+      baseVersion: options.baseVersion,
+    },
+  });
+  return normalizeDeleteReceipt(raw, id);
 }
 
 export async function listPlotThreads(
@@ -204,19 +256,24 @@ export async function listPlotThreads(
 
 // ───────── links ─────────
 
-export async function createPlotThreadLink(data: {
-  /** Reuse this domain ID when retrying the same logical create. */
-  id?: string;
-  threadId: string;
-  nodeId: string;
-  phaseType: PlotPhaseType;
-  note?: string | null;
-  sortOrder?: string | null;
-}): Promise<PlotThreadLinkRow> {
+export async function createPlotThreadLink(
+  data: {
+    /** Reuse this domain ID when retrying the same logical create. */
+    id?: string;
+    projectId: string;
+    threadId: string;
+    nodeId: string;
+    phaseType: PlotPhaseType;
+    note?: string | null;
+    sortOrder?: string | null;
+  },
+  options: PlotMutationLineage = {},
+): Promise<PlotThreadLinkRow> {
   const id = data.id ?? crypto.randomUUID();
   try {
     const created = await invoke("plot_thread_link_create", {
       payload: {
+        ...plotMutationIdentity(data.projectId, options, id),
         id,
         threadId: data.threadId,
         nodeId: data.nodeId,
@@ -255,38 +312,34 @@ export async function updatePlotThreadLink(
       PlotThreadLinkRow,
       "threadId" | "nodeId" | "phaseType" | "note" | "sortOrder"
     >
-  >,
+  > & { baseVersion: number; projectId: string },
+  options: PlotMutationLineage = {},
 ): Promise<PlotThreadLinkRow> {
-  if (nativeBackend()) {
-    const p: Record<string, unknown> = {};
-    if (patch.threadId !== undefined) p.threadId = patch.threadId;
-    if (patch.nodeId !== undefined) p.nodeId = patch.nodeId;
-    if (patch.phaseType !== undefined) p.phaseType = patch.phaseType;
-    if (patch.note !== undefined) p.note = patch.note;
-    if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
-    return normalizeLink(
-      await invoke("plot_thread_link_update", { id, patch: p }),
-    );
-  }
-  await db
-    .update(plotThreadSceneLinks)
-    .set({ ...patch, updatedAt: new Date().toISOString() })
-    .where(eq(plotThreadSceneLinks.id, id));
-  const [updated] = await db
-    .select()
-    .from(plotThreadSceneLinks)
-    .where(eq(plotThreadSceneLinks.id, id));
-  if (!updated)
-    throw new Error(`plot thread link not found after update: ${id}`);
-  return normalizeLink(updated);
+  const p: Record<string, unknown> = {};
+  if (patch.threadId !== undefined) p.threadId = patch.threadId;
+  if (patch.nodeId !== undefined) p.nodeId = patch.nodeId;
+  if (patch.phaseType !== undefined) p.phaseType = patch.phaseType;
+  if (patch.note !== undefined) p.note = patch.note;
+  if (patch.sortOrder !== undefined) p.sortOrder = patch.sortOrder;
+  p.baseVersion = patch.baseVersion;
+  Object.assign(p, plotMutationIdentity(patch.projectId, options));
+  return normalizeLink(
+    await invoke("plot_thread_link_update", { id, patch: p }),
+  );
 }
 
-export async function deletePlotThreadLink(id: string): Promise<void> {
-  if (nativeBackend()) {
-    await invoke("plot_thread_link_delete", { id });
-    return;
-  }
-  await db.delete(plotThreadSceneLinks).where(eq(plotThreadSceneLinks.id, id));
+export async function deletePlotThreadLink(
+  id: string,
+  options: { baseVersion: number; projectId: string } & PlotMutationLineage,
+): Promise<{ id: string; deleted: boolean; maintenanceTransactionId: string }> {
+  const raw = await invoke("plot_thread_link_delete", {
+    payload: {
+      ...plotMutationIdentity(options.projectId, options),
+      id,
+      baseVersion: options.baseVersion,
+    },
+  });
+  return normalizeDeleteReceipt(raw, id);
 }
 
 export async function listPlotThreadLinks(
@@ -321,29 +374,45 @@ export interface PlotThreadBranchRow {
   toThreadId: string;
   atNodeId: string;
   kind: PlotBranchKind;
+  /**
+   * `from|to|at|kind`. Optional on fixtures; normalize fills it.
+   */
+  semanticKey?: string;
+  version?: number;
   createdAt: string;
   updatedAt: string;
 }
 
 export function normalizeBranch(raw: unknown): PlotThreadBranchRow {
   const r = (raw ?? {}) as Record<string, unknown>;
-  return attachCreateResultMetadata(
-    {
-      id: s(r.id),
-      projectId: s(r.projectId ?? r.project_id),
-      fromThreadId: s(r.fromThreadId ?? r.from_thread_id),
-      toThreadId: s(r.toThreadId ?? r.to_thread_id),
-      atNodeId: s(r.atNodeId ?? r.at_node_id),
-      kind: s(r.kind, "branch") as PlotBranchKind,
-      createdAt: s(r.createdAt ?? r.created_at),
-      updatedAt: s(r.updatedAt ?? r.updated_at),
-    },
+  const fromThreadId = s(r.fromThreadId ?? r.from_thread_id);
+  const toThreadId = s(r.toThreadId ?? r.to_thread_id);
+  const atNodeId = s(r.atNodeId ?? r.at_node_id);
+  const kind = s(r.kind, "branch") as PlotBranchKind;
+  return attachNativeMutationMetadata(
+    attachCreateResultMetadata(
+      {
+        id: s(r.id),
+        projectId: s(r.projectId ?? r.project_id),
+        fromThreadId,
+        toThreadId,
+        atNodeId,
+        kind,
+        semanticKey: s(
+          r.semanticKey ?? r.semantic_key,
+          `${fromThreadId}|${toThreadId}|${atNodeId}|${kind}`,
+        ),
+        version: Number(r.version ?? 0),
+        createdAt: s(r.createdAt ?? r.created_at),
+        updatedAt: s(r.updatedAt ?? r.updated_at),
+      },
+      raw,
+    ),
     raw,
   );
 }
 
-export interface PlotThreadRestoreSnapshot {
-  requestId?: string;
+export interface PlotThreadRestoreSnapshot extends PlotMutationLineage {
   projectId: string;
   thread?: PlotThreadRow | null;
   links?: PlotThreadLinkRow[];
@@ -355,18 +424,33 @@ export interface PlotThreadRestoreSnapshotResult {
   thread: PlotThreadRow | null;
   links: PlotThreadLinkRow[];
   branches: PlotThreadBranchRow[];
+  maintenanceTransactionId?: string;
 }
 
-export interface PlotThreadDeleteSnapshot {
-  requestId?: string;
+export interface PlotThreadDeleteMarkerSnapshot extends PlotMutationLineage {
   projectId: string;
   link: PlotThreadLinkRow;
   branches: PlotThreadBranchRow[];
+  thread?: never;
+  links?: never;
 }
+
+export interface PlotThreadDeleteThreadSnapshot extends PlotMutationLineage {
+  projectId: string;
+  thread: PlotThreadRow;
+  links: PlotThreadLinkRow[];
+  branches: PlotThreadBranchRow[];
+  link?: never;
+}
+
+export type PlotThreadDeleteSnapshot =
+  | PlotThreadDeleteMarkerSnapshot
+  | PlotThreadDeleteThreadSnapshot;
 
 export interface PlotThreadDeleteSnapshotResult {
   id: string;
   deleted: boolean;
+  maintenanceTransactionId?: string;
 }
 
 export interface PlotThreadBranchTransition {
@@ -374,8 +458,7 @@ export interface PlotThreadBranchTransition {
   after: PlotThreadBranchRow | null;
 }
 
-export interface PlotThreadMoveMarkerBundle {
-  requestId?: string;
+export interface PlotThreadMoveMarkerBundle extends PlotMutationLineage {
   projectId: string;
   markerBefore: PlotThreadLinkRow;
   markerAfter: PlotThreadLinkRow;
@@ -387,6 +470,7 @@ export interface PlotThreadMoveMarkerBundleResult {
   marker: PlotThreadLinkRow;
   branches: PlotThreadBranchRow[];
   deletedBranchIds: string[];
+  maintenanceTransactionId?: string;
 }
 
 function retryableSnapshotError(
@@ -425,23 +509,30 @@ export async function restorePlotThreadSnapshot(
   try {
     const raw = await invoke("plot_thread_restore_snapshot", {
       payload: {
+        ...plotMutationIdentity(data.projectId, {
+          ...data,
+          requestId,
+          origin: data.origin ?? "restore",
+        }),
         requestId,
-        projectId: data.projectId,
         thread: data.thread ?? null,
         links: data.links ?? [],
         branches: data.branches ?? [],
       },
     });
     const row = (raw ?? {}) as Record<string, unknown>;
-    return attachCreateResultMetadata(
-      {
-        id: s(row.id, requestId),
-        thread: row.thread == null ? null : normalizeThread(row.thread),
-        links: Array.isArray(row.links) ? row.links.map(normalizeLink) : [],
-        branches: Array.isArray(row.branches)
-          ? row.branches.map(normalizeBranch)
-          : [],
-      },
+    return attachNativeMutationMetadata(
+      attachCreateResultMetadata(
+        {
+          id: s(row.id, requestId),
+          thread: row.thread == null ? null : normalizeThread(row.thread),
+          links: Array.isArray(row.links) ? row.links.map(normalizeLink) : [],
+          branches: Array.isArray(row.branches)
+            ? row.branches.map(normalizeBranch)
+            : [],
+        },
+        raw,
+      ),
       raw,
     );
   } catch (error) {
@@ -459,20 +550,33 @@ export async function deletePlotThreadSnapshot(
 ): Promise<PlotThreadDeleteSnapshotResult> {
   const requestId = data.requestId ?? crypto.randomUUID();
   try {
+    const payload =
+      "thread" in data
+        ? {
+            ...plotMutationIdentity(data.projectId, { ...data, requestId }),
+            requestId,
+            thread: data.thread,
+            links: data.links,
+            branches: data.branches,
+          }
+        : {
+            ...plotMutationIdentity(data.projectId, { ...data, requestId }),
+            requestId,
+            link: data.link,
+            branches: data.branches,
+          };
     const raw = await invoke("plot_thread_delete_snapshot", {
-      payload: {
-        requestId,
-        projectId: data.projectId,
-        link: data.link,
-        branches: data.branches,
-      },
+      payload,
     });
     const row = (raw ?? {}) as Record<string, unknown>;
-    return attachCreateResultMetadata(
-      {
-        id: s(row.id, requestId),
-        deleted: row.deleted === true || row.deleted === 1,
-      },
+    return attachNativeMutationMetadata(
+      attachCreateResultMetadata(
+        {
+          id: s(row.id, requestId),
+          deleted: row.deleted === true || row.deleted === 1,
+        },
+        raw,
+      ),
       raw,
     );
   } catch (error) {
@@ -492,25 +596,28 @@ export async function movePlotMarkerBundle(
   try {
     const raw = await invoke("plot_thread_move_marker_bundle", {
       payload: {
+        ...plotMutationIdentity(data.projectId, { ...data, requestId }),
         requestId,
-        projectId: data.projectId,
         markerBefore: data.markerBefore,
         markerAfter: data.markerAfter,
         branchTransitions: data.branchTransitions,
       },
     });
     const row = (raw ?? {}) as Record<string, unknown>;
-    return attachCreateResultMetadata(
-      {
-        id: s(row.id, requestId),
-        marker: normalizeLink(row.marker),
-        branches: Array.isArray(row.branches)
-          ? row.branches.map(normalizeBranch)
-          : [],
-        deletedBranchIds: Array.isArray(row.deletedBranchIds)
-          ? row.deletedBranchIds.map(String)
-          : [],
-      },
+    return attachNativeMutationMetadata(
+      attachCreateResultMetadata(
+        {
+          id: s(row.id, requestId),
+          marker: normalizeLink(row.marker),
+          branches: Array.isArray(row.branches)
+            ? row.branches.map(normalizeBranch)
+            : [],
+          deletedBranchIds: Array.isArray(row.deletedBranchIds)
+            ? row.deletedBranchIds.map(String)
+            : [],
+        },
+        raw,
+      ),
       raw,
     );
   } catch (error) {
@@ -518,21 +625,24 @@ export async function movePlotMarkerBundle(
   }
 }
 
-export async function createPlotThreadBranch(data: {
-  /** Reuse this domain ID when retrying the same logical create. */
-  id?: string;
-  projectId: string;
-  fromThreadId: string;
-  toThreadId: string;
-  atNodeId: string;
-  kind: PlotBranchKind;
-}): Promise<PlotThreadBranchRow> {
+export async function createPlotThreadBranch(
+  data: {
+    /** Reuse this domain ID when retrying the same logical create. */
+    id?: string;
+    projectId: string;
+    fromThreadId: string;
+    toThreadId: string;
+    atNodeId: string;
+    kind: PlotBranchKind;
+  },
+  options: PlotMutationLineage = {},
+): Promise<PlotThreadBranchRow> {
   const id = data.id ?? crypto.randomUUID();
   try {
     const created = await invoke("plot_thread_branch_create", {
       payload: {
+        ...plotMutationIdentity(data.projectId, options, id),
         id,
-        projectId: data.projectId,
         fromThreadId: data.fromThreadId,
         toThreadId: data.toThreadId,
         atNodeId: data.atNodeId,
@@ -566,24 +676,48 @@ export async function updatePlotThreadBranch(
   id: string,
   patch: Partial<
     Pick<PlotThreadBranchRow, "fromThreadId" | "toThreadId" | "atNodeId">
-  >,
+  > & { baseVersion: number; projectId: string },
+  options: PlotMutationLineage = {},
 ): Promise<PlotThreadBranchRow> {
-  await db
-    .update(plotThreadBranches)
-    .set({ ...patch, updatedAt: new Date().toISOString() })
-    .where(eq(plotThreadBranches.id, id));
-  const [updated] = await db
-    .select()
-    .from(plotThreadBranches)
-    .where(eq(plotThreadBranches.id, id));
-  if (!updated) {
-    throw new Error(`plot thread branch not found after update: ${id}`);
-  }
-  return normalizeBranch(updated);
+  const p: Record<string, unknown> = {};
+  if (patch.fromThreadId !== undefined) p.fromThreadId = patch.fromThreadId;
+  if (patch.toThreadId !== undefined) p.toThreadId = patch.toThreadId;
+  if (patch.atNodeId !== undefined) p.atNodeId = patch.atNodeId;
+  p.baseVersion = patch.baseVersion;
+  Object.assign(p, plotMutationIdentity(patch.projectId, options));
+  return normalizeBranch(
+    await invoke("plot_thread_branch_update", { id, patch: p }),
+  );
 }
 
-export async function deletePlotThreadBranch(id: string): Promise<void> {
-  await db.delete(plotThreadBranches).where(eq(plotThreadBranches.id, id));
+export async function deletePlotThreadBranch(
+  id: string,
+  options: { baseVersion: number; projectId: string } & PlotMutationLineage,
+): Promise<{ id: string; deleted: boolean; maintenanceTransactionId: string }> {
+  const raw = await invoke("plot_thread_branch_delete", {
+    payload: {
+      ...plotMutationIdentity(options.projectId, options),
+      id,
+      baseVersion: options.baseVersion,
+    },
+  });
+  return normalizeDeleteReceipt(raw, id);
+}
+
+function normalizeDeleteReceipt(
+  raw: unknown,
+  fallbackId: string,
+): { id: string; deleted: boolean; maintenanceTransactionId: string } {
+  const row = (raw ?? {}) as Record<string, unknown>;
+  const normalized = attachNativeMutationMetadata(
+    {
+      id: s(row.id, fallbackId),
+      deleted: row.deleted === true || row.deleted === 1,
+      maintenanceTransactionId: s(row.maintenanceTransactionId),
+    },
+    raw,
+  );
+  return normalized;
 }
 
 export async function listPlotThreadBranches(

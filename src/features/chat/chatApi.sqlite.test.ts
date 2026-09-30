@@ -44,7 +44,9 @@ async function pinnedRows(
 
 beforeEach(async () => {
   delete (window as unknown as Record<string, unknown>).grimodex;
-  browser = await createBrowserMock();
+  browser = await createBrowserMock({
+    allowProtectedWriterTestFixtures: true,
+  });
   invokeMock.mockReset();
   invokeMock.mockImplementation(
     (command: string, args?: Record<string, unknown>) =>

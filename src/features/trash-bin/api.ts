@@ -12,6 +12,9 @@ import type {
   TrashSubKind,
   TrashPayload,
 } from "./types";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import { runTimelapseMutation } from "@/features/timelapse/bodyWriteMode";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 /**
  * この実行シェルで trash_bin 5 コマンドがネイティブ実装されているか。
@@ -102,6 +105,8 @@ export async function createTrashItem(
     deletedAt?: string;
     /** Reuse this domain ID when retrying the same logical create. */
     id?: string;
+    /** Permit a capture that was queued before a lifecycle lease. */
+    preexistingDraft?: boolean;
   },
 ): Promise<TrashItemData> {
   if (!supportsTrashBin()) {
@@ -124,18 +129,68 @@ export async function createTrashItem(
       ? {}
       : { deletedAt: options.deletedAt }),
   };
-  const created = await invoke<unknown>("trash_bin_create", { payload });
-  return normalizeTrashItem(created);
+  return runTimelapseMutation(
+    input.projectId,
+    async () => {
+      const created = await invoke<unknown>("trash_bin_create", { payload });
+      return normalizeTrashItem(created);
+    },
+    options.preexistingDraft ? { preexistingDraft: true } : undefined,
+  );
+}
+
+export interface RestoreStructuralTrashOptions {
+  requestId?: string;
+  boardIdOverride?: string;
+  dropX?: number;
+  dropY?: number;
+}
+
+export interface RestoreStructuralTrashResult {
+  newId: string;
+  brokenLinks: string[];
+}
+
+/**
+ * Restore a persisted structure item through the Native aggregate. The domain
+ * rows, both ledgers, retry receipt, and Trash consumption share one DB tx.
+ */
+export async function restoreStructuralTrashItem(
+  item: TrashItemData,
+  options: RestoreStructuralTrashOptions = {},
+): Promise<RestoreStructuralTrashResult> {
+  if (!supportsTrashBin()) {
+    throw new Error(
+      "trash_bin_restore: native shell (tauri/electron) required",
+    );
+  }
+  return runTimelapseMutation(item.projectId, () =>
+    invoke<RestoreStructuralTrashResult>("trash_bin_restore", {
+      payload: {
+        requestId: options.requestId ?? `trash-restore:${item.id}`,
+        sessionId: getRecorderSessionId(),
+        projectId: item.projectId,
+        itemId: item.id,
+        boardIdOverride: options.boardIdOverride ?? null,
+        dropX: options.dropX ?? null,
+        dropY: options.dropY ?? null,
+      },
+    }),
+  );
 }
 
 export async function deleteTrashItem(id: string): Promise<void> {
   if (!supportsTrashBin()) return;
-  await invoke("trash_bin_delete", { id });
+  await runTimelapseMutation(getCurrentProjectId(), () =>
+    invoke("trash_bin_delete", { id }),
+  );
 }
 
 export async function clearAllTrashItems(projectId: string): Promise<void> {
   if (!supportsTrashBin()) return;
-  await invoke("trash_bin_clear_all", { projectId });
+  await runTimelapseMutation(projectId, () =>
+    invoke("trash_bin_clear_all", { projectId }),
+  );
 }
 
 export async function pruneTrashItems(
@@ -144,9 +199,11 @@ export async function pruneTrashItems(
   maxCount = 10_000,
 ): Promise<number> {
   if (!supportsTrashBin()) return 0;
-  return invoke<number>("trash_bin_prune", {
-    projectId,
-    retentionDays,
-    maxCount,
-  });
+  return runTimelapseMutation(projectId, () =>
+    invoke<number>("trash_bin_prune", {
+      projectId,
+      retentionDays,
+      maxCount,
+    }),
+  );
 }

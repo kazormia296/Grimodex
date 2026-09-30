@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "nir1-recovery-positive-probe/2",
+  "baseWorkload": "recovery-workload.json",
+  "baseWorkloadSha256": "5e9c5401d64a4a3d1a527b4d88fce3f046371a620e127c0bb7b9ed6076c99d0e",
+  "rankingPolicyVersion": "nir1-related-scenes-ranking/2",
+  "approvalRef": "docs/plans/nir1-a5-candidate-2.md",
+  "currentBody": "洪水で石橋が崩壊し、薪小屋への通行が不可能になった。この出来事の根拠を確認したい。"
+}

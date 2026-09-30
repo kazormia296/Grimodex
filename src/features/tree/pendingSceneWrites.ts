@@ -99,7 +99,7 @@ export async function awaitAllPendingSceneWrites(): Promise<void> {
 }
 
 registerQuiescenceProvider({
-  id: "scene-writes",
+  id: createQuiescenceProviderId("scene-writes"),
   stage: "scene-writes",
   flush: awaitAllPendingSceneWrites,
 });
@@ -147,4 +147,33 @@ export async function awaitPendingSceneContentWrite(
     write = next === write ? undefined : next;
   }
 }
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+
+/**
+ * Snapshot-grade per-Scene barrier. Unlike ordinary UI readers, a failed
+ * predecessor cannot be treated as "last committed row is good enough".
+ */
+export async function awaitPendingSceneWriteStrict(
+  sceneId: string,
+): Promise<void> {
+  const failures: unknown[] = [];
+  let write = writeChains.get(sceneId) ?? pendingWrites.get(sceneId);
+  while (write) {
+    try {
+      await write;
+    } catch (error) {
+      failures.push(error);
+    }
+    const next = writeChains.get(sceneId) ?? pendingWrites.get(sceneId);
+    write = next === write ? undefined : next;
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `One or more writes failed for Scene ${sceneId}`,
+    );
+  }
+}
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";

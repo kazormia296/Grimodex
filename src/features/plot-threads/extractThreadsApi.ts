@@ -2,6 +2,7 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { getProject } from "@/features/project/api";
@@ -82,13 +83,34 @@ export function normalizeProposal(
 }
 
 /**
+ * PR7 soft-cutover switch (plot-thread-extraction-vertical-slice).
+ *
+ * Off by default: existing one-shot behavior (this file's LLM call) is
+ * unchanged so current tests/production behavior are byte-identical. When
+ * turned on, `proposePlotThreads` stops calling the LLM directly and
+ * returns no proposals — callers should route users to the new review path
+ * (`extraction-ui/PlotThreadExtractionDialog`, wired from
+ * `PlotStructureAnalysis`) instead, once that pipeline's scene→IR adapter
+ * (feeding signalIndex → seedManifest → narrative_plot_thread_synthesize →
+ * proposalPlanner) lands.
+ */
+export function isNewPlotThreadExtractionPipelinePreferred(): boolean {
+  return import.meta.env.VITE_PLOT_THREAD_NEW_EXTRACTION_PIPELINE === "1";
+}
+
+/**
  * Phase 4a: 既存本文（章/フォルダ単位のシーン群）を LLM 解析し、命名サブプロット
  * ＋ phaseType マーカーを提案する。foreshadow.auditChapter のイディオムを踏襲。
+ *
+ * TODO(plot-thread-extraction-vertical-slice PR7): retire this one-shot
+ * façade once the new extraction pipeline's scene→IR adapter exists and
+ * `isNewPlotThreadExtractionPipelinePreferred()` can default to true.
  */
 export async function proposePlotThreads(
   req: ProposeThreadsRequest,
 ): Promise<PlotThreadProposal[]> {
-  if (blockIfPolicyOff("analysis")) return [];
+  if (isNewPlotThreadExtractionPipelinePreferred()) return [];
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return [];
 
   const nonEmpty = req.scenes.filter((s) => s.bodyText.trim().length > 0);
   if (nonEmpty.length === 0) return [];

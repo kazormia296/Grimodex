@@ -19,10 +19,20 @@ import {
 import { useTreeStore } from "@/features/tree/treeStore";
 import {
   recordChangeEvent,
+  type TimelapseAcceptedEnqueueReceipt,
+  type TimelapseDocumentRef,
   type RecordEventInput,
 } from "@/features/timelapse/recorder";
+import {
+  createTimelapseDocumentCaptureAccumulator,
+  isTimelapseReplacementFenceActiveForDocument,
+  type TimelapseDocumentCaptureAccumulator,
+  type TimelapseDocumentIdentity,
+} from "@/features/timelapse/documentCoverage";
+import { documentKeyFromBinding } from "@/features/editor/document/documentKey";
 import { debugLog } from "@/lib/debugLog";
 import { markEnd, markStart } from "@/lib/perfLog";
+import type { LoadedEditorBinding } from "@/features/editor/document/types";
 
 export interface SceneBeatIndexState {
   sceneId: string;
@@ -33,6 +43,81 @@ export interface SceneBeatIndexRef {
   current: SceneBeatIndexState | null;
 }
 
+/**
+ * Immutable authority of the document that is actually present in an editor.
+ *
+ * A component can be reused while Project/Phase props already point at the
+ * next target. Timelapse capture must therefore read this committed descriptor
+ * from a ref owned by the load transaction, never from render-time props.
+ */
+export interface LoadedTimelapseDescriptor {
+  readonly projectId: string;
+  readonly binding: LoadedEditorBinding;
+  readonly documentIdentity: TimelapseDocumentIdentity;
+  readonly captureAccumulator: TimelapseDocumentCaptureAccumulator;
+  /** Latest accepted doc.step capability for the loaded body. */
+  document?: TimelapseDocumentRef;
+}
+
+export function createLoadedTimelapseDescriptor(
+  projectId: string,
+  binding: LoadedEditorBinding,
+): LoadedTimelapseDescriptor {
+  const normalizedBinding =
+    binding.kind === "codex" && binding.phaseId === "__base__"
+      ? { ...binding, phaseId: null }
+      : { ...binding };
+  return {
+    projectId,
+    binding: normalizedBinding,
+    documentIdentity:
+      normalizedBinding.kind === "tree"
+        ? {
+            projectId,
+            domain: "editor",
+            entityType: "scene",
+            entityId: normalizedBinding.id,
+            storage: normalizedBinding.storage,
+          }
+        : normalizedBinding.kind === "codex"
+          ? {
+              projectId,
+              domain: "codex",
+              entityType: "codex_entry",
+              entityId: normalizedBinding.id,
+            }
+          : {
+              projectId,
+              domain: "snippet",
+              entityType: "snippet",
+              entityId: normalizedBinding.id,
+            },
+    captureAccumulator: createTimelapseDocumentCaptureAccumulator(
+      normalizedBinding.kind === "tree"
+        ? {
+            projectId,
+            domain: "editor",
+            entityType: "scene",
+            entityId: normalizedBinding.id,
+            storage: normalizedBinding.storage,
+          }
+        : normalizedBinding.kind === "codex"
+          ? {
+              projectId,
+              domain: "codex",
+              entityType: "codex_entry",
+              entityId: normalizedBinding.id,
+            }
+          : {
+              projectId,
+              domain: "snippet",
+              entityType: "snippet",
+              entityId: normalizedBinding.id,
+            },
+    ),
+  };
+}
+
 interface UnplacedBeatStorePort {
   getBeats: (sceneId: string) => UnplacedBeat[];
   addBeat: (sceneId: string, beat: UnplacedBeat) => void;
@@ -40,7 +125,9 @@ interface UnplacedBeatStorePort {
 }
 
 export interface SceneEditorTransactionPorts {
-  recordChangeEvent: (input: RecordEventInput) => void;
+  recordChangeEvent: (
+    input: RecordEventInput,
+  ) => TimelapseAcceptedEnqueueReceipt | null | void;
   reportTimelapseFailure: (error: unknown) => void;
   getUnplacedBeatStore: () => UnplacedBeatStorePort;
   setNodePreview: (
@@ -74,11 +161,9 @@ const defaultPorts: SceneEditorTransactionPorts = {
 
 export interface SceneEditorTransactionInput {
   transaction: Transaction;
-  id: string | null;
-  isEntryMode: boolean;
-  isCodexMode: boolean;
-  isSnippetMode: boolean;
-  isChronicleEventMode: boolean;
+  timelapseDescriptor: LoadedTimelapseDescriptor | null;
+  /** Target scene used only while a programmatic scene load rebuilds Beat state. */
+  beatSceneId: string | null;
   isApplyingExternalUpdate: boolean;
   beatIndexRef: SceneBeatIndexRef;
 }
@@ -92,11 +177,8 @@ export interface SceneEditorTransactionInput {
 export function handleSceneEditorTransaction(
   {
     transaction,
-    id,
-    isEntryMode,
-    isCodexMode,
-    isSnippetMode,
-    isChronicleEventMode,
+    timelapseDescriptor,
+    beatSceneId,
     isApplyingExternalUpdate,
     beatIndexRef,
   }: SceneEditorTransactionInput,
@@ -104,30 +186,67 @@ export function handleSceneEditorTransaction(
 ): void {
   if (!transaction.docChanged) return;
 
-  const capture = getEditorTimelapseCapture({
-    id,
-    isEntryMode,
-    isCodexMode,
-    isSnippetMode,
-    isChronicleEventMode,
-    isApplyingExternalUpdate,
-  });
-  if (capture) {
+  const binding = timelapseDescriptor?.binding ?? null;
+  const capture = binding
+    ? getEditorTimelapseCapture({
+        id: binding.id,
+        isEntryMode: binding.kind !== "tree",
+        isCodexMode: binding.kind === "codex",
+        isCodexPhaseMode: binding.kind === "codex" && binding.phaseId !== null,
+        isSnippetMode: binding.kind === "snippet",
+        isChronicleEventMode: binding.kind === "chronicle-event",
+        isApplyingExternalUpdate,
+      })
+    : null;
+  if (capture && binding) {
+    const documentKey = documentKeyFromBinding(binding);
+    if (
+      isTimelapseReplacementFenceActiveForDocument(
+        timelapseDescriptor!.projectId,
+        documentKey,
+      )
+    ) {
+      // A replacement fence is admission denial, not a capture failure. Keep
+      // the prior epoch retryable while the PM transaction is filtered by the
+      // editor's synchronous editable/admission guard.
+      return;
+    }
     try {
-      ports.recordChangeEvent({
+      const receipt = ports.recordChangeEvent({
         domain: capture.domain,
         opType: "doc.step",
         sceneId: capture.sceneId,
         entityType: capture.entityType,
         entityId: capture.entityId,
+        projectId: timelapseDescriptor!.projectId,
+        ...(binding.kind === "tree"
+          ? { documentStorage: binding.storage }
+          : {}),
         payload: {
           steps: serializeTransactionSteps(transaction.steps),
         },
       });
+      if (receipt?.document) {
+        timelapseDescriptor!.document = receipt.document;
+      }
+      timelapseDescriptor!.captureAccumulator.accept(receipt ?? null);
+      if (timelapseDescriptor!.captureAccumulator.broken) {
+        timelapseDescriptor!.document = undefined;
+      }
     } catch (error) {
+      timelapseDescriptor!.captureAccumulator.markBroken();
+      timelapseDescriptor!.document = undefined;
       ports.reportTimelapseFailure(error);
     }
   }
+
+  const id = binding?.kind === "tree" ? binding.id : beatSceneId;
+  const isEntryMode = binding ? binding.kind !== "tree" : id === null;
+
+  // With no committed binding, only the programmatic scene-load transaction
+  // may rebuild the local Beat index. A bystander transaction in the load gap
+  // owns neither persistence nor history.
+  if (!binding && !isApplyingExternalUpdate) return;
 
   // Codex, Snippet, and Chronicle bodies have no scene Beat sidecars.
   if (isEntryMode || !id) return;

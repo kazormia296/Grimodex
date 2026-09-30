@@ -1,9 +1,14 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
+import {
+  createTrashBinCapturePlugin,
+  META_ORIGIN,
+} from "@/features/editor/TrashBinCapturePlugin";
+import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import {
   useInlineAiDiff,
   type InlineAiProjectionAuthority,
@@ -20,11 +25,21 @@ import { inlineAiDiffKey } from "./InlineAIDiffPlugin";
 const createdEditors: Editor[] = [];
 const hookUnmounts: Array<() => void> = [];
 
-function makeEditor(content: string): Editor {
+function makeEditor(content: string, withTrashCapture = false): Editor {
   const editor = new Editor({
     extensions: [StarterKit, AuthorshipMark],
     content,
   });
+  if (withTrashCapture) {
+    editor.registerPlugin(createTrashBinCapturePlugin());
+    editor
+      .chain()
+      .command(({ tr }) => {
+        tr.setMeta(META_ORIGIN, { kind: "scene", id: "scene-trash-test" });
+        return true;
+      })
+      .run();
+  }
   createdEditors.push(editor);
   return editor;
 }
@@ -37,6 +52,12 @@ function renderDiff(editor: Editor, projection?: InlineAiProjectionAuthority) {
 
 function getText(editor: Editor): string {
   return editor.state.doc.textBetween(0, editor.state.doc.content.size, "\n");
+}
+
+function pendingTrashPreviews(): string[] {
+  return useTrashBinStore
+    .getState()
+    .pendingQueue.map((pending) => pending.data.previewText);
 }
 
 function startOwnerSession(activeEditor: Editor | null, insertPos: number) {
@@ -54,12 +75,19 @@ function startOwnerSession(activeEditor: Editor | null, insertPos: number) {
 describe("useInlineAiDiff: 複数エディタ共有時の owner ゲート", () => {
   beforeEach(() => {
     useInlineAiStore.getState().reset();
+    useTrashBinStore.setState({
+      activeProjectId: "default-project",
+      items: new Map(),
+      pendingQueue: [],
+      isCapturing: true,
+    });
   });
   afterEach(() => {
     hookUnmounts.splice(0).forEach((u) => u());
     createdEditors.splice(0).forEach((e) => {
       if (!e.isDestroyed) e.destroy();
     });
+    vi.useRealTimers();
   });
 
   it("owner の生成中でも非 owner エディタへのタイプは握りつぶされず着地する", () => {
@@ -191,7 +219,8 @@ describe("useInlineAiDiff: 複数エディタ共有時の owner ゲート", () =
   });
 
   it("rollback removes a partial preview without leaving a saveable edit", () => {
-    const editor = makeEditor("<p>owner</p>");
+    vi.useFakeTimers();
+    const editor = makeEditor("<p>owner</p>", true);
     const projection: InlineAiProjectionAuthority = {
       keyRef: { current: "projection-a" },
       readyRef: { current: true },
@@ -218,5 +247,45 @@ describe("useInlineAiDiff: 複数エディタ共有時の owner ゲート", () =
 
     expect(getText(editor)).toBe("owner");
     expect(useInlineAiStore.getState().status).toBe("idle");
+    vi.advanceTimersByTime(600);
+    expect(useTrashBinStore.getState().pendingQueue).toEqual([]);
+  });
+
+  it("Reject の programmatic rollback は Trash Bin に入らない", () => {
+    vi.useFakeTimers();
+    const editor = makeEditor("<p>owner</p>", true);
+    const rendered = renderDiff(editor);
+
+    act(() => {
+      rendered.result.current.showProvidedText("AI preview", {
+        mode: "insert",
+        insertPos: 1,
+      });
+    });
+    expect(getText(editor)).toBe("AI previewowner");
+
+    act(() => rendered.result.current.rejectOrAbort());
+    vi.advanceTimersByTime(600);
+
+    expect(getText(editor)).toBe("owner");
+    expect(useTrashBinStore.getState().pendingQueue).toEqual([]);
+  });
+
+  it("Accept の replace は元本文の削除を Trash Bin に残す", () => {
+    vi.useFakeTimers();
+    const editor = makeEditor("<p>owner</p>", true);
+    const rendered = renderDiff(editor);
+
+    act(() => {
+      rendered.result.current.showProvidedText("AI replacement", {
+        mode: "replace",
+        originalRange: { from: 1, to: 6 },
+      });
+    });
+    act(() => rendered.result.current.accept());
+    vi.advanceTimersByTime(600);
+
+    expect(getText(editor)).toBe("AI replacement");
+    expect(pendingTrashPreviews()).toEqual(["owner"]);
   });
 });

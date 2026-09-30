@@ -51,6 +51,7 @@ describe("editor background shader settings", () => {
     expect(ZEN_SHADER_DEFAULTS.opacity).toBe(100);
     expect(ZEN_SHADER_DEFAULTS.speed).toBe(3);
     expect(ZEN_SHADER_DEFAULTS.speedMode).toBe("fast");
+    expect(ZEN_SHADER_DEFAULTS.resolutionMode).toBe("balanced");
     expect(ZEN_SHADER_DEFAULTS.scale).toBe(1.7);
     expect(ZEN_SHADER_DEFAULTS.rotation).toBe(170);
     expect(ZEN_SHADER_DEFAULTS.offsetX).toBe(0.25);
@@ -93,6 +94,7 @@ describe("editor background shader settings", () => {
       "editor.zenBackground.opacity": "300",
       "editor.zenBackground.speedPercent": "300",
       "editor.zenBackground.speedMode": "slow",
+      "editor.zenBackground.resolutionMode": "performance",
       "editor.zenBackground.paperOpacity": "-5",
       "editor.zenBackground.paperEdgeFade": "30",
       "editor.zenBackground.contrastGuard.mode": "invalid",
@@ -103,6 +105,7 @@ describe("editor background shader settings", () => {
     expect(config.opacity).toBe(100);
     expect(config.speed).toBe(100);
     expect(config.speedMode).toBe("slow");
+    expect(config.resolutionMode).toBe("performance");
     expect(config).not.toHaveProperty("paperOpacity");
     expect(config).not.toHaveProperty("paperEdgeFade");
     expect(config.contrastGuard).toEqual({
@@ -144,6 +147,7 @@ describe("editor background shader settings", () => {
       "editor.zenBackground.enabled": "false",
       "editor.zenBackground.shader": "unknown",
       "editor.zenBackground.paletteMode": "invalid",
+      "editor.zenBackground.resolutionMode": "ultra",
       "editor.zenBackground.scale": "NaN",
       "editor.zenBackground.rotation": "721",
       "editor.zenBackground.offsetX": "-9",
@@ -163,6 +167,7 @@ describe("editor background shader settings", () => {
     expect(config.shader).toBe("liquid-metal");
     expect(config.paletteMode).toBe("theme");
     expect(config.speedMode).toBe("fast");
+    expect(config.resolutionMode).toBe("balanced");
     expect(config.scale).toBe(ZEN_SHADER_DEFAULTS.scale);
     expect(config.rotation).toBe(360);
     expect(config.offsetX).toBe(-1);

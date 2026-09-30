@@ -1,0 +1,1286 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import {
+  GATE_B2_ASSURANCE_SCOPE,
+  GATE_B2_CONTRACT_VERSION,
+  HARNESS_DIGEST_PATHS,
+  allocateGateB2ArtifactAttempt,
+  assertDigestsMatchFreeze,
+  assertFreezeActive,
+  buildGhRunDownloadArgs,
+  buildDecisionDocument,
+  buildHeavyCertificationEnv,
+  buildJourneyCertificationEnv,
+  checkoutIdentityArtifactName,
+  fetchCheckoutIdentityArtifact,
+  listRunArtifacts,
+  prepareWorktreeDependencies,
+  sanitizeCertificationEnv,
+  selectCheckoutIdentityArtifact,
+  stripCredentialPlaceholders,
+  validateChronicleProductionReport,
+  validateFullCiEvidence,
+  validateJourneyEvidence,
+  validateJsonAgainstSchema,
+  validateWebAiConsentBrowserReport,
+  validateWebAiConsentReport,
+  verifyFullCiWithGithub,
+  writeGateB2AttemptArtifact,
+} from "./certify-gate-b2-bindings.mjs";
+import { getGateB2GithubAttemptIdentity } from "./gate-b2-github-attempt.mjs";
+import {
+  CHRONICLE_PRODUCTION_DIMENSION_SCORE_KEYS,
+  CHRONICLE_PRODUCTION_EXPECTED_DIMENSION_KEYS,
+  CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS,
+  CURRENT_NARRATIVE_EVAL_PROTOCOL,
+} from "./quality-evaluation-runtime.mjs";
+
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
+const digest = `sha256:${"d".repeat(64)}`;
+const candidate = {
+  commitSha: "a".repeat(40),
+  treeSha: "b".repeat(40),
+  baseMasterSha: "c".repeat(40),
+  schemaVersion: 20,
+  attemptAuthority: {
+    ...getGateB2GithubAttemptIdentity(),
+    runId: "9001",
+    runAttempt: 1,
+  },
+};
+
+const fullCiContract = {
+  workflowId: 123,
+  workflowPath: ".github/workflows/ci.yml",
+  acceptedEvents: ["push", "workflow_dispatch"],
+  requiredJobs: ["Quality", "Frontend"],
+};
+
+const fullCiContractWithCheckout = {
+  ...fullCiContract,
+  requireCheckoutIdentityArtifact: true,
+};
+
+function fullCiEvidence(overrides = {}) {
+  return {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    workflowId: fullCiContract.workflowId,
+    runId: "88",
+    runAttempt: 1,
+    conclusion: "success",
+    requiredJobs: [...fullCiContract.requiredJobs],
+    ...overrides,
+  };
+}
+
+function githubRunPayload(overrides = {}) {
+  return {
+    run: {
+      head_sha: candidate.commitSha,
+      run_attempt: 1,
+      conclusion: "success",
+      workflow_id: fullCiContract.workflowId,
+      path: fullCiContract.workflowPath,
+      event: "push",
+      ...overrides.run,
+    },
+    jobs: overrides.jobs ?? [
+      { name: "Quality", conclusion: "success" },
+      { name: "Frontend", conclusion: "success" },
+    ],
+  };
+}
+
+function checkoutIdentity(overrides = {}) {
+  return {
+    artifactId: 12345,
+    artifactName: "checkout-identity-88-1",
+    artifactRunAttempt: 1,
+    artifactDigest: `sha256:${"e".repeat(64)}`,
+    identity: {
+      commitSha: candidate.commitSha,
+      treeSha: candidate.treeSha,
+      ...overrides,
+    },
+  };
+}
+
+function chronicleEvaluation({
+  passed = true,
+  parseFailureCount = 0,
+  unresolvedEvidenceCount = 0,
+  criticalViolations = [],
+  unobservableDimensions = [],
+  dimensions = null,
+} = {}) {
+  const defaultDimensions = Object.fromEntries(
+    CHRONICLE_PRODUCTION_EXPECTED_DIMENSION_KEYS.map((dimension) => [
+      dimension,
+      Object.fromEntries(
+        CHRONICLE_PRODUCTION_DIMENSION_SCORE_KEYS.map((key) => [key, 0]),
+      ),
+    ]),
+  );
+  if (!passed) {
+    defaultDimensions.eventDetection.falsePositive = 1;
+    defaultDimensions.eventDetection.falseNegative = 1;
+  }
+  return {
+    passed,
+    parseFailureCount,
+    unresolvedEvidenceCount,
+    criticalViolations,
+    unobservableDimensions,
+    dimensions: dimensions ?? defaultDimensions,
+  };
+}
+
+function chronicleCase({ caseId, passed = true, evaluation = {} }) {
+  return {
+    caseId,
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
+    evaluation: chronicleEvaluation({ passed, ...evaluation }),
+  };
+}
+
+function chronicleFailedCase({ caseId, terminalFailure }) {
+  return {
+    caseId,
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
+    terminalFailure,
+  };
+}
+
+test("certification environments bind candidate and GitHub run metadata", () => {
+  const baseEnv = sanitizeCertificationEnv({
+    KEEP_ME: "yes",
+    NARRATIVE_EVAL_LIMIT: "1",
+    NARRATIVE_EVAL_SUITE_ID: "chronicle-motif-boundary-v1",
+    GATE_B2_BOUND_EXECUTION: "1",
+    GATE_B2_FREEZE_PATH: "/tmp/trusted-freeze.json",
+    OPENROUTER_API_KEY: "must-not-reach-gate",
+    OPEN_ROUTER_API_KEY: "legacy-alias-must-not-reach-gate",
+    ANTHROPIC_AUTH_TOKEN: "other-provider-must-not-reach-gate",
+  });
+  assert.equal(baseEnv.KEEP_ME, "yes");
+  assert.equal(baseEnv.NARRATIVE_EVAL_LIMIT, undefined);
+  assert.equal(baseEnv.NARRATIVE_EVAL_SUITE_ID, undefined);
+  assert.equal(baseEnv.GATE_B2_BOUND_EXECUTION, undefined);
+  assert.equal(baseEnv.GATE_B2_FREEZE_PATH, undefined);
+  assert.equal(baseEnv.OPENROUTER_API_KEY, undefined);
+  assert.equal(baseEnv.OPEN_ROUTER_API_KEY, undefined);
+  assert.equal(baseEnv.ANTHROPIC_AUTH_TOKEN, undefined);
+  assert.equal(
+    stripCredentialPlaceholders(
+      "OPENROUTER_API_KEY=... EMBED_NODE_MODULES=... pnpm test:node --run x.ts",
+    ),
+    "pnpm test:node --run x.ts",
+  );
+
+  const heavy = buildHeavyCertificationEnv({
+    candidate,
+    suiteId: "heavy-a",
+    runId: "suite-run",
+    outputPath: "/tmp/heavy.json",
+    commandDigest: digest,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    attempt: 1,
+    attemptDir: "/tmp/attempt-1",
+    baseEnv,
+  });
+  assert.equal(heavy.GATE_B2_CANDIDATE_COMMIT_SHA, candidate.commitSha);
+  assert.equal(heavy.GATE_B2_GITHUB_RUN_ID, "9001");
+  assert.equal(heavy.GATE_B2_GITHUB_RUN_ATTEMPT, "1");
+  assert.equal(heavy.GATE_B2_ATTEMPT, "1");
+  assert.equal(heavy.NARRATIVE_EVAL_SUITE_ID, undefined);
+
+  const journey = buildJourneyCertificationEnv({
+    candidate,
+    journeyId: "journey-a",
+    outputPath: "/tmp/journey.json",
+    runnerArtifactPath: "/tmp/runner.json",
+    commandDigest: digest,
+    environmentDigest: digest,
+    runnerId: "runner-a",
+    runnerVersion: "1",
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    attempt: 1,
+    attemptDir: "/tmp/attempt-1",
+    baseEnv,
+  });
+  assert.equal(journey.GATE_B2_SUITE_ID, "journey-a");
+  assert.equal(journey.GATE_B2_GITHUB_RUN_ID, "9001");
+});
+
+test("suite Attempt 1 artifacts are staged once inside the workflow artifact", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-attempt-"));
+  try {
+    const allocation = await allocateGateB2ArtifactAttempt({
+      artifactRoot: temp,
+      suiteId: "heavy-a",
+      bucket: "requiredHeavy",
+    });
+    assert.equal(allocation.attempt, 1);
+    assert.match(allocation.attemptDir, /requiredHeavy\/heavy-a\/attempt-1$/);
+    const written = await writeGateB2AttemptArtifact({
+      attemptDir: allocation.attemptDir,
+      record: {
+        schemaVersion: 1,
+        candidateCommitSha: candidate.commitSha,
+        candidateTreeSha: candidate.treeSha,
+        suiteId: "heavy-a",
+        bucket: "requiredHeavy",
+        attempt: 1,
+        result: "passed",
+      },
+    });
+    const saved = JSON.parse(await readFile(written.recordPath, "utf8"));
+    assert.match(saved.contentDigest, /^sha256:[0-9a-f]{64}$/);
+    await assert.rejects(
+      () =>
+        writeGateB2AttemptArtifact({
+          attemptDir: allocation.attemptDir,
+          record: saved,
+        }),
+      /EEXIST/,
+    );
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("Full CI evidence is candidate-bound and GitHub-verified", async () => {
+  const evidence = fullCiEvidence({ requiredJobs: ["Frontend", "Quality"] });
+  assert.equal(
+    validateFullCiEvidence(evidence, candidate, fullCiContract).ok,
+    true,
+  );
+  assert.equal(
+    validateFullCiEvidence(
+      { ...evidence, requiredJobs: ["Frontend"] },
+      candidate,
+      fullCiContract,
+    ).ok,
+    false,
+  );
+  const verified = await verifyFullCiWithGithub(evidence, candidate, {
+    fullCiContract,
+    fetchRun: async () => githubRunPayload(),
+  });
+  assert.equal(verified.ok, true, verified.message);
+});
+
+test("Full CI verification rejects incomplete evidence and GitHub drift", async () => {
+  const bare = validateFullCiEvidence({ passed: true }, candidate);
+  assert.equal(bare.ok, false);
+  assert.match(bare.message, /missing required fields/i);
+
+  for (const [name, payload, pattern] of [
+    [
+      "candidate",
+      githubRunPayload({ run: { head_sha: "f".repeat(40) } }),
+      /head_sha/i,
+    ],
+    ["attempt", githubRunPayload({ run: { run_attempt: 2 } }), /run_attempt/i],
+    [
+      "workflow",
+      githubRunPayload({ run: { workflow_id: 999 } }),
+      /workflow_id/i,
+    ],
+    [
+      "path",
+      githubRunPayload({
+        run: { path: ".github/workflows/release.yml" },
+      }),
+      /workflow path/i,
+    ],
+    [
+      "event",
+      githubRunPayload({ run: { event: "pull_request" } }),
+      /acceptedEvents/i,
+    ],
+    [
+      "jobs",
+      githubRunPayload({
+        jobs: [{ name: "Quality", conclusion: "success" }],
+      }),
+      /missing required job Frontend/i,
+    ],
+  ]) {
+    const result = await verifyFullCiWithGithub(fullCiEvidence(), candidate, {
+      fullCiContract,
+      fetchRun: async () => payload,
+    });
+    assert.equal(result.ok, false, name);
+    assert.match(result.message, pattern, name);
+  }
+
+  const unavailable = await verifyFullCiWithGithub(
+    fullCiEvidence(),
+    candidate,
+    {
+      fullCiContract,
+      fetchRun: async () => {
+        throw new Error("gh unavailable");
+      },
+    },
+  );
+  assert.equal(unavailable.ok, false);
+  assert.match(unavailable.message, /gh unavailable/i);
+});
+
+test("Full CI checkout artifact remains candidate-bound", async () => {
+  const mismatched = await verifyFullCiWithGithub(fullCiEvidence(), candidate, {
+    fullCiContract: fullCiContractWithCheckout,
+    fetchRun: async () => githubRunPayload(),
+    fetchCheckoutIdentity: async () =>
+      checkoutIdentity({ treeSha: "f".repeat(40) }),
+  });
+  assert.equal(mismatched.ok, false);
+  assert.match(mismatched.message, /checkout-identity treeSha/i);
+
+  const verified = await verifyFullCiWithGithub(fullCiEvidence(), candidate, {
+    fullCiContract: fullCiContractWithCheckout,
+    fetchRun: async () => githubRunPayload(),
+    fetchCheckoutIdentity: async () => checkoutIdentity(),
+  });
+  assert.equal(verified.ok, true, verified.message);
+  assert.equal(verified.checkoutArtifactId, 12345);
+  assert.equal(verified.checkoutArtifactRunAttempt, 1);
+  assert.equal(verified.checkoutCommitSha, candidate.commitSha);
+  assert.equal(verified.checkoutTreeSha, candidate.treeSha);
+});
+
+test("checkout identity selection follows failed-only rerun semantics", () => {
+  const artifacts = [
+    { id: 1, name: "checkout-identity-88-1" },
+    { id: 2, name: "checkout-identity-88-2" },
+    { id: 3, name: "checkout-identity-88-3" },
+    { id: 4, name: "checkout-identity-99-2" },
+  ];
+
+  const exact = selectCheckoutIdentityArtifact({
+    artifacts,
+    runId: "88",
+    runAttempt: 2,
+  });
+  assert.equal(exact.artifact.id, 2);
+  assert.equal(exact.artifactRunAttempt, 2);
+
+  const carriedForward = selectCheckoutIdentityArtifact({
+    artifacts: artifacts.filter((artifact) => artifact.id !== 2),
+    runId: "88",
+    runAttempt: 2,
+  });
+  assert.equal(carriedForward.artifact.id, 1);
+  assert.equal(carriedForward.artifactRunAttempt, 1);
+
+  assert.throws(
+    () =>
+      selectCheckoutIdentityArtifact({
+        artifacts: [{ id: 3, name: "checkout-identity-88-3" }],
+        runId: "88",
+        runAttempt: 2,
+      }),
+    /at or before attempt 2/i,
+  );
+  assert.throws(
+    () =>
+      selectCheckoutIdentityArtifact({
+        artifacts: [
+          { id: 1, name: "checkout-identity-88-1" },
+          { id: 2, name: "checkout-identity-88-1" },
+        ],
+        runId: "88",
+        runAttempt: 2,
+      }),
+    /exactly one.*attempt 1/i,
+  );
+  assert.throws(
+    () =>
+      selectCheckoutIdentityArtifact({
+        artifacts: [{ id: 1, name: "checkout-identity-88-1", expired: true }],
+        runId: "88",
+        runAttempt: 2,
+      }),
+    /unexpired/i,
+  );
+});
+
+test("checkout artifact download is exact and paginated", async () => {
+  const args = buildGhRunDownloadArgs({
+    runId: "88",
+    slug: "owner/repo",
+    artifactName: checkoutIdentityArtifactName("88", 1),
+    dir: "/tmp/out",
+  });
+  assert.deepEqual(args.slice(0, 3), ["run", "download", "88"]);
+  assert.equal(args.includes("--output"), false);
+  assert.ok(args.includes("checkout-identity-88-1"));
+
+  const calls = [];
+  const downloaded = await fetchCheckoutIdentityArtifact({
+    repoRoot,
+    runId: "88",
+    runAttempt: 2,
+    slug: "owner/repo",
+    runGh: async (_command, ghArgs) => {
+      calls.push([...ghArgs]);
+      if (ghArgs[0] === "api") {
+        return JSON.stringify({
+          artifacts: [{ id: 42, name: "checkout-identity-88-1" }],
+        });
+      }
+      const dir = ghArgs[ghArgs.indexOf("--dir") + 1];
+      await writeFile(
+        path.join(dir, "checkout-identity.json"),
+        `${JSON.stringify({
+          commitSha: candidate.commitSha,
+          treeSha: candidate.treeSha,
+        })}\n`,
+        "utf8",
+      );
+      return "";
+    },
+  });
+  assert.equal(downloaded.artifactId, 42);
+  assert.equal(downloaded.artifactRunAttempt, 1);
+  assert.match(downloaded.artifactDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.ok(calls.some((call) => call[0] === "run"));
+
+  const pages = [];
+  const artifacts = await listRunArtifacts({
+    slug: "owner/repo",
+    runId: "88",
+    repoRoot,
+    runGh: async (_command, ghArgs) => {
+      const query = String(ghArgs[1]);
+      pages.push(query);
+      const page = Number(new URLSearchParams(query.split("?")[1]).get("page"));
+      return JSON.stringify({
+        artifacts:
+          page === 1
+            ? Array.from({ length: 100 }, (_, index) => ({
+                id: index + 1,
+                name: `artifact-${index + 1}`,
+              }))
+            : [{ id: 101, name: "checkout-identity-88-1" }],
+      });
+    },
+  });
+  assert.equal(artifacts.length, 101);
+  assert.ok(pages[0].includes("per_page=100"));
+  assert.ok(pages[1].includes("page=2"));
+});
+
+test("Journey and Heavy evidence must bind the frozen candidate", () => {
+  assert.deepEqual(GATE_B2_ASSURANCE_SCOPE, {
+    engineeringSafety: "certified",
+    liveProviderExecution: "excluded",
+    modelQuality: "excluded",
+    externalCredentialsUsed: false,
+  });
+  const journeyContract = {
+    runnerId: "runner-a",
+    runnerVersion: "1",
+    requiredAssertions: ["assertion-a"],
+  };
+  const journey = {
+    schemaVersion: 2,
+    journeyId: "journey-a",
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    runnerId: "runner-a",
+    runnerVersion: "1",
+    environmentDigest: digest,
+    commandDigest: digest,
+    runnerArtifactDigest: digest,
+    assertions: [{ id: "assertion-a", passed: true }],
+    result: "passed",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:01:00.000Z",
+    artifactDigests: [digest],
+  };
+  assert.equal(
+    validateJourneyEvidence(journey, {
+      journeyId: "journey-a",
+      candidate,
+      contract: journeyContract,
+      expected: {
+        freezeId: "freeze-1",
+        certificationRunId: "cert-1",
+        environmentDigest: digest,
+        commandDigest: digest,
+        runnerArtifactDigest: digest,
+      },
+    }).ok,
+    true,
+  );
+  assert.equal(
+    validateJourneyEvidence(
+      { ...journey, candidateTreeSha: "f".repeat(40) },
+      { journeyId: "journey-a", candidate, contract: journeyContract },
+    ).ok,
+    false,
+  );
+
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: digest,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    attempt: 1,
+  };
+  const chronicle = {
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    suiteId: expected.suiteId,
+    runId: expected.runId,
+    commandDigest: digest,
+    mode: "chronicle-production-live",
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    attempt: 1,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:01:00.000Z",
+    caseCount: 14,
+    certificationEligible: true,
+    summary: { passed: 14, failed: 0, parseFailureCount: 0 },
+    cases: Array.from({ length: 14 }, (_, index) =>
+      chronicleCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[index],
+      }),
+    ),
+    failedCases: [],
+  };
+  assert.equal(
+    validateChronicleProductionReport(chronicle, candidate, expected).ok,
+    true,
+  );
+  assert.equal(
+    validateChronicleProductionReport(
+      { ...chronicle, attempt: 2 },
+      candidate,
+      expected,
+    ).ok,
+    false,
+  );
+  for (const report of [
+    { ...chronicle, evidenceMode: undefined },
+    { ...chronicle, evidenceMode: "legacy-v1" },
+    { ...chronicle, receiptMode: undefined },
+    {
+      ...chronicle,
+      versions: {
+        ...chronicle.versions,
+        parser: "window-observation-normalizer/1",
+      },
+    },
+  ]) {
+    assert.equal(
+      validateChronicleProductionReport(report, candidate, expected).ok,
+      false,
+    );
+  }
+
+  const mutateFirstCase = (mutate) => ({
+    ...chronicle,
+    cases: chronicle.cases.map((entry, index) =>
+      index === 0 ? mutate(entry) : entry,
+    ),
+  });
+  for (const [name, report] of [
+    [
+      "missing per-case evidence mode",
+      mutateFirstCase((entry) => ({ ...entry, evidenceMode: undefined })),
+    ],
+    [
+      "legacy per-case evidence mode",
+      mutateFirstCase((entry) => ({ ...entry, evidenceMode: "legacy-v1" })),
+    ],
+    [
+      "missing per-case receipt mode",
+      mutateFirstCase((entry) => ({ ...entry, receiptMode: undefined })),
+    ],
+    [
+      "drifted per-case parser",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        versions: {
+          ...entry.versions,
+          parser: "window-observation-normalizer/1",
+        },
+      })),
+    ],
+  ]) {
+    assert.equal(
+      validateChronicleProductionReport(report, candidate, expected).ok,
+      false,
+      name,
+    );
+  }
+
+  const cloneDimensions = (evaluation) =>
+    Object.fromEntries(
+      Object.entries(evaluation.dimensions).map(([dimension, score]) => [
+        dimension,
+        { ...score },
+      ]),
+    );
+  for (const [name, report] of [
+    [
+      "parse failure",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, parseFailureCount: 1 },
+      })),
+    ],
+    [
+      "missing parse failure count",
+      mutateFirstCase((entry) => {
+        const evaluation = { ...entry.evaluation };
+        delete evaluation.parseFailureCount;
+        return { ...entry, evaluation };
+      }),
+    ],
+    [
+      "unresolved evidence",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, unresolvedEvidenceCount: 1 },
+      })),
+    ],
+    [
+      "negative unresolved evidence",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, unresolvedEvidenceCount: -1 },
+      })),
+    ],
+    [
+      "critical violation",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: {
+          ...entry.evaluation,
+          passed: false,
+          criticalViolations: [{ classId: "critical" }],
+        },
+      })),
+    ],
+    [
+      "malformed critical violations",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, criticalViolations: {} },
+      })),
+    ],
+    [
+      "unobservable dimension list",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: {
+          ...entry.evaluation,
+          unobservableDimensions: [{ dimension: "eventDetection" }],
+        },
+      })),
+    ],
+    [
+      "malformed unobservable dimension list",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, unobservableDimensions: {} },
+      })),
+    ],
+    [
+      "dimension unobservable score",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.eventDetection.unobservable = 1;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "missing dimension",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        delete dimensions.actuality;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "missing dimensions object",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, dimensions: undefined },
+      })),
+    ],
+    [
+      "malformed dimension record",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.actuality = null;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "malformed dimension score",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        delete dimensions.actuality.unobservable;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "negative dimension score",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.eventDetection.falsePositive = -1;
+        return {
+          ...entry,
+          evaluation: { ...entry.evaluation, passed: false, dimensions },
+        };
+      }),
+    ],
+    [
+      "non-integer dimension score",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.eventDetection.truePositive = 0.5;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "passed consistency mismatch",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.eventDetection.falsePositive = 1;
+        dimensions.eventDetection.falseNegative = 1;
+        return {
+          ...entry,
+          evaluation: { ...entry.evaluation, passed: true, dimensions },
+        };
+      }),
+    ],
+  ]) {
+    assert.equal(
+      validateChronicleProductionReport(report, candidate, expected).ok,
+      false,
+      name,
+    );
+  }
+
+  const scoredFailure = {
+    ...chronicle,
+    cases: chronicle.cases.map((entry, index) =>
+      index === 13
+        ? chronicleCase({
+            caseId: entry.caseId,
+            passed: false,
+          })
+        : entry,
+    ),
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  };
+  const terminalFailure = {
+    ...chronicle,
+    cases: chronicle.cases.slice(0, 13),
+    failedCases: [
+      chronicleFailedCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+        terminalFailure: {
+          kind: "terminal-pipeline-failure",
+          stageId: null,
+          invocationIndex: null,
+          parseStatus: null,
+        },
+      }),
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  };
+  const parseFailure = {
+    ...chronicle,
+    summary: { passed: 14, failed: 0, parseFailureCount: 1 },
+  };
+  for (const [name, report] of [
+    ["scored semantic failure", scoredFailure],
+    ["terminal failed case", terminalFailure],
+    ["parser failure", parseFailure],
+  ]) {
+    assert.equal(
+      validateChronicleProductionReport(report, candidate, expected).ok,
+      false,
+      name,
+    );
+  }
+
+  const duplicateCaseId = {
+    ...chronicle,
+    cases: chronicle.cases.map((entry, index) =>
+      index === 13
+        ? { ...entry, caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0] }
+        : entry,
+    ),
+  };
+  const unknownCaseId = {
+    ...chronicle,
+    cases: chronicle.cases.map((entry, index) =>
+      index === 0 ? { ...entry, caseId: "chronicle.micro.unknown-999" } : entry,
+    ),
+  };
+  const missingCaseId = {
+    ...chronicle,
+    cases: chronicle.cases.slice(0, 13),
+    caseCount: 14,
+    summary: { passed: 13, failed: 0, parseFailureCount: 0 },
+  };
+  const malformedTerminalFailure = {
+    ...chronicle,
+    cases: chronicle.cases.slice(0, 13),
+    failedCases: [
+      chronicleFailedCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+        terminalFailure: { kind: "terminal-pipeline-failure" },
+      }),
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  };
+  const missingTerminalFailure = {
+    ...chronicle,
+    cases: chronicle.cases.slice(0, 13),
+    failedCases: [
+      {
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+        evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+        receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+        versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
+      },
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  };
+  for (const [name, report] of [
+    ["duplicate case ID", duplicateCaseId],
+    ["unknown case ID", unknownCaseId],
+    ["missing case ID", missingCaseId],
+    ["malformed terminal failure", malformedTerminalFailure],
+    ["missing terminal failure", missingTerminalFailure],
+  ]) {
+    assert.equal(
+      validateChronicleProductionReport(report, candidate, expected).ok,
+      false,
+      name,
+    );
+  }
+
+  for (const [name, ownTerminalFailure] of [
+    ["undefined", undefined],
+    ["null", null],
+    ["malformed", {}],
+    [
+      "valid",
+      {
+        kind: "terminal-pipeline-failure",
+        stageId: null,
+        invocationIndex: null,
+        parseStatus: null,
+      },
+    ],
+  ]) {
+    const scoredTerminalFailure = {
+      ...chronicle,
+      cases: chronicle.cases.map((entry, index) =>
+        index === 0 ? { ...entry, terminalFailure: ownTerminalFailure } : entry,
+      ),
+    };
+    assert.equal(
+      validateChronicleProductionReport(
+        scoredTerminalFailure,
+        candidate,
+        expected,
+      ).ok,
+      false,
+      `scored terminalFailure ${name}`,
+    );
+  }
+
+  const crossArrayDuplicate = {
+    ...chronicle,
+    cases: chronicle.cases.slice(0, 13),
+    failedCases: [
+      chronicleFailedCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0],
+        terminalFailure: {
+          kind: "terminal-pipeline-failure",
+          stageId: null,
+          invocationIndex: null,
+          parseStatus: null,
+        },
+      }),
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  };
+  assert.equal(
+    validateChronicleProductionReport(crossArrayDuplicate, candidate, expected)
+      .ok,
+    false,
+    "cross-array duplicate case ID",
+  );
+
+  for (const [name, hybridTerminalFailure] of [
+    [
+      "null stage with invocation",
+      {
+        kind: "terminal-pipeline-failure",
+        stageId: null,
+        invocationIndex: 0,
+        parseStatus: null,
+      },
+    ],
+    [
+      "stage with null invocation",
+      {
+        kind: "terminal-pipeline-failure",
+        stageId: "narrative_observation_extract",
+        invocationIndex: null,
+        parseStatus: null,
+      },
+    ],
+    [
+      "parse status without invocation",
+      {
+        kind: "terminal-pipeline-failure",
+        stageId: null,
+        invocationIndex: null,
+        parseStatus: "invalid",
+      },
+    ],
+  ]) {
+    const hybridReport = {
+      ...chronicle,
+      cases: chronicle.cases.slice(0, 13),
+      failedCases: [
+        chronicleFailedCase({
+          caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+          terminalFailure: hybridTerminalFailure,
+        }),
+      ],
+      summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+    };
+    assert.equal(
+      validateChronicleProductionReport(hybridReport, candidate, expected).ok,
+      false,
+      name,
+    );
+  }
+
+  const browser = {
+    ...chronicle,
+    suiteId: "heavy-web-ai-consent-browser-live",
+    mode: "web-ai-consent-browser-live",
+    browser: {
+      realBrowser: true,
+      provider: "@vitest/browser-playwright",
+      engine: "chromium",
+    },
+    requestCountBeforeConsent: 0,
+    requestCountAfterRefuse: 0,
+    requestCountAfterApprove: 1,
+    requestCountAfterDestinationChangeRefuse: 1,
+    providerRequestCount: 1,
+    assertions: [
+      "refusal-before-provider-is-zero-http",
+      "approval-dispatches-provider-http",
+      "destination-change-requires-fresh-consent",
+      "indexeddb-and-localstorage-are-cleared",
+      "browser-mock-is-closed-before-evidence",
+    ],
+    teardown: {
+      serverClosed: true,
+      evidenceServerClosed: true,
+      localStorageCleared: true,
+      indexedDbCleared: true,
+      consentBrokerDeclined: true,
+      browserMockClosed: true,
+    },
+  };
+  assert.equal(
+    validateWebAiConsentBrowserReport(browser, {
+      ...expected,
+      suiteId: browser.suiteId,
+    }).ok,
+    true,
+  );
+});
+
+test("Decision contains only current suite attempts and GitHub authority", async () => {
+  const digests = {
+    writerRegistryDigest: digest,
+    aiPathRegistryDigest: digest,
+    qualityManifestDigest: digest,
+    narrativeEvalManifestDigest: digest,
+    adrChecklistDigest: digest,
+    classificationDigest: digest,
+  };
+  const suites = [
+    {
+      suiteId: "light-a",
+      bucket: "requiredLight",
+      attempt: 1,
+      result: "passed",
+      message: "passed",
+    },
+  ];
+  const decision = buildDecisionDocument({
+    candidate,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    verdict: "PASS",
+    reasons: ["passed"],
+    suites,
+    reportDigest: digest,
+    digests,
+  });
+  assert.deepEqual(decision.suiteAttempts, [
+    {
+      suiteId: "light-a",
+      bucket: "requiredLight",
+      attempt: 1,
+      result: "passed",
+      message: "passed",
+    },
+  ]);
+  assert.equal(decision.attemptAuthority.runId, "9001");
+  assert.equal(decision.contractVersion, 8);
+  assert.deepEqual(decision.assuranceScope, {
+    engineeringSafety: "certified",
+    liveProviderExecution: "excluded",
+    modelQuality: "excluded",
+    externalCredentialsUsed: false,
+  });
+
+  const schema = JSON.parse(
+    await readFile(
+      path.join(
+        repoRoot,
+        "evals/certifications/schemas/gate-b2-decision-v1.schema.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(validateJsonAgainstSchema(decision, schema).ok, true);
+  const unbound = {
+    ...decision,
+    attemptAuthority: getGateB2GithubAttemptIdentity(),
+  };
+  assert.equal(validateJsonAgainstSchema(unbound, schema).ok, false);
+});
+
+test("freeze and harness digests are fixed to contract v8 authority", () => {
+  const harness = Object.fromEntries(
+    Object.keys(HARNESS_DIGEST_PATHS).map((key) => [key, digest]),
+  );
+  assert.deepEqual(assertDigestsMatchFreeze(harness, harness), []);
+  assert.match(
+    assertDigestsMatchFreeze(
+      { ...harness, attemptWorkflowDigest: `sha256:${"e".repeat(64)}` },
+      harness,
+    ).join("\n"),
+    /attemptWorkflowDigest/,
+  );
+
+  const authority = getGateB2GithubAttemptIdentity();
+  const freeze = {
+    contractVersion: GATE_B2_CONTRACT_VERSION,
+    gateId: "gate-b2",
+    status: "active",
+    freezeId: "freeze-1",
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    productSchemaVersion: 20,
+    attemptAuthority: authority,
+    candidate: {
+      commitSha: candidate.commitSha,
+      treeSha: candidate.treeSha,
+      schemaVersion: 20,
+      attemptAuthority: authority,
+    },
+  };
+  assert.doesNotThrow(() => assertFreezeActive(freeze));
+  assert.throws(
+    () =>
+      assertFreezeActive({
+        ...freeze,
+        candidate: {
+          ...freeze.candidate,
+          attemptAuthority: { ...authority, repository: "other/repo" },
+        },
+      }),
+    /GitHub Actions attempt authority/i,
+  );
+});
+
+test("freeze validation fails closed for supersession and missing harness digests", () => {
+  assert.throws(
+    () =>
+      assertFreezeActive({
+        status: "superseded",
+        candidate: { commitSha: candidate.commitSha },
+      }),
+    /superseded/i,
+  );
+
+  const failures = assertDigestsMatchFreeze(
+    { writerRegistryDigest: digest },
+    { writerRegistryDigest: digest },
+    { contractVersion: GATE_B2_CONTRACT_VERSION - 1 },
+  );
+  assert.ok(failures.some((error) => error.startsWith("contractVersion:")));
+  assert.ok(
+    failures.some((error) =>
+      error.startsWith("certificationManifestDigest: missing in freeze"),
+    ),
+  );
+  assert.equal(
+    HARNESS_DIGEST_PATHS.attemptWorkflowDigest,
+    ".github/workflows/gate-b2-certification.yml",
+  );
+});
+
+test("Journey and consent validation reject forged metadata", () => {
+  const journeyContract = {
+    runnerId: "runner-a",
+    runnerVersion: "1",
+    requiredAssertions: ["assertion-a"],
+  };
+  const baseJourney = {
+    schemaVersion: 2,
+    journeyId: "journey-a",
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    runnerId: "runner-a",
+    runnerVersion: "1",
+    environmentDigest: digest,
+    commandDigest: digest,
+    runnerArtifactDigest: digest,
+    assertions: [{ id: "assertion-a", passed: true }],
+    result: "passed",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:01:00.000Z",
+    artifactDigests: [digest],
+  };
+  const forgedJourney = validateJourneyEvidence(
+    { ...baseJourney, runnerId: "forged-runner" },
+    {
+      journeyId: "journey-a",
+      candidate,
+      contract: journeyContract,
+      expected: {
+        freezeId: "freeze-1",
+        certificationRunId: "cert-1",
+        environmentDigest: digest,
+        commandDigest: digest,
+        runnerArtifactDigest: digest,
+      },
+    },
+  );
+  assert.equal(forgedJourney.ok, false);
+  assert.match(forgedJourney.message, /runnerId/i);
+
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-web-ai-consent-live",
+    runId: "run-1",
+    commandDigest: digest,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    attempt: 1,
+  };
+  const consent = {
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    suiteId: expected.suiteId,
+    runId: expected.runId,
+    commandDigest: digest,
+    freezeId: "freeze-1",
+    certificationRunId: "cert-1",
+    attempt: 1,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:01:00.000Z",
+    certificationEligible: true,
+    teardown: { serverClosed: true, localStorageCleared: true },
+  };
+  assert.equal(validateWebAiConsentReport(consent, expected).ok, true);
+  assert.equal(
+    validateWebAiConsentReport(
+      {
+        ...consent,
+        teardown: { ...consent.teardown, serverClosed: false },
+      },
+      expected,
+    ).ok,
+    false,
+  );
+});
+
+test("detached worktree dependency preparation rejects lockfile drift", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "gate-b2-wt-deps-"));
+  const sourceRoot = path.join(temp, "source");
+  const executionRoot = path.join(temp, "execution");
+  await mkdir(sourceRoot, { recursive: true });
+  await mkdir(executionRoot, { recursive: true });
+  try {
+    await writeFile(
+      path.join(sourceRoot, "pnpm-lock.yaml"),
+      "lockfileVersion: 9\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(executionRoot, "pnpm-lock.yaml"),
+      "lockfileVersion: 9\npatched: true\n",
+      "utf8",
+    );
+    await assert.rejects(
+      () =>
+        prepareWorktreeDependencies({
+          repoRoot: sourceRoot,
+          executionRoot,
+        }),
+      /pnpm-lock.yaml digest mismatch/i,
+    );
+    assert.deepEqual(
+      await prepareWorktreeDependencies({
+        repoRoot: sourceRoot,
+        executionRoot: sourceRoot,
+      }),
+      { mode: "in-place" },
+    );
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});

@@ -37,6 +37,7 @@ import type {
 } from "../shared/ipcContract.js";
 import { readUtf8FileWithLimit } from "./boundedFileRead.js";
 import { FsScope } from "./fsScope.js";
+import type { ProfileEgressGate } from "./profileEgress.js";
 
 // 64 MiB SQLite payloadはbase64で約85.34 MiBになる。最大メタデータを含む
 // version 1 JSONを許容しつつ、main/renderer双方の文字列・JSON parseを固定上限にする。
@@ -765,6 +766,7 @@ export interface PanelWindowDelegate {
     opts: { width?: unknown; height?: unknown; title?: unknown },
   ): void;
   focusByLabel(label: string): boolean;
+  existsByLabel(label: string): boolean;
 }
 
 /**
@@ -778,6 +780,7 @@ export interface PanelWindowDelegate {
 export function registerShellBridgeHandlers(
   panelWindows?: PanelWindowDelegate,
   fsScope: FsScope = new FsScope(),
+  assertExternalEgressAllowed?: ProfileEgressGate["assertExternalUrl"],
 ): void {
   handleWithEnvelope(IPC.windowControl, (event, op) => {
     const win = senderWindow(event);
@@ -896,6 +899,7 @@ export function registerShellBridgeHandlers(
   });
 
   handleWithEnvelope(IPC.openExternal, async (_event, url) => {
+    assertExternalEgressAllowed?.();
     const target = requireStringArg(url, "url");
     // scheme allowlist 再検証 = src/lib/safeUrl.ts と二重防御（§3.4）
     if (!isSafeExternalUrl(target)) {
@@ -929,5 +933,11 @@ export function registerShellBridgeHandlers(
       throw new Error(unimplementedError("panelWindow.focusByLabel"));
     }
     return panelWindows.focusByLabel(requireStringArg(label, "label"));
+  });
+  handleWithEnvelope(IPC.panelExists, (_event, label) => {
+    if (!panelWindows) {
+      throw new Error(unimplementedError("panelWindow.existsByLabel"));
+    }
+    return panelWindows.existsByLabel(requireStringArg(label, "label"));
   });
 }

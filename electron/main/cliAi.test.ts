@@ -1216,6 +1216,242 @@ describe("CliAiManager", () => {
     ).rejects.toThrow("CLI manager is disposed");
     expect(runner.runCalls).toHaveLength(0);
   });
+
+  it("profile egress quiescence cancels pending detection before spawn", async () => {
+    const runner = new FakeRunner();
+    let resolveDetection!: (value: string) => void;
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      detectBinary: async () =>
+        new Promise<string>((resolve) => {
+          resolveDetection = resolve;
+        }),
+      hashFile: stableHashFile,
+      authorizeExecutable: async () => true,
+      forceKillAfterMs: 20,
+    });
+    const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
+      payload: { cli: "claude", prompt: "hello" },
+    });
+    await vi.waitFor(() => expect(resolveDetection).toBeTypeOf("function"));
+
+    const quiesce = manager.quiesceForProfileEgress();
+    expect(runner.startCalls).toHaveLength(0);
+    resolveDetection("/usr/local/bin/claude");
+
+    await expect(send).rejects.toThrow("CLI manager is disposed");
+    await quiesce;
+    expect(runner.startCalls).toHaveLength(0);
+  });
+
+  it("profile egress quiescence awaits a direct detection handler", async () => {
+    let resolveDetection!: (value: string) => void;
+    const manager = createCliAiManager(() => {}, {
+      runner: new FakeRunner(),
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      detectBinary: async () =>
+        new Promise<string>((resolve) => {
+          resolveDetection = resolve;
+        }),
+      hashFile: stableHashFile,
+      authorizeExecutable: async () => true,
+      forceKillAfterMs: 20,
+    });
+    const detection = manager.handlers.detect_cli_binary({ cli: "claude" });
+    await vi.waitFor(() => expect(resolveDetection).toBeTypeOf("function"));
+
+    let quiesced = false;
+    const quiesce = manager.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    expect(quiesced).toBe(false);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(quiesced).toBe(false);
+    resolveDetection("/usr/local/bin/claude");
+
+    await expect(detection).rejects.toThrow("CLI manager is disposed");
+    await quiesce;
+    expect(quiesced).toBe(true);
+  });
+
+  it("profile egress quiescence awaits active CLI transport termination", async () => {
+    const { manager, runner } = createHarness();
+    const send = manager.handlers.send_cli_chat_stream({
+      streamId: "stream-test",
+      payload: { cli: "claude", prompt: "hello" },
+    });
+    await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
+
+    let quiesced = false;
+    const quiesce = manager.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    expect(runner.nextRunning.terminate).toHaveBeenCalledWith("SIGTERM");
+    expect(runner.nextRunning.terminate).toHaveBeenCalledWith("SIGKILL");
+    await Promise.resolve();
+    expect(quiesced).toBe(false);
+
+    runner.nextRunning.finish(null, "SIGTERM");
+    await expect(send).resolves.toBeNull();
+    await quiesce;
+    expect(quiesced).toBe(true);
+  });
+
+  it("profile egress quiescence awaits an in-flight capture command", async () => {
+    let resolveRun!: (result: CliProcessResult) => void;
+    const run = vi.fn(
+      () =>
+        new Promise<CliProcessResult>((resolve) => {
+          resolveRun = resolve;
+        }),
+    );
+    const disposeAll = vi.fn();
+    const runner: CliProcessRunner = {
+      run,
+      start: () => {
+        throw new Error("unexpected stream child");
+      },
+      disposeAll,
+    };
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      hashFile: stableHashFile,
+      authorizeExecutable: async () => true,
+      forceKillAfterMs: 20,
+    });
+    const checking = manager.handlers.test_cli_connection({
+      binaryPath: "/usr/local/bin/claude",
+    });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+
+    const quiesce = manager.quiesceForProfileEgress();
+    expect(disposeAll).toHaveBeenCalledOnce();
+    resolveRun({ exitCode: 0, signal: null, stdout: "claude 1.0", stderr: "" });
+
+    await expect(checking).resolves.toBe("claude 1.0");
+    await quiesce;
+  });
+
+  it.each([
+    ["4MiB output overflow", "CLI command output exceeds limit"],
+    ["capture timeout", "CLI command timed out after 10000ms"],
+  ])(
+    "profile egress waits for the child close after an early %s capture rejection",
+    async (_label, rejectionMessage) => {
+      let resolveChildClose!: () => void;
+      const childClosed = new Promise<void>((resolve) => {
+        resolveChildClose = resolve;
+      });
+      const runner: CliProcessRunner = {
+        run: vi.fn(async () => {
+          throw new Error(rejectionMessage);
+        }),
+        start: () => {
+          throw new Error("unexpected stream child");
+        },
+        disposeAll: vi.fn(),
+        quiesceForProfileEgress: vi.fn(() => childClosed),
+      };
+      const manager = createCliAiManager(() => {}, {
+        runner,
+        platform: "linux",
+        isFile: async () => true,
+        realPath: async (candidate) => candidate,
+        hashFile: stableHashFile,
+        authorizeExecutable: async () => true,
+        forceKillAfterMs: 20,
+      });
+
+      const capture = manager.handlers.test_cli_connection({
+        binaryPath: "/usr/local/bin/claude",
+      });
+      await expect(capture).rejects.toThrow(rejectionMessage);
+
+      let quiesced = false;
+      const quiesce = manager.quiesceForProfileEgress().then(() => {
+        quiesced = true;
+      });
+      await Promise.resolve();
+      expect(quiesced).toBe(false);
+      expect(runner.quiesceForProfileEgress).toHaveBeenCalledOnce();
+
+      resolveChildClose();
+      await quiesce;
+      expect(quiesced).toBe(true);
+    },
+  );
+
+  it("fails profile egress closed when a captured child close is unconfirmed", async () => {
+    const runner: CliProcessRunner = {
+      run: vi.fn(async () => {
+        throw new Error("CLI command output exceeds limit");
+      }),
+      start: () => {
+        throw new Error("unexpected stream child");
+      },
+      disposeAll: vi.fn(),
+      quiesceForProfileEgress: vi.fn(async () => {
+        throw new Error("child close was not observed");
+      }),
+    };
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      hashFile: stableHashFile,
+      authorizeExecutable: async () => true,
+      forceKillAfterMs: 20,
+    });
+    const capture = manager.handlers.test_cli_connection({
+      binaryPath: "/usr/local/bin/claude",
+    });
+    await expect(capture).rejects.toThrow("CLI command output exceeds limit");
+
+    await expect(manager.quiesceForProfileEgress()).rejects.toThrow(
+      "CLI egress transport did not quiesce",
+    );
+  });
+
+  it("times out profile egress when a captured child never reports close", async () => {
+    const childNeverCloses = new Promise<void>(() => {});
+    const runner: CliProcessRunner = {
+      run: vi.fn(async () => {
+        throw new Error("CLI command timed out after 10000ms");
+      }),
+      start: () => {
+        throw new Error("unexpected stream child");
+      },
+      disposeAll: vi.fn(),
+      quiesceForProfileEgress: vi.fn(() => childNeverCloses),
+    };
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      hashFile: stableHashFile,
+      authorizeExecutable: async () => true,
+      forceKillAfterMs: 20,
+    });
+    const capture = manager.handlers.test_cli_connection({
+      binaryPath: "/usr/local/bin/claude",
+    });
+    await expect(capture).rejects.toThrow("CLI command timed out after 10000ms");
+
+    await expect(manager.quiesceForProfileEgress()).rejects.toThrow(
+      "CLI egress transport did not quiesce",
+    );
+  });
 });
 
 describe("createNodeCliProcessRunner", () => {
@@ -1364,6 +1600,28 @@ describe("createNodeCliProcessRunner", () => {
     runner.disposeAll();
     const result = await running.completion;
     expect(result.exitCode !== 0 || result.signal !== null).toBe(true);
+  }, 10_000);
+
+  it("profile egress quiescence waits for an actual child close", async () => {
+    const runner = createNodeCliProcessRunner(process.platform);
+    const running = runner.start({
+      executable: process.execPath,
+      args: ["-e", "setTimeout(() => {}, 250)"],
+    });
+    await running.started;
+
+    let quiesced = false;
+    const quiesce = runner.quiesceForProfileEgress?.().then(() => {
+      quiesced = true;
+    });
+    expect(quiesce).toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(quiesced).toBe(false);
+
+    await running.completion;
+    await quiesce;
+    expect(quiesced).toBe(true);
+    runner.disposeAll?.();
   }, 10_000);
 
   it("disposeAll後のrun/startは新しいchildを起動しない", async () => {

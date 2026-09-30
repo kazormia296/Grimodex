@@ -1,0 +1,1848 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schema/narrative/narrative-ir-contract-v1.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contract",
+    "adr",
+    "contractVersion",
+    "identity",
+    "authorities",
+    "vocabularies",
+    "v1ProducerMapping",
+    "envelope",
+    "stageProvenance",
+    "monotonicity",
+    "chroniclePilot",
+    "humanDerived",
+    "materialBasis",
+    "staleValidation",
+    "crossRuntimeAdapter",
+    "consumerBinding",
+    "activation",
+    "scopeAdoption",
+    "fixtures",
+    "nonGoals"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "contract": {
+      "const": "narrative-ir-contract"
+    },
+    "adr": {
+      "const": "docs/adr/011-narrative-ir-revision-semantics-contract.md"
+    },
+    "contractVersion": {
+      "const": "narrative-ir/2"
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "revisionTable",
+        "revisionIdColumn",
+        "consumerKind",
+        "projectScoped",
+        "durability",
+        "portableReference",
+        "portableExport",
+        "independentRevisionConsumer",
+        "independentRevisionConsumerStatus",
+        "heuristicIdentity"
+      ],
+      "properties": {
+        "revisionTable": {
+          "const": "narrative_proposal_revisions"
+        },
+        "revisionIdColumn": {
+          "const": "id"
+        },
+        "consumerKind": {
+          "const": "proposal-revision"
+        },
+        "projectScoped": {
+          "const": true
+        },
+        "durability": {
+          "const": "while-project-exists"
+        },
+        "portableReference": {
+          "const": [
+            "projectId",
+            "revisionId",
+            "envelopeDigest",
+            "contractVersion"
+          ]
+        },
+        "portableExport": {
+          "type": "object",
+          "required": ["requiredClosure", "originalProjectAvailability"],
+          "properties": {
+            "requiredClosure": {
+              "const": "referenced-closure"
+            },
+            "originalProjectAvailability": {
+              "const": "must-not-be-assumed"
+            }
+          },
+          "additionalProperties": false
+        },
+        "independentRevisionConsumer": {
+          "const": "narrative-ir-revision"
+        },
+        "independentRevisionConsumerStatus": {
+          "const": "not-yet-modelled"
+        },
+        "heuristicIdentity": {
+          "const": "forbid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "authorities": {
+      "type": "object",
+      "required": [
+        "immutableRevision",
+        "review",
+        "freshness",
+        "projectionExecution",
+        "applicationContribution",
+        "semanticIndex"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "immutableRevision": {
+          "const": "proposal-revision+narrative-revision-envelope"
+        },
+        "review": {
+          "const": "decision-ledger"
+        },
+        "freshness": {
+          "const": "narrative_consumer_freshness"
+        },
+        "projectionExecution": {
+          "const": "prepared-commit+typed-writer"
+        },
+        "applicationContribution": {
+          "const": "application-contribution-ledger"
+        },
+        "semanticIndex": {
+          "const": "rebuildable-acceleration-only"
+        }
+      }
+    },
+    "vocabularies": {
+      "type": "object",
+      "required": [
+        "assertionKinds",
+        "assertionModalities",
+        "assertionPolarities",
+        "producerKinds",
+        "supportClasses",
+        "changeKinds",
+        "contextExposures"
+      ],
+      "properties": {
+        "assertionKinds": {
+          "const": ["scene-event@1"]
+        },
+        "assertionModalities": {
+          "const": [
+            "modality-explicit-text",
+            "modality-narrator-claim",
+            "modality-hearsay",
+            "modality-character-belief",
+            "modality-inference",
+            "modality-hypothesis",
+            "modality-author-declaration",
+            "modality-imported-assertion"
+          ]
+        },
+        "assertionPolarities": {
+          "const": ["affirmative", "negative", "uncertain"]
+        },
+        "producerKinds": {
+          "const": [
+            "ai-inference",
+            "reconciler-proposal",
+            "author-declaration",
+            "import-metadata",
+            "legacy-migration"
+          ]
+        },
+        "supportClasses": {
+          "const": [
+            "author-declared",
+            "direct-source",
+            "reported-source",
+            "single-source-inference",
+            "multi-source-inference",
+            "imported-assertion",
+            "unresolved"
+          ]
+        },
+        "changeKinds": {
+          "const": ["add", "revise", "retract", "merge", "split"]
+        },
+        "contextExposures": {
+          "const": ["deterministic-stage", "author-supplied", "model-visible"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "v1ProducerMapping": {
+      "type": "object",
+      "required": ["producerKind", "producerIdSource", "producerVersionSource"],
+      "properties": {
+        "producerKind": {
+          "const": "reconciler-proposal"
+        },
+        "producerIdSource": {
+          "const": "reconcilerId"
+        },
+        "producerVersionSource": {
+          "const": "reconcilerVersion"
+        }
+      },
+      "additionalProperties": false
+    },
+    "envelope": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "requiredFields",
+        "assertionDigestDomains",
+        "changeIntent",
+        "projectionBinding",
+        "producerActorSeparation",
+        "reviewFreshnessProjectionOutsideRevision"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 2
+        },
+        "requiredFields": {
+          "const": [
+            "assertion",
+            "assertionDigests",
+            "changeIntent",
+            "effectiveMaterialBasis",
+            "revisionBasis",
+            "projectionBinding"
+          ]
+        },
+        "assertionDigestDomains": {
+          "type": "object",
+          "required": [
+            "assertionCoreDigest",
+            "scopeDigest",
+            "assertionDigest",
+            "disclosureFieldsExcludedFromAssertionCore"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "assertionCoreDigest": {
+              "const": [
+                "assertionKind",
+                "payloadSchemaRef",
+                "typedSemanticPayload",
+                "modality",
+                "polarity",
+                "supportClass",
+                "producer",
+                "producerConfidence"
+              ]
+            },
+            "scopeDigest": {
+              "const": ["canonicalNarrativeScopeV2"]
+            },
+            "assertionDigest": {
+              "const": ["assertionCoreDigest", "scopeDigest"]
+            },
+            "disclosureFieldsExcludedFromAssertionCore": {
+              "const": ["secret", "revealDocumentRef"]
+            }
+          }
+        },
+        "changeIntent": {
+          "type": "object",
+          "required": [
+            "addTargetProjectionRef",
+            "retractTargetProjectionRef",
+            "humanDerivedMustPreserve"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "addTargetProjectionRef": {
+              "const": "forbidden"
+            },
+            "retractTargetProjectionRef": {
+              "const": "required"
+            },
+            "humanDerivedMustPreserve": {
+              "const": "exact"
+            }
+          }
+        },
+        "projectionBinding": {
+          "type": "object",
+          "required": [
+            "proposalKindAndSchemaDistinct",
+            "recomputePayloadDigestInNative",
+            "adapterContractRequired"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "proposalKindAndSchemaDistinct": {
+              "const": true
+            },
+            "recomputePayloadDigestInNative": {
+              "const": true
+            },
+            "adapterContractRequired": {
+              "const": true
+            }
+          }
+        },
+        "producerActorSeparation": {
+          "const": true
+        },
+        "reviewFreshnessProjectionOutsideRevision": {
+          "const": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "stageProvenance": {
+      "type": "object",
+      "required": [
+        "auditVersion",
+        "modelBindingDigestDomain",
+        "terminalReceiptDigestDomain",
+        "closureDigestDomain",
+        "parsedOutputDigestDomain",
+        "requestDigestExcludesModel",
+        "bindingContract",
+        "terminalReceiptContract",
+        "c1Completeness",
+        "closureContract",
+        "sourceLiteralPins",
+        "generationMode",
+        "taskCoordinateReachability",
+        "envelopeChange",
+        "persistence",
+        "terminalReceiptPersistence",
+        "forbidden"
+      ],
+      "properties": {
+        "auditVersion": { "const": 2 },
+        "modelBindingDigestDomain": {
+          "const": "chronicle-stage-model-binding/1"
+        },
+        "terminalReceiptDigestDomain": {
+          "const": "chronicle-stage-terminal-receipt/1"
+        },
+        "closureDigestDomain": {
+          "const": "chronicle-stage-provenance-closure/1"
+        },
+        "parsedOutputDigestDomain": {
+          "const": "chronicle.parsed-output/1"
+        },
+        "requestDigestExcludesModel": { "const": true },
+        "bindingContract": {
+          "type": "object",
+          "required": [
+            "fields",
+            "endpointBinding",
+            "credentialShape",
+            "statusMatrix"
+          ],
+          "properties": {
+            "fields": {
+              "const": [
+                "provider",
+                "endpointBindingId",
+                "requestedModel",
+                "effectiveModel",
+                "modelFingerprint",
+                "apiVariant",
+                "reasoningMode",
+                "generationMode",
+                "resolutionStatus"
+              ]
+            },
+            "endpointBinding": { "const": "stable-id-or-sha256-digest-only" },
+            "credentialShape": {
+              "const": "reject-credential-shaped-values-before-digest"
+            },
+            "statusMatrix": {
+              "type": "object",
+              "required": [
+                "fingerprinted",
+                "provider-reported",
+                "requested-only",
+                "unresolved"
+              ],
+              "properties": {
+                "fingerprinted": {
+                  "type": "object",
+                  "required": ["required", "forbidden"],
+                  "properties": {
+                    "required": {
+                      "const": [
+                        "provider",
+                        "modelFingerprint",
+                        "requestedOrEffectiveModel"
+                      ]
+                    },
+                    "forbidden": { "const": [] }
+                  },
+                  "additionalProperties": false
+                },
+                "provider-reported": {
+                  "type": "object",
+                  "required": ["required", "forbidden"],
+                  "properties": {
+                    "required": { "const": ["provider", "effectiveModel"] },
+                    "forbidden": { "const": ["modelFingerprint"] }
+                  },
+                  "additionalProperties": false
+                },
+                "requested-only": {
+                  "type": "object",
+                  "required": ["required", "forbidden"],
+                  "properties": {
+                    "required": { "const": ["provider", "requestedModel"] },
+                    "forbidden": {
+                      "const": ["effectiveModel", "modelFingerprint"]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "unresolved": {
+                  "type": "object",
+                  "required": ["required", "forbidden"],
+                  "properties": {
+                    "required": {
+                      "const": [
+                        "all-route-model-fields-null",
+                        "generationMode=provider-default"
+                      ]
+                    },
+                    "forbidden": {
+                      "const": [
+                        "provider",
+                        "endpointBindingId",
+                        "requestedModel",
+                        "effectiveModel",
+                        "modelFingerprint",
+                        "apiVariant",
+                        "reasoningMode"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "terminalReceiptContract": {
+          "type": "object",
+          "required": [
+            "statusMatrix",
+            "beginTerminalSeal",
+            "modelBindingDigestCoherence",
+            "exactlyOnce",
+            "fullTerminalPaths"
+          ],
+          "properties": {
+            "statusMatrix": {
+              "const": [
+                {
+                  "terminalStatus": "succeeded",
+                  "parseStatus": "parsed",
+                  "responseDigest": "required"
+                },
+                {
+                  "terminalStatus": "failed",
+                  "parseStatus": "invalid",
+                  "responseDigest": "required"
+                },
+                {
+                  "terminalStatus": "failed",
+                  "parseStatus": "not-attempted",
+                  "responseDigest": "null"
+                },
+                {
+                  "terminalStatus": "cancelled",
+                  "parseStatus": "not-attempted",
+                  "responseDigest": "null"
+                },
+                {
+                  "terminalStatus": "skipped",
+                  "parseStatus": "not-attempted",
+                  "responseDigest": "null"
+                }
+              ]
+            },
+            "beginTerminalSeal": {
+              "const": "protected-identity-and-digests-structurally-equal"
+            },
+            "modelBindingDigestCoherence": {
+              "const": "digest-binding-before-begin-and-terminal"
+            },
+            "exactlyOnce": {
+              "const": "one-full-terminal-receipt-per-stage-execution"
+            },
+            "fullTerminalPaths": {
+              "const": [
+                "success",
+                "response-parse-failure",
+                "provider-dispatch-failure",
+                "cli-skip",
+                "cancelled"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "c1Completeness": {
+          "type": "object",
+          "required": [
+            "requiredStages",
+            "ownerStage",
+            "successfulPath",
+            "ownerDigestFields",
+            "ownerDigestsMatchExecution",
+            "repairLineage",
+            "terminalOutputContract"
+          ],
+          "properties": {
+            "requiredStages": {
+              "const": [
+                "narrative_observation_extract",
+                "narrative_event_synthesize"
+              ]
+            },
+            "ownerStage": { "const": "narrative_event_synthesize" },
+            "successfulPath": {
+              "const": "parsed-success-root-or-parsed-successful-repair-child-or-deterministic-empty"
+            },
+            "ownerDigestFields": {
+              "const": [
+                "contextSetDigest",
+                "componentContractDigest",
+                "finalRequestDigest"
+              ]
+            },
+            "ownerDigestsMatchExecution": { "const": true },
+            "repairLineage": {
+              "type": "object",
+              "required": [
+                "childStage",
+                "parentMustBe",
+                "sameTaskAndAttempt",
+                "parentPointer"
+              ],
+              "properties": {
+                "childStage": { "const": "narrative_structured_repair" },
+                "parentMustBe": {
+                  "const": "failed-invalid-observation-or-synthesis"
+                },
+                "sameTaskAndAttempt": { "const": true },
+                "parentPointer": { "const": "immutable-parentStageExecutionId" }
+              },
+              "additionalProperties": false
+            },
+            "terminalOutputContract": {
+              "type": "object",
+              "required": [
+                "typedCompanion",
+                "outputKind",
+                "hypothesesArtifactKind",
+                "hypothesisSemanticBinding",
+                "rawObservationsArtifact",
+                "acceptedTerminalStatusMatrix",
+                "unacceptedRootPolicy",
+                "perDispatchedCluster",
+                "v2ProposalSet"
+              ],
+              "properties": {
+                "typedCompanion": {
+                  "type": "object",
+                  "required": ["kind", "version", "outputs"],
+                  "properties": {
+                    "kind": { "const": "chronicle.stage-synthesis-outputs@1" },
+                    "version": { "const": 1 },
+                    "outputs": {
+                      "const": "exactly-one-per-accepted-synthesis-root"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "outputKind": { "const": "chronicle.event-synthesis-output@1" },
+                "hypothesesArtifactKind": {
+                  "const": "chronicle.event-hypotheses@1"
+                },
+                "hypothesisSemanticBinding": {
+                  "const": "normalized-event-output-all-semantic-fields-except-generated-hypothesis-id"
+                },
+                "rawObservationsArtifact": {
+                  "type": "object",
+                  "required": ["kind", "genericV1", "reservedByC1"],
+                  "properties": {
+                    "kind": { "const": "chronicle.raw-observations@1" },
+                    "genericV1": { "const": true },
+                    "reservedByC1": { "const": false }
+                  },
+                  "additionalProperties": false
+                },
+                "acceptedTerminalStatusMatrix": {
+                  "const": [
+                    {
+                      "rootParseStatus": "parsed",
+                      "rootTerminalStatus": "succeeded",
+                      "terminalStage": "narrative_event_synthesize",
+                      "terminalParseStatus": "parsed",
+                      "terminalStatus": "succeeded",
+                      "disposition": "root-success",
+                      "responseDigest": "required",
+                      "rawObservationsDigest": "required",
+                      "parsedOutputDigest": "required",
+                      "zeroObservationOnly": false
+                    },
+                    {
+                      "rootParseStatus": "invalid",
+                      "rootTerminalStatus": "failed",
+                      "terminalStage": "narrative_structured_repair",
+                      "terminalParseStatus": "parsed",
+                      "terminalStatus": "succeeded",
+                      "disposition": "repair-success",
+                      "responseDigest": "required",
+                      "rawObservationsDigest": "required",
+                      "parsedOutputDigest": "required",
+                      "zeroObservationOnly": false
+                    },
+                    {
+                      "rootParseStatus": "not-attempted",
+                      "rootTerminalStatus": "skipped",
+                      "terminalStage": "narrative_event_synthesize",
+                      "terminalParseStatus": "not-attempted",
+                      "terminalStatus": "skipped",
+                      "disposition": "deterministic-empty",
+                      "responseDigest": "null",
+                      "rawObservationsDigest": "required",
+                      "parsedOutputDigest": "required",
+                      "zeroObservationOnly": true
+                    }
+                  ]
+                },
+                "unacceptedRootPolicy": {
+                  "const": "fail-closed-NEX_CHRONICLE_SYNTHESIS_PROVENANCE_MISSING"
+                },
+                "perDispatchedCluster": {
+                  "const": "exactly-one-accepted-typed-terminal-output"
+                },
+                "v2ProposalSet": {
+                  "type": "object",
+                  "required": [
+                    "receiptRosterField",
+                    "requiresResponseBackedParsedTerminal",
+                    "rejectsDeterministicEmpty",
+                    "closurePersistence"
+                  ],
+                  "properties": {
+                    "receiptRosterField": {
+                      "const": "chronicleStageReceiptRefs"
+                    },
+                    "requiresResponseBackedParsedTerminal": { "const": true },
+                    "rejectsDeterministicEmpty": { "const": true },
+                    "closurePersistence": {
+                      "const": "forbidden-recursively-by-key-or-shape"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "closureContract": {
+          "type": "object",
+          "required": [
+            "receiptOrder",
+            "receiptRefs",
+            "selfDigest",
+            "membership",
+            "lifecycle",
+            "authority",
+            "authoritative",
+            "storage",
+            "retention",
+            "scope"
+          ],
+          "properties": {
+            "receiptOrder": {
+              "const": "stageExecutionId-then-stageExecutionReceiptDigest"
+            },
+            "receiptRefs": {
+              "const": "exact-recomputed-from-canonical-receipts"
+            },
+            "selfDigest": {
+              "const": "digest-excludes-stageProvenanceClosureDigest-and-must-recompute"
+            },
+            "membership": {
+              "const": "caller-supplied-request-scoped-receipt-set"
+            },
+            "lifecycle": { "const": "ephemeral" },
+            "authority": { "const": "none" },
+            "authoritative": { "const": false },
+            "storage": { "const": "application-memory-pure-sidecar" },
+            "retention": { "const": "not-retained" },
+            "scope": { "const": "request-scoped" }
+          },
+          "additionalProperties": false
+        },
+        "sourceLiteralPins": {
+          "type": "object",
+          "required": ["auditVersion", "digestDomains", "implementationPins"],
+          "properties": {
+            "auditVersion": {
+              "type": "object",
+              "required": ["path", "literal"],
+              "properties": {
+                "path": {
+                  "const": "src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts"
+                },
+                "literal": {
+                  "const": "export const CHRONICLE_STAGE_AUDIT_VERSION = 2 as const;"
+                }
+              },
+              "additionalProperties": false
+            },
+            "digestDomains": {
+              "const": [
+                {
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literal": "chronicle-stage-model-binding/1"
+                },
+                {
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literal": "chronicle-stage-terminal-receipt/1"
+                },
+                {
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literal": "chronicle-stage-provenance-closure/1"
+                },
+                {
+                  "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+                  "literal": "chronicle-stage-model-binding/1"
+                },
+                {
+                  "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+                  "literal": "chronicle-stage-terminal-receipt/1"
+                },
+                {
+                  "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+                  "literal": "chronicle-stage-provenance-closure/1"
+                },
+                {
+                  "path": "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+                  "literal": "chronicle.parsed-output/1"
+                },
+                {
+                  "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+                  "literal": "chronicle.parsed-output/1"
+                }
+              ]
+            },
+            "implementationPins": {
+              "const": [
+                {
+                  "id": "binding-status-matrix",
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literals": [
+                    "case \"fingerprinted\":",
+                    "case \"provider-reported\":",
+                    "case \"requested-only\":",
+                    "case \"unresolved\":"
+                  ]
+                },
+                {
+                  "id": "begin-terminal-seal",
+                  "path": "src/features/chat/singleShotTransport.ts",
+                  "literals": [
+                    "CHRONICLE_BEGIN_PROTECTED_FIELDS",
+                    "Chronicle Stage terminal changed protected field",
+                    "assertChronicleBindingCoherence"
+                  ]
+                },
+                {
+                  "id": "exactly-once-observation-emitter",
+                  "path": "src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts",
+                  "literals": [
+                    "onNoResponseTerminalMetadata",
+                    "onAuditCompleted",
+                    "emitStageReceipt(capturedStageReceipt)"
+                  ]
+                },
+                {
+                  "id": "exactly-once-event-emitter",
+                  "path": "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+                  "literals": [
+                    "onNoResponseTerminalMetadata",
+                    "onAuditCompleted",
+                    "emitStageReceipt(capturedStageReceipt)"
+                  ]
+                },
+                {
+                  "id": "exactly-once-repair-emitter",
+                  "path": "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
+                  "literals": [
+                    "onNoResponseTerminalMetadata",
+                    "onAuditCompleted",
+                    "emitStageReceipt(capturedStageReceipt)"
+                  ]
+                },
+                {
+                  "id": "c1-completeness",
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literals": [
+                    "assertChronicleStageC1ClosureCompleteness",
+                    "C1 owner synthesis receipt digests or terminal path",
+                    "C1 stage provenance closure requires a successful"
+                  ]
+                },
+                {
+                  "id": "repair-lineage",
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literals": [
+                    "Structured repair receipt requires a parent receipt",
+                    "Stage provenance repair parent must be failed invalid observation or synthesis",
+                    "parentStageExecutionId"
+                  ]
+                },
+                {
+                  "id": "owner-digest-reachability",
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literals": [
+                    "assertChronicleStageProvenanceReachability",
+                    "Stage provenance closure does not reach stage execution owner",
+                    "stageProvenanceClosureDigest"
+                  ]
+                },
+                {
+                  "id": "canonical-closure-self-digest",
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literals": [
+                    "closureDigestPayload",
+                    "Stage provenance closure receipt refs mismatch",
+                    "Stage provenance closure digest mismatch"
+                  ]
+                },
+                {
+                  "id": "typed-c1-terminal-output",
+                  "path": "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+                  "literals": [
+                    "CHRONICLE_PARSED_OUTPUT_DIGEST_DOMAIN",
+                    "root-success",
+                    "repair-success",
+                    "deterministic-empty",
+                    "onTerminalOutput"
+                  ]
+                },
+                {
+                  "id": "typed-c1-native-companion",
+                  "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+                  "literals": [
+                    "CHRONICLE_STAGE_SYNTHESIS_OUTPUTS_KIND",
+                    "resolve_terminal_output_receipt",
+                    "canonical_parsed_output_digest",
+                    "hypotheses are not semantically equal to parsed terminal events",
+                    "every accepted synthesis terminal path must have exactly one output"
+                  ]
+                },
+                {
+                  "id": "c1-cluster-completeness",
+                  "path": "src/application/narrative-extraction/extractionCoordinator.ts",
+                  "literals": [
+                    "NEX_CHRONICLE_SYNTHESIS_TERMINAL_OUTPUT_REQUIRED",
+                    "acceptedTerminalOutputRootIds",
+                    "stageSynthesisOutputs"
+                  ]
+                },
+                {
+                  "id": "receipt-only-proposal-set",
+                  "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+                  "literals": [
+                    "reject_ephemeral_chronicle_stage_provenance_in_summary",
+                    "chronicleStageReceiptRefs",
+                    "full Chronicle stage provenance closure/C1 bundle must not be persisted"
+                  ]
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "generationMode": {
+          "type": "object",
+          "required": ["providerDefault", "explicitWhen"],
+          "properties": {
+            "providerDefault": { "const": "provider/model-selection-only" },
+            "explicitWhen": {
+              "const": [
+                "reasoningMode",
+                "thinking",
+                "effort",
+                "reasoningEnabled",
+                "reasoningEffort",
+                "requestMaxOutputTokens"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "taskCoordinateReachability": {
+          "type": "object",
+          "required": [
+            "revisionBasisOwner",
+            "sidecarKey",
+            "upstreamReceipts",
+            "repairParentChild"
+          ],
+          "properties": {
+            "revisionBasisOwner": { "const": "revisionBasis.runId+taskId" },
+            "sidecarKey": {
+              "const": "projectId+runId+taskId+stageProvenanceClosureDigest"
+            },
+            "upstreamReceipts": { "const": "same-project-and-run-allowed" },
+            "repairParentChild": { "const": "same-task-and-attempt" }
+          },
+          "additionalProperties": false
+        },
+        "envelopeChange": {
+          "const": "stageProvenanceClosureDigest-forbidden"
+        },
+        "persistence": {
+          "type": "object",
+          "required": [
+            "owner",
+            "appliesTo",
+            "status",
+            "lifecycle",
+            "authority",
+            "authoritative",
+            "storage",
+            "retention",
+            "scope",
+            "membership"
+          ],
+          "properties": {
+            "owner": { "const": "C2A atomic task output/artifact persistence" },
+            "appliesTo": { "const": "application-closure-sidecar" },
+            "status": { "const": "deferred" },
+            "lifecycle": { "const": "ephemeral" },
+            "authority": { "const": "none" },
+            "authoritative": { "const": false },
+            "storage": { "const": "application-memory-pure-sidecar" },
+            "retention": { "const": "not-retained" },
+            "scope": { "const": "request-scoped" },
+            "membership": { "const": "caller-supplied-receipt-set" }
+          },
+          "additionalProperties": false
+        },
+        "terminalReceiptPersistence": {
+          "type": "object",
+          "required": [
+            "owner",
+            "appliesTo",
+            "status",
+            "lifecycle",
+            "authority",
+            "authoritative",
+            "storage",
+            "tables",
+            "productionEntryPoints"
+          ],
+          "properties": {
+            "owner": { "const": "native-typed-c2a-finish" },
+            "appliesTo": {
+              "const": "stage-terminal-receipts-and-model-bindings"
+            },
+            "status": { "const": "implemented-durable" },
+            "lifecycle": { "const": "durable" },
+            "authority": { "const": "audit-only" },
+            "authoritative": { "const": false },
+            "storage": { "const": "sqlite-workspace-db" },
+            "tables": {
+              "const": [
+                "narrative_extraction_stage_model_bindings",
+                "narrative_extraction_stage_receipts"
+              ]
+            },
+            "productionEntryPoints": {
+              "const": [
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs::persist_receipt"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "forbidden": {
+          "const": [
+            "credentials",
+            "raw-url-or-origin",
+            "profile-dependent-prompt-or-significance",
+            "evaluation-contract-v2"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "monotonicity": {
+      "type": "object",
+      "required": [
+        "currentRevisionRule",
+        "forbiddenTransitions",
+        "semanticAuthority",
+        "typedWriterValidation",
+        "structuralDefense",
+        "contractFreezeOnly"
+      ],
+      "properties": {
+        "currentRevisionRule": {
+          "const": "once-v2-always-v2"
+        },
+        "forbiddenTransitions": {
+          "const": [
+            "v2-to-v1",
+            "v2-to-no-envelope",
+            "v2-to-legacy-unbound",
+            "v2-to-legacy-inherit-reconciliation-envelope"
+          ]
+        },
+        "semanticAuthority": {
+          "const": "typed-writer"
+        },
+        "typedWriterValidation": {
+          "const": [
+            "parent-current-revision-cas",
+            "v2-lineage-monotonicity",
+            "adapter-version",
+            "digest-recomputation",
+            "derivation-invariants",
+            "material-basis",
+            "change-intent",
+            "proposal-binding"
+          ]
+        },
+        "structuralDefense": {
+          "type": "object",
+          "required": [
+            "kind",
+            "role",
+            "state",
+            "productionEntryPoints",
+            "triggers"
+          ],
+          "properties": {
+            "kind": {
+              "const": "sqlite-trigger-suite"
+            },
+            "role": {
+              "const": "structural-defense-only"
+            },
+            "state": {
+              "const": "implemented-wired"
+            },
+            "productionEntryPoints": {
+              "const": [
+                "src-tauri/crates/grimodex-db/src/migrate.rs::repair_narrative_v2_monotonicity_trigger"
+              ]
+            },
+            "triggers": {
+              "const": [
+                {
+                  "name": "narrative_proposal_revisions_v2_monotonicity_guard",
+                  "operation": "before-insert",
+                  "target": "narrative_proposal_revisions",
+                  "forbiddenTransition": "current-v2-to-non-v2-child",
+                  "errorCode": "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"
+                },
+                {
+                  "name": "narrative_proposals_v2_pointer_monotonicity_guard",
+                  "operation": "before-update-of-current_revision_id",
+                  "target": "narrative_proposals",
+                  "forbiddenTransition": "current-v2-to-non-v2-current-pointer",
+                  "errorCode": "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"
+                },
+                {
+                  "name": "narrative_proposal_revisions_v2_immutable_update_guard",
+                  "operation": "before-update",
+                  "target": "narrative_proposal_revisions",
+                  "forbiddenTransition": "v2-revision-mutation",
+                  "errorCode": "NEX_REVISION_V2_IMMUTABLE"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "contractFreezeOnly": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "chroniclePilot": {
+      "type": "object",
+      "required": [
+        "assertionKind",
+        "productWiredChangeKinds",
+        "declaredOrReservedChangeKinds",
+        "existingProjectionRevisionStatus"
+      ],
+      "properties": {
+        "assertionKind": {
+          "const": "scene-event@1"
+        },
+        "productWiredChangeKinds": {
+          "const": ["add"]
+        },
+        "declaredOrReservedChangeKinds": {
+          "const": ["revise", "retract", "merge", "split"]
+        },
+        "existingProjectionRevisionStatus": {
+          "const": "requires-separately-ratified-proposal-kind-and-apply-path"
+        }
+      },
+      "additionalProperties": false
+    },
+    "humanDerived": {
+      "type": "object",
+      "required": [
+        "requestFields",
+        "clientSubmittedFields",
+        "nativeOwnedFields",
+        "persistedBasis",
+        "contextExposureAllowed",
+        "contextExposureForbidden",
+        "contextLineage",
+        "classification",
+        "invariants"
+      ],
+      "properties": {
+        "requestFields": {
+          "const": [
+            "proposalId",
+            "expectedCurrentRevisionId",
+            "parentRevisionId",
+            "expectedParentEnvelopeDigest",
+            "proposalPayload",
+            "adapter",
+            "surfaceId"
+          ]
+        },
+        "clientSubmittedFields": {
+          "const": [
+            "proposalId",
+            "expectedCurrentRevisionId",
+            "parentRevisionId",
+            "expectedParentEnvelopeDigest",
+            "proposalPayload",
+            "adapter",
+            "surfaceId"
+          ]
+        },
+        "nativeOwnedFields": {
+          "const": [
+            "parentLookupAndCas",
+            "proposalPayloadDiff",
+            "pathClassification",
+            "strongestDerivationClassification",
+            "childAssertionAndScope",
+            "effectiveMaterialBasis",
+            "digestComputation",
+            "dependencyDeclaration",
+            "currentEpochFreshness",
+            "finalPersistence"
+          ]
+        },
+        "persistedBasis": {
+          "const": [
+            "parentRevisionId",
+            "expectedParentEnvelopeDigest",
+            "parentAssertionDigest",
+            "rootInterpretationRevisionId",
+            "derivation",
+            "revisionActor",
+            "derivationContextSet",
+            "derivationContextSetDigest"
+          ]
+        },
+        "contextExposureAllowed": {
+          "const": ["deterministic-stage", "author-supplied"]
+        },
+        "contextExposureForbidden": {
+          "const": ["model-visible"]
+        },
+        "contextLineage": {
+          "type": "object",
+          "required": [
+            "inheritedEntryMarker",
+            "inheritedEntriesKeepParentExposure",
+            "inheritedFromMustEqualParentRevisionId",
+            "exposureRulesApplyTo"
+          ],
+          "properties": {
+            "inheritedEntryMarker": {
+              "const": "inheritedFromRevisionId"
+            },
+            "inheritedEntriesKeepParentExposure": {
+              "const": true
+            },
+            "inheritedFromMustEqualParentRevisionId": {
+              "const": true
+            },
+            "exposureRulesApplyTo": {
+              "const": "own-derivation-entries-only"
+            }
+          },
+          "additionalProperties": false
+        },
+        "classification": {
+          "type": "object",
+          "required": [
+            "pathClasses",
+            "precedence",
+            "cumulativeAllowedPathClasses",
+            "unknownPathPolicy",
+            "clientMetadataAuthority",
+            "assertionOverrideStatus",
+            "fixtures"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "pathClasses": {
+              "type": "object",
+              "required": [
+                "projectionOnly",
+                "scopeAffecting",
+                "assertionAffecting"
+              ],
+              "properties": {
+                "projectionOnly": {
+                  "const": ["/title", "/note"]
+                },
+                "scopeAffecting": {
+                  "const": [
+                    "/disclosure/secret",
+                    "/disclosure/revealDocumentRef"
+                  ]
+                },
+                "assertionAffecting": {
+                  "const": []
+                }
+              },
+              "additionalProperties": false
+            },
+            "precedence": {
+              "const": [
+                "assertion-override",
+                "scope-override",
+                "projection-only"
+              ]
+            },
+            "cumulativeAllowedPathClasses": {
+              "type": "object",
+              "required": [
+                "projectionOnly",
+                "scopeOverride",
+                "assertionOverride"
+              ],
+              "properties": {
+                "projectionOnly": {
+                  "const": ["projection-only"]
+                },
+                "scopeOverride": {
+                  "const": ["projection-only", "scope-affecting"]
+                },
+                "assertionOverride": {
+                  "const": []
+                }
+              },
+              "additionalProperties": false
+            },
+            "unknownPathPolicy": {
+              "const": "reject"
+            },
+            "clientMetadataAuthority": {
+              "const": "forbid"
+            },
+            "assertionOverrideStatus": {
+              "const": "reserved-rejected"
+            },
+            "fixtures": {
+              "type": "array",
+              "minItems": 6,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "required": ["id", "changedPaths", "expectedDisposition"],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "changedPaths": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "pattern": "^/"
+                    }
+                  },
+                  "expectedDerivationKind": {
+                    "enum": [
+                      "projection-only",
+                      "scope-override",
+                      "assertion-override"
+                    ]
+                  },
+                  "changedPathClasses": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "projection-only",
+                        "scope-affecting",
+                        "assertion-affecting"
+                      ]
+                    }
+                  },
+                  "expectedDisposition": {
+                    "enum": ["accept", "reject"]
+                  }
+                },
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "expectedDisposition": {
+                          "const": "accept"
+                        }
+                      },
+                      "required": ["expectedDisposition"]
+                    },
+                    "then": {
+                      "required": [
+                        "expectedDerivationKind",
+                        "changedPathClasses"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "invariants": {
+          "type": "object",
+          "required": ["projectionOnly", "scopeOverride", "clientCannotSupply"],
+          "additionalProperties": false,
+          "properties": {
+            "projectionOnly": {
+              "const": [
+                "assertionCoreDigest-preserved",
+                "scopeDigest-preserved",
+                "assertionDigest-preserved",
+                "all-paths-projection-only"
+              ]
+            },
+            "scopeOverride": {
+              "const": [
+                "assertionCoreDigest-preserved",
+                "scope-deterministically-rederived",
+                "scopeDigest-may-change",
+                "all-paths-projection-or-scope"
+              ]
+            },
+            "clientCannotSupply": {
+              "const": [
+                "derivationKind",
+                "changedPaths",
+                "scope",
+                "childAssertion",
+                "childDigests"
+              ]
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "materialBasis": {
+      "type": "object",
+      "required": [
+        "humanDerivedOwnsDeclarations",
+        "declarations",
+        "projectionOnlyInheritance",
+        "scopeOverridePolicy",
+        "noLineageFreshnessAuthority",
+        "zeroEdgeCurrentRevision",
+        "currentEpochEvaluation"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "humanDerivedOwnsDeclarations": {
+          "const": true
+        },
+        "declarations": {
+          "const": [
+            "sourceBasis",
+            "evidenceSet",
+            "dependencySet",
+            "v1CompatibilityEdges",
+            "v2SealedDeclarationSet",
+            "edgeStates",
+            "consumerFreshness"
+          ]
+        },
+        "projectionOnlyInheritance": {
+          "const": "source-evidence-dependency-sets-identical"
+        },
+        "scopeOverridePolicy": {
+          "const": "inherit-applicable-and-rederive-scope-resolution"
+        },
+        "noLineageFreshnessAuthority": {
+          "const": true
+        },
+        "zeroEdgeCurrentRevision": {
+          "const": "forbidden"
+        },
+        "currentEpochEvaluation": {
+          "const": "atomic-before-current-revision-promotion"
+        }
+      }
+    },
+    "staleValidation": {
+      "type": "object",
+      "required": ["interpretation", "humanDerived", "fixtures"],
+      "properties": {
+        "interpretation": {
+          "type": "object",
+          "required": ["requireLiveSourceTokenEquality", "staleRefusal"],
+          "additionalProperties": false,
+          "properties": {
+            "requireLiveSourceTokenEquality": {
+              "const": true
+            },
+            "staleRefusal": {
+              "const": "NEX_READ_SET_STALE"
+            }
+          }
+        },
+        "humanDerived": {
+          "type": "object",
+          "required": [
+            "requireLiveSourceTokenEquality",
+            "preserveObservedTokens",
+            "internalIntegrity",
+            "evaluateAgainstCurrentLiveSource",
+            "publishStates",
+            "doesNotBypassApplyOCC",
+            "doesNotClearBuildActions",
+            "doesNotPerformSemanticRetraction"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "requireLiveSourceTokenEquality": {
+              "const": false
+            },
+            "preserveObservedTokens": {
+              "const": true
+            },
+            "internalIntegrity": {
+              "const": [
+                "quote-quoteDigest",
+                "source-basis-consistency",
+                "evidence-consistency",
+                "dependency-consistency"
+              ]
+            },
+            "evaluateAgainstCurrentLiveSource": {
+              "const": true
+            },
+            "publishStates": {
+              "const": [
+                "fresh",
+                "stale",
+                "source-missing",
+                "anchor-mismatch",
+                "read-set-drift",
+                "unknown"
+              ]
+            },
+            "doesNotBypassApplyOCC": {
+              "const": true
+            },
+            "doesNotClearBuildActions": {
+              "const": true
+            },
+            "doesNotPerformSemanticRetraction": {
+              "const": true
+            }
+          }
+        },
+        "fixtures": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["id", "basis", "expected"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "enum": [
+                  "interpretation-live-token-mismatch-refuses",
+                  "human-derived-stale-parent-publishes-state"
+                ]
+              },
+              "basis": {
+                "enum": ["interpretation", "human-derived"]
+              },
+              "expected": {
+                "enum": [
+                  "reject-live-token",
+                  "accept-and-publish-current-state"
+                ]
+              }
+            },
+            "oneOf": [
+              {
+                "const": {
+                  "id": "interpretation-live-token-mismatch-refuses",
+                  "basis": "interpretation",
+                  "expected": "reject-live-token"
+                }
+              },
+              {
+                "const": {
+                  "id": "human-derived-stale-parent-publishes-state",
+                  "basis": "human-derived",
+                  "expected": "accept-and-publish-current-state"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "crossRuntimeAdapter": {
+      "type": "object",
+      "required": [
+        "id",
+        "version",
+        "assertionKind",
+        "initialScopeDerivationRuntime",
+        "humanDerivedScopeRuntime",
+        "canonicalOutput",
+        "goldenFixtureRequired",
+        "fixtureFile",
+        "proposalSchemaRef",
+        "requiredCaseIds",
+        "noIndependentRuntimeInterpretation"
+      ],
+      "properties": {
+        "id": {
+          "const": "chronicle.scene-event"
+        },
+        "version": {
+          "const": "1"
+        },
+        "assertionKind": {
+          "const": "scene-event@1"
+        },
+        "initialScopeDerivationRuntime": {
+          "const": "typescript"
+        },
+        "humanDerivedScopeRuntime": {
+          "const": "rust"
+        },
+        "canonicalOutput": {
+          "const": "byte-identical-canonical-scope-json-and-scope-digest"
+        },
+        "goldenFixtureRequired": {
+          "const": true
+        },
+        "fixtureFile": {
+          "const": "policies/narrative/fixtures/narrative-ir/chronicle-scene-event-v2.json"
+        },
+        "proposalSchemaRef": {
+          "const": "policies/narrative/schemas/chronicle-event-proposal-v1.schema.json"
+        },
+        "requiredCaseIds": {
+          "type": "array",
+          "minItems": 11,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "noIndependentRuntimeInterpretation": {
+          "const": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "consumerBinding": {
+      "type": "object",
+      "required": [
+        "consumerKind",
+        "childHumanDerivedRevisionIsFirstClassConsumer",
+        "childOwnsSourceEvidenceDependencyAndFreshness",
+        "freshnessLookup",
+        "hiddenRootLineageLookup"
+      ],
+      "properties": {
+        "consumerKind": {
+          "const": "proposal-revision"
+        },
+        "childHumanDerivedRevisionIsFirstClassConsumer": {
+          "const": true
+        },
+        "childOwnsSourceEvidenceDependencyAndFreshness": {
+          "const": true
+        },
+        "freshnessLookup": {
+          "const": "child-consumer-identity"
+        },
+        "hiddenRootLineageLookup": {
+          "const": "forbid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "activation": {
+      "type": "object",
+      "required": [
+        "state",
+        "productionEntryPoints",
+        "scanRoots",
+        "productionMarkers",
+        "prerequisites",
+        "v2Emission",
+        "humanDerivedV2Ui",
+        "currentRevisionPromotion",
+        "pureFixtureGeneration",
+        "productionFallback"
+      ],
+      "properties": {
+        "state": {
+          "enum": ["disabled", "enabled"]
+        },
+        "productionEntryPoints": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "scanRoots": {
+          "const": ["src", "electron", "src-tauri"]
+        },
+        "productionMarkers": {
+          "const": [
+            "NARRATIVE_IR_V2_PRODUCTION_ENABLED",
+            "createHumanDerivedNarrativeRevisionV2",
+            "CHRONICLE_SCENE_EVENT_V2_PRODUCTION"
+          ]
+        },
+        "prerequisites": {
+          "type": "array",
+          "minItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "v2Emission": {
+          "enum": ["blocked-until-c2b", "enabled"]
+        },
+        "humanDerivedV2Ui": {
+          "enum": ["blocked-until-c2b", "enabled"]
+        },
+        "currentRevisionPromotion": {
+          "enum": ["blocked-until-c2b", "enabled"]
+        },
+        "pureFixtureGeneration": {
+          "enum": ["allowed-before-activation", "allowed"]
+        },
+        "productionFallback": {
+          "const": "existing-v1-path"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "state": { "const": "disabled" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "productionEntryPoints": { "maxItems": 0 },
+              "v2Emission": { "const": "blocked-until-c2b" },
+              "humanDerivedV2Ui": { "const": "blocked-until-c2b" },
+              "currentRevisionPromotion": { "const": "blocked-until-c2b" },
+              "pureFixtureGeneration": { "const": "allowed-before-activation" }
+            }
+          },
+          "else": {
+            "properties": {
+              "productionEntryPoints": { "minItems": 1 },
+              "v2Emission": { "const": "enabled" },
+              "humanDerivedV2Ui": { "const": "enabled" },
+              "currentRevisionPromotion": { "const": "enabled" },
+              "pureFixtureGeneration": { "const": "allowed" }
+            }
+          }
+        }
+      ]
+    },
+    "scopeAdoption": {
+      "type": "object",
+      "required": [
+        "owner",
+        "independentFrom",
+        "lifecycleStates",
+        "capabilities",
+        "track",
+        "firstLikelyConsumer",
+        "nir1OwnsLifecycle",
+        "disclosureAdmissionProductionEntryPoint"
+      ],
+      "properties": {
+        "owner": {
+          "const": "adr-009-scope-contract"
+        },
+        "independentFrom": {
+          "const": "narrative-ir-contract"
+        },
+        "lifecycleStates": {
+          "const": ["declared", "shadow", "wired"]
+        },
+        "capabilities": {
+          "type": "object",
+          "required": [
+            "structuralValidation",
+            "relationComparison",
+            "disclosureAdmission"
+          ],
+          "properties": {
+            "structuralValidation": {
+              "const": "declared"
+            },
+            "relationComparison": {
+              "const": "declared"
+            },
+            "disclosureAdmission": {
+              "const": "declared"
+            }
+          },
+          "additionalProperties": false
+        },
+        "track": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "firstLikelyConsumer": {
+          "const": "NIR-1 pre-ranking disclosure"
+        },
+        "nir1OwnsLifecycle": {
+          "const": false
+        },
+        "disclosureAdmissionProductionEntryPoint": {
+          "type": ["string", "null"],
+          "const": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "fixtures": {
+      "type": "object",
+      "required": [
+        "directory",
+        "corpusFile",
+        "requiredCaseIds",
+        "requiredFamilies",
+        "humanDerivedCaseIds"
+      ],
+      "properties": {
+        "directory": {
+          "const": "policies/narrative/fixtures/narrative-ir"
+        },
+        "corpusFile": {
+          "const": "policies/narrative/fixtures/narrative-ir/chronicle-scene-event-v2.json"
+        },
+        "requiredCaseIds": {
+          "type": "array",
+          "minItems": 11,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "requiredFamilies": {
+          "const": [
+            "scope-derivation",
+            "human-derivation",
+            "cross-runtime-parity"
+          ]
+        },
+        "humanDerivedCaseIds": {
+          "type": "array",
+          "minItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "nonGoals": {
+      "type": "array",
+      "minItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "additionalProperties": false
+}

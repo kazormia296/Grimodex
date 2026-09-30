@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    { "name": "human-ui-write", "authorityRoute": "human-direct" },
+    { "name": "agent-codex-create", "authorityRoute": "interactive-agent-command" },
+    { "name": "narrative-prepared-commit", "authorityRoute": "interpreter-projection" },
+    { "name": "import-commit", "authorityRoute": "import-apply" },
+    { "name": "undo", "authorityRoute": "history-replay" },
+    { "name": "snapshot-restore", "authorityRoute": "restore-or-migration" }
+  ],
+  "unknownRoute": { "name": "unclassified", "expected": "reject" }
+}

@@ -3,18 +3,57 @@ import { db } from "@/db/client";
 import { foreshadows, foreshadowSetups } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { normalizeForeshadowRow } from "./normalizeForeshadowRow";
+import type { ForeshadowRow } from "./types";
+import { foreshadowMutationIdentity } from "./api";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 // Shape returned by extract helpers (subset of NewForeshadowSetup)
 export interface SetupAnchorExtract {
   id: string; // setupId from mark
   foreshadowId: string;
+  baseVersion: number;
   sceneId: string;
   fromPos: number;
   toPos: number;
 }
 
+const sceneForeshadowBaseVersions = new Map<string, Map<string, number>>();
+
+export function getSceneForeshadowBaseVersions(
+  sceneId: string,
+  doc?: ProseMirrorNode,
+): Record<string, number> {
+  const versions = new Map(sceneForeshadowBaseVersions.get(sceneId) ?? []);
+  if (doc) {
+    doc.descendants((node) => {
+      if (!node.isText) return;
+      for (const mark of node.marks) {
+        if (
+          mark.type.name !== "foreshadowSetup" &&
+          mark.type.name !== "foreshadowPayoff"
+        ) {
+          continue;
+        }
+        const foreshadowId = mark.attrs.foreshadowId as unknown;
+        const baseVersion = mark.attrs.baseVersion as unknown;
+        if (
+          typeof foreshadowId === "string" &&
+          typeof baseVersion === "number" &&
+          Number.isSafeInteger(baseVersion) &&
+          baseVersion >= 0
+        ) {
+          versions.set(foreshadowId, baseVersion);
+        }
+      }
+    });
+  }
+  return Object.fromEntries(versions);
+}
+
 export interface PayoffAnchorExtract {
   foreshadowId: string;
+  baseVersion: number;
   sceneId: string;
   fromPos: number;
   toPos: number;
@@ -41,15 +80,37 @@ export function extractSetupAnchors(
     if (!node.isText) return;
     const mark = node.marks.find((m) => m.type.name === "foreshadowSetup");
     if (!mark) return;
-    const { setupId, foreshadowId } = mark.attrs as {
+    const { setupId, foreshadowId, baseVersion } = mark.attrs as {
       setupId: string;
       foreshadowId: string;
+      baseVersion: unknown;
     };
     if (!setupId || !foreshadowId) return;
+    if (
+      typeof baseVersion !== "number" ||
+      !Number.isSafeInteger(baseVersion) ||
+      baseVersion < 0
+    ) {
+      throw new Error(
+        `Foreshadow setup '${foreshadowId}' has no valid baseVersion; reload the scene before saving`,
+      );
+    }
     const len = node.text?.length ?? 0;
+    const previous = result.at(-1);
+    if (
+      previous?.id === setupId &&
+      previous.foreshadowId === foreshadowId &&
+      previous.baseVersion === baseVersion &&
+      previous.sceneId === sceneId &&
+      previous.toPos === pos
+    ) {
+      previous.toPos = pos + len;
+      return;
+    }
     result.push({
       id: setupId,
       foreshadowId,
+      baseVersion,
       sceneId,
       fromPos: pos,
       toPos: pos + len,
@@ -67,10 +128,38 @@ export function extractPayoffAnchors(
     if (!node.isText) return;
     const mark = node.marks.find((m) => m.type.name === "foreshadowPayoff");
     if (!mark) return;
-    const { foreshadowId } = mark.attrs as { foreshadowId: string };
+    const { foreshadowId, baseVersion } = mark.attrs as {
+      foreshadowId: string;
+      baseVersion: unknown;
+    };
     if (!foreshadowId) return;
+    if (
+      typeof baseVersion !== "number" ||
+      !Number.isSafeInteger(baseVersion) ||
+      baseVersion < 0
+    ) {
+      throw new Error(
+        `Foreshadow payoff '${foreshadowId}' has no valid baseVersion; reload the scene before saving`,
+      );
+    }
     const len = node.text?.length ?? 0;
-    result.push({ foreshadowId, sceneId, fromPos: pos, toPos: pos + len });
+    const previous = result.at(-1);
+    if (
+      previous?.foreshadowId === foreshadowId &&
+      previous.baseVersion === baseVersion &&
+      previous.sceneId === sceneId &&
+      previous.toPos === pos
+    ) {
+      previous.toPos = pos + len;
+      return;
+    }
+    result.push({
+      foreshadowId,
+      baseVersion,
+      sceneId,
+      fromPos: pos,
+      toPos: pos + len,
+    });
   });
   return result;
 }
@@ -89,7 +178,7 @@ export function extractPayoffAnchors(
 export async function saveForeshadowAnchors(
   sceneId: string,
   doc: ProseMirrorNode,
-): Promise<void> {
+): Promise<ForeshadowRow[]> {
   // Extract first. 大多数のシーンは伏線マークを持たないため、両方空なら FK sweep
   // 用の全件 SELECT(SELECT id FROM foreshadows) はフィルタ対象が無く結果が使われない
   // → スキップする。空配列のまま invoke は続行するので、Rust 側の orphan sweep
@@ -97,6 +186,7 @@ export async function saveForeshadowAnchors(
   // ※「両方空なら早期 return」は scene-clear 時の orphan sweep を飛ばすため不可。
   const rawSetups = extractSetupAnchors(sceneId, doc);
   const rawPayoffs = extractPayoffAnchors(sceneId, doc);
+  const baseVersions = getSceneForeshadowBaseVersions(sceneId, doc);
 
   let setups = rawSetups;
   let payoffs = rawPayoffs;
@@ -112,86 +202,34 @@ export async function saveForeshadowAnchors(
     payoffs = rawPayoffs.filter((p) => validIds.has(p.foreshadowId));
   }
 
-  if (isTauriRuntime()) {
-    await invoke("foreshadow_save_anchors_for_scene", {
+  const rows = await invoke<unknown[]>("foreshadow_save_anchors_for_scene", {
+    payload: {
+      ...foreshadowMutationIdentity(getCurrentProjectId()),
       sceneId,
       setups: setups.map((s) => ({
         id: s.id,
         foreshadowId: s.foreshadowId,
+        baseVersion: s.baseVersion,
         sceneId: s.sceneId,
         fromPos: s.fromPos,
         toPos: s.toPos,
       })),
       payoffs: payoffs.map((p) => ({
         foreshadowId: p.foreshadowId,
+        baseVersion: p.baseVersion,
         sceneId: p.sceneId,
         fromPos: p.fromPos,
         toPos: p.toPos,
       })),
+      baseVersions,
       docContentSize: doc.content.size,
-    });
-    return;
-  }
-
-  // dev-only browser fallback (used by `pnpm dev`; not transactional)
-  const now = new Date();
-
-  for (const s of setups) {
-    await db
-      .insert(foreshadowSetups)
-      .values({
-        id: s.id,
-        foreshadowId: s.foreshadowId,
-        sceneId: s.sceneId,
-        fromPos: s.fromPos,
-        toPos: s.toPos,
-        kind: "designated_existing",
-        attribution: "human",
-        isOrphan: false,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: foreshadowSetups.id,
-        set: {
-          fromPos: s.fromPos,
-          toPos: s.toPos,
-          isOrphan: false,
-          updatedAt: now,
-        },
-      });
-  }
-
-  for (const p of payoffs) {
-    await db
-      .update(foreshadows)
-      .set({
-        payoffSceneId: p.sceneId,
-        payoffFromPos: p.fromPos,
-        payoffToPos: p.toPos,
-        updatedAt: now,
-      })
-      .where(eq(foreshadows.id, p.foreshadowId));
-  }
-
-  const setupIds = setups.map((s) => s.id);
-  const existingSceneSetups = await db
-    .select({ id: foreshadowSetups.id })
-    .from(foreshadowSetups)
-    .where(eq(foreshadowSetups.sceneId, sceneId));
-  const orphanIds = existingSceneSetups
-    .map((s) => s.id)
-    .filter((id) => !setupIds.includes(id));
-
-  for (const orphanId of orphanIds) {
-    await db
-      .update(foreshadowSetups)
-      .set({
-        isOrphan: true,
-        updatedAt: now,
-      })
-      .where(eq(foreshadowSetups.id, orphanId));
-  }
+    },
+  });
+  const normalized = rows.map(normalizeForeshadowRow);
+  const cached = new Map(sceneForeshadowBaseVersions.get(sceneId) ?? []);
+  for (const row of normalized) cached.set(row.id, row.version);
+  sceneForeshadowBaseVersions.set(sceneId, cached);
+  return normalized;
 }
 
 /**
@@ -239,6 +277,57 @@ export function unsetForeshadowPayoffMarksByForeshadowIds(
   });
 }
 
+/** Refresh aggregate OCC tokens in the editor that successfully persisted them. */
+export function refreshForeshadowPayoffMarkVersions(
+  applyTr: (fn: (tr: import("@tiptap/pm/state").Transaction) => void) => void,
+  rows: readonly ForeshadowRow[],
+): void {
+  if (rows.length === 0) return;
+  const versions = new Map(rows.map((row) => [row.id, row.version]));
+  applyTr((tr) => {
+    const markTypes = [
+      tr.doc.type.schema.marks["foreshadowSetup"],
+      tr.doc.type.schema.marks["foreshadowPayoff"],
+    ].filter(Boolean);
+    const replacements: Array<{
+      from: number;
+      to: number;
+      mark: import("@tiptap/pm/model").Mark;
+      version: number;
+    }> = [];
+    tr.doc.descendants((node, pos) => {
+      if (!node.isText) return;
+      for (const markType of markTypes) {
+        const mark = node.marks.find(
+          (candidate) => candidate.type === markType,
+        );
+        if (!mark) continue;
+        const foreshadowId = mark.attrs.foreshadowId as string | null;
+        const version = foreshadowId ? versions.get(foreshadowId) : undefined;
+        if (version === undefined || mark.attrs.baseVersion === version)
+          continue;
+        replacements.push({
+          from: pos,
+          to: pos + node.nodeSize,
+          mark,
+          version,
+        });
+      }
+    });
+    for (const replacement of replacements) {
+      tr.removeMark(replacement.from, replacement.to, replacement.mark);
+      tr.addMark(
+        replacement.from,
+        replacement.to,
+        replacement.mark.type.create({
+          ...replacement.mark.attrs,
+          baseVersion: replacement.version,
+        }),
+      );
+    }
+  });
+}
+
 // ── Load helpers (DB read → mark data) ───────────────────────────
 
 export interface MarkApplication {
@@ -252,9 +341,25 @@ export async function loadForeshadowAnchors(
   sceneId: string,
 ): Promise<MarkApplication[]> {
   if (isTauriRuntime()) {
-    return invoke<MarkApplication[]>("foreshadow_load_anchors_for_scene", {
+    const marks = await invoke<MarkApplication[]>(
+      "foreshadow_load_anchors_for_scene",
+      {
+        sceneId,
+      },
+    );
+    sceneForeshadowBaseVersions.set(
       sceneId,
-    });
+      new Map(
+        marks.flatMap((mark) => {
+          const id = mark.attrs.foreshadowId;
+          const version = mark.attrs.baseVersion;
+          return typeof id === "string" && typeof version === "number"
+            ? [[id, version] as const]
+            : [];
+        }),
+      ),
+    );
+    return marks;
   }
 
   const result: MarkApplication[] = [];
@@ -264,13 +369,25 @@ export async function loadForeshadowAnchors(
     .from(foreshadowSetups)
     .where(eq(foreshadowSetups.sceneId, sceneId));
 
+  const rootVersions = new Map(
+    (
+      await db
+        .select({ id: foreshadows.id, version: foreshadows.version })
+        .from(foreshadows)
+    ).map((row) => [row.id, row.version]),
+  );
+
   for (const s of setups) {
     if (s.isOrphan) continue;
     result.push({
       from: s.fromPos,
       to: s.toPos,
       markName: "foreshadowSetup",
-      attrs: { setupId: s.id, foreshadowId: s.foreshadowId },
+      attrs: {
+        setupId: s.id,
+        foreshadowId: s.foreshadowId,
+        baseVersion: rootVersions.get(s.foreshadowId),
+      },
     });
   }
 
@@ -285,9 +402,11 @@ export async function loadForeshadowAnchors(
       from: f.payoffFromPos,
       to: f.payoffToPos,
       markName: "foreshadowPayoff",
-      attrs: { foreshadowId: f.id },
+      attrs: { foreshadowId: f.id, baseVersion: f.version },
     });
   }
+
+  sceneForeshadowBaseVersions.set(sceneId, rootVersions);
 
   return result;
 }

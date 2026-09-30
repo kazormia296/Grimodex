@@ -3,6 +3,7 @@ import tseslint from "typescript-eslint";
 import prettier from "eslint-plugin-prettier/recommended";
 import reactHooks from "eslint-plugin-react-hooks";
 import jsxA11y from "eslint-plugin-jsx-a11y";
+import narrativeMaintenanceBoundaryRule from "./scripts/quality/narrative-maintenance-boundary-rule.mjs";
 
 export default tseslint.config(
   { ignores: ["dist", "src-tauri"] },
@@ -31,6 +32,22 @@ export default tseslint.config(
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
+    },
+  },
+  {
+    files: [
+      "src/**/*.{js,jsx,ts,tsx}",
+      "electron/preload/**/*.{js,jsx,ts,tsx}",
+    ],
+    plugins: {
+      "grimodex-boundaries": {
+        rules: {
+          "narrative-maintenance": narrativeMaintenanceBoundaryRule,
+        },
+      },
+    },
+    rules: {
+      "grimodex-boundaries/narrative-maintenance": "error",
     },
   },
 );

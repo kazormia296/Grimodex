@@ -30,6 +30,7 @@ import {
 } from "@/features/concurrency/externalWriteStore";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { sceneIdFromEventId } from "./sceneEventAdapter";
+import type { ChronicleWriteOptions } from "@/application/chronicle/chronicleCommands";
 
 // narrow（＝インスペクタ幅が狭い）ときに下部アクションのラベルを畳んでアイコンのみに
 // する。アクション行を `@container` にして各ラベル span に付ける（Tailwind v4 CQ・調整可）。
@@ -69,13 +70,20 @@ export interface ChronicleInspectorProps {
   onRemoveCause?: (causeId: string) => void;
   onStamp?: () => void;
   onPull?: () => void;
-  onPatch: (patch: Partial<EventRow>) => void | Promise<void>;
+  onPatch: (
+    patch: Partial<EventRow>,
+    options?: ChronicleWriteOptions,
+  ) => void | Promise<void>;
   /** Debounced drafts need the rejection to preserve their dirty session. */
-  onPatchDraft?: (patch: Partial<EventRow>) => void | Promise<void>;
+  onPatchDraft?: (
+    patch: Partial<EventRow>,
+    options?: ChronicleWriteOptions,
+  ) => void | Promise<void>;
   /** Rich body save propagates persistence failure to useAutoSave/quiesce. */
   onPatchDetail?: (
     detail: string,
     baseVersion: number,
+    options?: ChronicleWriteOptions,
   ) => Promise<{ version: number }>;
   /** Seed the Event aggregate coordinator before conflict-staged drafts resume. */
   onResolveExternalVersion?: (version: number) => void;
@@ -97,7 +105,10 @@ const labelCls =
 
 interface DraftTextFieldProps {
   value: string;
-  onCommit: (v: string) => void | Promise<void>;
+  onCommit: (
+    v: string,
+    options?: ChronicleWriteOptions,
+  ) => void | Promise<void>;
   documentKey: DocumentKey;
   placeholder?: string;
   className?: string;
@@ -128,7 +139,10 @@ export function DraftTextField({
   const editorInstanceIdRef = useRef(createEditorInstanceId("chronicle-draft"));
   const editGenerationRef = useRef(0);
   const pendingRef = useRef<{
-    commit: (v: string) => void | Promise<void>;
+    commit: (
+      v: string,
+      options?: ChronicleWriteOptions,
+    ) => void | Promise<void>;
     value: string;
   } | null>(null);
   // 外部更新（undo / 他ビュー編集）は未編集（pending なし）のときだけ取り込む。
@@ -149,52 +163,57 @@ export function DraftTextField({
     lastValueRef.current = value;
     if (pendingRef.current == null) setDraft(value);
   }
-  const persistPending = useCallback(async () => {
-    const p = pendingRef.current;
-    if (!p) return;
-    const generation = editGenerationRef.current;
+  const persistPending = useCallback(
+    async (options?: ChronicleWriteOptions) => {
+      const p = pendingRef.current;
+      if (!p) return;
+      const generation = editGenerationRef.current;
 
-    // 打ち消し合って元の値へ戻った下書きは書き込まない（無駄な再取得を防ぐ）。
-    if (p.value === lastValueRef.current) {
+      // 打ち消し合って元の値へ戻った下書きは書き込まない（無駄な再取得を防ぐ）。
+      if (p.value === lastValueRef.current) {
+        if (pendingRef.current === p) pendingRef.current = null;
+        if (
+          editGenerationRef.current === generation &&
+          pendingRef.current === null
+        ) {
+          useEditorSessionStore
+            .getState()
+            .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
+        }
+        return;
+      }
+
+      try {
+        if (options?.preexistingDraft === true)
+          await p.commit(p.value, { preexistingDraft: true });
+        else await p.commit(p.value);
+      } catch (error) {
+        // ChroniclePanel already owns the user-facing toast. Keep `p` intact so
+        // the next blur/manual quiesce retries the exact draft, including after
+        // this component unmounts.
+        useEditorSessionStore
+          .getState()
+          .setDocumentDirty(documentKey, true, editorInstanceIdRef.current);
+        throw error instanceof AlreadyNotifiedSaveError
+          ? error
+          : new AlreadyNotifiedSaveError(
+              error instanceof Error ? error.message : String(error),
+            );
+      }
+
       if (pendingRef.current === p) pendingRef.current = null;
       if (
         editGenerationRef.current === generation &&
         pendingRef.current === null
       ) {
+        lastValueRef.current = p.value;
         useEditorSessionStore
           .getState()
           .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
       }
-      return;
-    }
-
-    try {
-      await p.commit(p.value);
-    } catch (error) {
-      // ChroniclePanel already owns the user-facing toast. Keep `p` intact so
-      // the next blur/manual quiesce retries the exact draft, including after
-      // this component unmounts.
-      useEditorSessionStore
-        .getState()
-        .setDocumentDirty(documentKey, true, editorInstanceIdRef.current);
-      throw error instanceof AlreadyNotifiedSaveError
-        ? error
-        : new AlreadyNotifiedSaveError(
-            error instanceof Error ? error.message : String(error),
-          );
-    }
-
-    if (pendingRef.current === p) pendingRef.current = null;
-    if (
-      editGenerationRef.current === generation &&
-      pendingRef.current === null
-    ) {
-      lastValueRef.current = p.value;
-      useEditorSessionStore
-        .getState()
-        .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
-    }
-  }, [documentKey]);
+    },
+    [documentKey],
+  );
   const { schedule, cancel, pause, resume, flush } = useAutoSave(
     persistPending,
     delayMs,
@@ -388,7 +407,9 @@ export function ChronicleInspector({
               key={`title-${event.id}`}
               value={event.title}
               documentKey={inspectorDocumentKey}
-              onCommit={(v) => (onPatchDraft ?? onPatch)({ title: v })}
+              onCommit={(v, options) =>
+                (onPatchDraft ?? onPatch)({ title: v }, options)
+              }
               placeholder={t("chronicle.untitled", "無題のイベント")}
               className="min-w-0 flex-1 bg-transparent text-base font-semibold text-foreground outline-none"
             />
@@ -721,7 +742,9 @@ export function ChronicleInspector({
                   multiline
                   value={event.note ?? ""}
                   documentKey={inspectorDocumentKey}
-                  onCommit={(v) => (onPatchDraft ?? onPatch)({ note: v })}
+                  onCommit={(v, options) =>
+                    (onPatchDraft ?? onPatch)({ note: v }, options)
+                  }
                   rows={3}
                   className="min-h-16 rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground"
                   placeholder={t(

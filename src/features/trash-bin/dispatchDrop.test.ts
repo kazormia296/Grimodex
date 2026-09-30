@@ -3,7 +3,7 @@
  * dispatchDrop の編集系経路で「ドロップされた pane の Editor」が
  * 優先されることを検証する回帰テスト (advisor 指摘の focus/drop ずれ修正)。
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
@@ -14,6 +14,13 @@ import {
 } from "@/store/focusedContentEditorStore";
 import type { DropTarget } from "@/store/dropTargetRegistry";
 import type { TrashItemData } from "./types";
+
+const { restoreStructuralTrashItemMock } = vi.hoisted(() => ({
+  restoreStructuralTrashItemMock: vi.fn(),
+}));
+vi.mock("./api", () => ({
+  restoreStructuralTrashItem: restoreStructuralTrashItemMock,
+}));
 
 function makeEditor(initial = "<p></p>"): Editor {
   return new Editor({
@@ -70,6 +77,7 @@ describe("dispatchDrop editor target", () => {
   let droppedEditor: Editor;
 
   beforeEach(() => {
+    restoreStructuralTrashItemMock.mockReset();
     focusedEditor = makeEditor();
     droppedEditor = makeEditor();
     useFocusedContentEditorStore
@@ -118,5 +126,58 @@ describe("dispatchDrop editor target", () => {
     if (!result.ok) {
       expect(result.reason).toBe("no-target");
     }
+  });
+
+  it("routes structural panel restore through one Native aggregate", async () => {
+    restoreStructuralTrashItemMock.mockResolvedValue({
+      newId: "restored-scene:trash-scene",
+      brokenLinks: [],
+    });
+    const item: TrashItemData = {
+      id: "trash-scene",
+      projectId: "p1",
+      kind: "structure-item",
+      subKind: "scene",
+      originSceneId: null,
+      originCodexId: null,
+      previewText: "Scene",
+      previewMeta: null,
+      payload: {
+        originalId: "old-scene",
+        title: "Scene",
+        body: "{}",
+        beats: "[]",
+        povCharacterId: null,
+        folderHintId: null,
+        folderHintName: null,
+        metadata: {
+          synopsis: null,
+          status: null,
+          nodeType: "scene",
+          locationId: null,
+          sortOrder: "a0",
+          storyTimeOrder: null,
+          storyTimeLabel: null,
+        },
+        charCount: 0,
+      },
+      charCount: 5,
+      isInteresting: true,
+      deletedAt: "2026-08-13T00:00:00.000Z",
+    };
+
+    const result = await dispatchDrop(
+      item,
+      makeTarget("scenes-panel", null),
+      { x: 0, y: 0 },
+      "p1",
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      newId: "restored-scene:trash-scene",
+      brokenLinks: [],
+    });
+    expect(restoreStructuralTrashItemMock).toHaveBeenCalledWith(item, {});
   });
 });

@@ -47,8 +47,10 @@ function requireRow(rows, label) {
   return rows[0];
 }
 
-async function assertNoIntegrityOrphans(harness, page, label) {
-  const report = await harness.invokeOk(page, "integrity_check", {});
+async function assertNoIntegrityOrphans(harness, page, projectId, label) {
+  const report = await harness.invokeOk(page, "integrity_check", {
+    projectId,
+  });
   const orphanCounts = Object.entries(report ?? {}).filter(
     ([, count]) => typeof count !== "number" || count !== 0,
   );
@@ -71,7 +73,7 @@ async function runNativeRoundTrip(
   const workspace = harness.workspacePath(id);
   await configureWorkspace(harness, workspace);
 
-  const writing = await harness.launch(`${id}/write`);
+  let writing = await harness.launch(`${id}/write`);
   let state;
   try {
     const projectId = await projectIdFor(harness, writing.page);
@@ -82,6 +84,19 @@ async function runNativeRoundTrip(
         page: writing.page,
         projectId,
         workspace,
+        relaunchAfterFixtureOperations: async (operations) => {
+          await harness.close(writing.app, writing.page, `${id}/write`);
+          writing = null;
+          await harness.executeFixtureOperations(workspace, operations);
+          writing = await harness.launch(`${id}/write`);
+          const reopenedProjectId = await projectIdFor(harness, writing.page);
+          if (reopenedProjectId !== projectId) {
+            throw new Error(
+              `${id}: project authority changed after fixture relaunch (${projectId} -> ${reopenedProjectId})`,
+            );
+          }
+          return writing.page;
+        },
       })),
     };
     await verify({
@@ -91,7 +106,7 @@ async function runNativeRoundTrip(
       phase: "write",
     });
   } finally {
-    await harness.close(writing.app, writing.page, `${id}/write`);
+    if (writing) await harness.close(writing.app, writing.page, `${id}/write`);
   }
 
   const restart = await harness.launch(`${id}/restart`);
@@ -130,61 +145,95 @@ function chronicleJourney(configureWorkspace, log) {
         log,
         write: async ({ harness: current, page, projectId }) => {
           const eventId = `native-event-${randomUUID()}`;
+          const eventUid = `native-chronicle-event-${randomUUID()}`;
           const requestId = `native-chronicle-${randomUUID()}`;
-          const now = new Date().toISOString();
-          await current.invokeOk(page, "db_execute", {
-            sql: `INSERT INTO events
-              (id, project_id, title, ordinal, start_time,
-               start_granularity, end_granularity, precision, kind,
-               created_at, updated_at, version)
-              VALUES (?, ?, ?, 'native-roundtrip', NULL,
-                      'none', 'none', 'exact', 'generic', ?, ?, 0)`,
-            params: [
+          const created = await current.invokeOk(page, "event_create", {
+            payload: {
+              requestId: `native-create-request-${randomUUID()}`,
+              eventUid,
+              origin: "human",
+              authorityRoute: "human-direct",
+              caller: "manual-wrapper",
+              controls: [
+                "runtime-policy",
+                "actor-context",
+                "typed-writer",
+                "occ",
+                "change-event",
+                "change-feed",
+              ],
+              provenance: null,
+              writesAuthorityProtectedField: false,
+              originalTransactionId: null,
+              undoJournalId: null,
               eventId,
               projectId,
-              "Native Chronicle round-trip",
-              now,
-              now,
-            ],
-            method: "run",
-          });
-          const result = await current.invokeOk(
-            page,
-            "agent_chronicle_bulk_mutate",
-            {
-              payload: {
-                requestId,
-                projectId,
-                sessionId: `native-session-${randomUUID()}`,
-                surface: "manual",
-                operations: [
-                  {
-                    kind: "eventSetDate",
-                    eventId,
-                    baseVersion: 0,
-                    startTime: CHRONICLE_START_TIME,
-                    startMinute: null,
-                    startGranularity: "day",
-                    endTime: null,
-                    endMinute: null,
-                    endGranularity: "none",
-                  },
-                ],
-              },
+              sessionId: `native-create-session-${randomUUID()}`,
+              surface: "manual",
+              title: "Native Chronicle round-trip",
+              ordinal: "native-roundtrip",
+              startGranularity: "none",
+              endGranularity: "none",
+              precision: "exact",
+              kind: "generic",
+              participantCodexIds: [],
+              sceneIds: [],
             },
-          );
+          });
+          if (created?.entityId !== eventId || created?.version !== 1) {
+            throw new Error(
+              `${id}: Chronicle create did not acknowledge version 1`,
+            );
+          }
+          const result = await current.invokeOk(page, "chronicle_bulk_mutate", {
+            payload: {
+              requestId,
+              eventUid: `native-chronicle-bulk-event-${randomUUID()}`,
+              origin: "human",
+              authorityRoute: "human-direct",
+              caller: "manual-wrapper",
+              controls: [
+                "runtime-policy",
+                "actor-context",
+                "typed-writer",
+                "occ",
+                "change-event",
+                "change-feed",
+              ],
+              provenance: null,
+              writesAuthorityProtectedField: false,
+              originalTransactionId: null,
+              undoJournalId: null,
+              projectId,
+              sessionId: `native-session-${randomUUID()}`,
+              surface: "manual",
+              operations: [
+                {
+                  kind: "eventSetDate",
+                  eventId,
+                  baseVersion: created.version,
+                  startTime: CHRONICLE_START_TIME,
+                  startMinute: null,
+                  startGranularity: "day",
+                  endTime: null,
+                  endMinute: null,
+                  endGranularity: "none",
+                },
+              ],
+            },
+          });
           const eventResult = result?.eventResults?.find(
             (entry) => entry?.eventId === eventId,
           );
           if (
             eventResult?.kind !== "eventSetDate" ||
-            eventResult?.version !== 1
+            eventResult?.version !== created.version + 1
           ) {
             throw new Error(
-              `${id}: Chronicle bulk result did not acknowledge version 1`,
+              `${id}: Chronicle bulk result did not advance the event version`,
             );
           }
-          return { eventId, requestId };
+          return { eventId, requestId, version: eventResult.version };
         },
         verify: async ({ harness: current, page, state, phase }) => {
           const row = requireRow(
@@ -212,13 +261,18 @@ function chronicleJourney(configureWorkspace, log) {
             row.endTime !== null ||
             row.endMinute !== null ||
             row.endGranularity !== "none" ||
-            row.version !== 1
+            row.version !== state.version
           ) {
             throw new Error(
               `${id}/${phase}: persisted Chronicle aggregate did not match the typed mutation`,
             );
           }
-          await assertNoIntegrityOrphans(current, page, `${id}/${phase}`);
+          await assertNoIntegrityOrphans(
+            current,
+            page,
+            state.projectId,
+            `${id}/${phase}`,
+          );
         },
       }),
   };
@@ -315,7 +369,12 @@ function lintJourney(configureWorkspace, log) {
               `${id}/${phase}: SQLite row did not match the typed lint write`,
             );
           }
-          await assertNoIntegrityOrphans(current, page, `${id}/${phase}`);
+          await assertNoIntegrityOrphans(
+            current,
+            page,
+            state.projectId,
+            `${id}/${phase}`,
+          );
         },
       }),
   };
@@ -338,6 +397,9 @@ function mapJourney(configureWorkspace, log) {
           const now = new Date().toISOString();
           await current.invokeOk(page, "map_write_bundle", {
             payload: {
+              requestId: `native-map-request-${randomUUID()}`,
+              sessionId: `native-map-session-${randomUUID()}`,
+              eventUid: `native-map-event-${randomUUID()}`,
               kind: "create-board",
               projectId,
               board: {
@@ -441,7 +503,12 @@ function mapJourney(configureWorkspace, log) {
               `${id}/${phase}: Map aggregate did not survive as one FK-linked graph`,
             );
           }
-          await assertNoIntegrityOrphans(current, page, `${id}/${phase}`);
+          await assertNoIntegrityOrphans(
+            current,
+            page,
+            state.projectId,
+            `${id}/${phase}`,
+          );
         },
       }),
   };
@@ -457,41 +524,52 @@ function snapshotJourney(configureWorkspace, log) {
         restoredMarker: "snapshot-native-roundtrip-restored",
         configureWorkspace,
         log,
-        write: async ({ harness: current, page, projectId }) => {
+        write: async ({
+          harness: current,
+          page,
+          projectId,
+          relaunchAfterFixtureOperations,
+        }) => {
           const sceneId = `native-snapshot-scene-${randomUUID()}`;
           const versionId = `native-snapshot-version-${randomUUID()}`;
           const snapshotId = `native-snapshot-${randomUUID()}`;
           const snapshotName = `Native snapshot ${randomUUID()}`;
           const now = new Date().toISOString();
-          await current.invokeOk(page, "db_execute_batch", {
-            statements: [
-              {
-                sql: `INSERT INTO tree_nodes
-                  (id, project_id, node_type, title, sort_order, status,
-                   content, char_count, created_at, updated_at)
-                  VALUES (?, ?, 'scene', 'Native snapshot scene',
-                          'native-roundtrip', 'draft', ?, ?, ?, ?)`,
-                params: [
-                  sceneId,
-                  projectId,
-                  SNAPSHOT_CONTENT,
-                  "NATIVE-SNAPSHOT-ROUNDTRIP".length,
-                  now,
-                  now,
-                ],
-                method: "run",
-              },
-              {
-                sql: `INSERT INTO content_versions
-                  (id, entity_type, entity_id, content, version_number,
-                   snapshot_type, created_at)
-                  VALUES (?, 'scene', ?, ?, 1, 'manual', ?)`,
-                params: [versionId, sceneId, SNAPSHOT_CONTENT, now],
-                method: "run",
-              },
-            ],
+          const scene = await current.invokeOk(page, "tree_node_create", {
+            payload: {
+              projectId,
+              requestId: `native-snapshot-scene-request-${randomUUID()}`,
+              sessionId: `native-snapshot-scene-session-${randomUUID()}`,
+              eventUid: `native-snapshot-scene-event-${randomUUID()}`,
+              origin: "human",
+              originalTransactionId: null,
+              undoJournalId: null,
+              id: sceneId,
+              parentId: null,
+              nodeType: "scene",
+              title: "Native snapshot scene",
+              sortOrder: "native-roundtrip",
+              status: "draft",
+              content: SNAPSHOT_CONTENT,
+            },
           });
-          await current.invokeOk(page, "project_snapshot_create", {
+          if (
+            scene?.id !== sceneId ||
+            scene?.projectId !== projectId ||
+            scene?.content !== SNAPSHOT_CONTENT
+          ) {
+            throw new Error(`${id}: typed scene seed was not persisted`);
+          }
+          const fixturePage = await relaunchAfterFixtureOperations([
+            {
+              kind: "content-version-insert",
+              id: versionId,
+              entityId: sceneId,
+              content: SNAPSHOT_CONTENT,
+              createdAt: now,
+            },
+          ]);
+          await current.invokeOk(fixturePage, "project_snapshot_create", {
             payload: {
               projectId,
               snapshotId,
@@ -591,7 +669,12 @@ function snapshotJourney(configureWorkspace, log) {
               `${id}/${phase}: SQLite snapshot rows did not match the typed aggregate`,
             );
           }
-          await assertNoIntegrityOrphans(current, page, `${id}/${phase}`);
+          await assertNoIntegrityOrphans(
+            current,
+            page,
+            state.projectId,
+            `${id}/${phase}`,
+          );
         },
       }),
   };

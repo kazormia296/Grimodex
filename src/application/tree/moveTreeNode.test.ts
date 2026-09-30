@@ -36,6 +36,7 @@ function harness(nodes: TreeNodeData[]): MoveTreeNodePorts & {
       return state.nodes;
     },
     history,
+    tryAcquireNavigationAuthority: () => ({ release: vi.fn() }),
     getNodes: () => state.nodes,
     applyNodes: (next) => {
       state.nodes = next;
@@ -88,5 +89,17 @@ describe("moveTreeNode", () => {
       "a",
       expect.objectContaining({ parentId: null }),
     );
+  });
+
+  it("does not apply an optimistic topology change without navigation authority", async () => {
+    const ports = harness([node("a", "a0"), node("b", "a1")]);
+    ports.tryAcquireNavigationAuthority = () => null;
+
+    await moveTreeNode("b", null, null, ports);
+
+    expect(ports.persist).not.toHaveBeenCalled();
+    expect(
+      ports.currentNodes.find((entry) => entry.id === "b")?.sortOrder,
+    ).toBe("a1");
   });
 });

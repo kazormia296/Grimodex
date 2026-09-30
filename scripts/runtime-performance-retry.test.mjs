@@ -112,6 +112,33 @@ test("CI retry flag is explicit and disabled for the default benchmark", () => {
   );
 });
 
+test("CI package-script forwarding delimiter preserves the run-scoped output", () => {
+  const argv = [
+    "node",
+    "performance-benchmark.mjs",
+    "--retry-transient-once",
+    "--output",
+    ".artifacts/electron-runtime-performance/runtime-metrics.json",
+    "--",
+    "--output",
+    ".artifacts/local-ci/runs/run-id/runtime-metrics.json",
+  ];
+  const parsed = parsePerformanceBenchmarkArguments(argv);
+
+  assert.equal(parsed.retryTransientOnce, true);
+  assert.equal(
+    parsed.outputPath,
+    new URL(
+      "../.artifacts/local-ci/runs/run-id/runtime-metrics.json",
+      import.meta.url,
+    ).pathname,
+  );
+  assert.throws(
+    () => parsePerformanceBenchmarkArguments([...argv, "--"]),
+    /-- may only be specified once/,
+  );
+});
+
 test("only one strongly unattributed gesture Long Task is retryable", () => {
   for (const interaction of ["timelineDrag", "chroniclePan"]) {
     const decision = classifyTransientPerformanceRetry(
@@ -268,6 +295,15 @@ test("measurement errors, mixed regressions, and disabled policy never retry", (
       first: {
         status: 1,
         phase: "measurement",
+        metrics: null,
+        evaluation: null,
+      },
+    },
+    {
+      retryTransientOnce: true,
+      first: {
+        status: 1,
+        phase: "measurement-timeout",
         metrics: null,
         evaluation: null,
       },

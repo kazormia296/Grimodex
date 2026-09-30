@@ -9,7 +9,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-import { isNotNull } from "drizzle-orm";
+import { isNotNull, isNull } from "drizzle-orm";
 import { nowInstantString } from "@/lib/time";
 
 export const projects = sqliteTable("projects", {
@@ -217,7 +217,7 @@ export const codexEntries = sqliteTable(
     childrenBudget: text("children_budget").notNull().default("compact"), // 'none' | 'compact' | 'standard' | 'generous'
     sourceChatMessageId: text("source_chat_message_id").references(
       () => chatMessages.id,
-      { onDelete: "set null" },
+      { onDelete: "restrict" },
     ),
     notes: text("notes"), // Private notes (ProseMirror JSON) – never injected into AI context
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
@@ -312,13 +312,20 @@ export const codexDetailDefinitions = sqliteTable(
     fieldConfig: text("field_config"), // JSON
     sortOrder: real("sort_order").notNull().default(0.0),
     includeInContext: integer("include_in_context").notNull().default(0),
+    // OCC version. Added in SCHEMA_VERSION 8 via migrate.rs add_column_if_missing.
+    version: integer("version").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     uniqueIndex("uq_codex_detail_defs_project_type_name").on(
       table.projectId,
       table.typeSlug,
       table.name,
+    ),
+    uniqueIndex("uq_codex_detail_defs_project_id").on(
+      table.projectId,
+      table.id,
     ),
     index("idx_codex_detail_defs").on(
       table.projectId,
@@ -335,6 +342,57 @@ export const codexDetailDefinitions = sqliteTable(
   ],
 );
 
+export const codexDetailSemanticBindings = sqliteTable(
+  "codex_detail_semantic_bindings",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    definitionId: text("definition_id").notNull(),
+    facetKey: text("facet_key").notNull(),
+    projectionKind: text("projection_kind", {
+      enum: ["scalar-text", "summary-text", "enum", "entity-reference"],
+    }).notNull(),
+    temporalPolicy: text("temporal_policy", {
+      enum: [
+        "base-only",
+        "phase-on-durable-change",
+        "base-and-phase",
+        "derived",
+        "manual-only",
+      ],
+    }).notNull(),
+    source: text("source", {
+      enum: ["preset", "user", "reviewed-ai"],
+    }).notNull(),
+    confirmed: integer("confirmed", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.projectId, table.definitionId],
+      foreignColumns: [
+        codexDetailDefinitions.projectId,
+        codexDetailDefinitions.id,
+      ],
+      name: "codex_detail_semantic_bindings_definition_fkey",
+    }).onDelete("cascade"),
+    uniqueIndex("uq_codex_detail_semantic_binding_definition_facet").on(
+      table.definitionId,
+      table.facetKey,
+    ),
+    index("idx_codex_detail_semantic_bindings_project_facet").on(
+      table.projectId,
+      table.facetKey,
+    ),
+  ],
+);
+
 export const codexDetailValues = sqliteTable(
   "codex_detail_values",
   {
@@ -346,6 +404,11 @@ export const codexDetailValues = sqliteTable(
       .notNull()
       .references(() => codexDetailDefinitions.id, { onDelete: "cascade" }),
     value: text("value"),
+    // OCC version. Added in SCHEMA_VERSION 8 via migrate.rs add_column_if_missing.
+    // New inserts start at 1; updates require baseVersion and CAS-bump.
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     uniqueIndex("uq_codex_detail_values_entry_def").on(
@@ -373,7 +436,7 @@ export const snippets = sqliteTable(
     }),
     sourceChatMessageId: text("source_chat_message_id").references(
       () => chatMessages.id,
-      { onDelete: "set null" },
+      { onDelete: "restrict" },
     ),
     usageCount: integer("usage_count").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
@@ -1010,6 +1073,26 @@ export const appSettings = sqliteTable("app_settings", {
   value: text("value").notNull(),
 });
 
+/**
+ * Native-owned Narrative Engine runtime authority (Release Gate B Foundation).
+ * Renderer generic SQL must not mutate this table — only the typed Native
+ * setter (`narrative_runtime_policy_set`) may change it.
+ */
+export const narrativeRuntimePolicy = sqliteTable("narrative_runtime_policy", {
+  singletonId: integer("singleton_id").primaryKey(),
+  runtimeMode: text("runtime_mode").notNull().default("review-only"),
+  maintenanceEnabled: integer("maintenance_enabled", { mode: "boolean" })
+    .notNull()
+    .default(false),
+  genericImportEnabled: integer("generic_import_enabled", { mode: "boolean" })
+    .notNull()
+    .default(false),
+  backgroundAiEnabled: integer("background_ai_enabled", { mode: "boolean" })
+    .notNull()
+    .default(false),
+  version: integer("version").notNull().default(1),
+});
+
 // Project-scoped key-value store. Reserved for future per-project overrides.
 export const projectSettings = sqliteTable(
   "project_settings",
@@ -1267,6 +1350,12 @@ export const codexRelations = sqliteTable(
       .references(() => codexEntries.id, { onDelete: "cascade" }),
     relationType: text("relation_type").notNull().default("custom"),
     label: text("label"),
+    // CHECK(directionality IN ('directed','symmetric')) は SQL 側。
+    directionality: text("directionality").notNull().default("directed"),
+    inverseLabel: text("inverse_label"),
+    // migrate が既存行を directed semantic key で backfill する。初期 default は空文字。
+    semanticKey: text("semantic_key").notNull().default(""),
+    version: integer("version").notNull().default(1),
     depthHint: integer("depth_hint"),
     sourceMapEdgeId: text("source_map_edge_id"),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
@@ -1276,6 +1365,8 @@ export const codexRelations = sqliteTable(
     index("idx_codex_relations_project").on(table.projectId),
     index("idx_codex_relations_from").on(table.fromCodexId),
     index("idx_codex_relations_to").on(table.toCodexId),
+    // non-unique: 既存 duplicate を壊さない。unique 化は後続 PR。
+    index("idx_codex_relations_semantic_key").on(table.semanticKey),
   ],
 );
 
@@ -1303,6 +1394,8 @@ export const plotThreads = sqliteTable(
     }),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+    // OCC generation. SCHEMA_VERSION 11.
+    version: integer("version").notNull().default(0),
   },
   (table) => [index("idx_plot_threads_project").on(table.projectId)],
 );
@@ -1322,12 +1415,17 @@ export const plotThreadSceneLinks = sqliteTable(
     phaseType: text("phase_type").notNull(),
     note: text("note"),
     sortOrder: text("sort_order"),
+    // OCC + semantic identity. SCHEMA_VERSION 11.
+    // semantic_key = thread_id|node_id|phase_type (dup suffix allowed for legacy)
+    semanticKey: text("semantic_key").notNull().default(""),
+    version: integer("version").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_plot_thread_links_thread").on(table.threadId),
     index("idx_plot_thread_links_node").on(table.nodeId),
+    index("idx_plot_thread_links_semantic_key").on(table.semanticKey),
   ],
 );
 
@@ -1366,6 +1464,10 @@ export const plotThreadBranches = sqliteTable(
       .references(() => treeNodes.id, { onDelete: "cascade" }),
     // 'branch' | 'merge'
     kind: text("kind").notNull(),
+    // OCC + semantic identity. SCHEMA_VERSION 11.
+    // semantic_key = from|to|at_node|kind
+    semanticKey: text("semantic_key").notNull().default(""),
+    version: integer("version").notNull().default(0),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
@@ -1373,6 +1475,7 @@ export const plotThreadBranches = sqliteTable(
     index("idx_plot_thread_branches_project").on(table.projectId),
     index("idx_plot_thread_branches_from").on(table.fromThreadId),
     index("idx_plot_thread_branches_to").on(table.toThreadId),
+    index("idx_plot_thread_branches_semantic_key").on(table.semanticKey),
   ],
 );
 
@@ -1499,6 +1602,7 @@ export const sceneEvents = sqliteTable(
     eventId: text("event_id")
       .notNull()
       .references(() => events.id, { onDelete: "cascade" }),
+    incarnationToken: text("incarnation_token").notNull().default(""),
   },
   (table) => [
     primaryKey({ columns: [table.sceneId, table.eventId] }),
@@ -1534,6 +1638,8 @@ export const projectCalendar = sqliteTable("project_calendar", {
   timezone: text("timezone").notNull().default("null"),
   // 旧暦の節気判定 UTC オフセット分。480=中国農暦(既定) / 540=日本。節気のみ再ビン。
   lunarTzMinutes: integer("lunar_tz_minutes").notNull().default(480),
+  // Calendar snapshot / editor OCC generation. Successful writes increment it.
+  version: integer("version").notNull().default(0),
   createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
 });
@@ -1697,6 +1803,8 @@ export const foreshadows = sqliteTable(
 
     // Phase 6: load_bearing 軸（critical / supporting / optional / null）
     loadBearing: text("load_bearing"),
+    mechanism: text("mechanism"),
+    version: integer("version").notNull().default(0),
 
     // impact-review: リンク先 Codex が変更された時刻。setup の lastEvaluatedAt より
     // 新しければ「Codex 変更により再評価が必要」として stale 判定する（null=未変更）。
@@ -1728,6 +1836,7 @@ export const foreshadowSetups = sqliteTable(
 
     // Metadata
     kind: text("kind").notNull(), // 'designated_existing' | 'inserted_new' | 'rewritten'
+    role: text("role").notNull().default("unspecified"),
     strength: text("strength"), // 'subtle' | 'moderate' | 'overt' | null
     aiStrength: text("ai_strength"),
     aiReasoning: text("ai_reasoning"),
@@ -1738,6 +1847,8 @@ export const foreshadowSetups = sqliteTable(
     isOrphan: integer("is_orphan", { mode: "boolean" })
       .notNull()
       .default(false),
+    evidenceAnchorId: text("evidence_anchor_id"),
+    semanticKey: text("semantic_key").notNull().default(""),
 
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
@@ -1746,6 +1857,68 @@ export const foreshadowSetups = sqliteTable(
     index("idx_fs_setup_fid").on(t.foreshadowId),
     index("idx_fs_setup_scene").on(t.sceneId),
     index("idx_fs_setup_orphan").on(t.isOrphan),
+    index("idx_fs_setup_semantic_key").on(t.semanticKey),
+    uniqueIndex("uq_fs_setup_semantic_key").on(t.semanticKey),
+  ],
+);
+
+export const foreshadowPayoffs = sqliteTable(
+  "foreshadow_payoffs",
+  {
+    id: text("id").primaryKey(),
+    foreshadowId: text("foreshadow_id")
+      .notNull()
+      .references(() => foreshadows.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    fromPos: integer("from_pos"),
+    toPos: integer("to_pos"),
+    role: text("role").notNull().default("unspecified"),
+    confirmed: integer("confirmed", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    isPrimary: integer("is_primary", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    attribution: text("attribution").notNull().default("human"),
+    aiRationale: text("ai_rationale"),
+    isOrphan: integer("is_orphan", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    evidenceAnchorId: text("evidence_anchor_id"),
+    semanticKey: text("semantic_key").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    index("idx_fs_payoff_fid").on(t.foreshadowId),
+    index("idx_fs_payoff_scene").on(t.sceneId),
+    index("idx_fs_payoff_semantic_key").on(t.semanticKey),
+    uniqueIndex("uq_fs_payoff_semantic_key").on(t.semanticKey),
+  ],
+);
+
+export const foreshadowSetupPayoffLinks = sqliteTable(
+  "foreshadow_setup_payoff_links",
+  {
+    foreshadowId: text("foreshadow_id")
+      .notNull()
+      .references(() => foreshadows.id, { onDelete: "cascade" }),
+    setupId: text("setup_id")
+      .notNull()
+      .references(() => foreshadowSetups.id, { onDelete: "cascade" }),
+    payoffId: text("payoff_id")
+      .notNull()
+      .references(() => foreshadowPayoffs.id, { onDelete: "cascade" }),
+    bridgeKind: text("bridge_kind").notNull().default("unspecified"),
+    explanation: text("explanation"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.foreshadowId, t.setupId, t.payoffId] }),
+    index("idx_fs_payoff_link_setup").on(t.setupId),
+    index("idx_fs_payoff_link_payoff").on(t.payoffId),
   ],
 );
 
@@ -2015,6 +2188,1598 @@ export const sceneLensData = sqliteTable(
   ],
 );
 
+// =========================================================================
+// Narrative Extraction: Run / Task / Proposal / Apply persistence.
+// Physical DDL is mirrored in migrate.rs (SCHEMA_VERSION 6). Column shapes
+// match grimodex-db ensure_test_schema plus Apply／Provenance tables.
+// =========================================================================
+export const narrativeExtractionRuns = sqliteTable(
+  "narrative_extraction_runs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    surfacePathId: text("surface_path_id").notNull(),
+    scopeJson: text("scope_json").notNull(),
+    specJson: text("spec_json").notNull(),
+    specDigest: text("spec_digest").notNull(),
+    snapshotDigest: text("snapshot_digest"),
+    catalogDigest: text("catalog_digest"),
+    registryDigest: text("registry_digest"),
+    status: text("status").notNull(),
+    coverageJson: text("coverage_json").notNull().default("{}"),
+    outcomeSummaryJson: text("outcome_summary_json"),
+    createdAt: text("created_at").notNull(),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    version: integer("version").notNull().default(0),
+    // SCHEMA_VERSION 23 (Gate C2-01): see narrative-execution-state.json /
+    // narrative-failure-policy.json for the status/failure contract these
+    // columns implement.
+    runKind: text("run_kind").notNull().default("interpretation"),
+    consumerId: text("consumer_id"),
+    semanticEpochId: text("semantic_epoch_id").references(
+      () => narrativeSemanticEpochs.id,
+    ),
+    workKey: text("work_key"),
+    terminalReasonCode: text("terminal_reason_code"),
+    supersededByRunId: text("superseded_by_run_id"),
+    // SCHEMA_VERSION 26: request identity, deliberately separate from
+    // workKey. workKey answers "is this the same work?"; these answer "is
+    // this the same request?" and drive sameRequestIdReuse:
+    // idempotent-replay. Nullable — interpretation Runs have no request.
+    requestId: text("request_id"),
+    idempotencyDomain: text("idempotency_domain"),
+    requestPayloadDigest: text("request_payload_digest"),
+    actorId: text("actor_id"),
+  },
+);
+
+export const narrativeExtractionTasks = sqliteTable(
+  "narrative_extraction_tasks",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull(),
+    taskKind: text("task_kind").notNull(),
+    status: text("status").notNull(),
+    inputJson: text("input_json").notNull().default("{}"),
+    outputJson: text("output_json"),
+    priority: integer("priority").notNull().default(0),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: text("lease_expires_at"),
+    heartbeatAt: text("heartbeat_at"),
+    errorMessage: text("error_message"),
+    createdAt: text("created_at").notNull(),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    version: integer("version").notNull().default(0),
+  },
+);
+
+export const narrativeExtractionTaskEdges = sqliteTable(
+  "narrative_extraction_task_edges",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull(),
+    fromTaskId: text("from_task_id").notNull(),
+    toTaskId: text("to_task_id").notNull(),
+    edgeKind: text("edge_kind").notNull().default("depends_on"),
+    createdAt: text("created_at").notNull(),
+  },
+);
+
+export const narrativeExtractionAttempts = sqliteTable(
+  "narrative_extraction_attempts",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").notNull(),
+    attemptNumber: integer("attempt_number").notNull(),
+    status: text("status").notNull(),
+    startedAt: text("started_at").notNull(),
+    completedAt: text("completed_at"),
+    errorMessage: text("error_message"),
+    outputJson: text("output_json"),
+    // SCHEMA_VERSION 23 (Gate C2-01): typed failure per
+    // narrative-failure-policy.json. next_attempt_at is set iff
+    // retryDisposition is "retryable" (SQL CHECK in migrate.rs).
+    failureCode: text("failure_code"),
+    retryDisposition: text("retry_disposition"),
+    policyVersion: text("policy_version"),
+    nextAttemptAt: text("next_attempt_at"),
+  },
+);
+
+export const narrativeExtractionArtifacts = sqliteTable(
+  "narrative_extraction_artifacts",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull(),
+    taskId: text("task_id"),
+    attemptId: text("attempt_id"),
+    artifactKind: text("artifact_kind").notNull(),
+    payloadStorage: text("payload_storage").notNull().default("inline-json"),
+    payloadJson: text("payload_json"),
+    payloadRef: text("payload_ref"),
+    payloadDigest: text("payload_digest"),
+    createdAt: text("created_at").notNull(),
+  },
+);
+
+// SCHEMA_VERSION 34 (NIR-0 C2A): durable, non-authoritative Chronicle stage
+// audit metadata. The closure remains validated at task completion; these
+// rows are the durable receipt/binding evidence, not a Freshness authority.
+export const narrativeExtractionStageModelBindings = sqliteTable(
+  "narrative_extraction_stage_model_bindings",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    taskId: text("task_id").notNull(),
+    attemptId: text("attempt_id").notNull(),
+    stageExecutionId: text("stage_execution_id").notNull(),
+    bindingJson: text("binding_json").notNull(),
+    bindingDigest: text("binding_digest").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_stage_model_bindings_execution").on(
+      table.projectId,
+      table.stageExecutionId,
+    ),
+    index("idx_narrative_stage_model_bindings_owner").on(
+      table.projectId,
+      table.runId,
+      table.taskId,
+      table.attemptId,
+    ),
+  ],
+);
+
+export const narrativeExtractionStageReceipts = sqliteTable(
+  "narrative_extraction_stage_receipts",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    taskId: text("task_id").notNull(),
+    attemptId: text("attempt_id").notNull(),
+    stageExecutionId: text("stage_execution_id").notNull(),
+    receiptJson: text("receipt_json").notNull(),
+    receiptDigest: text("receipt_digest").notNull(),
+    modelBindingDigest: text("model_binding_digest").notNull(),
+    terminalStatus: text("terminal_status").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_stage_receipts_execution").on(
+      table.projectId,
+      table.stageExecutionId,
+    ),
+    index("idx_narrative_stage_receipts_owner").on(
+      table.projectId,
+      table.runId,
+      table.taskId,
+      table.attemptId,
+    ),
+  ],
+);
+
+// NIR-1 D2b. Native owns these metadata references; bodies remain in their
+// existing stores. Receipt storage alone does not authorize history or dispatch.
+export const nir1GenerationAttempts = sqliteTable(
+  "nir1_generation_attempts",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull(),
+    bindingJson: text("binding_json").notNull(),
+    payloadDigest: text("payload_digest").notNull(),
+    inputDigest: text("input_digest").notNull(),
+    createdAtMs: integer("created_at_ms").notNull(),
+    expiresAtMs: integer("expires_at_ms").notNull(),
+    claimedAtMs: integer("claimed_at_ms"),
+    terminalJson: text("terminal_json"),
+    terminalDigest: text("terminal_digest"),
+    completedAtMs: integer("completed_at_ms"),
+    outputVersionId: text("output_version_id"),
+  },
+  (table) => [
+    index("idx_nir1_generation_attempts_session").on(
+      table.projectId,
+      table.sessionId,
+      table.id,
+    ),
+    index("idx_nir1_generation_attempts_pending")
+      .on(table.projectId, table.id)
+      .where(isNull(table.terminalJson)),
+  ],
+);
+
+export const nir1GenerationMessageVersions = sqliteTable(
+  "nir1_generation_message_versions",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull(),
+    messageId: text("message_id").notNull(),
+    origin: text("origin").notNull(),
+    bodyDigest: text("body_digest").notNull(),
+    parentAttemptId: text("parent_attempt_id").references(
+      () => nir1GenerationAttempts.id,
+    ),
+    createdAtMs: integer("created_at_ms").notNull(),
+    invalidated: integer("invalidated").notNull().default(0),
+  },
+  (table) => [
+    uniqueIndex("uq_nir1_generation_message_versions_message").on(
+      table.messageId,
+    ),
+    index("idx_nir1_generation_message_versions_session").on(
+      table.projectId,
+      table.sessionId,
+      table.id,
+    ),
+  ],
+);
+
+export const nir1GenerationInputRefs = sqliteTable(
+  "nir1_generation_input_refs",
+  {
+    attemptId: text("attempt_id")
+      .notNull()
+      .references(() => nir1GenerationAttempts.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    referenceJson: text("reference_json").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.attemptId, table.ordinal] })],
+);
+
+export const nir1GenerationQualificationRefs = sqliteTable(
+  "nir1_generation_qualification_refs",
+  {
+    attemptId: text("attempt_id")
+      .notNull()
+      .references(() => nir1GenerationAttempts.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    referenceJson: text("reference_json").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.attemptId, table.ordinal] })],
+);
+
+// NIR-1 A1. The existing tree/project Scope authority remains canonical for
+// membership and order; these Native-owned rows carry only typed scope
+// metadata, principals, incarnation, and OCC/source-token state.
+export const narrativeScopeRegistries = sqliteTable(
+  "narrative_scope_registries",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    registryVersion: text("registry_version").notNull(),
+    timelineRefsJson: text("timeline_refs_json").notNull(),
+    worldlineRefsJson: text("worldline_refs_json").notNull(),
+    narrativeLayerRefsJson: text("narrative_layer_refs_json").notNull(),
+    version: integer("version").notNull().default(1),
+    sourceToken: text("source_token").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId] })],
+);
+
+export const narrativeSceneScopeBindings = sqliteTable(
+  "narrative_scene_scope_bindings",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    sceneIncarnationId: text("scene_incarnation_id").notNull(),
+    compatibilityMarker: text("compatibility_marker").notNull(),
+    queryIdentityJson: text("query_identity_json").notNull(),
+    materialConstraintJson: text("material_constraint_json").notNull(),
+    knowledgeHolderJson: text("knowledge_holder_json").notNull(),
+    audienceJson: text("audience_json").notNull(),
+    version: integer("version").notNull().default(1),
+    sourceToken: text("source_token").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.sceneId] }),
+    index("idx_narrative_scene_scope_bindings_scene").on(table.sceneId),
+    index("idx_narrative_scene_scope_bindings_project").on(
+      table.projectId,
+      table.version,
+    ),
+  ],
+);
+
+export const narrativeProposalSets = sqliteTable("narrative_proposal_sets", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  setKind: text("set_kind").notNull(),
+  status: text("status").notNull().default("draft"),
+  summaryJson: text("summary_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  version: integer("version").notNull().default(0),
+});
+
+export const narrativeProposals = sqliteTable("narrative_proposals", {
+  id: text("id").primaryKey(),
+  proposalSetId: text("proposal_set_id").notNull(),
+  proposalKey: text("proposal_key").notNull(),
+  kind: text("kind").notNull(),
+  status: text("status").notNull().default("unreviewed"),
+  payloadJson: text("payload_json").notNull(),
+  currentRevisionId: text("current_revision_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const narrativeProposalRevisions = sqliteTable(
+  "narrative_proposal_revisions",
+  {
+    id: text("id").primaryKey(),
+    proposalId: text("proposal_id").notNull(),
+    revisionNumber: integer("revision_number").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    // SCHEMA_VERSION 15: sealed plan fragment for Prepared Commit.
+    planFragmentJson: text("plan_fragment_json"),
+    planFragmentDigest: text("plan_fragment_digest"),
+    // SCHEMA_VERSION 17: immutable Proposal Revision Envelope binding.
+    originKind: text("origin_kind").notNull().default("legacy-unbound"),
+    reconciliationEnvelopeJson: text("reconciliation_envelope_json"),
+    reconciliationEnvelopeDigest: text("reconciliation_envelope_digest"),
+    createdAt: text("created_at").notNull(),
+    createdBy: text("created_by").notNull(),
+  },
+);
+
+export const narrativeRevisionSourceBasis = sqliteTable(
+  "narrative_revision_source_basis",
+  {
+    revisionId: text("revision_id").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceKey: text("source_key").notNull(),
+    revisionToken: text("revision_token").notNull(),
+    observedAt: text("observed_at"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.revisionId, table.ordinal] }),
+    uniqueIndex("uq_narrative_revision_source_basis_key").on(
+      table.revisionId,
+      table.sourceKey,
+    ),
+  ],
+);
+
+// SCHEMA_VERSION 19: Native-owned field authority rows. These are logical
+// ownership records, not foreign-key projections of domain entities.
+export const narrativeFieldAuthority = sqliteTable(
+  "narrative_field_authority",
+  {
+    projectId: text("project_id").notNull(),
+    entityKind: text("entity_kind").notNull(),
+    entityId: text("entity_id").notNull(),
+    fieldPath: text("field_path").notNull(),
+    ownerKind: text("owner_kind").notNull(),
+    explicitLock: integer("explicit_lock").notNull().default(0),
+    version: integer("version").notNull().default(0),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.projectId,
+        table.entityKind,
+        table.entityId,
+        table.fieldPath,
+      ],
+    }),
+    index("idx_narrative_field_authority_entity").on(
+      table.projectId,
+      table.entityKind,
+      table.entityId,
+    ),
+  ],
+);
+
+// SCHEMA_VERSION 18: Application source dependencies are freshness-only
+// records; they deliberately do not reference source/domain rows by FK.
+export const narrativeProjectionFreshness = sqliteTable(
+  "narrative_projection_freshness",
+  {
+    applicationId: text("application_id").primaryKey(),
+    status: text("status").notNull(),
+    reasonJson: text("reason_json"),
+    version: integer("version").notNull().default(0),
+    updatedAt: text("updated_at").notNull(),
+  },
+);
+
+export const narrativeProjectionDependencies = sqliteTable(
+  "narrative_projection_dependencies",
+  {
+    applicationId: text("application_id").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceKey: text("source_key").notNull(),
+    observedRevisionToken: text("observed_revision_token").notNull(),
+    propagation: text("propagation").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.applicationId, table.sourceKind, table.sourceKey],
+    }),
+    index("idx_narrative_projection_dependencies_source").on(
+      table.sourceKind,
+      table.sourceKey,
+    ),
+  ],
+);
+
+export const narrativeProposalDecisions = sqliteTable(
+  "narrative_proposal_decisions",
+  {
+    id: text("id").primaryKey(),
+    proposalId: text("proposal_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    decision: text("decision").notNull(),
+    decisionJson: text("decision_json").notNull().default("{}"),
+    createdAt: text("created_at").notNull(),
+    createdBy: text("created_by").notNull(),
+    actorKind: text("actor_kind").notNull().default("human"),
+    actorId: text("actor_id").notNull().default("legacy-review"),
+    authorityScope: text("authority_scope").notNull().default("legacy-review"),
+    overrideFieldPathsJson: text("override_field_paths_json")
+      .notNull()
+      .default("[]"),
+  },
+);
+
+export const narrativeApplyCommits = sqliteTable("narrative_apply_commits", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  runId: text("run_id"),
+  proposalSetId: text("proposal_set_id"),
+  requestId: text("request_id").notNull(),
+  planDigest: text("plan_digest").notNull(),
+  status: text("status").notNull(),
+  receiptJson: text("receipt_json"),
+  errorMessage: text("error_message"),
+  // SCHEMA_VERSION 15: immutable Prepared Commit seal.
+  preparedPlanJson: text("prepared_plan_json"),
+  preparedPolicyVersion: integer("prepared_policy_version"),
+  preparedAt: text("prepared_at"),
+  authorityDigest: text("authority_digest"),
+  sessionId: text("session_id"),
+  createdAt: text("created_at").notNull(),
+  completedAt: text("completed_at"),
+  version: integer("version").notNull().default(0),
+});
+
+export const narrativeApplyOperations = sqliteTable(
+  "narrative_apply_operations",
+  {
+    id: text("id").primaryKey(),
+    commitId: text("commit_id").notNull(),
+    operationIndex: integer("operation_index").notNull(),
+    operationKind: text("operation_kind").notNull(),
+    payloadJson: text("payload_json").notNull().default("{}"),
+    resultEntityKind: text("result_entity_kind"),
+    resultEntityId: text("result_entity_id"),
+    status: text("status").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+);
+
+export const narrativeProposalApplications = sqliteTable(
+  "narrative_proposal_applications",
+  {
+    id: text("id").primaryKey(),
+    commitId: text("commit_id").notNull(),
+    proposalId: text("proposal_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    appliedEntityKind: text("applied_entity_kind").notNull(),
+    appliedEntityId: text("applied_entity_id").notNull(),
+    createdAt: text("created_at").notNull(),
+    // SCHEMA_VERSION 20: semantic retractions append compensating applications;
+    // the compensated application remains immutable history.
+    applicationKind: text("application_kind").notNull().default("normal"),
+    compensatesApplicationId: text("compensates_application_id"),
+  },
+);
+
+export const narrativeCommitJournals = sqliteTable(
+  "narrative_commit_journals",
+  {
+    id: text("id").primaryKey(),
+    commitId: text("commit_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    beforeJson: text("before_json"),
+    afterJson: text("after_json"),
+    createdAt: text("created_at").notNull(),
+  },
+);
+
+// =========================================================================
+// Import Sessions: durable adapter packages, source identity, and commits.
+// Physical DDL is mirrored in migrate.rs (SCHEMA_VERSION 13).
+// =========================================================================
+export const importSessions = sqliteTable(
+  "import_sessions",
+  {
+    id: text("id").primaryKey(),
+    state: text("state").notNull(),
+    adapterId: text("adapter_id"),
+    adapterVersion: text("adapter_version"),
+    targetJson: text("target_json").notNull(),
+    sourcePackageDigest: text("source_package_digest"),
+    sourcePackageRef: text("source_package_ref"),
+    extractionRunIdsJson: text("extraction_run_ids_json")
+      .notNull()
+      .default("[]"),
+    proposalSetIdsJson: text("proposal_set_ids_json").notNull().default("[]"),
+    errorMessage: text("error_message"),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_sessions_state").on(table.state, table.updatedAt),
+  ],
+);
+
+export const importSourcePackages = sqliteTable(
+  "import_source_packages",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => importSessions.id, { onDelete: "cascade" }),
+    digest: text("digest").notNull(),
+    adapterId: text("adapter_id").notNull(),
+    adapterVersion: text("adapter_version").notNull(),
+    packageJson: text("package_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_source_packages_session").on(
+      table.sessionId,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const importSourceMappings = sqliteTable(
+  "import_source_mappings",
+  {
+    id: text("id").primaryKey(),
+    sourceSetId: text("source_set_id").notNull(),
+    sourceObjectKey: text("source_object_key").notNull(),
+    sourceObjectKind: text("source_object_kind").notNull(),
+    targetKind: text("target_kind").notNull(),
+    targetId: text("target_id").notNull(),
+    sourceRecordDigest: text("source_record_digest").notNull(),
+    targetStateDigest: text("target_state_digest").notNull(),
+    adapterId: text("adapter_id").notNull(),
+    adapterVersion: text("adapter_version").notNull(),
+    firstImportSessionId: text("first_import_session_id").notNull(),
+    lastImportSessionId: text("last_import_session_id").notNull(),
+    status: text("status").notNull().default("active"),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_source_mappings_source").on(
+      table.sourceSetId,
+      table.sourceObjectKey,
+    ),
+    index("idx_import_source_mappings_target").on(
+      table.targetKind,
+      table.targetId,
+    ),
+  ],
+);
+
+export const importSourceBaselines = sqliteTable("import_source_baselines", {
+  mappingId: text("mapping_id")
+    .primaryKey()
+    .references(() => importSourceMappings.id, { onDelete: "cascade" }),
+  sourceDigest: text("source_digest").notNull(),
+  targetDigest: text("target_digest").notNull(),
+  normalizedBodyDigest: text("normalized_body_digest"),
+  targetVersion: integer("target_version"),
+  adapterVersion: text("adapter_version").notNull(),
+  normalizerVersion: text("normalizer_version").notNull(),
+  committedAt: text("committed_at").notNull().$defaultFn(nowInstantString),
+});
+
+export const importCommits = sqliteTable(
+  "import_commits",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull(),
+    requestId: text("request_id").notNull(),
+    planDigest: text("plan_digest").notNull(),
+    projectId: text("project_id"),
+    status: text("status").notNull(),
+    receiptJson: text("receipt_json"),
+    errorMessage: text("error_message"),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("sqlite_autoindex_import_commits_1").on(table.requestId),
+    index("idx_import_commits_session").on(table.sessionId, table.createdAt),
+  ],
+);
+
+export const importEvidenceBindings = sqliteTable(
+  "import_evidence_bindings",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull(),
+    evidenceAnchorId: text("evidence_anchor_id").notNull(),
+    sourceDocumentKey: text("source_document_key").notNull(),
+    targetSceneId: text("target_scene_id").notNull(),
+    sourceDocumentDigest: text("source_document_digest").notNull(),
+    committedStorageDigest: text("committed_storage_digest").notNull(),
+    projectionStatus: text("projection_status").notNull(),
+    committedAt: text("committed_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_evidence_bindings_session").on(
+      table.sessionId,
+      table.targetSceneId,
+    ),
+  ],
+);
+
+// =========================================================================
+// Import Captures: portable native inventory, digest registry, and decoder
+// outputs. Physical DDL is mirrored in migrate.rs (SCHEMA_VERSION 14).
+// =========================================================================
+export const importCaptures = sqliteTable(
+  "import_captures",
+  {
+    id: text("id").primaryKey(),
+    state: text("state").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sealedDigest: text("sealed_digest"),
+    budgetJson: text("budget_json").notNull(),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_captures_state").on(table.state, table.updatedAt),
+  ],
+);
+
+export const importCaptureEntries = sqliteTable(
+  "import_capture_entries",
+  {
+    id: text("id").primaryKey(),
+    captureId: text("capture_id")
+      .notNull()
+      .references(() => importCaptures.id, { onDelete: "cascade" }),
+    resourceKey: text("resource_key").notNull(),
+    parentResourceKey: text("parent_resource_key"),
+    relativePath: text("relative_path").notNull(),
+    kind: text("kind").notNull(),
+    byteLength: integer("byte_length").notNull(),
+    extension: text("extension"),
+    captureStatus: text("capture_status").notNull(),
+    rawDigest: text("raw_digest"),
+    blobRef: text("blob_ref"),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_capture_entries_capture").on(
+      table.captureId,
+      table.captureStatus,
+      table.relativePath,
+    ),
+  ],
+);
+
+export const importCaptureBlobs = sqliteTable("import_capture_blobs", {
+  digest: text("digest").primaryKey(),
+  byteLength: integer("byte_length").notNull(),
+  createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+});
+
+export const importDecodedResources = sqliteTable(
+  "import_decoded_resources",
+  {
+    id: text("id").primaryKey(),
+    captureId: text("capture_id")
+      .notNull()
+      .references(() => importCaptures.id, { onDelete: "cascade" }),
+    resourceKey: text("resource_key").notNull(),
+    decoderId: text("decoder_id").notNull(),
+    decoderVersion: text("decoder_version").notNull(),
+    kind: text("kind").notNull(),
+    digest: text("digest").notNull(),
+    decodedJson: text("decoded_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    index("idx_import_decoded_resources_capture").on(
+      table.captureId,
+      table.resourceKey,
+    ),
+  ],
+);
+
+export const genericExtractionSchemas = sqliteTable(
+  "generic_extraction_schemas",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    digest: text("digest").notNull(),
+    schemaJson: text("schema_json").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("sqlite_autoindex_generic_extraction_schemas_1").on(
+      table.id,
+      table.revision,
+    ),
+    index("idx_generic_extraction_schemas_digest").on(table.digest),
+  ],
+);
+
+// =========================================================================
+// Narrative Maintenance Change Feed foundation (SCHEMA_VERSION 21), with the
+// mandatory writer-origin contract added in SCHEMA_VERSION 22.
+//
+// This is a freshness / dependency-invalidation feed, not a second audit
+// ledger. Every transaction is correlated to the canonical change_events hash
+// chain. Writes are Native-only; renderer schema declarations exist for typed
+// reads and physical contract parity.
+// =========================================================================
+export const narrativeChangeTransactions = sqliteTable(
+  "narrative_change_transactions",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    requestId: text("request_id").notNull(),
+    sourceDomain: text("source_domain").notNull(),
+    sourceChangeEventUid: text("source_change_event_uid").notNull(),
+    sourceChangeEventSequence: integer(
+      "source_change_event_sequence",
+    ).notNull(),
+    causeKind: text("cause_kind", {
+      enum: ["forward", "undo", "redo"],
+    }).notNull(),
+    origin: text("origin", {
+      enum: [
+        "human",
+        "ai-apply",
+        "import",
+        "undo",
+        "redo",
+        "restore",
+        "migration",
+      ],
+    }).notNull(),
+    originalTransactionId: text("original_transaction_id"),
+    commitId: text("commit_id"),
+    journalId: text("journal_id"),
+    undoJournalId: text("undo_journal_id"),
+    applicationIdsJson: text("application_ids_json").notNull().default("[]"),
+    payloadDigest: text("payload_digest").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_change_transactions_project_id").on(
+      table.projectId,
+      table.id,
+    ),
+    uniqueIndex("uq_narrative_change_transactions_request").on(
+      table.projectId,
+      table.sourceDomain,
+      table.requestId,
+    ),
+    uniqueIndex("uq_narrative_change_transactions_source_event").on(
+      table.projectId,
+      table.sourceChangeEventUid,
+    ),
+    index("idx_narrative_change_transactions_project_sequence").on(
+      table.projectId,
+      table.sourceChangeEventSequence,
+    ),
+  ],
+);
+
+export const narrativeChangeEvents = sqliteTable(
+  "narrative_change_events",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    transactionId: text("transaction_id").notNull(),
+    canonicalChangeEventUid: text("canonical_change_event_uid").notNull(),
+    canonicalSequence: integer("canonical_sequence").notNull(),
+    eventOrdinal: integer("event_ordinal").notNull(),
+    objectKeyJson: text("object_key_json").notNull(),
+    changeKind: text("change_kind", {
+      enum: [
+        "content",
+        "metadata",
+        "order",
+        "association",
+        "catalog",
+        "calendar",
+        "policy",
+        "schema",
+        "unknown",
+      ],
+    }).notNull(),
+    mutationKind: text("mutation_kind", {
+      enum: ["create", "update", "delete", "restore"],
+    }).notNull(),
+    beforeVersion: integer("before_version"),
+    beforeDigest: text("before_digest"),
+    afterVersion: integer("after_version"),
+    afterDigest: text("after_digest"),
+    changedPathsJson: text("changed_paths_json").notNull(),
+    textImpactJson: text("text_impact_json"),
+    structuralImpactJson: text("structural_impact_json"),
+    occurredAt: text("occurred_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_change_events_project_id").on(
+      table.projectId,
+      table.id,
+    ),
+    uniqueIndex("uq_narrative_change_events_source_ordinal").on(
+      table.projectId,
+      table.canonicalChangeEventUid,
+      table.eventOrdinal,
+    ),
+    foreignKey({
+      columns: [table.projectId, table.transactionId],
+      foreignColumns: [
+        narrativeChangeTransactions.projectId,
+        narrativeChangeTransactions.id,
+      ],
+      name: "narrative_change_events_transaction_fkey",
+    }).onDelete("cascade"),
+    index("idx_narrative_change_events_project_sequence").on(
+      table.projectId,
+      table.canonicalSequence,
+      table.eventOrdinal,
+    ),
+  ],
+);
+
+/** Latest after-state per normalized object identity for O(1) continuity checks. */
+export const narrativeChangeObjectHeads = sqliteTable(
+  "narrative_change_object_heads",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    objectIdentity: text("object_identity").notNull(),
+    afterVersion: integer("after_version"),
+    afterDigest: text("after_digest"),
+    eventId: text("event_id").notNull(),
+    canonicalSequence: integer("canonical_sequence").notNull(),
+    eventOrdinal: integer("event_ordinal").notNull(),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.objectIdentity] }),
+    foreignKey({
+      columns: [table.projectId, table.eventId],
+      foreignColumns: [
+        narrativeChangeEvents.projectId,
+        narrativeChangeEvents.id,
+      ],
+      name: "narrative_change_object_heads_event_fkey",
+    }).onDelete("cascade"),
+    index("idx_narrative_change_object_heads_project_sequence").on(
+      table.projectId,
+      table.canonicalSequence,
+      table.eventOrdinal,
+    ),
+  ],
+);
+
+export const narrativeChangeCursors = sqliteTable(
+  "narrative_change_cursors",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    consumerId: text("consumer_id").notNull(),
+    acknowledgedThroughSequence: integer("acknowledged_through_sequence")
+      .notNull()
+      .default(0),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: text("lease_expires_at"),
+    lastError: text("last_error"),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+    // SCHEMA_VERSION 23 (Gate C2-01): reservation columns for the Change
+    // Feed consumer that drives the Freshness evaluator Run. NULL for
+    // pre-C2 consumers, which keep using only acknowledgedThroughSequence
+    // and the lease columns above.
+    semanticEpochId: text("semantic_epoch_id").references(
+      () => narrativeSemanticEpochs.id,
+    ),
+    reservedThroughSequence: integer("reserved_through_sequence"),
+    activeRunId: text("active_run_id").references(
+      () => narrativeExtractionRuns.id,
+    ),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.consumerId] }),
+    index("idx_narrative_change_cursors_project").on(
+      table.projectId,
+      table.consumerId,
+    ),
+  ],
+);
+
+// =========================================================================
+// Gate C2-01 Semantic Build Graph. Physical DDL is mirrored in migrate.rs
+// (SCHEMA_VERSION 23). narrativeConsumerFreshness is the one durable
+// Freshness authority (see policies/narrative/semantic-core-authorities.json,
+// concern "evidence-freshness"); narrativeMaintenanceFindingObservations is
+// epoch-bound rebuildable diagnostic history, never the current value; a
+// Semantic Epoch is the generation boundary a restore/migration/full
+// rebuild advances.
+// =========================================================================
+/**
+ * Which data migrations this workspace has completed, and at which revision
+ * of their side effects.
+ *
+ * Separate from `PRAGMA user_version` because that marker only records which
+ * *schema* a workspace reached. A data migration whose side effects grow
+ * inside one schema version cannot be recovered from the rows it left behind
+ * — an already-repaired identity looks identical whether the rest of that
+ * migration ran or not — so completion is recorded rather than inferred.
+ */
+export const schemaDataMigrations = sqliteTable("schema_data_migrations", {
+  migrationId: text("migration_id").primaryKey(),
+  contractVersion: integer("contract_version").notNull(),
+  appliedAt: text("applied_at").notNull(),
+});
+
+export const narrativeSemanticEpochs = sqliteTable(
+  "narrative_semantic_epochs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    epochNumber: integer("epoch_number").notNull(),
+    reason: text("reason").notNull(),
+    triggeredByChangeEventUid: text("triggered_by_change_event_uid"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_narrative_semantic_epochs_project").on(
+      table.projectId,
+      table.epochNumber,
+    ),
+  ],
+);
+
+export const narrativeDependencyEdges = sqliteTable(
+  "narrative_dependency_edges",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    consumerKind: text("consumer_kind").notNull(),
+    consumerKey: text("consumer_key").notNull(),
+    sourceObjectIdentity: text("source_object_identity").notNull(),
+    readSetJson: text("read_set_json").notNull().default("[]"),
+    generatedByTransactionId: text("generated_by_transaction_id"),
+    createdAt: text("created_at").notNull(),
+    // SCHEMA 30. Last, matching where `ALTER TABLE ADD COLUMN` puts it on an
+    // upgraded workspace — the schema contract compares by ordinal.
+    owningRunId: text("owning_run_id"),
+  },
+  (table) => [
+    index("idx_narrative_dependency_edges_source").on(
+      table.projectId,
+      table.sourceObjectIdentity,
+    ),
+    index("idx_narrative_dependency_edges_consumer").on(
+      table.projectId,
+      table.consumerKind,
+      table.consumerKey,
+    ),
+  ],
+);
+
+// NIR-0 D1: the V2 declaration storage boundary.  Sets and entries are
+// immutable once sealed; only the Consumer head advances through a native
+// optimistic-CAS writer.  This remains shadow storage while V1
+// narrativeDependencyEdges stays the canonical Freshness input.
+export const narrativeDependencyDeclarationSets = sqliteTable(
+  "narrative_dependency_declaration_sets",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    consumerKind: text("consumer_kind").notNull(),
+    consumerKey: text("consumer_key").notNull(),
+    producerId: text("producer_id").notNull(),
+    producerGeneration: integer("producer_generation").notNull(),
+    dependencySetDigest: text("dependency_set_digest").notNull(),
+    state: text("state").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("narrative_dependency_declaration_sets_unique_generation").on(
+      table.projectId,
+      table.consumerKind,
+      table.consumerKey,
+      table.producerGeneration,
+    ),
+    index("idx_narrative_dependency_declaration_sets_consumer").on(
+      table.projectId,
+      table.consumerKind,
+      table.consumerKey,
+    ),
+  ],
+);
+
+export const narrativeDependencyDeclarationEntries = sqliteTable(
+  "narrative_dependency_declaration_entries",
+  {
+    id: text("id").primaryKey(),
+    declarationSetId: text("declaration_set_id")
+      .notNull()
+      .references(() => narrativeDependencyDeclarationSets.id, {
+        onDelete: "cascade",
+      }),
+    sourceObjectIdentity: text("source_object_identity").notNull(),
+    dependencyKey: text("dependency_key").notNull(),
+    dependencyRole: text("dependency_role").notNull(),
+    roleContractVersion: text("role_contract_version").notNull(),
+    selectorJson: text("selector_json").notNull(),
+    selectorDigest: text("selector_digest").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("narrative_dependency_declaration_entries_unique_key").on(
+      table.declarationSetId,
+      table.sourceObjectIdentity,
+      table.dependencyKey,
+    ),
+    index("idx_narrative_dependency_declaration_entries_set").on(
+      table.declarationSetId,
+    ),
+    index("idx_narrative_dependency_declaration_entries_source").on(
+      table.sourceObjectIdentity,
+    ),
+  ],
+);
+
+export const narrativeDependencyDeclarationHeads = sqliteTable(
+  "narrative_dependency_declaration_heads",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    consumerKind: text("consumer_kind").notNull(),
+    consumerKey: text("consumer_key").notNull(),
+    activeDeclarationSetId: text("active_declaration_set_id")
+      .notNull()
+      .references(() => narrativeDependencyDeclarationSets.id),
+    producerId: text("producer_id").notNull(),
+    producerGeneration: integer("producer_generation").notNull(),
+    version: integer("version").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.projectId, table.consumerKind, table.consumerKey],
+    }),
+    index("idx_narrative_dependency_declaration_heads_set").on(
+      table.activeDeclarationSetId,
+    ),
+  ],
+);
+
+export const narrativeDependencyEdgeStates = sqliteTable(
+  "narrative_dependency_edge_states",
+  {
+    edgeId: text("edge_id")
+      .primaryKey()
+      .references(() => narrativeDependencyEdges.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    evidenceFreshness: text("evidence_freshness").notNull(),
+    reasonCode: text("reason_code"),
+    buildAction: text("build_action").notNull(),
+    evaluatedAtEpochId: text("evaluated_at_epoch_id")
+      .notNull()
+      .references(() => narrativeSemanticEpochs.id),
+    evaluatedAt: text("evaluated_at").notNull(),
+    // SCHEMA_VERSION 24 (Gate C2 Run Kind Policy): the Source revision
+    // token/digest this edge was last evaluated against, so Verify can
+    // detect drift without a full Rebuild-Derived-State.
+    observedSourceRevisionToken: text("observed_source_revision_token"),
+    observedSourceDigest: text("observed_source_digest"),
+  },
+  (table) => [
+    index("idx_narrative_dependency_edge_states_project").on(
+      table.projectId,
+      table.evidenceFreshness,
+    ),
+  ],
+);
+
+export const narrativeConsumerFreshness = sqliteTable(
+  "narrative_consumer_freshness",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    consumerKind: text("consumer_kind").notNull(),
+    consumerKey: text("consumer_key").notNull(),
+    evidenceFreshness: text("evidence_freshness").notNull(),
+    buildAction: text("build_action").notNull(),
+    semanticEpochId: text("semantic_epoch_id")
+      .notNull()
+      .references(() => narrativeSemanticEpochs.id),
+    lastEvaluatedRunId: text("last_evaluated_run_id"),
+    updatedAt: text("updated_at").notNull(),
+    // SCHEMA_VERSION 24 (Gate C2 Run Kind Policy): digest of the Consumer's
+    // current dependency set, so Verify can detect a dependency-set change
+    // Evaluate hasn't reconciled yet.
+    dependencySetDigest: text("dependency_set_digest"),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.projectId, table.consumerKind, table.consumerKey],
+    }),
+    index("idx_narrative_consumer_freshness_epoch").on(
+      table.projectId,
+      table.semanticEpochId,
+    ),
+  ],
+);
+
+export const narrativeApplicationContributions = sqliteTable(
+  "narrative_application_contributions",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    applicationId: text("application_id").notNull(),
+    // SCHEMA_VERSION 29: provenance. operationId is nullable because a
+    // pre-Gate-C2 Application has no narrative_apply_operations row.
+    commitId: text("commit_id").notNull(),
+    proposalId: text("proposal_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    operationId: text("operation_id"),
+    targetObjectIdentity: text("target_object_identity").notNull(),
+    fieldPath: text("field_path").notNull(),
+    targetState: text("target_state").notNull(),
+    // SCHEMA_VERSION 29. The vocabulary is the ratified
+    // maintenanceOwnershipStates in
+    // policies/narrative/semantic-state-vocabulary.json.
+    maintenanceOwnership: text("maintenance_ownership")
+      .notNull()
+      .default("maintained"),
+    baselineSequence: integer("baseline_sequence"),
+    targetStateSequence: integer("target_state_sequence"),
+    targetStateUpdatedAt: text("target_state_updated_at"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_narrative_application_contributions_target").on(
+      table.projectId,
+      table.targetObjectIdentity,
+    ),
+    index("idx_narrative_application_contributions_field").on(
+      table.projectId,
+      table.targetObjectIdentity,
+      table.fieldPath,
+    ),
+    index("idx_narrative_application_contributions_application").on(
+      table.projectId,
+      table.applicationId,
+    ),
+    index("idx_narrative_application_contributions_commit").on(
+      table.projectId,
+      table.commitId,
+    ),
+    // Declared here as well as in migrate.rs: the physical table has carried
+    // this UNIQUE since SCHEMA 23, but Drizzle did not know about it, so the
+    // contract comparison could not see a drift in it.
+    uniqueIndex("narrative_application_contributions_unique_field").on(
+      table.projectId,
+      table.applicationId,
+      table.targetObjectIdentity,
+      table.fieldPath,
+    ),
+  ],
+);
+
+export const narrativeMaintenanceFindingObservations = sqliteTable(
+  "narrative_maintenance_finding_observations",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    semanticEpochId: text("semantic_epoch_id")
+      .notNull()
+      .references(() => narrativeSemanticEpochs.id),
+    edgeId: text("edge_id"),
+    findingKey: text("finding_key").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    evidenceFreshnessSnapshot: text("evidence_freshness_snapshot").notNull(),
+    materialBasisDigest: text("material_basis_digest").notNull(),
+    observedAt: text("observed_at").notNull(),
+    // NULL is a durable legacy-unresolved marker: an edge-scoped rule must
+    // not derive identity from a consumer finding_key when edge_id is gone.
+    findingIdentity: text("finding_identity"),
+    ruleId: text("rule_id").notNull(),
+    ruleVersion: integer("rule_version").notNull(),
+    observationDigest: text("observation_digest").notNull(),
+  },
+  (table) => [
+    index("idx_narrative_finding_observations_key").on(
+      table.projectId,
+      table.findingKey,
+      table.semanticEpochId,
+    ),
+  ],
+);
+
+export const narrativeMaintenanceFindingLifecycle = sqliteTable(
+  "narrative_maintenance_finding_lifecycle",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    findingIdentity: text("finding_identity").notNull(),
+    findingKey: text("finding_key").notNull(),
+    ruleId: text("rule_id").notNull(),
+    ruleVersion: integer("rule_version").notNull(),
+    lifecycleState: text("lifecycle_state").notNull(),
+    observationDigest: text("observation_digest"),
+    materialBasisDigest: text("material_basis_digest"),
+    runId: text("run_id").notNull(),
+    semanticEpochId: text("semantic_epoch_id")
+      .notNull()
+      .references(() => narrativeSemanticEpochs.id),
+    observedAt: text("observed_at").notNull(),
+  },
+  (table) => [
+    index("idx_narrative_finding_lifecycle_identity").on(
+      table.projectId,
+      table.findingIdentity,
+      table.observedAt,
+    ),
+    index("idx_narrative_finding_lifecycle_key").on(
+      table.projectId,
+      table.findingKey,
+      table.observedAt,
+    ),
+  ],
+);
+
+export const narrativeMaintenanceAttention = sqliteTable(
+  "narrative_maintenance_attention",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    findingKey: text("finding_key").notNull(),
+    disposition: text("disposition").notNull(),
+    materialBasisDigest: text("material_basis_digest").notNull(),
+    snoozedUntil: text("snoozed_until"),
+    setAt: text("set_at").notNull(),
+    // SCHEMA_VERSION 25: OCC + request identity + mandatory actor. actorId
+    // replaces the nullable setBy — an Attention row is durable user state,
+    // so an unattributed one is not a meaningful record.
+    actorId: text("actor_id").notNull(),
+    requestId: text("request_id").notNull(),
+    payloadDigest: text("payload_digest").notNull(),
+    reason: text("reason"),
+    version: integer("version").notNull(),
+    findingIdentity: text("finding_identity"),
+    identityResolutionStatus: text("identity_resolution_status")
+      .notNull()
+      .default("resolved"),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.findingKey] })],
+);
+
+// SCHEMA_VERSION 24 (Gate C2 Run Kind Policy). A Semantic Index may own only
+// the cache fields fixed in semantic-core-authorities.json's
+// semanticIndexAllowedFields; indexKey distinguishes multiple indexes a
+// project may build (e.g. embeddings vs. a future secondary index) under one
+// row shape.
+export const narrativeSemanticIndexMetadata = sqliteTable(
+  "narrative_semantic_index_metadata",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    indexKey: text("index_key").notNull(),
+    generation: integer("generation").notNull(),
+    builtAt: text("built_at").notNull(),
+    sourceDigest: text("source_digest").notNull(),
+    dependencySetDigest: text("dependency_set_digest").notNull(),
+    dirtyCacheFlag: integer("dirty_cache_flag").notNull(),
+    producerId: text("producer_id"),
+    producerVersion: text("producer_version"),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.indexKey] })],
+);
+
+// SCHEMA 35. Native-owned derived vectors; no material closure or persisted proof.
+export const narrativeNir1ChronicleVectors = sqliteTable(
+  "narrative_nir1_chronicle_vectors",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    revisionId: text("revision_id").notNull(),
+    generation: integer("generation").notNull(),
+    envelopeDigest: text("envelope_digest").notNull(),
+    statementDigest: text("statement_digest").notNull(),
+    serializerRef: text("serializer_ref").notNull(),
+    modelId: text("model_id").notNull(),
+    artifactSha256: text("artifact_sha256").notNull(),
+    tokenizerSha256: text("tokenizer_sha256").notNull(),
+    embeddingDim: integer("embedding_dim").notNull(),
+    chunkerVersion: text("chunker_version").notNull(),
+    auditOperationId: text("audit_operation_id").notNull(),
+    auditExecutionId: text("audit_execution_id").notNull(),
+    embedding: blob("embedding", { mode: "buffer" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.revisionId] })],
+);
+
+// SCHEMA_VERSION 24 (Gate C2 Run Kind Policy, Repair). Durable claim covering
+// the human-approval interval between a Verify-derived sealed repair plan
+// being shown to a human and its approved execution; not a general workspace
+// write lock. One active claim per project by construction.
+export const narrativeMaintenanceRepairLeases = sqliteTable(
+  "narrative_maintenance_repair_leases",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    leaseOwner: text("lease_owner").notNull(),
+    verifyRunId: text("verify_run_id").notNull(),
+    repairPlanDigest: text("repair_plan_digest").notNull(),
+    semanticEpochId: text("semantic_epoch_id")
+      .notNull()
+      .references(() => narrativeSemanticEpochs.id),
+    claimedAt: text("claimed_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    // SCHEMA_VERSION 27. The Run currently entitled to apply this plan.
+    // `lease_owner` identifies the process; this identifies the execution,
+    // so the mutation transaction can compare-and-swap the whole row and
+    // refuse to mutate under a lease that expired and was re-claimed.
+    // Nullable: a lease claimed before this migration carries NULL and
+    // fails that CAS, which is the safe direction.
+    activeRunId: text("active_run_id"),
+  },
+  (table) => [primaryKey({ columns: [table.projectId] })],
+);
+
+// SCHEMA_VERSION 35 (C2-5B scheduler durability). Native-owned durable wake
+// requests minted inside the same transaction as an epoch rotation, drained
+// and acked by the Electron scheduler so a crash between commit and enqueue
+// can no longer drop the wake. Renderer visibility is audit/export only.
+export const narrativeMaintenanceWakeOutbox = sqliteTable(
+  "narrative_maintenance_wake_outbox",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    operation: text("operation").notNull(),
+    reason: text("reason").notNull(),
+    createdAt: text("created_at").notNull(),
+    ackedAt: text("acked_at"),
+  },
+);
+
+export const narrativeChangeSets = sqliteTable(
+  "narrative_change_sets",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    fromSequenceExclusive: integer("from_sequence_exclusive").notNull(),
+    throughSequenceInclusive: integer("through_sequence_inclusive").notNull(),
+    eventIdsJson: text("event_ids_json").notNull(),
+    affectedObjectsJson: text("affected_objects_json").notNull(),
+    digest: text("digest").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_change_sets_project_range_digest").on(
+      table.projectId,
+      table.fromSequenceExclusive,
+      table.throughSequenceInclusive,
+      table.digest,
+    ),
+    index("idx_narrative_change_sets_project_range").on(
+      table.projectId,
+      table.fromSequenceExclusive,
+      table.throughSequenceInclusive,
+    ),
+  ],
+);
+
+/** Temporal Constraint Graph nodes (SCHEMA_VERSION 10). */
+export const narrativeTemporalNodes = sqliteTable(
+  "narrative_temporal_nodes",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    timelineKind: text("timeline_kind", {
+      enum: ["primary", "alternate", "embedded-fiction", "hypothetical"],
+    })
+      .notNull()
+      .default("primary"),
+    timelineKey: text("timeline_key"),
+    subjectKind: text("subject_kind", {
+      enum: [
+        "scene",
+        "event",
+        "state-boundary",
+        "phase-boundary",
+        "named-period",
+      ],
+    }).notNull(),
+    subjectJson: text("subject_json").notNull(),
+    semanticKey: text("semantic_key").notNull(),
+    shape: text("shape", {
+      enum: ["point", "interval", "unknown"],
+    })
+      .notNull()
+      .default("unknown"),
+    fingerprint: text("fingerprint").notNull(),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_temporal_nodes_semantic_key").on(
+      table.projectId,
+      table.semanticKey,
+    ),
+    index("idx_narrative_temporal_nodes_project").on(table.projectId),
+  ],
+);
+
+export const narrativeTemporalConstraints = sqliteTable(
+  "narrative_temporal_constraints",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    kind: text("kind", {
+      enum: [
+        "absolute-window",
+        "relative-offset",
+        "interval-relation",
+        "duration",
+        "symbolic",
+      ],
+    }).notNull(),
+    authority: text("authority", {
+      enum: [
+        "user-metadata",
+        "user-confirmed",
+        "explicit-story-text",
+        "existing-domain-relation",
+        "deterministic-derived",
+        "model-inferred",
+        "projection-derived",
+      ],
+    }).notNull(),
+    strictness: text("strictness", {
+      enum: ["hard", "soft"],
+    }).notNull(),
+    semanticKey: text("semantic_key").notNull(),
+    sourceIdsJson: text("source_ids_json").notNull().default("[]"),
+    fingerprint: text("fingerprint").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_temporal_constraints_semantic_key").on(
+      table.projectId,
+      table.semanticKey,
+    ),
+    index("idx_narrative_temporal_constraints_project").on(
+      table.projectId,
+      table.kind,
+    ),
+  ],
+);
+
+export const narrativeTemporalProjections = sqliteTable(
+  "narrative_temporal_projections",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    targetKind: text("target_kind", {
+      enum: ["scene-time", "event-time", "scene-story-order"],
+    }).notNull(),
+    targetId: text("target_id").notNull(),
+    constraintSetDigest: text("constraint_set_digest").notNull(),
+    solverVersion: text("solver_version").notNull(),
+    calendarDigest: text("calendar_digest"),
+    projectedValueDigest: text("projected_value_digest").notNull(),
+    targetResultVersion: integer("target_result_version").notNull(),
+    applicationId: text("application_id").notNull(),
+    status: text("status", {
+      enum: ["current", "invalidated", "undone"],
+    })
+      .notNull()
+      .default("current"),
+    version: integer("version").notNull().default(0),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_temporal_projections_target").on(
+      table.projectId,
+      table.targetKind,
+      table.targetId,
+    ),
+  ],
+);
+
 // Trash bin: holds deleted text fragments (Phase 1) and structure items (Phase 4-5).
 // payload / preview_meta は素の TEXT で JSON.stringify を保持（aiReasoning と同流儀）。
 export const trashItems = sqliteTable(
@@ -2208,6 +3973,13 @@ export const changeEvents = sqliteTable(
   (t) => [
     index("idx_change_events_project_ts").on(t.projectId, t.timestamp),
     index("idx_change_events_scene_ts").on(t.sceneId, t.timestamp),
+    index("idx_change_events_project_domain_op_entity_seq").on(
+      t.projectId,
+      t.domain,
+      t.opType,
+      t.entityId,
+      t.sequence,
+    ),
     uniqueIndex("uq_change_events_project_seq").on(t.projectId, t.sequence),
     uniqueIndex("uq_change_events_project_uid").on(t.projectId, t.eventUid),
   ],
@@ -2308,6 +4080,13 @@ export const stateSnapshots = sqliteTable(
       t.domain,
       t.anchorSequence,
     ),
+    index("idx_state_snap_project_domain_type_entity_seq").on(
+      t.projectId,
+      t.domain,
+      t.entityId,
+      t.entityType,
+      t.anchorSequence,
+    ),
   ],
 );
 
@@ -2405,6 +4184,10 @@ export type NewCodexTag = typeof codexTags.$inferInsert;
 export type CodexDetailDefinition = typeof codexDetailDefinitions.$inferSelect;
 export type NewCodexDetailDefinition =
   typeof codexDetailDefinitions.$inferInsert;
+export type CodexDetailSemanticBinding =
+  typeof codexDetailSemanticBindings.$inferSelect;
+export type NewCodexDetailSemanticBinding =
+  typeof codexDetailSemanticBindings.$inferInsert;
 export type CodexDetailValue = typeof codexDetailValues.$inferSelect;
 export type NewCodexDetailValue = typeof codexDetailValues.$inferInsert;
 export type CodexContextMode = "always" | "mentioned" | "suppress" | "hidden";
@@ -2461,6 +4244,12 @@ export type Foreshadow = typeof foreshadows.$inferSelect;
 export type NewForeshadow = typeof foreshadows.$inferInsert;
 export type ForeshadowSetup = typeof foreshadowSetups.$inferSelect;
 export type NewForeshadowSetup = typeof foreshadowSetups.$inferInsert;
+export type ForeshadowPayoff = typeof foreshadowPayoffs.$inferSelect;
+export type NewForeshadowPayoff = typeof foreshadowPayoffs.$inferInsert;
+export type ForeshadowSetupPayoffLink =
+  typeof foreshadowSetupPayoffLinks.$inferSelect;
+export type NewForeshadowSetupPayoffLink =
+  typeof foreshadowSetupPayoffLinks.$inferInsert;
 export type ForeshadowCodexLink = typeof foreshadowCodexLinks.$inferSelect;
 export type NewForeshadowCodexLink = typeof foreshadowCodexLinks.$inferInsert;
 
@@ -2486,6 +4275,81 @@ export type NewPostEffectAnnotationRelation =
   typeof postEffectAnnotationRelations.$inferInsert;
 export type SceneLensData = typeof sceneLensData.$inferSelect;
 export type NewSceneLensData = typeof sceneLensData.$inferInsert;
+
+export type NarrativeExtractionRun =
+  typeof narrativeExtractionRuns.$inferSelect;
+export type NewNarrativeExtractionRun =
+  typeof narrativeExtractionRuns.$inferInsert;
+export type NarrativeExtractionTask =
+  typeof narrativeExtractionTasks.$inferSelect;
+export type NewNarrativeExtractionTask =
+  typeof narrativeExtractionTasks.$inferInsert;
+export type NarrativeExtractionTaskEdge =
+  typeof narrativeExtractionTaskEdges.$inferSelect;
+export type NewNarrativeExtractionTaskEdge =
+  typeof narrativeExtractionTaskEdges.$inferInsert;
+export type NarrativeExtractionAttempt =
+  typeof narrativeExtractionAttempts.$inferSelect;
+export type NewNarrativeExtractionAttempt =
+  typeof narrativeExtractionAttempts.$inferInsert;
+export type NarrativeExtractionArtifact =
+  typeof narrativeExtractionArtifacts.$inferSelect;
+export type NewNarrativeExtractionArtifact =
+  typeof narrativeExtractionArtifacts.$inferInsert;
+export type NarrativeExtractionStageModelBinding =
+  typeof narrativeExtractionStageModelBindings.$inferSelect;
+export type NewNarrativeExtractionStageModelBinding =
+  typeof narrativeExtractionStageModelBindings.$inferInsert;
+export type NarrativeExtractionStageReceipt =
+  typeof narrativeExtractionStageReceipts.$inferSelect;
+export type NewNarrativeExtractionStageReceipt =
+  typeof narrativeExtractionStageReceipts.$inferInsert;
+export type NarrativeScopeRegistry =
+  typeof narrativeScopeRegistries.$inferSelect;
+export type NewNarrativeScopeRegistry =
+  typeof narrativeScopeRegistries.$inferInsert;
+export type NarrativeSceneScopeBinding =
+  typeof narrativeSceneScopeBindings.$inferSelect;
+export type NewNarrativeSceneScopeBinding =
+  typeof narrativeSceneScopeBindings.$inferInsert;
+export type NarrativeDependencyDeclarationSet =
+  typeof narrativeDependencyDeclarationSets.$inferSelect;
+export type NewNarrativeDependencyDeclarationSet =
+  typeof narrativeDependencyDeclarationSets.$inferInsert;
+export type NarrativeDependencyDeclarationEntry =
+  typeof narrativeDependencyDeclarationEntries.$inferSelect;
+export type NewNarrativeDependencyDeclarationEntry =
+  typeof narrativeDependencyDeclarationEntries.$inferInsert;
+export type NarrativeDependencyDeclarationHead =
+  typeof narrativeDependencyDeclarationHeads.$inferSelect;
+export type NewNarrativeDependencyDeclarationHead =
+  typeof narrativeDependencyDeclarationHeads.$inferInsert;
+export type NarrativeProposalSet = typeof narrativeProposalSets.$inferSelect;
+export type NewNarrativeProposalSet = typeof narrativeProposalSets.$inferInsert;
+export type NarrativeProposal = typeof narrativeProposals.$inferSelect;
+export type NewNarrativeProposal = typeof narrativeProposals.$inferInsert;
+export type NarrativeProposalRevision =
+  typeof narrativeProposalRevisions.$inferSelect;
+export type NewNarrativeProposalRevision =
+  typeof narrativeProposalRevisions.$inferInsert;
+export type NarrativeProposalDecision =
+  typeof narrativeProposalDecisions.$inferSelect;
+export type NewNarrativeProposalDecision =
+  typeof narrativeProposalDecisions.$inferInsert;
+export type NarrativeApplyCommit = typeof narrativeApplyCommits.$inferSelect;
+export type NewNarrativeApplyCommit = typeof narrativeApplyCommits.$inferInsert;
+export type NarrativeApplyOperation =
+  typeof narrativeApplyOperations.$inferSelect;
+export type NewNarrativeApplyOperation =
+  typeof narrativeApplyOperations.$inferInsert;
+export type NarrativeProposalApplication =
+  typeof narrativeProposalApplications.$inferSelect;
+export type NewNarrativeProposalApplication =
+  typeof narrativeProposalApplications.$inferInsert;
+export type NarrativeCommitJournal =
+  typeof narrativeCommitJournals.$inferSelect;
+export type NewNarrativeCommitJournal =
+  typeof narrativeCommitJournals.$inferInsert;
 
 export type SceneChunk = typeof sceneChunks.$inferSelect;
 export type NewSceneChunk = typeof sceneChunks.$inferInsert;

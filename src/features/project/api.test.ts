@@ -4,7 +4,27 @@ import { eq, getTableName } from "drizzle-orm";
 import { projects } from "@/db/schema";
 import * as schema from "@/db/schema";
 
-const invokeMock = vi.fn().mockResolvedValue(undefined);
+const invokeMock = vi.fn().mockResolvedValue({
+  id: "p1",
+  title: "Project",
+  genre: null,
+  pov: null,
+  tense: null,
+  language: "ja",
+  styleGuide: null,
+  aiInstructions: null,
+  outline: null,
+  targetReaders: null,
+  phaseResolutionMode: "auto",
+  aiPolicy: "{}",
+  createdAt: "2026-08-13T00:00:00.000Z",
+  updatedAt: "2026-08-13T00:00:00.000Z",
+  __writeReceipt: {
+    changeEventUid: "project-event",
+    maintenanceTransactionId: "project-transaction",
+    undoJournalId: "project-journal",
+  },
+});
 const scheduleImeExportRefreshMock = vi.fn();
 const cancelScheduledImeExportsMock = vi.fn();
 const removeImeProjectExportWithRetryMock = vi
@@ -29,17 +49,37 @@ vi.mock("@/features/ime/workspaceScope", () => ({
 }));
 
 const returningMock = vi.fn().mockResolvedValue([{ id: "p1", language: "en" }]);
-const deleteWhereMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/db/client", () => ({
   db: {
+    select: () => ({
+      from: () => ({
+        where: async () => [
+          {
+            id: "p1",
+            title: "Project",
+            genre: null,
+            pov: null,
+            tense: null,
+            language: "ja",
+            styleGuide: null,
+            aiInstructions: null,
+            outline: null,
+            targetReaders: null,
+            phaseResolutionMode: "auto",
+            aiPolicy: "{}",
+            createdAt: "2026-08-13T00:00:00.000Z",
+            updatedAt: "2026-08-13T00:00:00.000Z",
+          },
+        ],
+      }),
+    }),
     update: () => ({
       set: () => ({ where: () => ({ returning: returningMock }) }),
     }),
-    delete: () => ({ where: deleteWhereMock }),
   },
 }));
 
-import { deleteProject, updateProject } from "./api";
+import { createProject, deleteProject, updateProject } from "./api";
 import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
 
 // In-memory store simulating SQLite via the proxy interface
@@ -164,11 +204,21 @@ describe("updateProject", () => {
   it("rebuilds _en FTS when language is in the patch", async () => {
     await updateProject("p1", { language: "en" });
     expect(invokeMock).toHaveBeenCalledWith("fts_rebuild_en");
+    expect(invokeMock).toHaveBeenCalledWith(
+      "project_patch",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          projectId: "p1",
+          baseUpdatedAt: "2026-08-13T00:00:00.000Z",
+          patch: { language: "en" },
+        }),
+      }),
+    );
   });
 
   it("does not rebuild _en FTS when language is absent", async () => {
     await updateProject("p1", { title: "New Title" });
-    expect(invokeMock).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalledWith("fts_rebuild_en");
   });
 
   it.each(["title", "genre", "outline", "language"] as const)(
@@ -185,11 +235,76 @@ describe("updateProject", () => {
   });
 });
 
+describe("createProject", () => {
+  beforeEach(() => {
+    invokeMock.mockClear();
+  });
+
+  it("publishes the Project through the canonical Native writer", async () => {
+    invokeMock.mockResolvedValueOnce({
+      id: "project-native",
+      title: "Novel",
+      genre: null,
+      pov: null,
+      tense: null,
+      language: "en",
+      styleGuide: null,
+      aiInstructions: null,
+      outline: null,
+      targetReaders: null,
+      phaseResolutionMode: "auto",
+      aiPolicy: "{}",
+      createdAt: "2026-08-13T00:00:00.000Z",
+      updatedAt: "2026-08-13T00:00:00.000Z",
+      __writeReceipt: {
+        changeEventUid: "project-event",
+        maintenanceTransactionId: "project-transaction",
+        undoJournalId: null,
+      },
+    });
+
+    const created = await createProject({
+      id: "project-native",
+      title: "Novel",
+      language: "en",
+    });
+
+    expect(created).not.toHaveProperty("__writeReceipt");
+    expect(created).toMatchObject({
+      id: "project-native",
+      title: "Novel",
+      language: "en",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("project_create", {
+      payload: expect.objectContaining({
+        projectId: "project-native",
+        title: "Novel",
+        language: "en",
+        genre: null,
+        pov: null,
+        tense: null,
+        styleGuide: null,
+        aiInstructions: null,
+        outline: null,
+        targetReaders: null,
+        origin: "human",
+        originalTransactionId: null,
+        undoJournalId: null,
+        requestId: expect.any(String),
+        sessionId: expect.any(String),
+        eventUid: expect.any(String),
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+      }),
+    });
+  });
+});
+
 describe("deleteProject", () => {
   beforeEach(() => {
     pendingCompletedTurnPersistence.discard();
     cancelScheduledImeExportsMock.mockClear();
-    deleteWhereMock.mockClear();
+    invokeMock.mockClear();
     removeImeProjectExportWithRetryMock.mockClear();
   });
   afterEach(() => {
@@ -208,7 +323,18 @@ describe("deleteProject", () => {
       2,
       "default-project",
     );
-    expect(deleteWhereMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenCalledWith("project_delete", {
+      payload: expect.objectContaining({
+        projectId: "default-project",
+        origin: "human",
+        authorityRoute: "human-direct",
+        requestId: expect.any(String),
+        sessionId: expect.any(String),
+        eventUid: expect.any(String),
+        originalTransactionId: null,
+        undoJournalId: null,
+      }),
+    });
     expect(removeImeProjectExportWithRetryMock).toHaveBeenCalledWith(
       "default-project",
       imeWorkspaceIdentity,
@@ -249,7 +375,7 @@ describe("deleteProject", () => {
       "still waiting to be saved",
     );
     expect(cancelScheduledImeExportsMock).not.toHaveBeenCalled();
-    expect(deleteWhereMock).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
     expect(removeImeProjectExportWithRetryMock).not.toHaveBeenCalled();
   });
 });

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.local/evals/certifications/schemas/gate-b2-journey-evidence-v2.schema.json",
+  "title": "Gate B2 Candidate-bound Journey Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "journeyId",
+    "candidateCommitSha",
+    "candidateTreeSha",
+    "freezeId",
+    "certificationRunId",
+    "runnerId",
+    "runnerVersion",
+    "environmentDigest",
+    "commandDigest",
+    "runnerArtifactDigest",
+    "assertions",
+    "result",
+    "startedAt",
+    "completedAt",
+    "artifactDigests"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "journeyId": { "type": "string", "minLength": 1 },
+    "candidateCommitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "candidateTreeSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "freezeId": { "type": "string", "minLength": 1 },
+    "certificationRunId": { "type": "string", "minLength": 1 },
+    "runnerId": { "type": "string", "minLength": 1 },
+    "runnerVersion": { "type": "string", "minLength": 1 },
+    "environmentDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "commandDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "runnerArtifactDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "assertions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "passed"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "passed": { "type": "boolean" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "result": { "type": "string", "enum": ["passed", "failed", "blocked", "hold"] },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "message": { "type": "string" },
+    "artifactDigests": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+    }
+  }
+}

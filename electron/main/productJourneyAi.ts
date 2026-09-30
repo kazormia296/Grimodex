@@ -1,4 +1,5 @@
 import type { NapiBackendLike } from "../shared/ipcContract.js";
+import { productJourneyChronicleResponse } from "./productJourneyChronicleAi.js";
 
 export const PRODUCT_JOURNEY_AI_ENV = "GRIMODEX_PRODUCT_JOURNEY_FAKE_AI";
 export const PRODUCT_JOURNEY_AI_VERSION = "deterministic-v1";
@@ -78,7 +79,7 @@ export function shouldUseProductJourneyAi({
 
 /**
  * Keep the real native backend for persistence and every non-AI command while
- * replacing only the HTTP provider edge with deterministic stream events.
+ * replacing only the HTTP provider edge with deterministic replies/events.
  * The wrapper is unreachable in packaged builds and requires an exact,
  * product-runner-owned environment value.
  */
@@ -98,12 +99,12 @@ export function wrapBackendForProductJourneyAi(
       backend.onEvent(callback);
     },
 
-    async sendChatMessage() {
+    async sendChatMessage(args) {
       return JSON.stringify({
         blocks: [
           {
             type: "text",
-            content: "Product Journey",
+            content: productJourneyChronicleResponse(args) ?? "Product Journey",
           },
         ],
         stopReason: "end_turn",

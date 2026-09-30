@@ -13,6 +13,8 @@ function link(threadId: string, nodeId: string): PlotThreadLinkRow {
     phaseType: "develop",
     note: null,
     sortOrder: null,
+    semanticKey: "",
+    version: 0,
     createdAt: "",
     updatedAt: "",
   };

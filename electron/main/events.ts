@@ -19,6 +19,31 @@ import {
   isAllowedRendererEventChannel,
 } from "../shared/ipcContract.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
+import type { ProfileEgressGate } from "./profileEgress.js";
+import {
+  parseWorkspaceLifecycleView,
+  type WorkspaceLifecycleView,
+} from "./workspaceLifecycleView.js";
+import {
+  isRelatedScenesInvalidatedEvent,
+  isRelatedScenesIndexReadyEvent,
+  RELATED_SCENES_INVALIDATED_EVENT,
+  RELATED_SCENES_INDEX_READY_EVENT,
+} from "../shared/relatedScenesSearchWire.js";
+
+/** Native completion signal consumed by main only; never broadcast to a window. */
+export const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT =
+  "narrative-maintenance:epoch-rotated";
+
+let profileEgressGate: ProfileEgressGate | null = null;
+let latestWorkspaceLifecycleView: WorkspaceLifecycleView | null = null;
+
+/** Install the startup gate before any trusted manager can publish an event. */
+export function setBackendEventEgressGate(
+  profileEgress?: ProfileEgressGate | null,
+): void {
+  profileEgressGate = profileEgress ?? null;
+}
 
 /** 全窓（送信元含む）へ 1 イベントを配信する。 */
 export function broadcastEvent(channel: string, payload: unknown): void {
@@ -36,7 +61,68 @@ export function broadcastBackendEvent(channel: string, payload: unknown): void {
     );
     return;
   }
+  if (profileEgressGate && !profileEgressGate.allowsBackendEvent(channel)) {
+    console.warn(`[backend:event] rejected D2a egress channel: ${channel}`);
+    return;
+  }
+  if (channel === "workspace:lifecycle-state") {
+    const lifecycle = acceptWorkspaceLifecycleView(payload);
+    if (!lifecycle) return;
+    payload = lifecycle;
+    profileEgressGate?.observeBackendEvent?.(channel, lifecycle);
+  }
   broadcastEvent(channel, payload);
+}
+
+function acceptWorkspaceLifecycleView(
+  payload: unknown,
+): WorkspaceLifecycleView | null {
+  let view: WorkspaceLifecycleView;
+  try {
+    view = parseWorkspaceLifecycleView(payload);
+  } catch (error) {
+    console.warn(
+      `[backend:event] invalid workspace lifecycle view: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  }
+  if (latestWorkspaceLifecycleView) {
+    if (view.revision < latestWorkspaceLifecycleView.revision) return null;
+    if (
+      view.revision === latestWorkspaceLifecycleView.revision &&
+      JSON.stringify(view) !== JSON.stringify(latestWorkspaceLifecycleView)
+    ) {
+      console.warn(
+        "[backend:event] conflicting workspace lifecycle views at one revision",
+      );
+      return null;
+    }
+  }
+  latestWorkspaceLifecycleView = view;
+  return view;
+}
+
+/** Publish a validated lifecycle snapshot obtained through the main-only getter. */
+export function publishWorkspaceLifecycleSnapshot(payload: unknown): boolean {
+  const view = acceptWorkspaceLifecycleView(payload);
+  if (!view) return false;
+  broadcastBackendEvent("workspace:lifecycle-state", view);
+  return true;
+}
+
+/** Refresh the lifecycle projection after renderer subscription / page load. */
+export async function refreshWorkspaceLifecycleView(
+  backend: NapiBackendLike | null,
+): Promise<boolean> {
+  const getter = backend?.getWorkspaceLifecycleView;
+  if (typeof getter !== "function") return false;
+  try {
+    const raw = await getter.call(backend);
+    return publishWorkspaceLifecycleSnapshot(raw);
+  } catch (error) {
+    console.warn("[backend:event] lifecycle snapshot refresh failed", error);
+    return false;
+  }
 }
 
 /**
@@ -52,6 +138,10 @@ export function sendBackendEventToWindow(
     console.warn(
       `[backend:event] rejected non-backend channel: ${String(channel)}`,
     );
+    return;
+  }
+  if (profileEgressGate && !profileEgressGate.allowsBackendEvent(channel)) {
+    console.warn(`[backend:event] rejected D2a egress channel: ${channel}`);
     return;
   }
   const target = BrowserWindow.getAllWindows().find(
@@ -115,10 +205,23 @@ function handleBackendEvent(
   payloadJson: unknown,
   observer?: (channel: string, payload: unknown) => void,
 ): void {
-  if (typeof channel !== "string" || !isAllowedBackendEventChannel(channel)) {
+  const observerOnly = channel === NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT;
+  if (
+    typeof channel !== "string" ||
+    (!observerOnly && !isAllowedBackendEventChannel(channel))
+  ) {
     console.warn(
       `[backend:event] dropped non-allowlisted channel: ${String(channel)}`,
     );
+    return;
+  }
+  if (
+    typeof channel === "string" &&
+    !observerOnly &&
+    profileEgressGate &&
+    !profileEgressGate.allowsBackendEvent(channel)
+  ) {
+    console.warn(`[backend:event] rejected D2a egress channel: ${channel}`);
     return;
   }
   let payload: unknown = payloadJson;
@@ -131,13 +234,36 @@ function handleBackendEvent(
       console.warn(`[backend:event] non-JSON payload on ${channel}`);
     }
   }
+  if (channel === "workspace:lifecycle-state") {
+    const lifecycle = acceptWorkspaceLifecycleView(payload);
+    if (!lifecycle) return;
+    payload = lifecycle;
+  }
+  if (
+    channel === RELATED_SCENES_INVALIDATED_EVENT &&
+    !isRelatedScenesInvalidatedEvent(payload)
+  ) {
+    console.warn("[backend:event] invalid related-scenes invalidation payload");
+    return;
+  }
+  if (
+    channel === RELATED_SCENES_INDEX_READY_EVENT &&
+    !isRelatedScenesIndexReadyEvent(payload)
+  ) {
+    console.warn(
+      "[backend:event] invalid related-scenes index readiness payload",
+    );
+    return;
+  }
   try {
+    profileEgressGate?.observeBackendEvent?.(channel, payload);
     observer?.(channel, payload);
   } catch (cause) {
     console.warn(
       `[backend:event] observer failed on ${channel}: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
   }
+  if (observerOnly) return;
   broadcastEvent(channel, payload);
 }
 
@@ -150,7 +276,9 @@ function handleBackendEvent(
 export function registerEventBus(
   backend: NapiBackendLike | null,
   observer?: (channel: string, payload: unknown) => void,
+  profileEgress?: ProfileEgressGate,
 ): void {
+  setBackendEventEgressGate(profileEgress);
   ipcMain.on(IPC.emit, (_event, channel: unknown, payload: unknown) => {
     if (
       typeof channel !== "string" ||

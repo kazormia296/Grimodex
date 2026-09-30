@@ -6,7 +6,9 @@ import type { listAnnotationsForScene } from "@/features/post-effect/api";
  * シーンロード時の帰属/伏線/疑似コメントの 3 並列リード結果を解決する純関数。
  *
  * 3 件は互いにデータ依存が無い独立リードで `Promise.allSettled` で待つ。
- * allSettled の意図は「1 件の失敗が他のマーク適用を巻き込まない」部分適用維持。
+ * allSettled の意図は「1 件の失敗が他のマーク適用を巻き込まない」部分適用を維持する
+ * こと。D2aでは foreshadow の平文読取と、保存用の version-only anchor projection を
+ * 分離するため、後者の拒否は通常の部分適用として扱わない。
  * ここでは fulfilled なら value、rejected なら欠落値(spans/foreshadow は `[]`、
  * annotations は `null`)へ畳み込み、rejected は呼び出し側でログするための
  * `{ label, reason }` 配列に集約する。dispatch / clamp / store 書き込みは

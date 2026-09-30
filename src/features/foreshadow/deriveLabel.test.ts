@@ -16,6 +16,7 @@ function makeForeshadow(overrides: Partial<ForeshadowRow> = {}): ForeshadowRow {
     abandoned: false,
     secret: false,
     loadBearing: null,
+    version: 0,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

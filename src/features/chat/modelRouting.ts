@@ -22,7 +22,7 @@
  *   - inline: inline_ai_stream
  *   - cheap: session_title, beat_role, summarization
  *       … summarization は chatStore の injected callback 経由で model を注入
- *   - structured: synopsis, foreshadow_*(3), map_branch, tree_scaffold, codex_judgment, codex_yomi
+ *   - structured: synopsis, foreshadow_*(3), map_branch, tree_scaffold, narrative_entity_resolve, narrative_relation_synthesize, narrative_state_synthesize, narrative_phase_synthesize, narrative_detail_compose, narrative_temporal_attach, narrative_temporal_synthesize, codex_yomi
  *   - review: post_effect_*（校閲）
  *   - reader: post_effect_pseudo_comment（本文を読む最中の反応）
  *       … start_post_effect_run(_multi) に model_override を渡し、各 process_*_scene が
@@ -153,7 +153,31 @@ export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
   foreshadow_propose_past_setups: "structured",
   foreshadow_evaluate_setup_strength: "structured",
   plot_thread_propose: "structured",
+  // chronicle_extract: Run surface / compatibility façade（旧一括抽出）。
+  // Stage AI は narrative_* 三 Path。cutover まで callsite は extractEventsApi に残る。
   chronicle_extract: "structured",
+  narrative_observation_extract: "structured",
+  narrative_event_synthesize: "structured",
+  narrative_entity_resolve: "structured",
+  narrative_relation_synthesize: "structured",
+  narrative_state_synthesize: "structured",
+  narrative_phase_synthesize: "structured",
+  narrative_detail_compose: "structured",
+  narrative_temporal_attach: "structured",
+  narrative_temporal_synthesize: "structured",
+  narrative_structured_repair: "structured",
+  narrative_plot_thread_synthesize: "structured",
+  narrative_plot_development_classify: "structured",
+  narrative_plot_marker_assign: "structured",
+  narrative_plot_relation_synthesize: "structured",
+  narrative_foreshadow_signal_synthesize: "structured",
+  narrative_setup_payoff_link: "structured",
+  narrative_foreshadow_global_reconcile: "structured",
+  narrative_foreshadow_quality_evaluate: "structured",
+  generic_import_role_classify: "structured",
+  generic_import_document_partition: "structured",
+  generic_import_custom_extract: "structured",
+  generic_import_record_reconcile: "structured",
   map_branch: "structured",
   tree_scaffold: "structured",
   codex_judgment: "structured",

@@ -33,6 +33,11 @@ describe("deriveSceneBodySnapshot", () => {
         mark("foreshadowSetup", {
           setupId: "setup-1",
           foreshadowId: "fs-1",
+          baseVersion: 4,
+        }),
+        mark("foreshadowPayoff", {
+          foreshadowId: "fs-2",
+          baseVersion: 9,
         }),
         mark("peAnnotation", { annotationId: "ann-1" }),
       ],
@@ -77,10 +82,23 @@ describe("deriveSceneBodySnapshot", () => {
       {
         id: "setup-1",
         foreshadowId: "fs-1",
+        baseVersion: 4,
         fromPos: 1,
         toPos: 3,
       },
     ]);
+    expect(snapshot.foreshadowPayoffs).toEqual([
+      {
+        foreshadowId: "fs-2",
+        baseVersion: 9,
+        fromPos: 1,
+        toPos: 3,
+      },
+    ]);
+    expect(snapshot.foreshadowBaseVersions).toEqual({
+      "fs-1": 4,
+      "fs-2": 9,
+    });
     expect(snapshot.annotationAnchors).toEqual([
       {
         id: "ann-1",

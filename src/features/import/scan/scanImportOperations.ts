@@ -11,7 +11,11 @@ import {
   linkScenesToEvent,
   setEventParticipants,
 } from "@/features/chronicle/api";
-import { createNode, listNodes, saveSceneContent } from "@/features/tree/api";
+import { createNode, listNodes } from "@/features/tree/api";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+} from "@/features/native-writes/writeContext";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import {
@@ -20,10 +24,7 @@ import {
   updateProject,
 } from "@/features/project/api";
 import { useProjectStore } from "@/features/project/projectStore";
-import {
-  deleteProjectSetting,
-  setProjectSetting,
-} from "@/features/settings/api";
+import { setProjectSetting } from "@/features/settings/api";
 import { seedProjectSettingsFromDefaults } from "@/features/settings/migration";
 import { fieldValueToProseMirror } from "../importApi";
 import type { ImportedNode } from "../importTypes";
@@ -36,10 +37,13 @@ import type {
   ScanRelationImportPlan,
 } from "./scanImportPlan";
 import { deriveScanImportId } from "./scanImportPlan";
-import { SCAN_IMPORT_STATE_KEY } from "./scanImportState";
-import { createScanStagingProject } from "./scanStagingProject";
+import {
+  createScanStagingProject,
+  publishScanStagingProject,
+} from "./scanStagingProject";
 import type {
   ScanImportApplyOperations,
+  ScanImportPublishReceipt,
   ScanImportStageResult,
 } from "./applyScanImportPlan";
 
@@ -56,31 +60,6 @@ function sceneContent(node: Extract<ImportedNode, { kind: "scene" }>): string {
   // warning-level fallback so an unsupported rich body cannot become raw HTML.
   if (node.bodyMarkdown) return fieldValueToProseMirror(node.bodyMarkdown);
   return "{}";
-}
-
-function sceneCharCount(content: string): number {
-  try {
-    const parsed = JSON.parse(content) as {
-      content?: Array<{ text?: string; content?: unknown[] }>;
-    };
-    const walk = (
-      nodes: Array<{ text?: string; content?: unknown[] }>,
-    ): number =>
-      nodes.reduce(
-        (total, node) =>
-          total +
-          (node.text?.length ?? 0) +
-          (Array.isArray(node.content)
-            ? walk(
-                node.content as Array<{ text?: string; content?: unknown[] }>,
-              )
-            : 0),
-        0,
-      );
-    return walk(parsed.content ?? []);
-  } catch {
-    return 0;
-  }
 }
 
 async function importNodes(
@@ -107,34 +86,35 @@ async function importNodes(
       const node = nodes[index]!;
       const sortOrder = siblingKeys[index]!;
       if (node.kind === "folder") {
-        await createNode({
-          id: node.id,
-          projectId,
-          parentId: parentId ?? undefined,
-          nodeType: "folder",
-          title: node.title || "Untitled",
-          sortOrder,
-        });
+        await createNode(
+          {
+            id: node.id,
+            projectId,
+            parentId: parentId ?? undefined,
+            nodeType: "folder",
+            title: node.title || "Untitled",
+            sortOrder,
+          },
+          { writeContext: createCanonicalWriteContext("import") },
+        );
         imported++;
         await insertNodes(node.children, node.id);
         continue;
       }
 
       const content = sceneContent(node);
-      await createNode({
-        id: node.id,
-        projectId,
-        parentId: parentId ?? undefined,
-        nodeType: "scene",
-        title: node.title || "Untitled",
-        sortOrder,
-      });
-      if (content !== "{}") {
-        await saveSceneContent(node.id, {
+      await createNode(
+        {
+          id: node.id,
+          projectId,
+          parentId: parentId ?? undefined,
+          nodeType: "scene",
+          title: node.title || "Untitled",
+          sortOrder,
           content,
-          charCount: sceneCharCount(content),
-        });
-      }
+        },
+        { writeContext: createCanonicalWriteContext("import") },
+      );
       imported++;
     }
   }
@@ -154,11 +134,14 @@ async function ensureScanCodexTypes(
   };
   for (const type of new Set(entries.map((entry) => entry.type))) {
     if (existingSlugs.has(type)) continue;
-    await createCodexType({
-      projectId,
-      slug: type,
-      label: labels[type] ?? type,
-    });
+    await createCodexType(
+      {
+        projectId,
+        slug: type,
+        label: labels[type] ?? type,
+      },
+      { writeContext: createCanonicalWriteContext("import") },
+    );
     existingSlugs.add(type);
   }
 }
@@ -185,7 +168,9 @@ async function importCodex(
 ): Promise<ScanImportStageResult> {
   if (entries.length === 0) return result(0);
   const project = await getProject(projectId);
-  await ensureBuiltinTypes(projectId, project?.language ?? "ja");
+  await ensureBuiltinTypes(projectId, project?.language ?? "ja", {
+    origin: "import",
+  });
   await ensureScanCodexTypes(projectId, entries);
 
   // Create all rows first, then attach parents. This makes parent order in an
@@ -199,21 +184,30 @@ async function importCodex(
         name: entry.name,
         aliases: JSON.stringify(entry.aliases),
         summary: entry.summary,
+        content: fieldValueToProseMirror(entry.summary ?? ""),
       },
-      { suppressImeExport: true },
+      {
+        suppressImeExport: true,
+        writeContext: createCanonicalWriteContext("import"),
+      },
     );
   }
   for (const entry of entries) {
-    await updateCodexEntry(
-      projectId,
-      entry.id,
-      {
-        ...(entry.parentId ? { parentId: entry.parentId } : {}),
-        content: fieldValueToProseMirror(entry.summary ?? ""),
-        notes: provenanceNote(entry),
-      },
-      { suppressImeExport: true },
-    );
+    const notes = provenanceNote(entry);
+    if (entry.parentId || notes) {
+      await updateCodexEntry(
+        projectId,
+        entry.id,
+        {
+          ...(entry.parentId ? { parentId: entry.parentId } : {}),
+          ...(notes ? { notes } : {}),
+        },
+        {
+          suppressImeExport: true,
+          writeContext: createCanonicalWriteContext("import"),
+        },
+      );
+    }
   }
   return result(entries.length);
 }
@@ -223,14 +217,17 @@ async function importRelations(
   relations: readonly ScanRelationImportPlan[],
 ): Promise<ScanImportStageResult> {
   for (const relation of relations) {
-    await createCodexRelation({
-      id: relation.id,
-      projectId,
-      fromCodexId: relation.fromCodexId,
-      toCodexId: relation.toCodexId,
-      relationType: relation.type || "custom",
-      label: relation.label,
-    });
+    await createCodexRelation(
+      {
+        id: relation.id,
+        projectId,
+        fromCodexId: relation.fromCodexId,
+        toCodexId: relation.toCodexId,
+        relationType: relation.type || "custom",
+        label: relation.label,
+      },
+      { writeContext: createCanonicalWriteContext("import") },
+    );
   }
   return result(relations.length);
 }
@@ -246,20 +243,23 @@ async function importPhases(
       const entryId = phase.entityIds[index];
       if (!entryId) continue;
       for (let anchorIndex = 0; anchorIndex < anchors.length; anchorIndex++) {
-        await createPhase({
-          id:
-            index === 0 && anchorIndex === 0
-              ? phase.id
-              : `${phase.id}:${index}:${anchorIndex}`,
-          entryId,
-          anchorNodeId:
-            phase.anchorNodeIds?.[anchorIndex] ?? phase.anchorNodeId ?? null,
-          label:
-            anchorIndex === 0 && index === 0
-              ? phase.title
-              : `${phase.title} · 根拠 ${anchorIndex + 1}`,
-          summaryOverride: phase.summary ?? null,
-        });
+        await createPhase(
+          {
+            id:
+              index === 0 && anchorIndex === 0
+                ? phase.id
+                : `${phase.id}:${index}:${anchorIndex}`,
+            entryId,
+            anchorNodeId:
+              phase.anchorNodeIds?.[anchorIndex] ?? phase.anchorNodeId ?? null,
+            label:
+              anchorIndex === 0 && index === 0
+                ? phase.title
+                : `${phase.title} · 根拠 ${anchorIndex + 1}`,
+            summaryOverride: phase.summary ?? null,
+          },
+          { writeContext: createCanonicalWriteContext("import") },
+        );
         imported += 1;
       }
     }
@@ -281,19 +281,25 @@ async function importEvents(
   );
   for (let index = 0; index < ordered.length; index++) {
     const event = ordered[index]!;
-    const eventRow = await createEvent({
-      id: event.id,
-      projectId,
-      title: event.title,
-      note: event.summary ?? null,
-      ordinal: eventOrdinal(index),
-      primaryCodexId: event.entityIds[0] ?? null,
+    const eventRow = await createEvent(
+      {
+        id: event.id,
+        projectId,
+        title: event.title,
+        note: event.summary ?? null,
+        ordinal: eventOrdinal(index),
+        primaryCodexId: event.entityIds[0] ?? null,
+      },
+      { origin: "import" },
+    );
+    await linkScenesToEvent(projectId, [event.sceneId], eventRow.id, {
+      origin: "import",
     });
-    await linkScenesToEvent(projectId, [event.sceneId], eventRow.id);
     await setEventParticipants(
       eventRow.id,
       projectId,
       event.entityIds.slice(1),
+      { origin: "import" },
     );
   }
   return result(events.length);
@@ -329,14 +335,17 @@ async function importFindings(
       }`;
     })
     .join("\n\n");
-  await createNode({
-    id: noteId,
-    projectId,
-    nodeType: "note",
-    title: "Scan findings",
-    sortOrder: generateNKeysBetween(lastRoot, null, 1)[0]!,
-    content: fieldValueToProseMirror(body),
-  });
+  await createNode(
+    {
+      id: noteId,
+      projectId,
+      nodeType: "note",
+      title: "Scan findings",
+      sortOrder: generateNKeysBetween(lastRoot, null, 1)[0]!,
+      content: fieldValueToProseMirror(body),
+    },
+    { writeContext: createCanonicalWriteContext("import") },
+  );
   return result(findings.length);
 }
 
@@ -346,7 +355,7 @@ export function createScanImportOperations(): ScanImportApplyOperations {
       const projectId = crypto.randomUUID();
       try {
         await createScanStagingProject({ id: projectId, title, language });
-        await ensureBuiltinTypes(projectId, language);
+        await ensureBuiltinTypes(projectId, language, { origin: "import" });
         await seedProjectSettingsFromDefaults(projectId);
         await setProjectSetting(
           projectId,
@@ -385,8 +394,15 @@ export function createScanImportOperations(): ScanImportApplyOperations {
         metadata.sourceFingerprint,
       );
     },
-    async publishStagingProject(projectId) {
-      await deleteProjectSetting(projectId, SCAN_IMPORT_STATE_KEY);
+    async publishStagingProject(projectId): Promise<ScanImportPublishReceipt> {
+      // One apply operation owns one canonical publish identity. The publish
+      // adapter retains this context while replaying an ambiguous transport
+      // outcome; each separately invoked operation gets a fresh identity.
+      const publishContext: CanonicalWriteContext =
+        createCanonicalWriteContext("import");
+      return publishScanStagingProject(projectId, publishContext);
+    },
+    async refreshPublishedProject(projectId, _receipt) {
       await useProjectStore.getState().refreshProjects();
       await useProjectStore.getState().loadProject(projectId);
       scheduleImeExportRefresh(projectId);

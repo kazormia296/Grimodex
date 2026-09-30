@@ -270,6 +270,7 @@
     "delete": "削除",
     "copy": "コピー",
     "close": "閉じる",
+    "retry": "再試行",
     "add": "追加",
     "edit": "編集",
     "reset": "リセット",
@@ -482,6 +483,17 @@
       "too-many-files": "フォルダー内の原稿ファイルが多すぎます（上限 {{maxFiles}} 件）",
       "folder-too-large": "フォルダー内の原稿ファイル合計が大きすぎます（上限 {{maxMiB}} MiB）",
       "path-too-deep": "フォルダー階層が深すぎます（上限 {{maxDepth}} 階層）"
+    },
+    "generic": {
+      "wizardTitle": "Generic インポート（プレビュー）",
+      "runPreview": "プレビュー実行",
+      "resourceTreeHint": "取り込み対象ファイルと推定ロール（プレビュー）。",
+      "noResources": "リソースがありません",
+      "rolePickerHint": "リソースの semantic role を確認します（プレビュー）。",
+      "disposition": "配置",
+      "summaryHint": "Generic インポートの組み立て概要（プレビュー）。",
+      "skipped": "スキップ",
+      "decoderPickerHint": "デコーダーは拡張子とマジックバイトから自動選択されます（プレビュー）。"
     },
     "scan": {
       "description": "Scan のプライベート editor seed (JSON) を読み込み、新規プロジェクトへ段階適用します。既存プロジェクトは変更されません。",
@@ -801,6 +813,11 @@
       "zenShader_warp": "Warp",
       "zenShader_static-mesh-gradient": "Static Mesh",
       "zenOpacity": "濃度",
+      "zenResolutionMode": "描画品質",
+      "zenResolutionModeDesc": "標準では動く背景を75%解像度で描画します。UI、Glass、読みやすさ補正はネイティブ解像度を維持します。",
+      "zenResolutionMode_native": "Native（最高画質）",
+      "zenResolutionMode_balanced": "標準（推奨）",
+      "zenResolutionMode_performance": "Performance（軽量）",
       "zenSpeed": "速度",
       "zenSpeedDesc": "0 で静止。ウィンドウ非アクティブ時と「モーションを減らす」有効時も自動停止します。",
       "zenSpeedMode": "速度レンジ",
@@ -1493,7 +1510,29 @@
         "codex_judgment": "固有名詞候補の判定",
         "codex_yomi": "読み推定",
         "plot_thread_extract": "プロットスレッド抽出",
-        "chronicle_extract": "作中年表 出来事抽出"
+        "chronicle_extract": "作中年表 出来事抽出",
+        "narrative_observation_extract": "Narrative Observation 抽出",
+        "narrative_event_synthesize": "Narrative Event 統合",
+        "narrative_entity_resolve": "Narrative Entity 解決",
+        "narrative_relation_synthesize": "Narrative Relation 統合",
+        "narrative_state_synthesize": "Narrative State 統合",
+        "narrative_phase_synthesize": "Narrative Phase 統合",
+        "narrative_detail_compose": "Narrative Detail 整形",
+        "narrative_temporal_attach": "時間表現 Attachment",
+        "narrative_temporal_synthesize": "時間関係 Synthesis",
+        "narrative_structured_repair": "Narrative JSON 修復",
+        "narrative_plot_thread_synthesize": "プロットスレッド候補 統合",
+        "narrative_plot_development_classify": "プロット進展 分類",
+        "narrative_plot_marker_assign": "プロットマーカー 補助",
+        "narrative_plot_relation_synthesize": "プロット関係 統合",
+        "narrative_foreshadow_signal_synthesize": "伏線 setup 信号 統合",
+        "narrative_setup_payoff_link": "Setup/Payoff リンク",
+        "narrative_foreshadow_global_reconcile": "伏線候補 グローバル調停",
+        "narrative_foreshadow_quality_evaluate": "伏線品質 評価",
+        "generic_import_role_classify": "Generic Import ロール分類",
+        "generic_import_document_partition": "Generic Import 文書分割",
+        "generic_import_custom_extract": "Generic Import カスタム抽出",
+        "generic_import_record_reconcile": "Generic Import レコード統合"
       }
     }
   },
@@ -2416,7 +2455,8 @@
       "fieldTypeText": "テキスト",
       "fieldTypeDropdown": "ドロップダウン",
       "fieldTypeCodexReference": "Codex 参照",
-      "manageFieldsTitle": "フィールドを管理: {{type}}"
+      "manageFieldsTitle": "フィールドを管理: {{type}}",
+      "editConflict": "この詳細は別のウィンドウで更新されたため保存できませんでした。最新を読み込んでから編集し直してください。"
     },
     "relation": {
       "title": "階層（親子）",
@@ -4056,6 +4096,8 @@
     }
   },
   "inlineAi": {
+    "accept": "反映",
+    "reject": "破棄",
     "generateFailed": "生成に失敗しました",
     "proposalAlreadyFinalized": "このAI提案は別の経路で処理済みだったため、古いプレビューを閉じました",
     "pendingBlocked": "未確定のAI生成があります。Tab で反映 / Esc で破棄してから操作できます",
@@ -4119,6 +4161,15 @@
     "slashMenuLabel": "インライン AI コマンド"
   },
   "relatedScenes": {
+    "rank": "{{rank}}位",
+    "approvedInterpretation": "承認済みの解釈",
+    "fresh": "参照元を確認済み",
+    "actuality": "成立性",
+    "attribution": "帰属",
+    "narrativeFrame": "語りの枠組み",
+    "openEvidence": "根拠の本文を開く",
+    "irUnsupported": "この参照条件では承認済み解釈を検索できません。本文検索の結果を表示します。",
+    "irUnavailable": "承認済み解釈は現在参照できません。本文検索の結果を表示します。",
     "noActiveScene": "シーンを選ぶと、関連する過去シーンが表示されます",
     "loading": "検索中…",
     "empty": "関連する過去シーンは見つかりませんでした",
@@ -5303,7 +5354,12 @@
     "reindexComplete": "再インデックス完了",
     "reindexing": "セマンティック再インデックス中",
     "noScenes": "対象シーンなし",
-    "progressDetail": "{{scene}} / {{total}} シーン · {{chunks}} チャンク"
+    "progressDetail": "{{scene}} / {{total}} シーン · {{chunks}} チャンク",
+    "modelDownloadFailed": "埋め込みモデルのダウンロードに失敗しました",
+    "modelDownloadComplete": "埋め込みモデルの準備が整いました",
+    "modelDownloading": "埋め込みモデルをダウンロード中…",
+    "modelDownloadFallback": "全文検索(FTS)で続行します",
+    "retryModelDownload": "再試行"
   },
   "beat": {
     "generateBeats": {
@@ -5707,6 +5763,24 @@
       "failed": "抽出に失敗しました",
       "none": "抽出できるサブプロットが見つかりませんでした。"
     },
+    "reviewExtract": {
+      "button": "抽出プレビュー",
+      "title": "プロットスレッド候補レビュー",
+      "hint": "AI が提案したプロットスレッド候補をレビューします（プレビュー機能）。",
+      "empty": "レビュー待ちの提案はまだありません。",
+      "markerCount": "マーカー {{n}} 件",
+      "blocked": "要確認",
+      "binding": {
+        "createNew": "新規作成",
+        "bindExisting": "既存スレッドへ統合",
+        "unresolved": "候補が複数あり未解決"
+      },
+      "prominence": {
+        "primary": "主要",
+        "supporting": "補助",
+        "minor": "小規模"
+      }
+    },
     "structure": {
       "title": "構造分析",
       "hide": "構造分析を閉じる",
@@ -5762,6 +5836,7 @@
     "extractShort": "抽出",
     "unnamed": "（無名）",
     "extract": {
+      "reanalysisRequired": "保存済みの抽出候補を復元できません。本文から再解析してください。",
       "title": "本文からイベントを抽出",
       "hint": "選んだ章/フォルダの本文を AI が読み、作中のイベントを提案します。取り込むと年表に追加されます。",
       "selectFolder": "章/フォルダを選択…",
@@ -6241,6 +6316,260 @@
       "deleteFailed": "テンプレートの削除に失敗しました",
       "titleRequired": "タイトルを入力してください",
       "contentRequired": "本文を入力してください"
+    }
+  },
+  "narrativeMaintenance": {
+    "title": "構造の健全性",
+    "shortLabel": "健全性",
+    "openPreview": "構造の健全性（プレビュー）",
+    "previewNote": "プレビュー: 依存関係Indexの配線後に実数へ切り替わります。既定は決定的 Maintenance のみで、AI は自動適用しません。",
+    "foundationOnly": "Change Feedの基盤だけが有効です。健全性の実数は依存関係Indexの配線後に表示されます。",
+    "modeLabel": "モード",
+    "principles": "変更検知・再解析・既存構造の書き換えは別段階です。Reanchor 候補は決定的に計算しますが自動適用しません。",
+    "health": {
+      "fresh": "正常",
+      "reanchorable": "位置の再確認が必要",
+      "contentStale": "本文が変更された",
+      "contextStale": "周辺文脈が変更された",
+      "coverageStale": "分析範囲が変わった",
+      "sourceMissing": "根拠が見つからない"
+    }
+  },
+  "workLayer": {
+    "back": "一段戻る",
+    "focus": {
+      "unset": "未設定",
+      "aria": "Focus {{title}}"
+    },
+    "attention": {
+      "aria": "Attention {{count}}件"
+    },
+    "arrival": {
+      "aria": "新しいAttentionが{{count}}件あります"
+    },
+    "resolution": {
+      "aria": "Attentionが{{count}}件解消されました（UIプレビュー）"
+    },
+    "system": {
+      "aria": "System {{label}}",
+      "activityAria": "System Activity",
+      "activityEmpty": "表示できるSystem activityの明細はまだありません。",
+      "activityReadOnly": "SYSは実行状況の読み取り専用プレビューです。FindingやTaskをチェック操作へ変換しません。",
+      "blockedAria": "System Blocked",
+      "blockedReason": "停止理由",
+      "blockedReasonFallback": "停止理由の詳細はまだ提供されていません。",
+      "staleImpact": "古くなる可能性がある範囲",
+      "staleImpactFallback": "影響範囲は未判定です。既存の構造と判断は変更されません。",
+      "blockedPreviewOnly": "再実行とDetachはUI配置だけのプレビューです。保存・再実行・切り離しは行いません。",
+      "retryPreview": "再実行 · PREVIEW ONLY",
+      "detachPreview": "Detach · PREVIEW ONLY",
+      "inspectRun": "INSPECT →",
+      "inspectRunAria": "System runを検査",
+      "runInspectionAria": "System Run Inspection",
+      "runInspectionNote": "この画面はfixture由来の読み取り専用UIです。実行・保存・NIR更新は行いません。",
+      "blockedNoCheckbox": "SYSの停止はFindingやTaskの完了ではありません。チェック操作では解消しません。"
+    },
+    "tray": {
+      "attentionAria": "Attentionの作業トレイ",
+      "focusAria": "Focusの作業トレイ",
+      "attentionNote": "作者の判断で解消します。チェックで完了にはしません。",
+      "openFinding": "{{title}}を開く",
+      "openFindingReview": "{{title}}をChange Reviewで開く",
+      "openProjection": "{{count}}件をResolve Projectionで開く",
+      "openProjectionLabel": "{{count}}件をまとめて RESOLVE で開く",
+      "addTask": "この作業にタスクを追加",
+      "addTaskPreviewAria": "この作業にタスクを追加 · PREVIEW ONLY",
+      "taskDraftLabel": "タスクの下書き",
+      "taskDraftPlaceholder": "作者タスクを入力",
+      "addTaskDraft": "下書きを追加",
+      "cancelTaskDraft": "下書きを閉じる",
+      "taskDraftNotSaved": "NOT SAVED",
+      "taskDraftPreviewNote": "この下書きはUIだけに表示され、保存されません。",
+      "previewOnly": "PREVIEW ONLY",
+      "switchFocus": "Focusへ切り替える",
+      "switchFocusTarget": "{{title}}へFocusを切り替える",
+      "capture": "作業を捕捉",
+      "noFocus": "Focus なし",
+      "emptyAttention": "作者の判断を待つAttentionはありません。",
+      "expandAttention": "Attention {{count}}件を展開",
+      "expandFocus": "Focusを展開",
+      "andMore": " ほか"
+    },
+    "lens": {
+      "aria": "Resolve Lens",
+      "sourceMissing": "現在の本文にAnchorがありません",
+      "reason": "理由",
+      "previous": "以前",
+      "bindingPreviewAria": "{{candidate}}へBindingをプレビュー",
+      "bindingDecision": "{{candidate}}へ Binding",
+      "binding": "{{candidate}}へ Binding",
+      "createPerson": "新しい人物として作成",
+      "annotations": "Lens注釈投影",
+      "impact": "影響",
+      "hold": "保留",
+      "holdPreview": "保留をプレビューしました。保存されていません。",
+      "excludePair": "この2件を今後同一候補にしない",
+      "excludePairPreview": "候補ペアの除外をプレビューしました。保存されていません。",
+      "next": "次: {{title}}"
+    },
+    "projection": {
+      "aria": "Resolve Projection",
+      "presetUnchanged": "PRESET UNCHANGED",
+      "candidateContext": "Context Portal · Codex",
+      "selectedCandidate": "選択中の候補",
+      "followsCandidate": "候補の選択に追従 · UI PREVIEW"
+    },
+    "portal": {
+      "aria": "Context Portal",
+      "open": "Context Portalを開く",
+      "noFinding": "選択中のFindingはありません",
+      "note": "不在のCodex文脈を一時的に表示しています。この選択はまだ保存されません。",
+      "candidates": "Binding候補",
+      "empty": "Binding候補はありません。",
+      "notSaved": "NOT SAVED",
+      "preview": "Bindingをプレビュー",
+      "temporary": "一時的な召喚",
+      "dismiss": "Context Portalを閉じる"
+    },
+    "review": {
+      "aria": "Change Review",
+      "open": "Change Reviewを開く",
+      "anchorMissing": "現在のAnchorは見つかりません",
+      "previewNote": "選択はUI上の確認だけで、まだ保存・適用されません。",
+      "target": "対象 · Chronicle Event「脱獄」",
+      "heading": "Change Review — Chronicle Event「脱獄」 V1→V2",
+      "proposalNotice": "Scene 12の再解釈により、承認済みの内容と異なるProposalが生成されました。適用するまでStory Bibleは書き換えられません。",
+      "diffCaption": "V1とV2のフィールド別差分",
+      "versions": {
+        "accepted": "承認済み · V1",
+        "proposal": "PROPOSAL · V2"
+      },
+      "fields": {
+        "title": "タイトル",
+        "method": "手段",
+        "period": "時期",
+        "notes": "補足"
+      },
+      "values": {
+        "title": "脱獄",
+        "methodOld": "青い剣で錠を斬り、牢を破る",
+        "methodNew": "拾った鍵で錠を開け、牢を出る",
+        "period": "3年霜月 · 確定",
+        "notesOld": "剣の呪いが解けたことを示す"
+      },
+      "unchanged": "変更なし",
+      "removed": "REMOVED",
+      "evidence": {
+        "oldExcerpt": "「彼女は青い剣を鞘から抜いた」",
+        "missing": "MISSING",
+        "oldAnchor": "v48 に一致なし",
+        "newExcerpt": "「アリスは鍵を拾い、地下牢を出た」",
+        "newAnchor": "¶2 · ANCHORED"
+      },
+      "states": {
+        "review": "REVIEW ACCEPTED · V1",
+        "freshness": "FRESHNESS SOURCE-MISSING",
+        "projection": "PROJECTION APPLIED · V1"
+      },
+      "rail": {
+        "trigger": "変更を引き起こした本文",
+        "triggerExcerpt": "「アリスは鍵を拾い、地下牢を出た。振り返りはしなかった。」",
+        "triggerAnchor": "SCENE 12 · ¶2 · v48",
+        "impact": "適用した場合の影響",
+        "impacts": {
+          "timeline": "Timeline「脱獄」ノード",
+          "scenes": "Related Scenes · 4件",
+          "thread": "伏線「青い剣」— 回収位置に波及",
+          "chat": "Chat Context materialization · 2件"
+        },
+        "applyEffect": "適用時: V2をHuman-derived Revisionとして保存し、下流Consumerを再投影",
+        "rejectEffect": "Reject時: V1を維持し、このMaterial Basisをnegative memoryに記録"
+      },
+      "actions": {
+        "apply": "Proposal を適用",
+        "editApply": "編集して適用",
+        "reject": "Reject",
+        "hold": "保留",
+        "ignoreBasis": "このMaterial Basisだけ無視",
+        "correctionRule": "Correction ruleを作成"
+      },
+      "decision": "{{action}}（UI Preview）",
+      "previewOnly": "PREVIEW ONLY · NOT SAVED",
+      "correction": {
+        "aria": "Correction ruleの作成プレビュー",
+        "heading": "CORRECTION RULE · UI PREVIEW",
+        "label": "Correction rule",
+        "defaultValue": "Evidenceが失われたChronicle Eventを再提案する",
+        "note": "ルールの編集内容はこのUIプレビュー内だけに保持され、保存されません。",
+        "close": "Correction ruleの作成プレビューを閉じる"
+      }
+    },
+    "batch": {
+      "aria": "Batch Review",
+      "open": "安全なProposalを一括確認",
+      "heading": "安全なProposalを一括確認",
+      "note": "押下状態で対象を選びます。チェックボックスはAuthor Task専用です。この承認はまだ保存されません。",
+      "criteria": "SAFEは新規追加のみ・既存構造と矛盾なし・Evidence anchored・重複候補なしのすべてを満たすProposalです。満たさないものは個別判断へ残します。",
+      "individual": "要個別判断",
+      "empty": "一括確認できるProposalはありません。",
+      "decision": "{{count}}件のSafe Proposalを一括承認（UI Preview）",
+      "preview": "一括承認をプレビュー",
+      "viewIndividual": "個別に見る",
+      "impact": "承認した場合の影響",
+      "impactNote": "一括承認は1 Decisionとして記録され、個別に取り消せます。要個別判断は選択されません。",
+      "openInspection": "Deep Inspectionを開く",
+      "impacts": {
+        "chronicle": "Chronicle · Event +2 / State +1 / Relation +1",
+        "timeline": "Timeline 再構築 · 1",
+        "scenes": "Related Scenes 再評価 · 4件"
+      }
+    },
+    "disposed": {
+      "aria": "処分済みの判断",
+      "heading": "処分済み",
+      "retention": "件数外 · 削除しない",
+      "open": "処分済み",
+      "openAria": "処分済みの判断 {{count}}件を開く",
+      "closeAria": "処分済みの判断 {{count}}件を閉じる",
+      "empty": "処分済みの判断はありません。",
+      "note": "Dismiss済みはmaterial basisが変わると新しいFindingとして再浮上します。",
+      "snoozedDetail": "再浮上まで保留",
+      "heldDetail": "作者判断まで保持",
+      "basisIgnoredDetail": "このMaterial Basisだけ抑制",
+      "dismissedDetail": "同一問題は再通知しない",
+      "legacyDetail": "推測で再割当しない"
+    },
+    "ledger": {
+      "aria": "すべての作業",
+      "heading": "すべての作業",
+      "open": "すべての作業 →",
+      "openAria": "すべての作業を開く",
+      "back": "トレイに戻る",
+      "order": "更新順",
+      "empty": "該当する作業はありません。",
+      "escape": "トレイへ",
+      "openActiveAria": "進行中の{{title}}をトレイで開く",
+      "taskProgress": "タスク {{completed}}/{{total}}",
+      "filters": {
+        "all": "すべて",
+        "active": "進行中",
+        "waiting": "待機",
+        "held": "保留",
+        "completed": "完了"
+      },
+      "groups": {
+        "waiting": "待機（LATER）"
+      }
+    },
+    "inspect": {
+      "aria": "Deep Inspection",
+      "open": "詳細を検査"
+    },
+    "resolved": {
+      "aria": "プレビュー判断の受領証",
+      "notPersisted": "これはUI上の選択確認です。判断はまだ保存されていません。基盤接続後にHuman Decisionとして記録されます。",
+      "next": "次: {{title}} →",
+      "nextAria": "次: {{title}}を{{destination}}で開く"
     }
   }
 }
