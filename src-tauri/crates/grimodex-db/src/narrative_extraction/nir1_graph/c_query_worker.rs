@@ -9,6 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(test)]
+use std::sync::{Arc, Mutex, MutexGuard};
+
 use anyhow::{anyhow, ensure, Result};
 
 use crate::{
@@ -23,13 +26,114 @@ use super::{
 
 const PARENT_BYTES: usize = 524_288;
 pub const REQUEST_BYTES: usize = 8_192;
+const REQUEST_CAPACITY_BYTES: usize = REQUEST_BYTES;
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 const FRAME_EXIT_POLL_INTERVAL: Duration = Duration::from_micros(100);
+const STARTUP_STDERR_CAPTURE_BYTES: usize = 256;
 
-/// Owner metadata outside the fixed Native allocation is deducted from the
-/// request/result allowance; the allocation itself never grows after reservation.
+#[cfg(feature = "nir1-c-query-test-seam")]
+const SQLITE_FAILURE_RECEIPT_LINE_BYTES: usize = 192;
+
+#[cfg(feature = "nir1-c-query-test-seam")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SqliteAllocationFailureReceipt {
+    kind: &'static str,
+    requested: usize,
+    old_capacity: usize,
+    claimed: usize,
+    available: usize,
+}
+
+#[cfg(feature = "nir1-c-query-test-seam")]
+fn parse_sqlite_allocation_failure_receipt(line: &[u8]) -> Option<SqliteAllocationFailureReceipt> {
+    if line.len() > SQLITE_FAILURE_RECEIPT_LINE_BYTES {
+        return None;
+    }
+    let line = std::str::from_utf8(line.strip_suffix(b"\n")?).ok()?;
+    let fields = line.strip_prefix("NIR1_C_QUERY_SQLITE_ALLOC_FAILURE:v1;kind=")?;
+    let (kind, fields) = fields.split_once(";requested=")?;
+    let kind = match kind {
+        "xMalloc" => "xMalloc",
+        "xRealloc" => "xRealloc",
+        _ => return None,
+    };
+    let (requested, fields) = fields.split_once(";old=")?;
+    let (old_capacity, fields) = fields.split_once(";claimed=")?;
+    let (claimed, available) = fields.split_once(";available=")?;
+    let parse_bytes = |value: &str| {
+        (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| value.parse::<usize>().ok())
+            .flatten()
+    };
+    let receipt = SqliteAllocationFailureReceipt {
+        kind,
+        requested: parse_bytes(requested)?,
+        old_capacity: parse_bytes(old_capacity)?,
+        claimed: parse_bytes(claimed)?,
+        available: parse_bytes(available)?,
+    };
+    (receipt.requested > 0
+        && receipt.available <= receipt.claimed
+        && (receipt.kind != "xMalloc" || receipt.old_capacity == 0))
+        .then_some(receipt)
+}
+
+fn startup_exit_error_from_bytes(bytes: &[u8]) -> anyhow::Error {
+    let Some(stage_end) = bytes.iter().position(|byte| *byte == b'\n') else {
+        return anyhow!("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY");
+    };
+    let stage = match &bytes[..=stage_end] {
+        b"NIR1_C_QUERY_STARTUP_BEFORE_ACTIVATION\n" => "NIR1_C_QUERY_STARTUP_BEFORE_ACTIVATION",
+        b"NIR1_C_QUERY_STARTUP_ACTIVATION\n" => "NIR1_C_QUERY_STARTUP_ACTIVATION",
+        b"NIR1_C_QUERY_STARTUP_READER_OPEN\n" => "NIR1_C_QUERY_STARTUP_READER_OPEN",
+        b"NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION\n" => {
+            "NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION"
+        }
+        b"NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_SQLITE_NOMEM\n" => {
+            "NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_SQLITE_NOMEM"
+        }
+        b"NIR1_C_QUERY_REG_NOMEM:SETUP\n" => "NIR1_C_QUERY_REG_NOMEM:SETUP",
+        b"NIR1_C_QUERY_REG_NOMEM:PRE_IDENTITY\n" => "NIR1_C_QUERY_REG_NOMEM:PRE_IDENTITY",
+        b"NIR1_C_QUERY_REG_NOMEM:OWNER_SETUP\n" => "NIR1_C_QUERY_REG_NOMEM:OWNER_SETUP",
+        b"NIR1_C_QUERY_REG_NOMEM:BEGIN\n" => "NIR1_C_QUERY_REG_NOMEM:BEGIN",
+        b"NIR1_C_QUERY_REG_NOMEM:PINNED_IDENTITY\n" => "NIR1_C_QUERY_REG_NOMEM:PINNED_IDENTITY",
+        b"NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX\n" => "NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX",
+        b"NIR1_C_QUERY_REG_NOMEM:SOURCE_INDEX\n" => "NIR1_C_QUERY_REG_NOMEM:SOURCE_INDEX",
+        b"NIR1_C_QUERY_REG_NOMEM:SEAL\n" => "NIR1_C_QUERY_REG_NOMEM:SEAL",
+        b"NIR1_C_QUERY_REG_NOMEM:POST_IDENTITY\n" => "NIR1_C_QUERY_REG_NOMEM:POST_IDENTITY",
+        b"NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_SQLITE_ERROR\n" => {
+            "NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_SQLITE_ERROR"
+        }
+        b"NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED\n" => {
+            "NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED"
+        }
+        _ => return anyhow!("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY"),
+    };
+    #[cfg(feature = "nir1-c-query-test-seam")]
+    if stage == "NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_SQLITE_NOMEM"
+        || stage.starts_with("NIR1_C_QUERY_REG_NOMEM:")
+    {
+        let rest = &bytes[stage_end + 1..];
+        if let Some(receipt_end) = rest.iter().position(|byte| *byte == b'\n') {
+            if let Some(receipt) = parse_sqlite_allocation_failure_receipt(&rest[..=receipt_end]) {
+                return anyhow!(
+                    "NIR1_GRAPH_WORKER_EXIT_BEFORE_READY: {stage}; NIR1_C_QUERY_SQLITE_ALLOC_FAILURE:v1;kind={};requested={};old={};claimed={};available={}",
+                    receipt.kind,
+                    receipt.requested,
+                    receipt.old_capacity,
+                    receipt.claimed,
+                    receipt.available,
+                );
+            }
+        }
+    }
+    anyhow!("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY: {stage}")
+}
+
+/// Owner metadata and bounded caller-owned request storage are deducted from
+/// the Native request/result allowance; the allocation never grows after reservation.
 struct RegionControl {
     storage: Option<Vec<NativeRegion>>,
     claim: Option<CQueryChildClaim>,
@@ -52,6 +156,7 @@ const READER_PIPE_ERROR: usize = 1 << 5;
 const OWNER_REQUEST: usize = 1 << 6;
 const OWNER_CANCEL: usize = 1 << 7;
 const PARENT_THREAD_READY: usize = 1 << 8;
+const READER_COMMIT: usize = 1 << 9;
 
 /// Inline one-shot state and wake handles; no channel queue or backing allocation.
 struct ReaderMailbox {
@@ -63,7 +168,10 @@ struct ReaderMailbox {
 const MAILBOX_BYTES: usize = std::mem::size_of::<ReaderMailbox>();
 pub const FRAME_BYTES: usize = PARENT_BYTES
     - REQUEST_BYTES
+    - REQUEST_CAPACITY_BYTES
+    - std::mem::size_of::<Nir1GraphRequest>()
     - std::mem::size_of::<RegionControl>()
+    - std::mem::size_of::<Option<ChildSession>>()
     - std::mem::size_of::<usize>() // borrowed lease handle
     - MAILBOX_BYTES;
 const STORAGE_BYTES: usize = REQUEST_BYTES + FRAME_BYTES;
@@ -82,17 +190,79 @@ struct NativeRegion {
 // immutable until the reader is joined or the allocation is quarantined.
 unsafe impl Sync for NativeRegion {}
 
-#[derive(Clone, Copy)]
-struct NativeRegionPtr(*const NativeRegion);
+#[cfg(test)]
+#[derive(Clone, Copy, Default)]
+struct ReaderPublicationStamps {
+    commit: Option<Duration>,
+    eof: Option<Duration>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct ReaderPublicationState {
+    admitted_at: Option<Instant>,
+    stamps: ReaderPublicationStamps,
+}
+
+/// Reader-shared test timing stays in this Arc sidecar, outside the fixed NativeRegion.
+#[derive(Clone, Default)]
+struct ReaderPublicationTiming {
+    #[cfg(test)]
+    state: Arc<Mutex<ReaderPublicationState>>,
+}
+
+impl ReaderPublicationTiming {
+    #[cfg(test)]
+    fn lock(&self) -> MutexGuard<'_, ReaderPublicationState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
+    fn begin_query(&self, admitted_at: Instant) {
+        *self.lock() = ReaderPublicationState {
+            admitted_at: Some(admitted_at),
+            stamps: ReaderPublicationStamps::default(),
+        };
+    }
+
+    fn publish(&self, region: &NativeRegion, event: usize) {
+        #[cfg(test)]
+        {
+            let mut state = self.lock();
+            let published_at = state.admitted_at.as_ref().map(Instant::elapsed);
+            region.publish(event);
+            match event {
+                READER_COMMIT => state.stamps.commit = published_at,
+                READER_EOF => state.stamps.eof = published_at,
+                _ => {}
+            }
+        }
+        #[cfg(not(test))]
+        region.publish(event);
+    }
+
+    #[cfg(test)]
+    fn stamps(&self) -> ReaderPublicationStamps {
+        self.lock().stamps
+    }
+}
+
+struct NativeRegionPtr {
+    region: *const NativeRegion,
+    reader_timing: ReaderPublicationTiming,
+}
 
 // SAFETY: the pointed-to allocation is stable and is retained until reader
-// join, or leaked by quarantine if cleanup cannot prove termination.
+// join, or leaked by quarantine if cleanup cannot prove termination. Test-only
+// timing state is independently synchronized and Arc-owned.
 unsafe impl Send for NativeRegionPtr {}
 
 impl NativeRegionPtr {
     unsafe fn read_pipe(self, stdout: ChildStdout) {
         // SAFETY: preserved from the owner's stable-reservation contract.
-        unsafe { read_worker_pipe(stdout, self.0) };
+        unsafe { read_worker_pipe(stdout, self.region, &self.reader_timing) };
     }
 }
 
@@ -100,7 +270,10 @@ const _: () = assert!(std::mem::size_of::<NativeRegion>() == MAILBOX_BYTES + STO
 const _: () = assert!(
     std::mem::size_of::<NativeRegion>()
         + std::mem::size_of::<RegionControl>()
+        + std::mem::size_of::<Option<ChildSession>>()
         + std::mem::size_of::<usize>()
+        + REQUEST_CAPACITY_BYTES
+        + std::mem::size_of::<Nir1GraphRequest>()
         == PARENT_BYTES
 );
 
@@ -197,6 +370,12 @@ fn frame_length_allowed(len: usize) -> bool {
     (1..=FRAME_BYTES).contains(&len)
 }
 
+fn result_wire_complete(events: usize) -> bool {
+    events & (READER_FRAME | READER_COMMIT | READER_EOF)
+        == (READER_FRAME | READER_COMMIT | READER_EOF)
+        && events & (READER_FAILED | READER_TRAILING | READER_PIPE_ERROR) == 0
+}
+
 struct ChildSession {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -209,16 +388,36 @@ struct ChildSession {
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct QueryPhaseDiagnostics {
     frame_binding_validated_at: Option<Duration>,
-    reader_eof_observed_at: Option<Duration>,
+    reader_commit_published_at: Option<Duration>,
+    reader_eof_published_at: Option<Duration>,
+    parent_commit_observed_at: Option<Duration>,
+    parent_eof_observed_at: Option<Duration>,
+    pre_cleanup_deadline_decision_at: Option<Duration>,
+    cleanup_elapsed: Option<Duration>,
     first_try_wait_success_at: Option<Duration>,
     first_post_frame_try_wait_none_at: Option<Duration>,
     first_post_frame_try_wait_success_at: Option<Duration>,
     post_frame_try_wait_none_count: u32,
     post_frame_park_count: u32,
-    reader_join_start_at: Option<Duration>,
-    reader_join_end_at: Option<Duration>,
     final_binding_check_start_at: Option<Duration>,
     final_binding_check_end_at: Option<Duration>,
+}
+
+#[cfg(test)]
+impl QueryPhaseDiagnostics {
+    fn observe_events(&mut self, events: usize, observed_at: Duration) {
+        if events & READER_COMMIT != 0 {
+            self.parent_commit_observed_at.get_or_insert(observed_at);
+        }
+        if events & READER_EOF != 0 {
+            self.parent_eof_observed_at.get_or_insert(observed_at);
+        }
+    }
+
+    fn observe_publications(&mut self, stamps: ReaderPublicationStamps) {
+        self.reader_commit_published_at = stamps.commit;
+        self.reader_eof_published_at = stamps.eof;
+    }
 }
 
 /// Holds one Native workspace snapshot. A result lease borrows this owner, so
@@ -234,14 +433,54 @@ pub struct CQueryWorkerOwner {
     hold_after_request_for_test: Option<PathBuf>,
     #[cfg(test)]
     suppress_eof_proof_for_test: bool,
+    #[cfg(all(test, target_os = "linux"))]
+    suppress_exit_proof_for_test: bool,
+    #[cfg(all(test, target_os = "linux"))]
+    panic_reader_after_pipe_for_test: bool,
+    #[cfg(test)]
+    partial_terminal_commit_for_test: bool,
+    #[cfg(test)]
+    partial_frame_for_test: bool,
+    #[cfg(test)]
+    test_partial_frame_rejected_without_frame: bool,
+    #[cfg(test)]
+    test_partial_frame_claim_held_before_cleanup: bool,
+    #[cfg(test)]
+    trailing_data_for_test: bool,
+    #[cfg(all(test, target_os = "linux"))]
+    hold_after_commit_for_test: bool,
+    #[cfg(all(test, target_os = "linux"))]
+    hold_stdout_open_after_commit_for_test: bool,
+    #[cfg(test)]
+    rust_oom_for_test: bool,
+    #[cfg(test)]
+    sqlite_nomem_for_test: bool,
+    #[cfg(all(test, unix))]
+    test_abnormal_exit_signal: Option<i32>,
+    #[cfg(test)]
+    test_available_request_bound_q2_frame_observed: bool,
+    #[cfg(test)]
+    test_committed_request_bound_q2_frame_with_trailing_observed: bool,
+    #[cfg(all(test, target_os = "linux"))]
+    test_frame_commit_observed_within_deadline: bool,
+    #[cfg(all(test, target_os = "linux"))]
+    test_missing_eof_boundary_observed_before_cleanup: bool,
     #[cfg(test)]
     test_cleanup_proved: bool,
+    #[cfg(all(test, target_os = "linux"))]
+    test_exit_proof_suppressed: bool,
+    #[cfg(all(test, target_os = "linux"))]
+    test_reader_join_failed: bool,
     #[cfg(test)]
     test_abnormal_exit_observed: bool,
+    #[cfg(test)]
+    test_abnormal_exit_code: Option<i32>,
     #[cfg(test)]
     test_normal_exit_and_eof_observed: bool,
     #[cfg(test)]
     query_phase_diagnostics: QueryPhaseDiagnostics,
+    #[cfg(test)]
+    reader_timing_for_test: ReaderPublicationTiming,
 }
 
 impl CQueryWorkerOwner {
@@ -268,14 +507,54 @@ impl CQueryWorkerOwner {
             hold_after_request_for_test: None,
             #[cfg(test)]
             suppress_eof_proof_for_test: false,
+            #[cfg(all(test, target_os = "linux"))]
+            suppress_exit_proof_for_test: false,
+            #[cfg(all(test, target_os = "linux"))]
+            panic_reader_after_pipe_for_test: false,
+            #[cfg(test)]
+            partial_terminal_commit_for_test: false,
+            #[cfg(test)]
+            partial_frame_for_test: false,
+            #[cfg(test)]
+            test_partial_frame_rejected_without_frame: false,
+            #[cfg(test)]
+            test_partial_frame_claim_held_before_cleanup: false,
+            #[cfg(test)]
+            trailing_data_for_test: false,
+            #[cfg(all(test, target_os = "linux"))]
+            hold_after_commit_for_test: false,
+            #[cfg(all(test, target_os = "linux"))]
+            hold_stdout_open_after_commit_for_test: false,
+            #[cfg(test)]
+            rust_oom_for_test: false,
+            #[cfg(test)]
+            sqlite_nomem_for_test: false,
+            #[cfg(all(test, unix))]
+            test_abnormal_exit_signal: None,
+            #[cfg(test)]
+            test_available_request_bound_q2_frame_observed: false,
+            #[cfg(test)]
+            test_committed_request_bound_q2_frame_with_trailing_observed: false,
+            #[cfg(all(test, target_os = "linux"))]
+            test_frame_commit_observed_within_deadline: false,
+            #[cfg(all(test, target_os = "linux"))]
+            test_missing_eof_boundary_observed_before_cleanup: false,
             #[cfg(test)]
             test_cleanup_proved: false,
+            #[cfg(all(test, target_os = "linux"))]
+            test_exit_proof_suppressed: false,
+            #[cfg(all(test, target_os = "linux"))]
+            test_reader_join_failed: false,
             #[cfg(test)]
             test_abnormal_exit_observed: false,
+            #[cfg(test)]
+            test_abnormal_exit_code: None,
             #[cfg(test)]
             test_normal_exit_and_eof_observed: false,
             #[cfg(test)]
             query_phase_diagnostics: QueryPhaseDiagnostics::default(),
+            #[cfg(test)]
+            reader_timing_for_test: ReaderPublicationTiming::default(),
         }
     }
 
@@ -343,8 +622,90 @@ impl CQueryWorkerOwner {
     }
 
     #[cfg(test)]
+    pub(super) fn partial_terminal_commit_for_test(&mut self) {
+        self.partial_terminal_commit_for_test = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn partial_frame_for_test(&mut self) {
+        self.partial_frame_for_test = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn partial_frame_failure_kept_claim_for_test(&self) -> bool {
+        self.test_partial_frame_rejected_without_frame
+            && self.test_partial_frame_claim_held_before_cleanup
+    }
+
+    #[cfg(test)]
+    pub(super) fn trailing_data_for_test(&mut self) {
+        self.trailing_data_for_test = true;
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn hold_after_commit_for_test(&mut self) {
+        self.hold_after_commit_for_test = true;
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn hold_stdout_open_after_commit_for_test(&mut self) {
+        self.hold_stdout_open_after_commit_for_test = true;
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn suppress_exit_proof_for_test(&mut self) {
+        self.suppress_exit_proof_for_test = true;
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn panic_reader_after_pipe_for_test(&mut self) {
+        self.panic_reader_after_pipe_for_test = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn rust_oom_for_test(&mut self) {
+        self.rust_oom_for_test = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn sqlite_nomem_for_test(&mut self) {
+        self.sqlite_nomem_for_test = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn available_request_bound_q2_frame_observed_for_test(&self) -> bool {
+        self.test_available_request_bound_q2_frame_observed
+    }
+
+    #[cfg(test)]
+    pub(super) fn committed_request_bound_q2_frame_with_trailing_observed_for_test(&self) -> bool {
+        self.test_committed_request_bound_q2_frame_with_trailing_observed
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn frame_commit_observed_within_deadline_for_test(&self) -> bool {
+        self.test_frame_commit_observed_within_deadline
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn missing_eof_boundary_observed_before_cleanup_for_test(&self) -> bool {
+        self.test_missing_eof_boundary_observed_before_cleanup
+    }
+
+    #[cfg(test)]
     pub(super) fn cleanup_proved_for_test(&self) -> bool {
         self.test_cleanup_proved
+    }
+
+    #[cfg(test)]
+    pub(super) fn retirement_pending_for_test(&self) -> bool {
+        self.region.lease_held
+            && self.region.claim.is_some()
+            && self.region.storage.is_some()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.reader.is_some())
     }
 
     #[cfg(test)]
@@ -361,6 +722,40 @@ impl CQueryWorkerOwner {
     }
 
     #[cfg(test)]
+    pub(super) fn abnormal_exit_code_for_test(&self) -> Option<i32> {
+        self.test_abnormal_exit_code
+    }
+
+    #[cfg(all(test, unix))]
+    pub(super) fn abnormal_exit_signal_for_test(&self) -> Option<i32> {
+        self.test_abnormal_exit_signal
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_for_child_exit_code_for_test(&mut self, expected: i32) -> Result<()> {
+        let deadline = Instant::now() + CLEANUP_TIMEOUT;
+        loop {
+            self.poll_exit()?;
+            if let Some(status) = self
+                .session
+                .as_ref()
+                .and_then(|session| session.exit.as_ref())
+            {
+                ensure!(
+                    status.code() == Some(expected),
+                    "NIR1_GRAPH_TEST_CHILD_EXIT_CODE"
+                );
+                return Ok(());
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "NIR1_GRAPH_TEST_CHILD_EXIT_UNOBSERVED"
+            );
+            thread::park_timeout(POLL_INTERVAL);
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn normal_exit_and_eof_observed_for_test(&self) -> bool {
         self.test_normal_exit_and_eof_observed
     }
@@ -368,6 +763,14 @@ impl CQueryWorkerOwner {
     #[cfg(test)]
     pub(super) fn query_phase_diagnostics_for_test(&self) -> QueryPhaseDiagnostics {
         self.query_phase_diagnostics
+    }
+
+    #[cfg(test)]
+    fn record_deadline_decision_for_test(&mut self, decision_at: Duration) {
+        self.query_phase_diagnostics
+            .pre_cleanup_deadline_decision_at = Some(decision_at);
+        self.query_phase_diagnostics
+            .observe_publications(self.reader_timing_for_test.stamps());
     }
 
     #[cfg(test)]
@@ -383,11 +786,47 @@ impl CQueryWorkerOwner {
             })
     }
 
-    /// Admit exactly one request after READY, validate its bounded frame in-place,
-    /// and require both child exit and pipe EOF before returning a lease.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn result_lease_exit_proof_quarantined_for_test(&self) -> bool {
+        self.region.quarantined
+            && self.snapshot.is_some()
+            && self.region.claim.is_some()
+            && self.region.storage.is_some()
+            && self.test_exit_proof_suppressed
+            && self.session.as_ref().is_some_and(|session| {
+                session.eof
+                    && session.exit.is_none()
+                    && session.reader.is_some()
+                    && session.stdin.is_none()
+            })
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn result_lease_reader_join_quarantined_for_test(&self) -> bool {
+        use std::os::unix::process::ExitStatusExt;
+
+        self.region.quarantined
+            && !self.test_cleanup_proved
+            && self.test_reader_join_failed
+            && self.snapshot.is_some()
+            && self.region.claim.is_some()
+            && self.region.storage.is_some()
+            && self.session.as_ref().is_some_and(|session| {
+                session.eof
+                    && session
+                        .exit
+                        .as_ref()
+                        .is_some_and(|status| status.signal() == Some(libc::SIGKILL))
+                    && session.reader.is_none()
+                    && session.stdin.is_none()
+            })
+    }
+
+    /// Admit one request after READY and return only a validated, committed frame
+    /// followed by clean EOF; child exit and reader join are retirement gates.
     pub fn query_once<'a>(
         &'a mut self,
-        request: &Nir1GraphRequest,
+        request: &'a Nir1GraphRequest,
     ) -> Result<CQueryResultLease<'a>> {
         ensure!(self.region.prepared, "NIR1_GRAPH_WORKER_NOT_READY");
         ensure!(!self.region.started, "NIR1_GRAPH_WORKER_ONE_QUERY_ONLY");
@@ -396,6 +835,7 @@ impl CQueryWorkerOwner {
         #[cfg(test)]
         {
             self.query_phase_diagnostics = QueryPhaseDiagnostics::default();
+            self.reader_timing_for_test.begin_query(admitted_at);
         }
         self.region.started = true;
         let result = self
@@ -417,6 +857,8 @@ impl CQueryWorkerOwner {
                 }
                 let elapsed = admitted_at.elapsed();
                 if elapsed > QUERY_DEADLINE {
+                    #[cfg(test)]
+                    self.record_deadline_decision_for_test(elapsed);
                     anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
                 }
                 self.region.elapsed = Some(elapsed);
@@ -427,7 +869,48 @@ impl CQueryWorkerOwner {
                 self.region.lease_held = true;
                 Ok(CQueryResultLease { owner: self })
             }
-            Err(error) => Err(self.cleanup_error(error)),
+            Err(error) => {
+                #[cfg(all(test, target_os = "linux"))]
+                {
+                    // Capture the wire/lease/child state before cleanup closes the pipe.
+                    let child_still_live = self.poll_exit().is_ok()
+                        && self
+                            .session
+                            .as_ref()
+                            .is_some_and(|session| session.exit.is_none());
+                    let claim_still_busy = self.region.claim.is_some()
+                        && self.snapshot.as_ref().is_some_and(|snapshot| {
+                            snapshot.authority.claim_c_query_child().is_none()
+                        });
+                    self.test_missing_eof_boundary_observed_before_cleanup = child_still_live
+                        && claim_still_busy
+                        && !self.region.lease_held
+                        && self.test_frame_commit_observed_within_deadline
+                        && self.committed_request_bound_q2_frame_without_eof_for_test(request);
+                    if self.hold_stdout_open_after_commit_for_test
+                        && !self.test_missing_eof_boundary_observed_before_cleanup
+                    {
+                        return Err(self.cleanup_query_error_for_test(anyhow!(
+                            "NIR1_GRAPH_TEST_MISSING_EOF_BOUNDARY_UNOBSERVED: {error:#}"
+                        )));
+                    }
+                }
+                #[cfg(test)]
+                {
+                    self.test_available_request_bound_q2_frame_observed =
+                        self.available_request_bound_q2_frame_for_test(request);
+                    self.test_committed_request_bound_q2_frame_with_trailing_observed =
+                        self.committed_request_bound_q2_frame_with_trailing_for_test(request);
+                }
+                #[cfg(test)]
+                {
+                    Err(self.cleanup_query_error_for_test(error))
+                }
+                #[cfg(not(test))]
+                {
+                    Err(self.cleanup_error(error))
+                }
+            }
         }
     }
 
@@ -440,9 +923,15 @@ impl CQueryWorkerOwner {
         }
         self.region.prepared = false;
         self.region.quarantined = false;
-        if let Some(claim) = self.region.claim.take() {
-            claim.release();
-        }
+        self.release_claim_after_retirement();
+        error
+    }
+
+    #[cfg(test)]
+    fn cleanup_query_error_for_test(&mut self, error: anyhow::Error) -> anyhow::Error {
+        let started_at = Instant::now();
+        let error = self.cleanup_error(error);
+        self.query_phase_diagnostics.cleanup_elapsed = Some(started_at.elapsed());
         error
     }
 
@@ -459,13 +948,42 @@ impl CQueryWorkerOwner {
         self.region.prepared_project_len = project_id.len();
         self.region.storage = Some(storage);
 
-        let mut child = Command::new(&self.worker)
+        let mut command = Command::new(&self.worker);
+        command
             .arg(authority.path())
             .arg(project_id)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stderr(Stdio::piped());
+        #[cfg(test)]
+        if self.partial_terminal_commit_for_test {
+            command.env("NIR1_C_QUERY_TEST_PARTIAL_COMMIT", "partial");
+        }
+        #[cfg(test)]
+        if self.partial_frame_for_test {
+            command.env("NIR1_C_QUERY_TEST_PARTIAL_FRAME", "partial");
+        }
+        #[cfg(test)]
+        if self.trailing_data_for_test {
+            command.env("NIR1_C_QUERY_TEST_TRAILING_DATA", "trailing");
+        }
+        #[cfg(all(test, target_os = "linux"))]
+        if self.hold_after_commit_for_test {
+            command.env("NIR1_C_QUERY_TEST_HOLD_AFTER_COMMIT", "held");
+        }
+        #[cfg(all(test, target_os = "linux"))]
+        if self.hold_stdout_open_after_commit_for_test {
+            command.env("NIR1_C_QUERY_TEST_HOLD_STDOUT_OPEN_AFTER_COMMIT", "held");
+        }
+        #[cfg(test)]
+        if self.rust_oom_for_test {
+            command.env("NIR1_C_QUERY_TEST_RUST_OOM", "query");
+        }
+        #[cfg(test)]
+        if self.sqlite_nomem_for_test {
+            command.env("NIR1_C_QUERY_TEST_SQLITE_NOMEM", "query");
+        }
+        let mut child = command.spawn()?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         if stdin.is_none() || stdout.is_none() {
@@ -485,11 +1003,30 @@ impl CQueryWorkerOwner {
             .storage
             .as_ref()
             .and_then(|storage| storage.first())
-            .map(|region| NativeRegionPtr(region as *const NativeRegion))
+            .map(|region| NativeRegionPtr {
+                region: region as *const NativeRegion,
+                reader_timing: {
+                    #[cfg(test)]
+                    {
+                        self.reader_timing_for_test.clone()
+                    }
+                    #[cfg(not(test))]
+                    {
+                        ReaderPublicationTiming::default()
+                    }
+                },
+            })
             .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
-        let reader = match thread::Builder::new()
-            .spawn(move || unsafe { region_address.read_pipe(stdout) })
-        {
+        #[cfg(all(test, target_os = "linux"))]
+        let panic_reader_after_pipe = self.panic_reader_after_pipe_for_test;
+        let reader = match thread::Builder::new().spawn(move || {
+            // SAFETY: the owner pins the region until this reader is joined or quarantined.
+            unsafe { region_address.read_pipe(stdout) };
+            #[cfg(all(test, target_os = "linux"))]
+            if panic_reader_after_pipe {
+                panic!("NIR1_GRAPH_TEST_READER_JOIN_FAILURE");
+            }
+        }) {
             Ok(reader) => reader,
             Err(error) => {
                 // stdout was transferred to a thread that could not start; cleanup
@@ -654,7 +1191,33 @@ impl CQueryWorkerOwner {
                         .saturating_add(1);
                 }
             }
-            if admitted_at.elapsed() >= QUERY_DEADLINE {
+            #[cfg(test)]
+            {
+                let events = self
+                    .region
+                    .storage
+                    .as_ref()
+                    .and_then(|storage| storage.first())
+                    .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?
+                    .mailbox
+                    .events
+                    .load(Ordering::Acquire);
+                let events_observed_at = admitted_at.elapsed();
+                self.query_phase_diagnostics
+                    .observe_events(events, events_observed_at);
+                self.query_phase_diagnostics
+                    .observe_publications(self.reader_timing_for_test.stamps());
+                #[cfg(target_os = "linux")]
+                if events & (READER_FRAME | READER_COMMIT) == (READER_FRAME | READER_COMMIT)
+                    && events_observed_at < QUERY_DEADLINE
+                {
+                    self.test_frame_commit_observed_within_deadline = true;
+                }
+            }
+            let elapsed = admitted_at.elapsed();
+            if elapsed >= QUERY_DEADLINE {
+                #[cfg(test)]
+                self.record_deadline_decision_for_test(elapsed);
                 anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
             }
             let native = self
@@ -665,18 +1228,25 @@ impl CQueryWorkerOwner {
                 .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
             let events = native.mailbox.events.load(Ordering::Acquire);
             #[cfg(test)]
-            if events & READER_EOF != 0
-                && self
-                    .query_phase_diagnostics
-                    .reader_eof_observed_at
-                    .is_none()
             {
-                self.query_phase_diagnostics.reader_eof_observed_at = Some(admitted_at.elapsed());
+                self.query_phase_diagnostics
+                    .observe_events(events, admitted_at.elapsed());
+                self.query_phase_diagnostics
+                    .observe_publications(self.reader_timing_for_test.stamps());
             }
             if events & READER_TRAILING != 0 {
                 anyhow::bail!("NIR1_GRAPH_WORKER_TRAILING_PIPE_DATA");
             }
             if events & READER_FAILED != 0 {
+                #[cfg(test)]
+                if self.partial_frame_for_test {
+                    self.test_partial_frame_rejected_without_frame =
+                        self.region.result_len == 0 && events & (READER_FRAME | READER_COMMIT) == 0;
+                    self.test_partial_frame_claim_held_before_cleanup = self
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.authority.claim_c_query_child().is_none());
+                }
                 anyhow::bail!("NIR1_GRAPH_WORKER_PIPE_TRUNCATED");
             }
             if events & READER_PIPE_ERROR != 0 {
@@ -685,18 +1255,29 @@ impl CQueryWorkerOwner {
             if events & READER_EOF != 0 {
                 #[cfg(test)]
                 if self.suppress_eof_proof_for_test {
-                    if self
-                        .session
-                        .as_ref()
-                        .is_some_and(|session| session.exit.is_some_and(|status| status.success()))
-                    {
+                    ensure!(
+                        events & READER_FRAME != 0,
+                        "NIR1_GRAPH_TEST_EOF_WITHOUT_COMPLETE_FRAME"
+                    );
+                    let exit_deadline = Instant::now() + CLEANUP_TIMEOUT;
+                    loop {
+                        self.poll_exit()?;
+                        if let Some(status) = self
+                            .session
+                            .as_ref()
+                            .and_then(|session| session.exit.as_ref())
+                        {
+                            ensure!(status.success(), "NIR1_GRAPH_TEST_CHILD_EXIT_FAILURE");
+                            break;
+                        }
                         ensure!(
-                            events & READER_FRAME != 0,
-                            "NIR1_GRAPH_TEST_EOF_WITHOUT_COMPLETE_FRAME"
+                            Instant::now() < exit_deadline,
+                            "NIR1_GRAPH_TEST_CHILD_EXIT_UNOBSERVED"
                         );
-                        self.test_normal_exit_and_eof_observed = true;
-                        anyhow::bail!("NIR1_GRAPH_TEST_EOF_PROOF_UNOBSERVED");
+                        thread::yield_now();
                     }
+                    self.test_normal_exit_and_eof_observed = true;
+                    anyhow::bail!("NIR1_GRAPH_TEST_EOF_PROOF_UNOBSERVED");
                 } else {
                     self.session
                         .as_mut()
@@ -749,16 +1330,7 @@ impl CQueryWorkerOwner {
                 }
                 self.region.result_len = len;
             }
-            if self.region.result_len > 0
-                && self
-                    .session
-                    .as_ref()
-                    .is_some_and(|session| session.eof && session.exit.is_some())
-            {
-                #[cfg(test)]
-                self.finish_session(admitted_at)?;
-                #[cfg(not(test))]
-                self.finish_session()?;
+            if self.region.result_len > 0 && result_wire_complete(events) {
                 return Ok(());
             }
             // result_len is set only after complete frame validation and the binding recheck.
@@ -770,6 +1342,8 @@ impl CQueryWorkerOwner {
             let Some(timeout) =
                 query_poll_timeout(self.region.result_len > 0, exit_observed, remaining)
             else {
+                #[cfg(test)]
+                self.record_deadline_decision_for_test(admitted_at.elapsed());
                 anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
             };
             #[cfg(test)]
@@ -796,7 +1370,7 @@ impl CQueryWorkerOwner {
                 .as_ref()
                 .is_some_and(|session| session.exit.is_some())
             {
-                anyhow::bail!("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY");
+                return Err(self.startup_exit_error());
             }
             if Instant::now() >= deadline {
                 anyhow::bail!("NIR1_GRAPH_WORKER_START_TIMEOUT");
@@ -816,13 +1390,15 @@ impl CQueryWorkerOwner {
                     .as_mut()
                     .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_SESSION"))?
                     .eof = true;
-                anyhow::bail!("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY");
+                thread::park_timeout(POLL_INTERVAL);
+                continue;
             }
             if events & READER_TRAILING != 0 {
                 anyhow::bail!("NIR1_GRAPH_WORKER_TRAILING_PIPE_DATA");
             }
             if events & READER_PIPE_ERROR != 0 {
-                anyhow::bail!("NIR1_GRAPH_WORKER_PIPE_ERROR");
+                thread::park_timeout(POLL_INTERVAL);
+                continue;
             }
             if events & READER_FRAME != 0 {
                 anyhow::bail!("NIR1_GRAPH_WORKER_RESULT_BEFORE_REQUEST");
@@ -834,44 +1410,144 @@ impl CQueryWorkerOwner {
         }
     }
 
-    fn finish_session(&mut self, #[cfg(test)] admitted_at: Instant) -> Result<()> {
-        let session = self
+    fn startup_exit_error(&mut self) -> anyhow::Error {
+        let Some(stderr) = self
             .session
-            .as_ref()
-            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_SESSION"))?;
-        ensure!(session.eof, "NIR1_GRAPH_WORKER_EOF_UNPROVED");
-        ensure!(
-            session.exit.is_some_and(|status| status.success()),
-            "NIR1_GRAPH_WORKER_EXIT_FAILURE"
-        );
-        let mut session = self
-            .session
-            .take()
-            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_SESSION"))?;
-        if let Some(reader) = session.reader.take() {
-            #[cfg(test)]
-            {
-                self.query_phase_diagnostics.reader_join_start_at = Some(admitted_at.elapsed());
+            .as_mut()
+            .and_then(|session| session.child.stderr.as_mut())
+        else {
+            return anyhow!("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY");
+        };
+        let mut bytes = [0u8; STARTUP_STDERR_CAPTURE_BYTES];
+        let mut length = 0;
+        let mut line_count = 0;
+        #[cfg(feature = "nir1-c-query-test-seam")]
+        let max_lines = 2;
+        #[cfg(not(feature = "nir1-c-query-test-seam"))]
+        let max_lines = 1;
+        while length < bytes.len() && line_count < max_lines {
+            let Ok(read) = stderr.read(&mut bytes[length..]) else {
+                break;
+            };
+            if read == 0 {
+                break;
             }
-            let join_result = reader.join();
-            #[cfg(test)]
-            {
-                self.query_phase_diagnostics.reader_join_end_at = Some(admitted_at.elapsed());
+            line_count += bytes[length..length + read]
+                .iter()
+                .filter(|byte| **byte == b'\n')
+                .count();
+            length += read;
+        }
+        startup_exit_error_from_bytes(&bytes[..length])
+    }
+
+    fn poll_exit(&mut self) -> Result<()> {
+        let exit = {
+            let session = self
+                .session
+                .as_mut()
+                .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_SESSION"))?;
+            if session.exit.is_some() {
+                return Ok(());
             }
-            join_result.map_err(|_| anyhow!("NIR1_GRAPH_WORKER_READER_PANIC"))?;
+            session.child.try_wait()?
+        };
+        if let Some(exit) = exit {
+            #[cfg(all(test, target_os = "linux"))]
+            if self.suppress_exit_proof_for_test {
+                // Simulate failure to transfer an observed exit status to the owner.
+                self.test_exit_proof_suppressed = true;
+                return Ok(());
+            }
+            self.session
+                .as_mut()
+                .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_SESSION"))?
+                .exit = Some(exit);
         }
         Ok(())
     }
 
-    fn poll_exit(&mut self) -> Result<()> {
-        let session = self
-            .session
-            .as_mut()
-            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_SESSION"))?;
-        if session.exit.is_none() {
-            session.exit = session.child.try_wait()?;
+    #[cfg(test)]
+    fn available_request_bound_q2_frame_for_test(&self, request: &Nir1GraphRequest) -> bool {
+        self.request_bound_q2_frame_for_test(
+            request,
+            READER_FRAME | READER_FAILED,
+            READER_COMMIT | READER_TRAILING | READER_PIPE_ERROR,
+        )
+    }
+
+    #[cfg(test)]
+    fn committed_request_bound_q2_frame_with_trailing_for_test(
+        &self,
+        request: &Nir1GraphRequest,
+    ) -> bool {
+        self.request_bound_q2_frame_for_test(
+            request,
+            READER_FRAME | READER_COMMIT | READER_TRAILING,
+            READER_FAILED | READER_PIPE_ERROR,
+        )
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    fn committed_request_bound_q2_frame_without_eof_for_test(
+        &self,
+        request: &Nir1GraphRequest,
+    ) -> bool {
+        self.region.result_len > 0
+            && self
+                .region
+                .elapsed
+                .is_some_and(|elapsed| elapsed <= QUERY_DEADLINE)
+            && self.request_bound_q2_frame_for_test(
+                request,
+                READER_FRAME | READER_COMMIT,
+                READER_EOF | READER_FAILED | READER_TRAILING | READER_PIPE_ERROR,
+            )
+    }
+
+    #[cfg(test)]
+    fn request_bound_q2_frame_for_test(
+        &self,
+        request: &Nir1GraphRequest,
+        required_events: usize,
+        forbidden_events: usize,
+    ) -> bool {
+        let Some(native) = self
+            .region
+            .storage
+            .as_ref()
+            .and_then(|storage| storage.first())
+        else {
+            return false;
+        };
+        let events = native.mailbox.events.load(Ordering::Acquire);
+        if events & required_events != required_events || events & forbidden_events != 0 {
+            return false;
         }
-        Ok(())
+        let len = native.mailbox.frame_len.load(Ordering::Relaxed);
+        let Some(end) = REQUEST_BYTES.checked_add(len) else {
+            return false;
+        };
+        if !frame_length_allowed(len) || end > STORAGE_BYTES {
+            return false;
+        }
+        // SAFETY: READER_FRAME is acquire-observed, so the reader no longer
+        // mutates these bytes; the fixed region remains owned through cleanup.
+        let bytes = unsafe { native.bytes() };
+        let Ok(frame) = worker_frame::validate(&bytes[REQUEST_BYTES..end]) else {
+            return false;
+        };
+        frame.project == request.project_id.as_str()
+            && frame.scene == request.query_scene_id.as_str()
+            && frame.reason.is_none()
+            && frame.scope.is_some()
+            && frame.generation.is_some_and(|generation| generation > 0)
+            && frame.seed == Some(request.seed_entity_id.as_str())
+            && frame.node_count == 1
+            && frame.edge_count == 0
+            && frame
+                .first_node
+                .is_some_and(|node| node.entity.id == request.seed_entity_id.as_str())
     }
 
     fn result_bytes(&self, len: usize) -> Result<&[u8]> {
@@ -938,17 +1614,24 @@ impl CQueryWorkerOwner {
             if self
                 .session
                 .as_ref()
-                .is_some_and(|s| s.exit.is_some() && s.eof)
+                .is_some_and(|session| session.exit.is_some() && session.eof)
             {
-                let mut session = self
+                let session = self
+                    .session
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_SESSION"))?;
+                if let Some(reader) = session.reader.take() {
+                    let joined = reader.join();
+                    #[cfg(all(test, target_os = "linux"))]
+                    if joined.is_err() {
+                        self.test_reader_join_failed = true;
+                    }
+                    joined.map_err(|_| anyhow!("NIR1_GRAPH_WORKER_READER_PANIC"))?;
+                }
+                let session = self
                     .session
                     .take()
                     .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_SESSION"))?;
-                if let Some(reader) = session.reader.take() {
-                    reader
-                        .join()
-                        .map_err(|_| anyhow!("NIR1_GRAPH_WORKER_READER_PANIC"))?;
-                }
                 #[cfg(test)]
                 {
                     // ExitStatus is populated only by Child::try_wait in poll_exit.
@@ -956,9 +1639,18 @@ impl CQueryWorkerOwner {
                         .exit
                         .as_ref()
                         .is_some_and(|status| !status.success());
-                    // This follows observed child exit + stdout EOF and a successful reader join.
+                    self.test_abnormal_exit_code =
+                        session.exit.as_ref().and_then(|status| status.code());
+                    #[cfg(all(test, unix))]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        self.test_abnormal_exit_signal =
+                            session.exit.as_ref().and_then(|status| status.signal());
+                    }
+                    // Retirement proof is actual exit + stdout EOF + successful reader join.
                     self.test_cleanup_proved = true;
                 }
+                drop(session);
                 return Ok(());
             }
             thread::park_timeout(POLL_INTERVAL);
@@ -967,8 +1659,8 @@ impl CQueryWorkerOwner {
     }
 }
 
-/// A borrowed, non-owning projection over the Native fixed result region.
-/// Dropping it is the only successful-path action that releases child admission.
+/// A borrowed projection over the Native fixed result region. Drop retires the
+/// child before releasing admission; unproved cleanup leaves the owner quarantined.
 pub struct CQueryResultLease<'a> {
     owner: &'a mut CQueryWorkerOwner,
 }
@@ -987,6 +1679,51 @@ impl CQueryResultLease<'_> {
     pub(super) fn query_phase_diagnostics_for_test(&self) -> QueryPhaseDiagnostics {
         self.owner.query_phase_diagnostics_for_test()
     }
+
+    #[cfg(test)]
+    pub(super) fn retirement_pending_for_test(&self) -> bool {
+        self.owner.retirement_pending_for_test()
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn suppress_exit_proof_for_test(&mut self) {
+        self.owner.suppress_exit_proof_for_test();
+    }
+
+    #[cfg(test)]
+    pub(super) fn committed_eof_with_reader_pending_for_test(&self) -> bool {
+        let Some(session) = self.owner.session.as_ref() else {
+            return false;
+        };
+        let Some(native) = self
+            .owner
+            .region
+            .storage
+            .as_ref()
+            .and_then(|storage| storage.first())
+        else {
+            return false;
+        };
+        self.owner.region.result_len > 0
+            && session.eof
+            && session.reader.is_some()
+            && result_wire_complete(native.mailbox.events.load(Ordering::Acquire))
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_for_child_exit_code_for_test(&mut self, expected: i32) -> Result<()> {
+        self.owner.wait_for_child_exit_code_for_test(expected)
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn child_exit_unobserved_for_test(&mut self) -> Result<bool> {
+        self.owner.poll_exit()?;
+        Ok(self
+            .owner
+            .session
+            .as_ref()
+            .is_some_and(|session| session.exit.is_none()))
+    }
 }
 
 impl Drop for CQueryResultLease<'_> {
@@ -994,7 +1731,23 @@ impl Drop for CQueryResultLease<'_> {
         self.owner.region.lease_held = false;
         self.owner.region.result_len = 0;
         self.owner.region.elapsed = None;
-        if let Some(claim) = self.owner.region.claim.take() {
+        if self.owner.session.is_some() && self.owner.stop_and_reap().is_err() {
+            self.owner.region.quarantined = true;
+            return;
+        }
+        self.owner.region.prepared = false;
+        self.owner.release_claim_after_retirement();
+    }
+}
+
+impl CQueryWorkerOwner {
+    fn release_claim_after_retirement(&mut self) {
+        if self.region.lease_held || self.session.is_some() {
+            return;
+        }
+        drop(self.region.storage.take());
+        drop(self.snapshot.take());
+        if let Some(claim) = self.region.claim.take() {
             claim.release();
         }
     }
@@ -1006,6 +1759,9 @@ impl Drop for CQueryWorkerOwner {
             if self.stop_and_reap().is_err() {
                 self.region.quarantined = true;
             }
+        }
+        if self.region.lease_held {
+            self.region.quarantined = true;
         }
         if self.region.quarantined {
             if let Some(snapshot) = self.snapshot.take() {
@@ -1020,8 +1776,8 @@ impl Drop for CQueryWorkerOwner {
             if let Some(session) = self.session.take() {
                 std::mem::forget(session);
             }
-        } else if let Some(claim) = self.region.claim.take() {
-            claim.release();
+        } else {
+            self.release_claim_after_retirement();
         }
     }
 }
@@ -1051,6 +1807,17 @@ fn deadline_refusal_reason(frame_elapsed: Option<Duration>) -> &'static str {
 }
 
 fn request_len(request: &Nir1GraphRequest) -> Result<usize> {
+    // The caller may retain these buffers while holding the result lease.
+    let request_capacity = request
+        .project_id
+        .capacity()
+        .checked_add(request.query_scene_id.capacity())
+        .and_then(|capacity| capacity.checked_add(request.seed_entity_id.capacity()))
+        .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_REQUEST_CAPACITY_OVERFLOW"))?;
+    ensure!(
+        request_capacity <= REQUEST_CAPACITY_BYTES,
+        "NIR1_GRAPH_WORKER_REQUEST_CAPACITY_LIMIT"
+    );
     let mut len = 2usize;
     for text in [
         &request.project_id,
@@ -1091,23 +1858,27 @@ fn encode_request(request: &Nir1GraphRequest, storage: &mut [u8]) -> Result<()> 
 /// The address points into the one-element Native reservation. The owner keeps
 /// that allocation alive until this thread is joined; on unproved cleanup it
 /// deliberately leaks the allocation before dropping the owner.
-unsafe fn read_worker_pipe(mut stdout: ChildStdout, region_ptr: *const NativeRegion) {
+unsafe fn read_worker_pipe(
+    mut stdout: impl Read,
+    region_ptr: *const NativeRegion,
+    reader_timing: &ReaderPublicationTiming,
+) {
     // SAFETY: guaranteed by the caller's stable-allocation/quarantine contract.
     let region = unsafe { &*region_ptr };
     if !region.wait_for_parent_thread() {
-        drain_to_eof(&mut stdout, region);
+        drain_to_eof(&mut stdout, region, reader_timing);
         return;
     }
 
     let mut ready = [0u8; 1];
     if stdout.read_exact(&mut ready).is_err() || ready != [b'R'] {
         region.publish(READER_PIPE_ERROR);
-        drain_to_eof(&mut stdout, region);
+        drain_to_eof(&mut stdout, region, reader_timing);
         return;
     }
     region.publish(READER_READY);
     if !region.wait_for_request() {
-        drain_to_eof(&mut stdout, region);
+        drain_to_eof(&mut stdout, region, reader_timing);
         return;
     }
 
@@ -1117,19 +1888,19 @@ unsafe fn read_worker_pipe(mut stdout: ChildStdout, region_ptr: *const NativeReg
         let bytes = unsafe { region.bytes_mut() };
         if stdout.read_exact(&mut bytes[..4]).is_err() {
             region.publish(READER_FAILED);
-            drain_to_eof(&mut stdout, region);
+            drain_to_eof(&mut stdout, region, reader_timing);
             return;
         }
         u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize
     };
     if !frame_length_allowed(len) {
         region.publish(READER_FAILED);
-        drain_to_eof(&mut stdout, region);
+        drain_to_eof(&mut stdout, region, reader_timing);
         return;
     }
     let Some(end) = REQUEST_BYTES.checked_add(len) else {
         region.publish(READER_FAILED);
-        drain_to_eof(&mut stdout, region);
+        drain_to_eof(&mut stdout, region, reader_timing);
         return;
     };
     {
@@ -1138,30 +1909,42 @@ unsafe fn read_worker_pipe(mut stdout: ChildStdout, region_ptr: *const NativeReg
         let bytes = unsafe { region.bytes_mut() };
         if stdout.read_exact(&mut bytes[REQUEST_BYTES..end]).is_err() {
             region.publish(READER_FAILED);
-            drain_to_eof(&mut stdout, region);
+            drain_to_eof(&mut stdout, region, reader_timing);
             return;
         }
     }
     region.mailbox.frame_len.store(len, Ordering::Relaxed);
     region.publish(READER_FRAME);
 
+    let mut marker = [0u8; worker_frame::TERMINAL_SUCCESS_COMMIT.len()];
+    if stdout.read_exact(&mut marker).is_err() || marker != *worker_frame::TERMINAL_SUCCESS_COMMIT {
+        region.publish(READER_FAILED);
+        drain_to_eof(&mut stdout, region, reader_timing);
+        return;
+    }
+    reader_timing.publish(region, READER_COMMIT);
+
     let mut trailing = [0u8; 1];
     match stdout.read(&mut trailing) {
-        Ok(0) => region.publish(READER_EOF),
+        Ok(0) => reader_timing.publish(region, READER_EOF),
         Ok(_) => {
             region.publish(READER_TRAILING);
-            drain_to_eof(&mut stdout, region);
+            drain_to_eof(&mut stdout, region, reader_timing);
         }
         Err(_) => region.publish(READER_PIPE_ERROR),
     }
 }
 
-fn drain_to_eof(stdout: &mut ChildStdout, region: &NativeRegion) {
+fn drain_to_eof(
+    stdout: &mut impl Read,
+    region: &NativeRegion,
+    reader_timing: &ReaderPublicationTiming,
+) {
     let mut byte = [0u8; 1];
     loop {
         match stdout.read(&mut byte) {
             Ok(0) => {
-                region.publish(READER_EOF);
+                reader_timing.publish(region, READER_EOF);
                 return;
             }
             Ok(_) => {}
@@ -1176,6 +1959,120 @@ fn drain_to_eof(stdout: &mut ChildStdout, region: &NativeRegion) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    fn unavailable_test_frame(reason: &str) -> Vec<u8> {
+        let mut frame = b"NQG1\0".to_vec();
+        for value in ["p", "s", reason] {
+            frame.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            frame.extend_from_slice(value.as_bytes());
+        }
+        frame
+    }
+
+    fn read_test_wire(suffix: &[u8]) -> usize {
+        read_test_frame(&unavailable_test_frame("r"), suffix)
+    }
+
+    fn read_test_frame(frame: &[u8], suffix: &[u8]) -> usize {
+        read_test_frame_with_timing(frame, suffix).0
+    }
+
+    fn read_test_frame_with_timing(
+        frame: &[u8],
+        suffix: &[u8],
+    ) -> (usize, ReaderPublicationStamps) {
+        assert!(worker_frame::validate(frame).is_ok());
+        let mut wire = vec![b'R'];
+        wire.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        wire.extend_from_slice(frame);
+        wire.extend_from_slice(suffix);
+
+        let region = Box::new(NativeRegion::new());
+        let timing = ReaderPublicationTiming::default();
+        timing.begin_query(Instant::now());
+        region.set_parent_thread(thread::current());
+        region.request();
+        // SAFETY: this test is the only reader and keeps the region alive.
+        unsafe { read_worker_pipe(Cursor::new(wire), &*region as *const NativeRegion, &timing) };
+        (
+            region.mailbox.events.load(Ordering::Acquire),
+            timing.stamps(),
+        )
+    }
+
+    #[test]
+    fn terminal_commit_requires_exact_marker_and_eof_without_trailing_data() {
+        let events = read_test_wire(worker_frame::TERMINAL_SUCCESS_COMMIT);
+        assert_ne!(events & READER_FRAME, 0);
+        assert_ne!(events & READER_COMMIT, 0);
+        assert_ne!(events & READER_EOF, 0);
+        assert!(result_wire_complete(events));
+
+        assert!(!result_wire_complete(READER_FRAME | READER_EOF));
+        assert!(!result_wire_complete(READER_FRAME | READER_COMMIT));
+        assert!(!result_wire_complete(
+            READER_FRAME | READER_COMMIT | READER_EOF | READER_FAILED
+        ));
+    }
+
+    #[test]
+    fn reader_publication_timestamps_capture_commit_then_eof() {
+        let (_, stamps) = read_test_frame_with_timing(
+            &unavailable_test_frame("r"),
+            worker_frame::TERMINAL_SUCCESS_COMMIT,
+        );
+        assert!(matches!(
+            (stamps.commit, stamps.eof),
+            (Some(commit), Some(eof)) if commit <= eof
+        ));
+        let mut phases = QueryPhaseDiagnostics::default();
+        phases.observe_publications(stamps);
+        assert_eq!(phases.reader_commit_published_at, stamps.commit);
+        assert_eq!(phases.reader_eof_published_at, stamps.eof);
+    }
+
+    #[test]
+    fn parent_event_diagnostics_keep_the_first_observation() {
+        let first = Duration::from_micros(6);
+        let second = Duration::from_micros(7);
+        let mut phases = QueryPhaseDiagnostics::default();
+        phases.observe_events(READER_COMMIT, first);
+        phases.observe_events(READER_COMMIT | READER_EOF, second);
+        phases.observe_events(READER_EOF, Duration::from_micros(8));
+        assert_eq!(phases.parent_commit_observed_at, Some(first));
+        assert_eq!(phases.parent_eof_observed_at, Some(second));
+    }
+
+    #[test]
+    fn terminal_commit_rejects_missing_partial_wrong_and_trailing_bytes() {
+        let marker = worker_frame::TERMINAL_SUCCESS_COMMIT;
+        let wrong_marker = [0u8; 5];
+        for suffix in [&[][..], &marker[..marker.len() - 1], &wrong_marker[..]] {
+            let events = read_test_wire(suffix);
+            assert_ne!(events & READER_FAILED, 0);
+            assert_eq!(events & READER_COMMIT, 0);
+            assert_ne!(events & READER_EOF, 0);
+            assert!(!result_wire_complete(events));
+        }
+
+        let mut extra = marker.to_vec();
+        extra.push(0xA5);
+        let events = read_test_wire(&extra);
+        assert_ne!(events & READER_COMMIT, 0);
+        assert_ne!(events & READER_TRAILING, 0);
+        assert_ne!(events & READER_EOF, 0);
+        assert!(!result_wire_complete(events));
+
+        let marker_in_payload = worker_frame::TERMINAL_SUCCESS_COMMIT;
+        let events = read_test_frame(
+            &unavailable_test_frame(std::str::from_utf8(marker_in_payload).unwrap()),
+            &[],
+        );
+        assert_ne!(events & READER_FAILED, 0);
+        assert_eq!(events & READER_COMMIT, 0);
+        assert_ne!(events & READER_EOF, 0);
+    }
 
     #[test]
     fn query_polling_accelerates_only_unobserved_exit_after_frame_and_obeys_deadline() {
@@ -1219,10 +2116,48 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "nir1-c-query-test-seam")]
+    #[test]
+    fn startup_failure_receipt_is_bounded_and_keeps_stage_classification() {
+        let stage = b"NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX\n";
+        let receipt = b"NIR1_C_QUERY_SQLITE_ALLOC_FAILURE:v1;kind=xRealloc;requested=8192;old=4096;claimed=1572600;available=32\n";
+        let mut stderr = stage.to_vec();
+        stderr.extend_from_slice(receipt);
+        let error = startup_exit_error_from_bytes(&stderr).to_string();
+        assert!(error.contains("NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX"));
+        assert!(error.contains("kind=xRealloc;requested=8192;old=4096"));
+        assert!(error.contains("claimed=1572600;available=32"));
+
+        let invalid_receipts: [&[u8]; 4] = [
+            b"NIR1_C_QUERY_SQLITE_ALLOC_FAILURE:v1;kind=xFree;requested=8;old=0;claimed=10;available=2\n",
+            b"NIR1_C_QUERY_SQLITE_ALLOC_FAILURE:v1;kind=xMalloc;requested=8;old=1;claimed=10;available=2\n",
+            b"NIR1_C_QUERY_SQLITE_ALLOC_FAILURE:v1;kind=xMalloc;requested=8;old=0;claimed=10;available=11\n",
+            b"NIR1_C_QUERY_SQLITE_ALLOC_FAILURE:v1;kind=xRealloc;requested=8;old=0;claimed=10;available=2;data=secret\n",
+        ];
+        for invalid in invalid_receipts {
+            let mut stderr = stage.to_vec();
+            stderr.extend_from_slice(invalid);
+            let error = startup_exit_error_from_bytes(&stderr).to_string();
+            assert!(error.contains("NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX"));
+            assert!(!error.contains("data=secret"));
+        }
+        assert!(parse_sqlite_allocation_failure_receipt(&vec![
+            b'0';
+            SQLITE_FAILURE_RECEIPT_LINE_BYTES
+                + 1
+        ])
+        .is_none());
+    }
+
     #[test]
     fn native_region_reserves_metadata_and_bounds_request() -> Result<()> {
-        let metadata =
-            std::mem::size_of::<RegionControl>() + std::mem::size_of::<usize>() + MAILBOX_BYTES;
+        let child_session_bytes = std::mem::size_of::<Option<ChildSession>>();
+        let request_bytes = REQUEST_CAPACITY_BYTES + std::mem::size_of::<Nir1GraphRequest>();
+        let metadata = std::mem::size_of::<RegionControl>()
+            + child_session_bytes
+            + std::mem::size_of::<usize>()
+            + MAILBOX_BYTES
+            + request_bytes;
         assert_eq!(
             std::mem::size_of::<NativeRegion>(),
             MAILBOX_BYTES + STORAGE_BYTES
@@ -1230,7 +2165,9 @@ mod tests {
         assert_eq!(
             std::mem::size_of::<NativeRegion>()
                 + std::mem::size_of::<RegionControl>()
-                + std::mem::size_of::<usize>(),
+                + child_session_bytes
+                + std::mem::size_of::<usize>()
+                + request_bytes,
             PARENT_BYTES
         );
         assert_eq!(REQUEST_BYTES + FRAME_BYTES + metadata, PARENT_BYTES);
@@ -1245,6 +2182,32 @@ mod tests {
             seed_entity_id: "e".into(),
         };
         assert_eq!(request_len(&request)?, REQUEST_BYTES);
+        let mut capacity_at_limit = String::with_capacity(REQUEST_CAPACITY_BYTES - 2);
+        capacity_at_limit.push('p');
+        let request_at_capacity_limit = Nir1GraphRequest {
+            project_id: capacity_at_limit,
+            query_scene_id: "s".into(),
+            seed_entity_id: "e".into(),
+        };
+        assert_eq!(
+            request_at_capacity_limit.project_id.capacity()
+                + request_at_capacity_limit.query_scene_id.capacity()
+                + request_at_capacity_limit.seed_entity_id.capacity(),
+            REQUEST_CAPACITY_BYTES
+        );
+        assert!(request_len(&request_at_capacity_limit).is_ok());
+        let mut oversized_capacity = String::with_capacity(REQUEST_CAPACITY_BYTES + 1);
+        oversized_capacity.push('p');
+        let oversized_capacity_request = Nir1GraphRequest {
+            project_id: oversized_capacity,
+            query_scene_id: "s".into(),
+            seed_entity_id: "e".into(),
+        };
+        let error = request_len(&oversized_capacity_request)
+            .expect_err("request backing capacity above the reserved allowance must be rejected");
+        assert!(error
+            .to_string()
+            .contains("NIR1_GRAPH_WORKER_REQUEST_CAPACITY_LIMIT"));
         let storage = reserve_storage()?;
         assert_eq!(storage.len(), 1);
         assert_eq!(storage.capacity(), 1);
@@ -1253,7 +2216,9 @@ mod tests {
         assert_eq!(
             std::mem::size_of_val(native)
                 + std::mem::size_of::<RegionControl>()
-                + std::mem::size_of::<usize>(),
+                + child_session_bytes
+                + std::mem::size_of::<usize>()
+                + request_bytes,
             PARENT_BYTES
         );
         native.set_parent_thread(thread::current());
@@ -1272,9 +2237,13 @@ mod tests {
             REQUEST_BYTES
         );
         assert_eq!(bytes[REQUEST_BYTES..].len(), FRAME_BYTES);
+        let mut over_project = String::with_capacity(REQUEST_BYTES - 9);
+        over_project.push_str(&request.project_id);
+        over_project.push('p');
         let over = Nir1GraphRequest {
-            project_id: format!("{}p", request.project_id),
-            ..request
+            project_id: over_project,
+            query_scene_id: "s".into(),
+            seed_entity_id: "e".into(),
         };
         let error = request_len(&over).expect_err("N+1 request must exceed its region");
         assert!(error

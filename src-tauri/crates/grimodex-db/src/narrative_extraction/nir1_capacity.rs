@@ -343,6 +343,12 @@ where
 }
 
 impl ProgressOwnerRestore {
+    /// Disable SQLite's callback for rollback without removing the registered
+    /// outer owner; `restore` reinstalls that owner before any later SQL runs.
+    pub(crate) fn clear_for_cleanup(&self, conn: &Connection) -> rusqlite::Result<()> {
+        crate::install_sqlite_progress_handler(conn, 0, None::<fn() -> bool>)
+    }
+
     pub(crate) fn restore(mut self, conn: &Connection) -> rusqlite::Result<()> {
         let previous = self.previous.take();
         self.state

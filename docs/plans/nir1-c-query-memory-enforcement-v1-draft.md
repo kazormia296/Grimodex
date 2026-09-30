@@ -1,23 +1,57 @@
-# NIR-1 C-query 2 MiB 同時メモリ強制案（提案 / HOLD）
+# NIR-1 C-query 2 MiB 同時メモリ強制 — 旧提案と批准済み実装境界
 
-状態: **未批准・数値baseline未決のためexact-ref確認にも未準備・Graph 非公開**（2026-09-25）。`draftRef`: `nir1-c-query-memory-enforcement-proposal/1`、提案 `contractId`: `graph-query-memory-accounting/1`。既存の [C capacity gap](nir1-c-memory-capacity-delta-draft.md) と [post-B §6.2](nir1-post-b-execution-plan.md#62-資源契約) の固定値 **2,097,152 bytes / Graph結果期限8 ms** を変えない。ユーザーは「クエリ起因の同時量」を設計方向に選んだが、下記の allocator/process/IPC/lifecycle 方式や信頼境界を批准したわけではない。独立した [C-query 観測precheck](nir1-c-query-memory-diagnostic-precheck.md) と opt-in harness の結果は受入れ証拠ではなく、製品 reader を変更しない。
+状態: 2026-09-29にユーザーが `nir610-q-default-registration-scratch/1` を批准した。現行の実装境界は以下の「批准済み実装境界」が正本であり、方式の批准は実装・受入れ合格・Graph製品公開を意味しない。C-queryと製品Graph入口は引き続きHOLD／非公開。旧 `draftRef` `nir1-c-query-memory-enforcement-proposal/1` と `contractId` `graph-query-memory-accounting/1` は、下記に保存する未批准の歴史的提案を指す識別子であり、批准済み契約ではない。
 
-## 資源単位と境界（承認対象）
+旧提案のうち、Native/UI全copyを一つのleaseで数える方式、worker基礎量に対するOS別RSS/数値上限、旧脅威モデル・受入れ表は批准済み設計と衝突する範囲で superseded であり、現行C-query要件として実装してはならない。この文書の対象はprivate workerとNative leaseまでであり、将来のC-product UI copyは別途受け入れる。ここでUI copyの計上・解放を証明せず、無視を承認もしない。メモリ除外を新設しない。維持する除外は既存のOS/stack/mapping境界だけで、SQLite・通常Rust・control・allocator metadata・frameを2 MiBの計上対象から外さない。既存固定値と [post-B §6.2](nir1-post-b-execution-plan.md#62-資源契約) の機能契約は変わらない。
+
+## 批准済み実装境界 — `nir610-q-default-registration-scratch/1`
+
+### 固定資源領域と所有者
+
+1. **Worker Q — 1,572,864 bytes。** Qは最初の通常Rust allocationから唯一のdefault heapで、worker内の全通常Rust allocationと全SQLite allocationを含む。SQLite connection/cache/JSON、reader/control/callback/Registration、query/frame、allocator control・metadata・alignmentも含める。SQLite callbackはscratch scope中も常にQを使う。Qをgrowせず、Systemや外部PCACHEへのfallbackを行わず、Sの空き容量をQへcreditしない。
+2. **Registration S — 最大64 MiB。** 既存baseline枠は、明示scope内の同期的なregistration一時Rust allocationだけに使う。Qのdefault・query処理・SQLite fallbackではなく、SのfreeはQ予算を増やさない。scopeを抜けたS allocationは解放し、外側のregistration/maintenance cleanup、hook/transaction復元、同一connectionのidentity/current/cancel確認が成功した後、実allocation live countが0であることを確認してSを永久sealしてからREADYを公開する。Q所有のPendingRegistrationは、この順序が完了するまで使用可能なRegistrationにならない。
+3. **Native — 524,288 bytes。** Native request/response領域、bounded frame検証、結果保持と `GraphResultLease` を含む固定領域。Qとの貸借・未使用分の移転はしない。Q + Native は **2,097,152 bytes** で固定する。
+
+### 接続・結果期限・retirement
+
+Nativeの単一ownerとworkerは、同じcanonical authority SQLite connectionをregistrationとqueryで共有する。別connectionのcopied grant、generation値またはworkerのstatus申告は認可にならない。Source/Revision/Decision/Scope/Freshness、ReadIdentity、A2/A3、sealed indexと既存canonical SQL・順序・digestを維持し、partial/stale resultは拒否する。workerはquery admission前にREADYでなければならず、親の8 ms期限はadmissionからNativeが結果leaseを受け取るまで一つだけ適用する。
+
+期限内に完全なbound frame、terminal commit、clean EOF、current bindingが確認できれば、child exit前でも結果を返せる。pre-commit failureは拒否し、post-commit nonzeroはretirement anomalyとする。結果leaseのdropに加え、再loan前に実child exit・pipe EOF・reader joinを確認する。kill要求、error、EOFだけではcleanup完了を証明しない。Restore/cancel/shutdown時もownerを保持し、実終了を証明できなければslotをquarantineする。
+
+### GDX-PRECHECK-001: 批准済みtrust boundary
+
+| 区分 | 現行境界 |
+| --- | --- |
+| Trusted | Native workspace/lifecycle/Graph owner、単一connection上でcanonical登録とqueryを行う隔離worker、既存A2/A3/Source/Revision/Decision/Scope/Freshness読取とallocator/IPC検証。 |
+| Untrusted / non-authoritative | renderer入力、変更・破損した保存データ、stale/duplicate/partial child frame、別connectionの同値ID/登録、worker status、保持S容量、強制・偽装されたscratch-zero。これらだけで権限や容量creditを得ない。 |
+| In-scope | baselineへのQ allocation隠し、identity/currentness drift、S escape/wrong-origin realloc、二重transaction/hook/lock、System/SQLite fallback、late/stale/partial Graph、cleanup前のreloan。 |
+| Out-of-scope | 既存のOS/stack/mapping除外のみ。これは全process RSS上限を主張しないという意味であり、SQLite/Rust/control/frame/allocator metadataの除外を追加しない。 |
+| Mandatory defenses | Q-default・SQLite Q-only・no fallback、狭い同期registration S scopeと実zero-live seal、single connection/owner、Q-owned pending registration、current identityとcanonical資格の再検証、deadline後/不完全結果の拒否、leaseとchild retirementの独立所有。 |
+
+### 受入れへの影響とHOLD
+
+2 MiB、worker/Native固定分割、512/513 charged records、100,000/100,001 SQLite steps、8 ms parent admission-to-lease、original Q2/old-Q512 fixturesとGold、canonical identity/digest、cleanup条件は変更しない。Q2の成功はQ512/513、3 OS実行、Native/allocator境界、残る独立review・Quick/Full等の受入れを代替しない。診断・単体試験・批准文書だけではGraphを公開せず、既存product Graph入口は閉じたままとする。
+
+## 旧v1提案本文（履歴保存のみ。以下は批准済み実装要件ではない）
+
+以下の `2026-09-25` 提案と後続の診断記録は、作成時の設計・観測の履歴として残す。記載された方式、脅威モデル、受入れ条件が上記批准済み境界と衝突する場合は、上記だけを適用する。opt-in harness/host診断の結果は現候補の受入れ証拠ではない。
+
+## 旧案: 資源単位と境界（superseded）
 
 1. 一回の seed-local Graph query に**起因して同時に live**な Rust + SQLite allocation の合計と、同じ結果の準備・serialization・IPC・製品UI保持側の全 response copy を、request/admission から**最後の結果leaseの実解放**まで一つの **2 MiB** 予算へ課す。Nativeが結果を受理した時点では返却側の予約を戻さない。候補 SQL/JSON1 scratch、A2/A3、serde/envelope/canonical JSON、中間container capacity、Evidence、path、返却 buffer、失敗時の保持分を含む。request ID/SQL bindings の準備と query 用キャッシュの増分も課す。ヒープ requested bytesだけの観測値、inputサイズ倍率、`OutputCounter` のbyte count は強制証明にならない。悪意あるrendererが私的に無制限コピーする行為は2 MiBの製品所有範囲外だが、通常のtyped IPC・Related Scenes・click保留中の全製品所有bufferは範囲内。
 2. **worker 基礎量**（Rust runtime/SQLite 初期化、読み込み済みDB page cache、登録時の構造等）は query 2 MiB に足さない代わりに、OS別の**数値付き強制上限**と開閉時実測を持つ。現時点では上限値も各OSでの強制手段も**未決**なので、exact-ref批准を求めない。Linuxだけの未保証な観測: disposable Q513/R3/D0診断processのpeak RSSは17,064 KiB、SQLite query前baselineは3,263,480 bytes、当該queryは8.248209 msでUnavailableだった（`resource.RUSAGE_CHILDREN`。Electron parentや全OSのworker baseline上界ではない）。Native側のGraph専用の既存result/cacheはbaseline扱いせず、過去のquery leaseとして計上する。起動時baselineは0 result buffer、一般Electron/Main heapはGraph query帰属外。queryで増えたchild cache/scratchをbaselineへ付け替えず、一回ごとにchildが実exitして解放する。baseline bufferのreallocやretained responseへの所有移転は増分を明示計上する。
 3. 予算authorityはNativeに一つ。保守的な静的上限で**child 1,572,864 bytes（Rust+SQLite+child送信frame）＋parent/UI 524,288 bytes（Native入出力frame、serialization再コピー、typed IPC、Related Scenes保持・clickの証拠）＝2,097,152 bytes**。Nativeはquery leaseごとに二枠を排他的に予約し、準備前に枠が足りなければUnavailable。child allocator二系統が同一child枠のchecked counterを使い、parentは全process所有copyを長さ確認**前に確保枠からreserve**、freeを確証してからその枠へcreditを戻す。cross-processで未使用枠の借用・転送はしない。IPC transit中はchild frameとparent frameを二重計上し、正規のUI leaseが続く限りparent枠を保留、unmount/別query/明示releaseでは実buffer破棄と保留click結果失効を確認してから解放。rendererのrelease申告だけではcreditを戻さない。新queryは前result leaseが残り親枠に足りなければUnavailable。同時Graph query/workerは全workspaceで一件のみ。kernel所有の不可視pipe buffer、OS/RSS/allocator metadataはuser-space query帰属の2MiBには足さず、別OS上界とprocess強制baselineの受入れ対象にする。
 4. 8 ms は既存契約どおり**結果期限**であり、cleanupを8 ms以内に完遂する絶対的な保証ではない。期限後の response は捨て、Native owner は実 SQL/reader/worker cleanup 完了まで責任を持つ。worker 起動や登録の待ち時間を 8 ms の外へ隠して Graph を成功扱いしない。実製品 path の入口から Graph 返却までを測定し、間に合わなければR+IRへ fallback。
 
-## 強制の候補方式（実装方式も未承認）
+## 旧案: 強制の候補方式（superseded）
 
 一つの Native-owned read-only **隔離 worker process** を Ready/Index generation で事前登録し、**一query専用**とする。受付後のworker起動/再登録を結果期限の外へ隠さず、未準備ならUnavailable。子ではprocess初期化前にRustのrequest-aware allocatorとSQLite allocation callbackを設定し、必要なallocation owner/epoch、baseline/provenanceとlive query bytesを**同じchild枠**へ充電する。既存のprocess-global SQLite/Rust allocatorをElectron本体へ無断設定しない。SQLite JSON1/serde内部も計測・強制し、fallibleな失敗が可能なAPIはUnavailableへ、Rustのinfallible OOMは**隔離childの非成功終端**へ倒す。実allocation前のadmissionができない場合はchildを失敗/終了させ、部分Graphを親へ送らない。query-caused SQLite page cacheはworker実exitまでchild枠を消費し、次workerのbaselineには移さない。allocator metadataや二allocatorが実際にshared child枠を使う証拠、fallible OOMの可観測性、baseline capが実OSで強制できない場合はhard-boundを主張しない。
 
 Native parent は IPC の request/response frame を独立に長さ検査し、受信前にparent枠を予約し、childに残るframeはchild枠が実free/exitするまで保持する。超過frameは読取・結果採用せずchildを閉じる。childが完了したと名乗っても parent は current workspace/epoch/Index/Source/Decision/Freshness、actual query、deadline、全frameとbound/cleanupを再検証する。返却後もNativeが結果leaseを所有し、Related Scenesの描画・click保留分はIPC/rendererと連動するleaseの対象。強制できないElectron内部のhidden copyがあればそのplatformはGraphをUnavailableのままにする。子へのDBは対象workspaceのread-only connectionだけ。Bのsealed generationとCのA2/A3/query-pathの既存権限を保持し、新しい承認DB、公開入口、persistent adjacencyは作らない。
 
-## GDX-PRECHECK-001: actors / attacks / defenses / acceptance
+## 旧案: GDX-PRECHECK-001 actors / attacks / defenses / acceptance（superseded）
 
-| 区分 | 承認対象 |
+| 区分 | 旧案の記述（現行境界は上記） |
 | --- | --- |
 | Trusted | Native lifecycle/Index/Graph owner、隔離 worker supervisor、既存 A2/A3/SQLite Source/Decision/Freshness reader、byte-budget/IPC validator。診断用 binary や renderer 申告は authority ではない。 |
 | Untrusted | renderer の seed/query ID、改変・破損した保存JSON/Graph候補、遅延/重複/stale child response、別workspaceの同値ID、worker内部の結果status申告のみ。OS/SQLite allocator metadataを renderer 認可として使わない。 |
@@ -27,7 +61,7 @@ Native parent は IPC の request/response frame を独立に長さ検査し、�
 | Positive acceptance | 最大境界内の実登録Graph query（SQLite JSON1、A2/A3、Evidence、path、実IPC response含む）が同じ request budget と期限で成功。複数fixture/次workspaceで契約値を超えず、fixed 24件/G-01評価の品質を保つ。baseline と query peakを別測定し、計上対象のcoverageを完全に示す。 |
 | Negative acceptance | 2 MiBのN/N+1、JSON1/serde/SQLite/Rust/response/IPCごとの超過、realloc、worker busy、取消/期限/rollback、A→B/Restore/shutdown、親子の crash/kill/partial frame、衝突ID/expired generation を全部fail closed。戻り先のR+IRは別認可のまま。 |
 
-## Finite owner / lifecycle（実装前に lock-order を立証）
+## 旧案: Finite owner / lifecycle（historical, superseded）
 
 | Entry / phase | Owner / 終端と有限性 |
 | --- | --- |

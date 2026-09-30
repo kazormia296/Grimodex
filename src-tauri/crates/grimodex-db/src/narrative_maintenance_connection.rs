@@ -338,7 +338,7 @@ fn preserve_participant_stop<T>(
 }
 
 impl NarrativeMaintenanceGraphControlConfig {
-    #[cfg(feature = "nir1-material-diagnostics")]
+    #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     pub(crate) fn with_progress_callbacks(progress_callbacks: Arc<AtomicU64>) -> Self {
         Self {
             progress_callbacks: Some(progress_callbacks),

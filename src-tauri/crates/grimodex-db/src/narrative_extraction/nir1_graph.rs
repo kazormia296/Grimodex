@@ -49,7 +49,7 @@ use super::nir1_entity_relation::{
     Nir1EntityRelationDisclosureRead,
 };
 use super::nir1_entity_relation_index::{
-    is_complete_registered_with_control, GraphProgressCallback, GraphWorkControl, GraphWorkStage,
+    is_complete_registered_with_scratch, GraphProgressCallback, GraphWorkControl, GraphWorkStage,
     INDEX_KEY,
 };
 use super::source_revision::{
@@ -154,6 +154,30 @@ pub struct Nir1GraphRequest {
     pub seed_entity_id: String,
 }
 
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Nir1GraphRegistrationStage {
+    Maintenance,
+    Setup,
+    PreflightIdentity,
+    OwnerSetup,
+    BeginSnapshot,
+    PinnedIdentity,
+    SemanticIndex,
+    SourceIndex,
+    Seal,
+    PostflightIdentity,
+}
+
+fn set_registration_stage(
+    observer: &mut Option<&mut Nir1GraphRegistrationStage>,
+    stage: Nir1GraphRegistrationStage,
+) {
+    if let Some(observer) = observer.as_deref_mut() {
+        *observer = stage;
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Nir1GraphResponse {
@@ -216,6 +240,12 @@ struct Seal {
     source: String,
     dependency: String,
     semantic_epoch: String,
+}
+
+struct PendingRegistration {
+    project: String,
+    identity: ReadIdentity,
+    seal: Seal,
 }
 
 struct Registration {
@@ -300,12 +330,34 @@ impl Nir1GraphCancellation {
     }
 }
 
-/// Native-internal owner of a dedicated reader and its completeness proof.
-/// The shell must drop/close this owner during lifecycle drain. Its participant
-/// and shared workspace lease remain held until the connection actually closes.
+/// Native-internal owner of Graph reader state and its completeness proof.
+/// Ordinary readers own a dedicated connection; the isolated worker borrows its
+/// authority Database connection so registration and query share one handle.
+enum ReaderConnection {
+    Owned(Connection),
+    Borrowed,
+    Closed,
+}
+
+impl ReaderConnection {
+    #[cfg(any(test, feature = "nir1-material-diagnostics"))]
+    fn as_ref(&self) -> Option<&Connection> {
+        match self {
+            Self::Owned(conn) => Some(conn),
+            Self::Borrowed | Self::Closed => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn is_none(&self) -> bool {
+        self.as_ref().is_none()
+    }
+}
+
 pub struct Nir1GraphReader {
-    connection: Option<Connection>,
+    connection: ReaderConnection,
     registration: Option<Registration>,
+    pending_registration: Option<PendingRegistration>,
     cancelled: Arc<AtomicBool>,
     epoch_signal: Arc<AtomicU64>,
     epoch: u64,
@@ -319,11 +371,6 @@ impl Nir1GraphReader {
         participant: WorkspaceParticipant,
     ) -> Result<Self> {
         ensure!(!participant.stop_requested()?, "NIR1_GRAPH_READER_CLOSED");
-        let runtime = authority.nir_chronicle_index_runtime();
-        let epoch = runtime
-            .native_reader_epoch()?
-            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_RUNTIME_UNAVAILABLE"))?;
-        let epoch_signal = runtime.native_build_cancellation_epoch();
         let conn = Connection::open_with_flags(
             authority.path().join("grimodex.db"),
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -336,13 +383,38 @@ impl Nir1GraphReader {
             [uuid::Uuid::new_v4().to_string()],
         )?;
         conn.execute_batch("PRAGMA query_only=ON")?;
+        Self::new(authority, participant, ReaderConnection::Owned(conn))
+    }
+
+    /// Build reader state for the isolated worker's already-open authority
+    /// connection. Registration and query methods must borrow that same handle.
+    #[doc(hidden)]
+    pub fn open_for_worker(
+        authority: Arc<WorkspaceAuthority>,
+        participant: WorkspaceParticipant,
+    ) -> Result<Self> {
+        Self::new(authority, participant, ReaderConnection::Borrowed)
+    }
+
+    fn new(
+        authority: Arc<WorkspaceAuthority>,
+        participant: WorkspaceParticipant,
+        connection: ReaderConnection,
+    ) -> Result<Self> {
+        ensure!(!participant.stop_requested()?, "NIR1_GRAPH_READER_CLOSED");
+        let runtime = authority.nir_chronicle_index_runtime();
+        let epoch = runtime
+            .native_reader_epoch()?
+            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_RUNTIME_UNAVAILABLE"))?;
+        let epoch_signal = runtime.native_build_cancellation_epoch();
         ensure!(
             epoch_signal.load(Ordering::Acquire) == epoch && !participant.stop_requested()?,
             "NIR1_GRAPH_READER_CLOSED"
         );
         Ok(Self {
-            connection: Some(conn),
+            connection,
             registration: None,
+            pending_registration: None,
             cancelled: Arc::new(AtomicBool::new(false)),
             epoch_signal,
             epoch,
@@ -363,16 +435,47 @@ impl Nir1GraphReader {
         project: &str,
         owner: &mut dyn GraphWorkControl,
     ) -> Result<bool> {
+        let conn = self.take_owned_connection()?;
+        let mut current_heap = |operation: &mut dyn FnMut()| {
+            operation();
+            true
+        };
+        let result =
+            self.register_with_control_observed(&conn, project, owner, None, &mut current_heap);
+        self.connection = ReaderConnection::Owned(conn);
+        match result {
+            Ok(true) => {
+                self.publish_pending_registration()?;
+                Ok(true)
+            }
+            Ok(false) => {
+                self.pending_registration = None;
+                Ok(false)
+            }
+            Err(error) => {
+                self.pending_registration = None;
+                Err(error)
+            }
+        }
+    }
+
+    fn register_with_control_observed(
+        &mut self,
+        conn: &Connection,
+        project: &str,
+        owner: &mut dyn GraphWorkControl,
+        mut observer: Option<&mut Nir1GraphRegistrationStage>,
+        scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
+    ) -> Result<bool> {
+        set_registration_stage(&mut observer, Nir1GraphRegistrationStage::Setup);
         self.registration = None;
+        self.pending_registration = None;
         ensure!(
             owner.allows_full_eligibility(),
             "NIR1_GRAPH_REGISTRATION_REQUIRES_MAINTENANCE_OWNER"
         );
         self.check()?;
-        let conn = self
-            .connection
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_READER_CLOSED"))?;
+        set_registration_stage(&mut observer, Nir1GraphRegistrationStage::PreflightIdentity);
         let before = ReadIdentity::read_unpinned(conn)?
             .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_REGISTRATION_DRIFT"))?;
         let mut lifecycle = self.control(None);
@@ -387,6 +490,7 @@ impl Nir1GraphReader {
         let owner_progress = owner
             .progress_callback()
             .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_REGISTRATION_OWNER_PROGRESS_UNAVAILABLE"))?;
+        set_registration_stage(&mut observer, Nir1GraphRegistrationStage::OwnerSetup);
         let owner_scope = self.install_owner_with_stop(
             conn,
             Some(Arc::clone(&owner_stopped)),
@@ -404,7 +508,9 @@ impl Nir1GraphReader {
             // boundary before BEGIN so an owner closure can stop the attempt
             // before the private registration transaction is opened.
             registration_owner.check(GraphWorkStage::CompleteRegistration)?;
+            set_registration_stage(&mut observer, Nir1GraphRegistrationStage::BeginSnapshot);
             conn.execute_batch("BEGIN DEFERRED")?;
+            set_registration_stage(&mut observer, Nir1GraphRegistrationStage::PinnedIdentity);
             ensure!(
                 ReadIdentity::read(conn)?.as_ref() == Some(&before),
                 "NIR1_GRAPH_REGISTRATION_DRIFT"
@@ -412,27 +518,29 @@ impl Nir1GraphReader {
             lifecycle.check(GraphWorkStage::CompleteRegistration)?;
             // rowid is only a cursor, not a material identity. Producer writes
             // auto-allocate positive rowids; reject malformed imported cursors.
+            set_registration_stage(&mut observer, Nir1GraphRegistrationStage::SemanticIndex);
             let nonpositive: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM narrative_dependency_edges WHERE project_id=?1 AND rowid<=0)", [project], |r| r.get(0))?;
             if nonpositive
-                || !is_complete_registered_with_control(
+                || !is_complete_registered_with_scratch(
                     conn,
                     project,
                     INDEX_KEY,
                     &mut registration_owner,
-                )?
-                || !candidates::verify_complete_source_index(
-                    conn,
-                    project,
-                    &mut registration_owner,
+                    scratch_scope,
                 )?
             {
                 return Ok(None);
             }
+            set_registration_stage(&mut observer, Nir1GraphRegistrationStage::SourceIndex);
+            if !candidates::verify_complete_source_index(conn, project, &mut registration_owner)? {
+                return Ok(None);
+            }
             lifecycle.check(GraphWorkStage::CompleteRegistration)?;
+            set_registration_stage(&mut observer, Nir1GraphRegistrationStage::Seal);
             let seal = read_seal(conn, project)?;
             Ok(seal)
         })();
-        let result = self.finish_read(result, Some(owner_scope))?;
+        let result = self.finish_read(conn, result, owner_scope)?;
         let result = match result {
             Err(error) => match registration_owner.check(GraphWorkStage::CompleteRegistration) {
                 Err(owner_error) => Err(owner_error),
@@ -440,20 +548,26 @@ impl Nir1GraphReader {
             },
             Ok(value) => Ok(value),
         }?;
+        set_registration_stage(
+            &mut observer,
+            Nir1GraphRegistrationStage::PostflightIdentity,
+        );
         self.check()?;
         registration_owner.check(GraphWorkStage::CompleteRegistration)?;
-        let conn = self
-            .connection
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_READER_CLOSED"))?;
-        if ReadIdentity::read_unpinned(conn)?.as_ref() != Some(&before) {
+        let current = ReadIdentity::read_unpinned(conn)?;
+        self.check()?;
+        registration_owner.check(GraphWorkStage::CompleteRegistration)?;
+        if current.as_ref() != Some(&before) {
             return Ok(false);
         }
         if let Some(seal) = result {
-            self.registration = Some(Registration {
+            // Deep-copy the verified authority into ordinary Q-owned reader state.
+            // Worker query code cannot use it until the outer maintenance scope and
+            // the worker's permanent zero-live scratch seal have both succeeded.
+            self.pending_registration = Some(PendingRegistration {
                 project: project.to_owned(),
-                identity: before,
-                seal,
+                identity: before.clone(),
+                seal: seal.clone(),
             });
             Ok(true)
         } else {
@@ -461,9 +575,56 @@ impl Nir1GraphReader {
         }
     }
 
-    /// Register on this reader's own connection under the existing no-wait
-    /// maintenance owner; no caller-supplied flag or generation grants access.
-    pub fn register_with_worker_maintenance(&mut self, project: &str) -> Result<bool> {
+    /// Register under the authority Database's no-wait maintenance owner;
+    /// worker reader state borrows that connection, and publishes only after
+    /// the supplied scratch-seal operation succeeds following outer cleanup.
+    pub fn register_with_worker_maintenance(
+        &mut self,
+        project: &str,
+        seal_scratch: impl FnOnce() -> bool,
+    ) -> Result<bool> {
+        let mut current_heap = |operation: &mut dyn FnMut()| {
+            operation();
+            true
+        };
+        self.register_with_worker_maintenance_observed(
+            project,
+            None,
+            &mut current_heap,
+            seal_scratch,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn register_with_worker_maintenance_diagnostic(
+        &mut self,
+        project: &str,
+        stage: &mut Nir1GraphRegistrationStage,
+        scratch_scope: impl FnMut(&mut dyn FnMut()) -> bool,
+        seal_scratch: impl FnOnce() -> bool,
+    ) -> Result<bool> {
+        *stage = Nir1GraphRegistrationStage::Maintenance;
+        self.register_with_worker_maintenance_observed(
+            project,
+            Some(stage),
+            scratch_scope,
+            seal_scratch,
+        )
+    }
+
+    fn register_with_worker_maintenance_observed(
+        &mut self,
+        project: &str,
+        mut observer: Option<&mut Nir1GraphRegistrationStage>,
+        mut scratch_scope: impl FnMut(&mut dyn FnMut()) -> bool,
+        seal_scratch: impl FnOnce() -> bool,
+    ) -> Result<bool> {
+        self.registration = None;
+        self.pending_registration = None;
+        ensure!(
+            matches!(&self.connection, ReaderConnection::Borrowed),
+            "NIR1_GRAPH_WORKER_REQUIRES_BORROWED_CONNECTION"
+        );
         let authority = Arc::clone(&self.authority);
         let result = with_narrative_maintenance_graph_control(
             &authority,
@@ -471,22 +632,138 @@ impl Nir1GraphReader {
             1_000,
             Arc::new(AtomicBool::new(false)),
             NarrativeMaintenanceGraphControlConfig::default(),
-            |_, control| self.register_with_control(project, control),
-        )?;
-        match result {
-            Some(result) => result.into_result(),
-            None => Ok(false),
+            |conn, control| {
+                self.register_with_control_observed(
+                    conn,
+                    project,
+                    control,
+                    observer.as_deref_mut(),
+                    &mut scratch_scope,
+                )
+            },
+        );
+        let registered = match result {
+            Ok(Some(result)) => match result.into_result() {
+                Ok(registered) => registered,
+                Err(error) => {
+                    self.pending_registration = None;
+                    return Err(error);
+                }
+            },
+            Ok(None) => {
+                self.pending_registration = None;
+                return Ok(false);
+            }
+            Err(error) => {
+                self.pending_registration = None;
+                return Err(error);
+            }
+        };
+        if !registered {
+            self.pending_registration = None;
+            return Ok(false);
         }
+        if let Err(error) = self.check() {
+            self.pending_registration = None;
+            return Err(error);
+        }
+        if !seal_scratch() {
+            self.pending_registration = None;
+            anyhow::bail!("NIR1_GRAPH_WORKER_SCRATCH_SEAL_FAILED");
+        }
+        self.publish_pending_registration()?;
+        Ok(true)
+    }
+
+    fn publish_pending_registration(&mut self) -> Result<()> {
+        if let Err(error) = self.check() {
+            self.pending_registration = None;
+            return Err(error);
+        }
+        let Some(pending) = self.pending_registration.take() else {
+            anyhow::bail!("NIR1_GRAPH_REGISTRATION_PENDING_REQUIRED");
+        };
+        self.registration = Some(Registration {
+            project: pending.project,
+            identity: pending.identity,
+            seal: pending.seal,
+        });
+        Ok(())
     }
 
     pub fn query(&mut self, request: &Nir1GraphRequest) -> Result<Nir1GraphResponse> {
-        self.query_with_deadline_observed(request, QUERY_DEADLINE, QUERY_SQL_STEPS, None, false)
+        let conn = self.take_owned_connection()?;
+        let result = self.query_with_deadline_observed(
+            &conn,
+            request,
+            QUERY_DEADLINE,
+            QUERY_SQL_STEPS,
+            None,
+            false,
+            None,
+        );
+        self.connection = ReaderConnection::Owned(conn);
+        result
     }
 
     /// Diagnostic reason tags for the isolated worker binary only; not a product API.
     #[doc(hidden)]
     pub fn query_for_worker(&mut self, request: &Nir1GraphRequest) -> Result<Nir1GraphResponse> {
-        self.query_with_deadline_observed(request, QUERY_DEADLINE, QUERY_SQL_STEPS, None, true)
+        let conn = self.take_owned_connection()?;
+        let result = self.query_with_deadline_observed(
+            &conn,
+            request,
+            QUERY_DEADLINE,
+            QUERY_SQL_STEPS,
+            None,
+            true,
+            None,
+        );
+        self.connection = ReaderConnection::Owned(conn);
+        result
+    }
+
+    /// Run the worker query against the authority-owned connection under its
+    /// existing maintenance lock, cancellation hook, and cleanup/quarantine.
+    #[doc(hidden)]
+    pub fn query_for_worker_with_maintenance(
+        &mut self,
+        request: &Nir1GraphRequest,
+    ) -> Result<Nir1GraphResponse> {
+        self.query_for_worker_with_maintenance_deadline(request, QUERY_DEADLINE)
+    }
+
+    fn query_for_worker_with_maintenance_deadline(
+        &mut self,
+        request: &Nir1GraphRequest,
+        duration: Duration,
+    ) -> Result<Nir1GraphResponse> {
+        ensure!(
+            matches!(&self.connection, ReaderConnection::Borrowed),
+            "NIR1_GRAPH_WORKER_REQUIRES_BORROWED_CONNECTION"
+        );
+        let authority = Arc::clone(&self.authority);
+        let result = with_narrative_maintenance_graph_control(
+            authority.db(),
+            Duration::ZERO,
+            1_000,
+            Arc::new(AtomicBool::new(false)),
+            NarrativeMaintenanceGraphControlConfig::default(),
+            |conn, control| {
+                self.query_with_deadline_observed(
+                    conn,
+                    request,
+                    duration,
+                    QUERY_SQL_STEPS,
+                    None,
+                    true,
+                    Some(control),
+                )
+            },
+        )?;
+        result
+            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_WORKER_MAINTENANCE_DEFERRED"))?
+            .into_result()
     }
 
     fn query_with_deadline(
@@ -495,7 +772,11 @@ impl Nir1GraphReader {
         duration: Duration,
         sql_steps: u64,
     ) -> Result<Nir1GraphResponse> {
-        self.query_with_deadline_observed(request, duration, sql_steps, None, false)
+        let conn = self.take_owned_connection()?;
+        let result = self
+            .query_with_deadline_observed(&conn, request, duration, sql_steps, None, false, None);
+        self.connection = ReaderConnection::Owned(conn);
+        result
     }
 
     #[cfg(feature = "nir1-material-diagnostics")]
@@ -514,23 +795,32 @@ impl Nir1GraphReader {
         sql_steps: u64,
     ) -> (Result<Nir1GraphResponse>, StageObservation) {
         let mut observation = StageObservation::default();
+        let conn = match self.take_owned_connection() {
+            Ok(conn) => conn,
+            Err(error) => return (Err(error), observation),
+        };
         let result = self.query_with_deadline_observed(
+            &conn,
             request,
             duration,
             sql_steps,
             Some(&mut observation),
             false,
+            None,
         );
+        self.connection = ReaderConnection::Owned(conn);
         (result, observation)
     }
 
     fn query_with_deadline_observed(
         &mut self,
+        conn: &Connection,
         request: &Nir1GraphRequest,
         duration: Duration,
         sql_steps: u64,
         mut _observation: Option<&mut StageObservation>,
         worker_path: bool,
+        external_owner: Option<&mut dyn GraphWorkControl>,
     ) -> Result<Nir1GraphResponse> {
         let deadline = Instant::now() + duration;
         validate_request(request)?;
@@ -546,15 +836,34 @@ impl Nir1GraphReader {
                 "registration-project-mismatch",
             ));
         }
-        let conn = self
-            .connection
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_READER_CLOSED"))?;
         let identity = registration.identity.clone();
         let expected_seal = registration.seal.clone();
         let budget = CapacityBudget::new(sql_steps, deadline);
-        let mut owner = self.control(Some(deadline));
-        let owner_scope = self.install_owner(conn)?;
+        let owner_stopped = Arc::new(AtomicBool::new(false));
+        let (external_stop, external_deadline, finalization_signal, external_progress) =
+            external_owner
+                .as_deref()
+                .map_or((None, None, None, None), |owner| {
+                    (
+                        owner.stop_signal(),
+                        owner.progress_deadline(),
+                        owner.finalization_signal(),
+                        owner.progress_callback(),
+                    )
+                });
+        let owner_scope = self.install_owner_with_stop(
+            conn,
+            Some(Arc::clone(&owner_stopped)),
+            external_stop,
+            external_deadline,
+            finalization_signal,
+            external_progress,
+        )?;
+        let mut owner = QueryOwnerControl {
+            reader: self.control(Some(deadline)),
+            maintenance: external_owner,
+            stopped: owner_stopped,
+        };
         let result = nir1_capacity::with_capacity_scope(
             conn,
             Some(Arc::clone(&budget)),
@@ -614,11 +923,7 @@ impl Nir1GraphReader {
         #[cfg(feature = "nir1-material-diagnostics")]
         let cleanup_post_stamp_started = _observation.as_ref().map(|_| Instant::now());
         let query_outcome = (|| -> Result<Nir1GraphResponse> {
-            let result = self.finish_read(result, Some(owner_scope))?;
-            let conn = self
-                .connection
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_READER_CLOSED"))?;
+            let result = self.finish_read(conn, result, owner_scope)?;
             let current = nir1_capacity::with_capacity_scope(
                 conn,
                 Some(Arc::clone(&budget)),
@@ -666,6 +971,7 @@ impl Nir1GraphReader {
             });
             if identity_drift || query_drift {
                 self.registration = None;
+                self.pending_registration = None;
                 #[cfg(feature = "nir1-material-diagnostics")]
                 if let Some(observation) = _observation.as_deref_mut() {
                     observation.unattributed = true;
@@ -676,6 +982,7 @@ impl Nir1GraphReader {
             let deadline_observed = !reader_invalidated && Instant::now() >= deadline;
             if reader_invalidated || deadline_observed {
                 self.registration = None;
+                self.pending_registration = None;
                 #[cfg(feature = "nir1-material-diagnostics")]
                 if let Some(observation) = _observation.as_deref_mut() {
                     observation.deadline_observed_at_collapse |= deadline_observed;
@@ -735,10 +1042,6 @@ impl Nir1GraphReader {
         self.control(None).check(GraphWorkStage::Page)
     }
 
-    fn install_owner(&self, conn: &Connection) -> Result<nir1_capacity::ProgressOwnerRestore> {
-        self.install_owner_with_stop(conn, None, None, None, None, None)
-    }
-
     fn install_owner_with_stop(
         &self,
         conn: &Connection,
@@ -771,42 +1074,42 @@ impl Nir1GraphReader {
     /// query may use it; explicit close or Drop still owns physical teardown.
     fn finish_read<T>(
         &mut self,
+        conn: &Connection,
         result: Result<T>,
-        owner_scope: Option<nir1_capacity::ProgressOwnerRestore>,
+        owner_scope: nir1_capacity::ProgressOwnerRestore,
     ) -> Result<Result<T>> {
-        let conn = self
-            .connection
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_READER_CLOSED"))?;
-        // The existing maintenance terminal order clears the callback once
-        // statements are gone, before rollback (which must not be interrupted).
-        let clear = nir1_capacity::set_progress_owner(conn, 0, None::<fn() -> bool>);
+        // Disable only SQLite's live callback before rollback. Keep the outer
+        // maintenance owner registered so restoring this nested scope reinstalls it.
+        let clear = owner_scope.clear_for_cleanup(conn);
         let rollback = if conn.is_autocommit() {
             Ok(())
         } else {
             conn.execute_batch("ROLLBACK")
         };
-        let restore = owner_scope.map(|scope| scope.restore(conn));
-        if rollback.is_err()
-            || clear.is_err()
-            || restore.is_some_and(|value| value.is_err())
-            || !conn.is_autocommit()
-        {
+        let restore = owner_scope.restore(conn);
+        if rollback.is_err() || clear.is_err() || restore.is_err() || !conn.is_autocommit() {
             self.cancelled.store(true, Ordering::Release);
             self.registration = None;
+            self.pending_registration = None;
             anyhow::bail!("NIR1_GRAPH_READER_CLEANUP_FAILED");
         }
         Ok(result)
     }
 
+    /// Close owned reader connections; worker-borrowed connections remain owned
+    /// by the enclosing WorkspaceAuthority Database.
     pub fn close(&mut self) -> Result<()> {
         self.cancelled.store(true, Ordering::Release);
         self.registration = None;
-        if let Some(conn) = self.connection.take() {
-            if let Err((conn, _)) = conn.close() {
-                self.connection = Some(conn);
-                anyhow::bail!("NIR1_GRAPH_READER_CLOSE_FAILED");
+        self.pending_registration = None;
+        match std::mem::replace(&mut self.connection, ReaderConnection::Closed) {
+            ReaderConnection::Owned(conn) => {
+                if let Err((conn, _)) = conn.close() {
+                    self.connection = ReaderConnection::Owned(conn);
+                    anyhow::bail!("NIR1_GRAPH_READER_CLOSE_FAILED");
+                }
             }
+            ReaderConnection::Borrowed | ReaderConnection::Closed => {}
         }
         self.participant = None;
         Ok(())
@@ -816,16 +1119,33 @@ impl Nir1GraphReader {
     pub(super) fn sqlite_memory_for_diagnostic(
         &self,
     ) -> Result<super::nir1_graph_memory_diagnostics::SqliteConnectionMemory> {
-        let conn = self
-            .connection
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_READER_CLOSED"))?;
+        let conn = self.owned_connection()?;
         super::nir1_graph_memory_diagnostics::sqlite_connection_memory_status(conn)
     }
 
     #[cfg(feature = "nir1-material-diagnostics")]
     pub(crate) fn is_closed_for_diagnostic(&self) -> bool {
-        self.connection.is_none() && self.participant.is_none()
+        matches!(self.connection, ReaderConnection::Closed) && self.participant.is_none()
+    }
+
+    fn take_owned_connection(&mut self) -> Result<Connection> {
+        match std::mem::replace(&mut self.connection, ReaderConnection::Closed) {
+            ReaderConnection::Owned(conn) => Ok(conn),
+            connection @ (ReaderConnection::Borrowed | ReaderConnection::Closed) => {
+                self.connection = connection;
+                Err(anyhow::anyhow!("NIR1_GRAPH_READER_CLOSED"))
+            }
+        }
+    }
+
+    #[cfg(feature = "nir1-material-diagnostics")]
+    fn owned_connection(&self) -> Result<&Connection> {
+        match &self.connection {
+            ReaderConnection::Owned(conn) => Ok(conn),
+            ReaderConnection::Borrowed | ReaderConnection::Closed => {
+                Err(anyhow::anyhow!("NIR1_GRAPH_READER_CLOSED"))
+            }
+        }
     }
 
     pub fn workspace_identity(&self) -> u64 {
@@ -1007,6 +1327,55 @@ impl GraphWorkControl for OwnerStopControl<'_> {
 
     fn finalization_signal(&self) -> Option<Arc<AtomicBool>> {
         self.inner.finalization_signal()
+    }
+}
+
+struct QueryOwnerControl<'a> {
+    reader: ReaderControl,
+    maintenance: Option<&'a mut dyn GraphWorkControl>,
+    stopped: Arc<AtomicBool>,
+}
+
+impl GraphWorkControl for QueryOwnerControl<'_> {
+    fn check(&mut self, stage: GraphWorkStage) -> Result<()> {
+        self.reader.check(stage)?;
+        if self.stopped.load(Ordering::Acquire) {
+            return Err(validation_terminated(
+                ValidationTerminationReason::Cancelled,
+                "NIR1 Graph maintenance owner stopped",
+            ));
+        }
+        if let Some(owner) = self.maintenance.as_deref_mut() {
+            if let Err(error) = owner.check(stage) {
+                self.stopped.store(true, Ordering::Release);
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn progress_callback(&self) -> Option<GraphProgressCallback> {
+        self.maintenance
+            .as_deref()
+            .and_then(GraphWorkControl::progress_callback)
+    }
+
+    fn stop_signal(&self) -> Option<Arc<AtomicBool>> {
+        self.maintenance
+            .as_deref()
+            .and_then(GraphWorkControl::stop_signal)
+    }
+
+    fn progress_deadline(&self) -> Option<Instant> {
+        self.maintenance
+            .as_deref()
+            .and_then(GraphWorkControl::progress_deadline)
+    }
+
+    fn finalization_signal(&self) -> Option<Arc<AtomicBool>> {
+        self.maintenance
+            .as_deref()
+            .and_then(GraphWorkControl::finalization_signal)
     }
 }
 

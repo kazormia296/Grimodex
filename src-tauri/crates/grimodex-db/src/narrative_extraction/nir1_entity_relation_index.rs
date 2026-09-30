@@ -34,8 +34,8 @@ use super::dependency_edges::{
 use super::evaluator::{
     evaluate_edge, BuildAction, EdgeComparisonInput, EdgeObservation, EvidenceFreshness,
 };
-use super::nir1_chronicle_index::NirChronicleIndexRuntime;
 use super::nir1_capacity::{self, with_capacity_scope, CapacityBudget};
+use super::nir1_chronicle_index::NirChronicleIndexRuntime;
 use super::nir1_entity_relation::{
     read_nir1_entity_relation_revision_current_for_graph_index, Nir1EntityRelationRevision,
 };
@@ -589,7 +589,10 @@ fn sort_roster_with_control(
                     since_check = 0;
                 }
                 match (left < middle, right < end) {
-                    (true, true) if compare_roster_entries(&roster[left], &roster[right]) != Ordering::Greater => {
+                    (true, true)
+                        if compare_roster_entries(&roster[left], &roster[right])
+                            != Ordering::Greater =>
+                    {
                         merged.push(roster[left].clone());
                         left += 1;
                     }
@@ -1075,10 +1078,7 @@ fn read_revision_input_stats(
     Ok(Some(RevisionInputStats { material_records }))
 }
 
-fn persisted_revision_components_within_limit(
-    payload_bytes: usize,
-    envelope_bytes: usize,
-) -> bool {
+fn persisted_revision_components_within_limit(payload_bytes: usize, envelope_bytes: usize) -> bool {
     payload_bytes <= REVISION_INPUT_BYTE_LIMIT && envelope_bytes <= REVISION_INPUT_BYTE_LIMIT
 }
 
@@ -1227,15 +1227,13 @@ fn preflight_revision_source_basis(
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
-    Ok(
-        basis_count == payload_source_count + 1
-            && scope_count == 1
-            && matched_payload_count == payload_source_count
-            && matched_basis_count == payload_source_count
-            && invalid_entity_count == 0
-            && invalid_relation_count == 0
-            && (payload_scope_count == 0 || matched_scope_count == payload_scope_count),
-    )
+    Ok(basis_count == payload_source_count + 1
+        && scope_count == 1
+        && matched_payload_count == payload_source_count
+        && matched_basis_count == payload_source_count
+        && invalid_entity_count == 0
+        && invalid_relation_count == 0
+        && (payload_scope_count == 0 || matched_scope_count == payload_scope_count))
 }
 
 /// Preflight the live Source values that the A2 reader will resolve. The
@@ -1351,7 +1349,12 @@ fn admit_capacity(value: &mut usize, additional: usize, maximum: usize, field: &
 
 impl SourceCapacity {
     fn input(&mut self, bytes: usize) -> Result<()> {
-        admit_capacity(&mut self.input_bytes, bytes, nir1_capacity::INPUT_BYTES, "input-bytes")
+        admit_capacity(
+            &mut self.input_bytes,
+            bytes,
+            nir1_capacity::INPUT_BYTES,
+            "input-bytes",
+        )
     }
 }
 
@@ -1547,9 +1550,20 @@ fn read_internal(
     // Nested publish/Verify reads inherit their budget; standalone Freshness
     // admission gets the same bound without gaining full-Source authority.
     let mut structural = NeverStopGraphWorkControl;
-    with_capacity_scope(conn, None, control.unwrap_or(&mut structural), |_, control| {
-        read_internal_bounded(conn, project, require_freshness, require_current_freshness, Some(control))
-    })
+    with_capacity_scope(
+        conn,
+        None,
+        control.unwrap_or(&mut structural),
+        |_, control| {
+            read_internal_bounded(
+                conn,
+                project,
+                require_freshness,
+                require_current_freshness,
+                Some(control),
+            )
+        },
+    )
 }
 
 fn read_internal_bounded(
@@ -1767,7 +1781,10 @@ pub(crate) fn is_registered_with_control(
         return Ok(false);
     }
     control.check(GraphWorkStage::Coverage)?;
-    Ok(matches!(read_internal(conn, project, true, true, Some(control))?, BindingRead::Registered(_)))
+    Ok(matches!(
+        read_internal(conn, project, true, true, Some(control))?,
+        BindingRead::Registered(_)
+    ))
 }
 
 /// Check whether the exact Graph binding is completely registered and live
@@ -1787,12 +1804,27 @@ pub(crate) fn is_complete_registered_with_control(
     key: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<bool> {
+    let mut current_heap = |operation: &mut dyn FnMut()| {
+        operation();
+        true
+    };
+    is_complete_registered_with_scratch(conn, project, key, control, &mut current_heap)
+}
+
+/// Worker variant whose callback scopes only the comparison tree-node inserts.
+pub(crate) fn is_complete_registered_with_scratch(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+    control: &mut dyn GraphWorkControl,
+    scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
+) -> Result<bool> {
     if conn.is_autocommit() {
         let tx = conn.unchecked_transaction()?;
-        return is_complete_registered_with_control(&tx, project, key, control);
+        return is_complete_registered_with_scratch(&tx, project, key, control, scratch_scope);
     }
     with_capacity_scope(conn, None, control, |_, control| {
-        is_complete_registered_with_control_unmetered(conn, project, key, control)
+        is_complete_registered_with_control_unmetered(conn, project, key, control, scratch_scope)
     })
 }
 
@@ -1801,13 +1833,14 @@ fn is_complete_registered_with_control_unmetered(
     project: &str,
     key: &str,
     control: &mut dyn GraphWorkControl,
+    scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
 ) -> Result<bool> {
     if key != INDEX_KEY {
         return Ok(false);
     }
     if conn.is_autocommit() {
         let tx = conn.unchecked_transaction()?;
-        return is_complete_registered_with_control(&tx, project, key, control);
+        return is_complete_registered_with_scratch(&tx, project, key, control, scratch_scope);
     }
     control.check(GraphWorkStage::CompleteRegistration)?;
     let BindingRead::Registered(binding) = read_with_control(conn, project, control)? else {
@@ -1822,7 +1855,7 @@ fn is_complete_registered_with_control_unmetered(
         return Ok(false);
     }
     let edges = find_edges_by_consumer(conn, project, CONSUMER_KIND, key)?;
-    if !edges_match_source_with_control(&edges, project, &source, control)? {
+    if !edges_match_source_with_control(&edges, project, &source, control, scratch_scope)? {
         return Ok(false);
     }
     control.check(GraphWorkStage::Coverage)?;
@@ -1904,18 +1937,33 @@ fn edges_match_source_with_control(
     project: &str,
     source: &GraphEligibilitySource,
     control: &mut dyn GraphWorkControl,
+    scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
 ) -> Result<bool> {
-    let mut expected = BTreeMap::<String, BTreeSet<String>>::new();
-    expected.insert(
-        source_key(project),
-        [source.digest.clone()].into_iter().collect(),
+    // Only tree nodes enter S; every borrowed key and token remains Q-owned.
+    let mut expected = BTreeMap::<&str, BTreeSet<&str>>::new();
+    let project_key = source_key(project);
+    let mut insert_project = || {
+        expected
+            .entry(project_key.as_str())
+            .or_default()
+            .insert(source.digest.as_str());
+    };
+    ensure!(
+        scratch_scope(&mut insert_project),
+        "NIR1_GRAPH_SCRATCH_SCOPE_REFUSED"
     );
     for entry in &source.roster {
         control.check(GraphWorkStage::Coverage)?;
-        expected
-            .entry(entry.source_object_identity.clone())
-            .or_default()
-            .insert(entry.source_token.clone());
+        let mut insert_entry = || {
+            expected
+                .entry(entry.source_object_identity.as_str())
+                .or_default()
+                .insert(entry.source_token.as_str());
+        };
+        ensure!(
+            scratch_scope(&mut insert_entry),
+            "NIR1_GRAPH_SCRATCH_SCOPE_REFUSED"
+        );
     }
     control.check(GraphWorkStage::Coverage)?;
     if expected.len() != edges.len() {
@@ -1923,7 +1971,7 @@ fn edges_match_source_with_control(
     }
     for edge in edges {
         control.check(GraphWorkStage::Coverage)?;
-        let Some(tokens) = expected.get(&edge.source_object_identity) else {
+        let Some(tokens) = expected.get(edge.source_object_identity.as_str()) else {
             return Ok(false);
         };
         let actual = serde_json::from_str::<Vec<String>>(&edge.read_set_json).ok();
@@ -1931,9 +1979,15 @@ fn edges_match_source_with_control(
             return Ok(false);
         };
         let mut actual_tokens = BTreeSet::new();
-        for token in actual {
+        for token in &actual {
             control.check(GraphWorkStage::Coverage)?;
-            actual_tokens.insert(token);
+            let mut insert_token = || {
+                actual_tokens.insert(token.as_str());
+            };
+            ensure!(
+                scratch_scope(&mut insert_token),
+                "NIR1_GRAPH_SCRATCH_SCOPE_REFUSED"
+            );
         }
         control.check(GraphWorkStage::Coverage)?;
         if &actual_tokens != tokens {
@@ -2403,6 +2457,15 @@ mod tests {
         }
     }
 
+    struct OutsideScratch<'a>(&'a std::cell::Cell<bool>);
+
+    impl GraphWorkControl for OutsideScratch<'_> {
+        fn check(&mut self, _stage: GraphWorkStage) -> Result<()> {
+            assert!(!self.0.get(), "control checks must remain in Q");
+            Ok(())
+        }
+    }
+
     struct TypedStop(GraphWorkStage);
 
     impl GraphWorkControl for TypedStop {
@@ -2464,6 +2527,75 @@ mod tests {
             graph_source_from_roster("project-1", source.roster.clone()).expect("source")
         );
         assert!(source.digest.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn edge_comparison_scopes_only_borrowed_set_insertions() -> Result<()> {
+        let project = "project-1";
+        let source = graph_source_from_roster(
+            project,
+            vec![roster_entry(
+                "entity",
+                "entity-1",
+                "codex:entity-1",
+                "revision-1",
+                "decision-1",
+                "token-1",
+            )],
+        )?;
+        let mut input_control = NeverStopGraphWorkControl;
+        let edges = input_edges_with_control(project, &source, &mut input_control)?;
+
+        let mut ordinary_control = NeverStopGraphWorkControl;
+        let mut ordinary_scope = |operation: &mut dyn FnMut()| {
+            operation();
+            true
+        };
+        assert!(edges_match_source_with_control(
+            &edges,
+            project,
+            &source,
+            &mut ordinary_control,
+            &mut ordinary_scope,
+        )?);
+
+        let scratch_active = std::cell::Cell::new(false);
+        let scope_count = std::cell::Cell::new(0);
+        let mut control = OutsideScratch(&scratch_active);
+        let mut scratch_scope = |operation: &mut dyn FnMut()| {
+            assert!(
+                !scratch_active.replace(true),
+                "scratch scopes must not nest"
+            );
+            scope_count.set(scope_count.get() + 1);
+            operation();
+            scratch_active.set(false);
+            true
+        };
+        assert!(edges_match_source_with_control(
+            &edges,
+            project,
+            &source,
+            &mut control,
+            &mut scratch_scope,
+        )?);
+        assert_eq!(scope_count.get(), 4);
+        assert!(!scratch_active.get());
+
+        let mut refused_control = NeverStopGraphWorkControl;
+        let mut refused_scope = |_operation: &mut dyn FnMut()| false;
+        let error = edges_match_source_with_control(
+            &edges,
+            project,
+            &source,
+            &mut refused_control,
+            &mut refused_scope,
+        )
+        .expect_err("scratch refusal must fail closed");
+        assert!(error
+            .to_string()
+            .contains("NIR1_GRAPH_SCRATCH_SCOPE_REFUSED"));
+        Ok(())
     }
 
     #[test]
@@ -2592,13 +2724,10 @@ mod tests {
             stage: GraphWorkStage::Digest,
             remaining: 12,
         };
-        let digest_error = graph_source_from_roster_with_control(
-            "project-1",
-            roster,
-            &mut digest_control,
-        )
-        .expect_err("long digest serialization must remain cancellable")
-        .to_string();
+        let digest_error =
+            graph_source_from_roster_with_control("project-1", roster, &mut digest_control)
+                .expect_err("long digest serialization must remain cancellable")
+                .to_string();
         assert!(digest_error.contains("NIR1_GRAPH_TEST_CANCELLED_AFTER_Digest"));
     }
 

@@ -22,7 +22,7 @@ uuid = { version = "1", features = ["v4"] }
 unicode-normalization = "0.1"
 grimodex-core = { path = "../grimodex-core" }
 libc = "0.2"
-talc = "=5.1.1"
+talc = { version = "=5.1.1", features = ["counters"] }
 
 [features]
 default = []
@@ -38,6 +38,8 @@ nir1-material-diagnostics = ["rusqlite/trace", "rusqlite/backup"]
 test-failpoints = []
 # Cross-crate Native tests can hold the DB path claim through fixture cleanup.
 workspace-maintenance-test-support = []
+# Test-only worker exit seam. Never enable in production builds.
+nir1-c-query-test-seam = []
 
 [[bin]]
 name = "migration-crash-harness"

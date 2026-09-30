@@ -9,6 +9,8 @@ use grimodex_core::narrative_nir1::{
 
 pub const FRAME_BYTES: usize = super::c_query_worker::FRAME_BYTES;
 const MAGIC: &[u8; 4] = b"NQG1";
+/// Fixed v1 terminal commit on the dedicated worker stdout pipe.
+pub const TERMINAL_SUCCESS_COMMIT: &[u8; 5] = b"NQGC1";
 
 struct Writer {
     bytes: Vec<u8>,

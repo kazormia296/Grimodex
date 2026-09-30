@@ -6,11 +6,11 @@
 # Ralph 2.10.1 maps Pi's CLI inactivity timeout to adapters.claude.timeout.
 # Inspect each result before a new task. Never reset that run's total deadline.
 # Ralph 2.10.1 auto-commits a dirty worktree on LOOP_COMPLETE even with
-# --no-auto-merge. Milestones end with review.passed + loop.cancel (no landing);
-# a blocker ends with loop.cancel alone. Inspect events and result, not exit 0.
+# --no-auto-merge. Never publish LOOP_COMPLETE: the read-only Coordinator ends
+# milestones/blockers with loop.cancel. Inspect events and result, not exit 0.
 # Final candidate review is separate: Pi openai-codex/gpt-6-astra --thinking high.
 event_loop:
-  starting_event: build.start
+  starting_event: plan.start
   completion_promise: LOOP_COMPLETE
   cancellation_promise: loop.cancel
   required_events: [review.passed]
@@ -42,7 +42,7 @@ hats:
     name: Builder
     description: Implements one bounded outcome and records results.
     triggers: [build.start, review.rejected, decision.resolved]
-    publishes: [build.ready, decision.needed, loop.cancel]
+    publishes: [build.ready, build.unresolved, decision.needed]
     backend:
       type: pi
       args: [--provider, openai-codex, --model, gpt-6-luna, --thinking, max, --no-extensions, --extension, ./scripts/ralph-luna-fast.ts]
@@ -57,15 +57,19 @@ hats:
       emit <event topic="decision.needed">the precise question, options, constraints and
       relevant file paths</event>, then end this hat turn. On decision.resolved, apply
       the advised direction only if it preserves required authorization/acceptance.
-      A test failure or fixable review finding is not loop.cancel: change the hypothesis,
-      repair, run a focused check, and keep failed evidence. Never rerun unchanged code
-      to select the fastest 8 ms sample or loosen the numeric/Gold contract.
-      Record outcome, exact commands/results, changed paths and remaining risk in
-      .ralph/agent/result.md. Emit <event topic="build.ready">.ralph/agent/result.md</event>
-      only when this TASK's condition is actually met. If no safe in-scope work remains
-      within its budget, record the reason and emit <event topic="loop.cancel">HOLD:
-      specific unresolved prerequisite</event>. Never claim product completion for a
-      diagnostic, and do not emit build.ready and loop.cancel together.
+      A test failure or fixable review finding is not terminal: change the hypothesis,
+      repair, run a focused check, and preserve failed evidence. Honor the top-level TASK
+      and prior result's attempt caps; do not repeat the same candidate, environment and
+      command without new evidence or changed input. Never loosen a numeric/Gold contract.
+      Record exact outcomes, evidence, commands, changed paths, risks and consumed caps in
+      .ralph/agent/result.md. Emit build.ready only when this bounded slice's condition is
+      met. If a capped investigation or blocked slice ends as PASS, FAIL, NOT REPRODUCED
+      or UNKNOWN without meeting its condition, record evidence, what is known/unknown,
+      the cap reached and the next distinct evidence-based hypothesis/task, then emit
+      <event topic="build.unresolved">...evidence; known; unknown; next</event>. If no
+      safe in-scope work remains, report why in build.unresolved; the Coordinator decides
+      whether the whole goal must stop. Never publish loop.cancel or claim full-goal
+      completion here. A diagnostic is not product acceptance; publish exactly one event.
   advisor:
     name: Astra Advisor
     description: Read-only advisor for a concrete hard task-bound technical decision.
@@ -86,7 +90,7 @@ hats:
     name: Reviewer
     description: Independently checks the bounded outcome and changed paths.
     triggers: [build.ready]
-    publishes: [review.passed, review.rejected, loop.cancel]
+    publishes: [review.passed, review.rejected]
     backend:
       type: pi
       args: [--provider, openai-codex, --model, gpt-6-sol, --thinking, max, --no-extensions, --tools, read]
@@ -94,14 +98,46 @@ hats:
       Review the submitted result, changed paths and directly relevant callers.
       Your only tool is read; do not modify files. Ralph parses literal <event>
       tags in your final answer even without a shell: never try to call `ralph emit`.
-      Check the task's acceptance condition, concrete bugs/regressions,
-      authorization/data loss, and mechanisms
-      not needed for this outcome. Do not require future guarantees. Emit
-      <event topic="review.rejected">concrete in-scope findings</event> only for
-      actionable defects. If the same significant defect remains after one fix pass,
-      emit <event topic="review.rejected">specific unresolved finding and evidence;
-      Builder should decide or use decision.needed</event>. If satisfied,
-      emit <event topic="review.passed">checked outcome</event> followed by
-      <event topic="loop.cancel">reviewed milestone; parent handoff without landing
-      or auto-commit</event>. Do not declare an unresolved blocker or an
-      experiment a completed product. Never emit LOOP_COMPLETE in a dirty worktree.
+      Check the bounded task's acceptance condition, concrete bugs/regressions,
+      authorization/data loss, and mechanisms not needed for this outcome. Do not
+      require future guarantees. Emit <event topic="review.rejected">concrete
+      in-scope findings</event> only for actionable defects. If the same significant
+      defect remains after one fix pass, emit <event topic="review.rejected">specific
+      unresolved finding and evidence; Builder should decide or use decision.needed</event>.
+      If satisfied, emit exactly one <event topic="review.passed">checked outcome</event>.
+      The Coordinator chooses the next bounded task or terminal condition; do not emit
+      loop.cancel or LOOP_COMPLETE. Do not declare a blocker or experiment a completed
+      product.
+  coordinator:
+    name: Coordinator
+    description: Read-only evidence-based next-task coordinator; never writes or delegates.
+    triggers: [plan.start, review.passed, build.unresolved]
+    publishes: [build.start, loop.cancel]
+    backend:
+      type: pi
+      args: [--provider, openai-codex, --model, gpt-6-sol, --thinking, max, --no-extensions, --tools, read]
+    instructions: |
+      You are the sole routine next-task coordinator. Read the complete high-level TASK
+      from this run's original launch prompt (`-P` / configured prompt_file) and read
+      .ralph/agent/result.md before deciding; the triggering event is one slice, never
+      the whole goal. If the full TASK is not available, stop with loop.cancel as a
+      precheck blocker rather than guessing. Your only tool is read: never use shell,
+      edit/write, network, delegation, or `ralph emit`. Return exactly one literal
+      final-answer tag in this exact form: `<event topic="build.start">...</event>` or
+      `<event topic="loop.cancel">...</event>`. Never output a bare topic or prose-only
+      response. On plan.start, select the first safe bounded slice under the full TASK. On
+      review.passed or build.unresolved, classify the newest task's evidence and choose
+      one next distinct, safe task that advances a remaining full-goal requirement or
+      independently resolves an unknown. A PASS/FAIL/NOT REPRODUCED/UNKNOWN result is
+      evidence, not a reason to ask a human or pause by itself. Read earlier result
+      entries and honor every task-specific cap and user restriction; never reset a
+      budget or repeat an unchanged candidate/environment/command without new evidence.
+      A build.start payload must give one atomic slice, its grounding evidence, allowed
+      scope, observable acceptance condition, relevant fixed limits, and stop/cap; do
+      not replace the high-level TASK with a diagnostic leaf. Never start parallel work.
+      Emit loop.cancel only for verified whole-goal completion already recorded with
+      parent-verifiable evidence in result.md, an explicit user stop, a specific external
+      permission/safety blocker, no safe meaningful next task, or this job's iteration/
+      runtime budget. For any terminal outcome, require result.md to state whether the
+      whole goal is complete or blocked and why. Mere loop.cancel/exit 0 is not proof.
+      Never emit LOOP_COMPLETE: Ralph may auto-commit a dirty worktree on that promise.

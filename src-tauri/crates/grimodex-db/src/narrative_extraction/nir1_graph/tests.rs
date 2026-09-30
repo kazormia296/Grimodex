@@ -26,6 +26,22 @@ const PROJECT: &str = "default-project";
 enum Q2WorkerScenario {
     ReaderOnly,
     NativeOwner,
+    StartupRegistrationRefused,
+    PostCommitNonzero,
+    #[cfg(target_os = "linux")]
+    ResultHeldChildLive,
+    #[cfg(target_os = "linux")]
+    ResultHeldExitProofUnobserved,
+    #[cfg(target_os = "linux")]
+    ResultHeldReaderJoinFailure,
+    #[cfg(target_os = "linux")]
+    CommittedFrameWithoutEof,
+    PartialTerminalMarker,
+    PartialFrame,
+    TrailingData,
+    #[cfg(target_os = "linux")]
+    RustOom,
+    SqliteNoMem,
     CleanupUnproved,
     #[cfg(target_os = "linux")]
     OwnerDeathHelper,
@@ -174,6 +190,359 @@ fn query(reader: &mut Nir1GraphReader, seed: &str) -> Result<Nir1GraphResponse> 
 /// use a generous deadline so their correctness assertions are not coupled to
 /// HDD scheduling; this ignored test exercises the actual public reader path.
 #[test]
+fn worker_reader_uses_one_authority_connection_for_registration_and_query() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut owned_reader = fixture.reader()?;
+    let registration_error = owned_reader
+        .register_with_worker_maintenance(PROJECT, || true)
+        .expect_err("worker registration must reject an independently-owned connection");
+    assert!(registration_error
+        .to_string()
+        .contains("NIR1_GRAPH_WORKER_REQUIRES_BORROWED_CONNECTION"));
+    let query_error = owned_reader
+        .query_for_worker_with_maintenance(&graph_request("nir1-alice"))
+        .expect_err("worker query must reject an independently-owned connection");
+    assert!(query_error
+        .to_string()
+        .contains("NIR1_GRAPH_WORKER_REQUIRES_BORROWED_CONNECTION"));
+    drop(owned_reader);
+
+    fixture.authority.db().with_conn(|conn| {
+        conn.busy_timeout(Duration::ZERO)?;
+        conn.execute_batch(
+            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
+             CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
+                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
+             );",
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
+            [uuid::Uuid::new_v4().to_string()],
+        )?;
+        conn.execute_batch("PRAGMA query_only=ON")?;
+        Ok(())
+    })?;
+
+    let mut reader = Nir1GraphReader::open_for_worker(
+        Arc::clone(&fixture.authority),
+        fixture.lifecycle.begin_workspace_participant()?,
+    )?;
+    let scratch_scopes = std::cell::Cell::new(0);
+    let mut registration_stage = Nir1GraphRegistrationStage::Maintenance;
+    assert!(reader.register_with_worker_maintenance_diagnostic(
+        PROJECT,
+        &mut registration_stage,
+        |operation: &mut dyn FnMut()| {
+            scratch_scopes.set(scratch_scopes.get() + 1);
+            operation();
+            true
+        },
+        || true,
+    )?);
+    assert!(scratch_scopes.get() > 0);
+    let response = reader.query_for_worker_with_maintenance_deadline(
+        &graph_request("nir1-alice"),
+        Duration::from_secs(2),
+    )?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    assert!(response
+        .graph
+        .as_ref()
+        .is_some_and(|graph| !graph.nodes.is_empty()));
+    fixture.authority.db().with_conn(|conn| {
+        assert!(conn.is_autocommit());
+        conn.query_row(
+            "SELECT 1 FROM temp.grimodex_connection_meta WHERE singleton=1",
+            [],
+            |_| Ok(()),
+        )?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn worker_reader_restore_admitted_during_query_read_refuses_result() -> Result<()> {
+    use rusqlite::hooks::{AuthAction, Authorization};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let fixture = Fixture::new()?;
+    let original_binding = LiveBinding::new(
+        fixture.authority.path().to_string_lossy(),
+        format!("test-workspace:{}", fixture.authority.identity()),
+        fixture.authority.identity(),
+        0,
+    );
+    fixture.lifecycle.set_ready(original_binding.clone())?;
+    fixture.authority.db().with_conn(|conn| {
+        conn.busy_timeout(Duration::ZERO)?;
+        conn.execute_batch(
+            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
+             CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
+                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
+             );",
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
+            [uuid::Uuid::new_v4().to_string()],
+        )?;
+        conn.execute_batch("PRAGMA query_only=ON")?;
+        Ok(())
+    })?;
+
+    let mut reader = Nir1GraphReader::open_for_worker(
+        Arc::clone(&fixture.authority),
+        fixture.lifecycle.begin_workspace_participant()?,
+    )?;
+    assert!(reader.register_with_worker_maintenance(PROJECT, || true)?);
+    assert!(reader.registration.is_some());
+
+    let restore_triggered = Arc::new(AtomicBool::new(false));
+    let restore_result = Arc::new(Mutex::new(
+        None::<std::result::Result<AdmissionOutcome, String>>,
+    ));
+    let triggered_for_authorizer = Arc::clone(&restore_triggered);
+    let result_for_authorizer = Arc::clone(&restore_result);
+    let lifecycle_for_authorizer = fixture.lifecycle.clone();
+    fixture.authority.db().with_conn(|conn| {
+        conn.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
+            if matches!(
+                context.action,
+                AuthAction::Read {
+                    table_name,
+                    column_name,
+                } if table_name.eq_ignore_ascii_case("narrative_dependency_edges")
+                    && column_name.eq_ignore_ascii_case("source_object_identity")
+            ) && !triggered_for_authorizer.swap(true, Ordering::AcqRel)
+            {
+                let outcome = lifecycle_for_authorizer
+                    .begin_transition(AdmissionKind::Restore)
+                    .map_err(|error| error.to_string());
+                *result_for_authorizer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(outcome);
+            }
+            Authorization::Allow
+        }))?;
+        Ok(())
+    })?;
+
+    let query_result = reader.query_for_worker_with_maintenance_deadline(
+        &graph_request("nir1-alice"),
+        Duration::from_secs(2),
+    );
+    fixture.authority.db().with_conn(|conn| {
+        conn.authorizer(None::<fn(rusqlite::hooks::AuthContext<'_>) -> Authorization>)?;
+        ensure!(
+            conn.is_autocommit(),
+            "Restore-interrupted query did not roll back"
+        );
+        Ok(())
+    })?;
+    let response = query_result?;
+    assert!(
+        restore_triggered.load(Ordering::Acquire),
+        "query SQL read did not trigger Restore"
+    );
+    assert_eq!(response.status, "unavailable", "{:?}", response.reason);
+    assert!(
+        response.graph.is_none(),
+        "Restore-interrupted query returned a Graph"
+    );
+
+    let restore_result = restore_result
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Restore authorizer result lock poisoned"))?
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Restore authorizer did not record an outcome"))?;
+    let restore_outcome = restore_result.map_err(anyhow::Error::msg)?;
+    let restore_ticket = match restore_outcome {
+        AdmissionOutcome::Admitted(ticket) => ticket,
+        AdmissionOutcome::NotAdmitted { reason, .. } => {
+            anyhow::bail!("Restore was not admitted during query SQL read: {reason:?}")
+        }
+    };
+    assert_eq!(fixture.lifecycle.workspace_participant_count()?, 1);
+    let exclusion_error = match fixture
+        .lifecycle
+        .physical_exclusive_for_ticket(&restore_ticket)
+    {
+        Err(error) => error,
+        Ok(exclusive) => {
+            drop(exclusive);
+            anyhow::bail!("Restore obtained exclusivity while the borrowed reader was live")
+        }
+    };
+    assert!(matches!(
+        exclusion_error,
+        crate::workspace_lifecycle::LifecycleError::ActiveOperations
+    ));
+
+    reader.close()?;
+    assert_eq!(fixture.lifecycle.workspace_participant_count()?, 0);
+    fixture.lifecycle.mark_transition_joined(&restore_ticket)?;
+    let exclusive = fixture
+        .lifecycle
+        .physical_exclusive_for_ticket(&restore_ticket)?;
+    drop(exclusive);
+    fixture
+        .lifecycle
+        .complete_unchanged(&restore_ticket, original_binding)?;
+    Ok(())
+}
+
+#[test]
+fn worker_registration_is_not_published_when_scratch_seal_fails() -> Result<()> {
+    use crate::narrative_maintenance_connection::try_lock_narrative_maintenance;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let fixture = Fixture::new()?;
+    fixture.authority.db().with_conn(|conn| {
+        conn.busy_timeout(Duration::ZERO)?;
+        conn.execute_batch(
+            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
+             CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
+                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
+             );",
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
+            [uuid::Uuid::new_v4().to_string()],
+        )?;
+        conn.execute_batch("PRAGMA query_only=ON")?;
+        Ok(())
+    })?;
+
+    let mut reader = Nir1GraphReader::open_for_worker(
+        Arc::clone(&fixture.authority),
+        fixture.lifecycle.begin_workspace_participant()?,
+    )?;
+    let seal_called = AtomicBool::new(false);
+    let outer_cleanup_proved = AtomicBool::new(false);
+    let database = fixture.authority.db();
+    let error = reader
+        .register_with_worker_maintenance(PROJECT, || {
+            seal_called.store(true, Ordering::Release);
+            let clean = try_lock_narrative_maintenance(database)
+                .ok()
+                .flatten()
+                .is_some_and(|conn| conn.is_autocommit());
+            outer_cleanup_proved.store(clean, Ordering::Release);
+            false
+        })
+        .expect_err("failed scratch sealing must prevent Registration publication");
+    assert!(error
+        .to_string()
+        .contains("NIR1_GRAPH_WORKER_SCRATCH_SEAL_FAILED"));
+    assert!(seal_called.load(Ordering::Acquire));
+    assert!(outer_cleanup_proved.load(Ordering::Acquire));
+    assert!(reader.registration.is_none());
+    assert!(reader.pending_registration.is_none());
+
+    let response = reader.query_for_worker_with_maintenance(&graph_request("nir1-alice"))?;
+    assert_eq!(response.reason.as_deref(), Some("registration-required"));
+    Ok(())
+}
+
+#[test]
+fn worker_registration_observes_cancellation_during_postflight_identity() -> Result<()> {
+    use crate::narrative_extraction::is_validation_terminated;
+    use crate::narrative_maintenance_connection::{
+        with_narrative_maintenance_graph_control, NarrativeMaintenanceGraphControlConfig,
+    };
+    use rusqlite::hooks::{AuthAction, Authorization};
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
+
+    let fixture = Fixture::new()?;
+    fixture.authority.db().with_conn(|conn| {
+        conn.busy_timeout(Duration::ZERO)?;
+        conn.execute_batch(
+            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
+             CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
+                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
+             );",
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
+            [uuid::Uuid::new_v4().to_string()],
+        )?;
+        conn.execute_batch("PRAGMA query_only=ON")?;
+        Ok(())
+    })?;
+
+    let mut reader = Nir1GraphReader::open_for_worker(
+        Arc::clone(&fixture.authority),
+        fixture.lifecycle.begin_workspace_participant()?,
+    )?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let progress_callbacks = Arc::new(AtomicU64::new(0));
+    let callbacks_at_postflight = Arc::new(AtomicU64::new(u64::MAX));
+    let user_version_reads = Arc::new(AtomicUsize::new(0));
+    let postflight_seen = Arc::new(AtomicBool::new(false));
+    let config = NarrativeMaintenanceGraphControlConfig::with_progress_callbacks(Arc::clone(
+        &progress_callbacks,
+    ));
+    let stop_in_authorizer = Arc::clone(&stop);
+    let callbacks_for_authorizer = Arc::clone(&progress_callbacks);
+    let callbacks_at_postflight_for_authorizer = Arc::clone(&callbacks_at_postflight);
+    let reads_for_authorizer = Arc::clone(&user_version_reads);
+    let postflight_for_authorizer = Arc::clone(&postflight_seen);
+
+    let result = with_narrative_maintenance_graph_control(
+        fixture.authority.db(),
+        Duration::ZERO,
+        1,
+        Arc::clone(&stop),
+        config,
+        |conn, owner| {
+            conn.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
+                if let AuthAction::Pragma { pragma_name, .. } = context.action {
+                    if pragma_name.eq_ignore_ascii_case("user_version")
+                        && reads_for_authorizer.fetch_add(1, Ordering::AcqRel) == 2
+                    {
+                        callbacks_at_postflight_for_authorizer.store(
+                            callbacks_for_authorizer.load(Ordering::Acquire),
+                            Ordering::Release,
+                        );
+                        postflight_for_authorizer.store(true, Ordering::Release);
+                        stop_in_authorizer.store(true, Ordering::Release);
+                    }
+                }
+                Authorization::Allow
+            }))?;
+            let mut current_heap = |operation: &mut dyn FnMut()| {
+                operation();
+                true
+            };
+            let registration = reader.register_with_control_observed(
+                conn,
+                PROJECT,
+                owner,
+                None,
+                &mut current_heap,
+            );
+            conn.authorizer(None::<fn(rusqlite::hooks::AuthContext<'_>) -> Authorization>)?;
+            registration
+        },
+    )?
+    .expect("maintenance connection acquired");
+
+    assert!(result.receipt.connection_reusable);
+    let error = result
+        .into_result()
+        .expect_err("cancellation during postflight must not publish Registration");
+    assert!(is_validation_terminated(&error), "{error:#}");
+    assert!(postflight_seen.load(Ordering::Acquire));
+    assert!(
+        progress_callbacks.load(Ordering::Acquire)
+            > callbacks_at_postflight.load(Ordering::Acquire),
+        "outer maintenance progress hook was not restored for postflight SQL"
+    );
+    assert!(reader.registration.is_none());
+    Ok(())
+}
+
+#[test]
 #[ignore = "run explicitly as the production 8ms availability measurement"]
 fn production_query_has_an_available_8ms_success_path() -> Result<()> {
     let fixture = Fixture::new()?;
@@ -218,6 +587,77 @@ fn ordinary_reader_registers_and_queries_fixed_q2_fixture() -> Result<()> {
 #[ignore = "requires a closed Q2/R1/D0-local preseed and a built normal worker binary"]
 fn native_worker_returns_fixed_q2_frame_from_real_workspace_owner() -> Result<()> {
     q2_reader_fixture(Q2WorkerScenario::NativeOwner)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed and a normal worker binary"]
+fn native_worker_reports_canonical_registration_refusal_before_ready() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::StartupRegistrationRefused)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed and a seam-enabled worker binary"]
+fn native_worker_accepts_committed_q2_frame_before_nonzero_exit() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::PostCommitNonzero)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires the official Q2 preseed and a seam-enabled worker binary"]
+fn native_worker_reaps_live_committed_child_after_result_lease() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::ResultHeldChildLive)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "isolated real-worker test; intentionally quarantines one ResultHeld owner until test-process exit"]
+fn native_worker_quarantines_result_lease_when_exit_proof_transfer_is_unavailable() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::ResultHeldExitProofUnobserved)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "isolated real-worker test; intentionally quarantines one ResultHeld owner until test-process exit"]
+fn native_worker_quarantines_result_lease_when_reader_join_fails() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::ResultHeldReaderJoinFailure)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires the official Q2 preseed and a seam-enabled worker binary"]
+fn native_worker_refuses_committed_q2_frame_without_eof() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::CommittedFrameWithoutEof)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed and a partial-marker seam-enabled worker binary"]
+fn native_worker_rejects_complete_q2_frame_with_partial_terminal_marker() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::PartialTerminalMarker)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed and a partial-frame seam-enabled worker binary"]
+fn native_worker_rejects_declared_q2_frame_with_partial_body() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::PartialFrame)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed and a trailing-data seam-enabled worker binary"]
+fn native_worker_rejects_committed_q2_frame_with_trailing_data() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::TrailingData)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires the official Q2 preseed and a seam-enabled worker binary"]
+fn native_worker_retires_after_real_child_rust_oom() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::RustOom)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed and a seam-enabled worker binary"]
+fn native_worker_refuses_after_real_child_sqlite_nomem() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::SqliteNoMem)
 }
 
 #[test]
@@ -1118,7 +1558,291 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
         let snapshot = active_workspace_snapshot(&native_state)?;
         let mut owner =
             super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path.clone());
-        owner.prepare(&request.project_id)?;
+        match scenario {
+            #[cfg(target_os = "linux")]
+            Q2WorkerScenario::ResultHeldChildLive
+            | Q2WorkerScenario::ResultHeldExitProofUnobserved
+            | Q2WorkerScenario::ResultHeldReaderJoinFailure => {
+                owner.hold_after_commit_for_test();
+                if scenario == Q2WorkerScenario::ResultHeldReaderJoinFailure {
+                    owner.panic_reader_after_pipe_for_test();
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Q2WorkerScenario::CommittedFrameWithoutEof => {
+                owner.hold_stdout_open_after_commit_for_test()
+            }
+            Q2WorkerScenario::PartialTerminalMarker => owner.partial_terminal_commit_for_test(),
+            Q2WorkerScenario::PartialFrame => owner.partial_frame_for_test(),
+            Q2WorkerScenario::TrailingData => owner.trailing_data_for_test(),
+            #[cfg(target_os = "linux")]
+            Q2WorkerScenario::RustOom => owner.rust_oom_for_test(),
+            Q2WorkerScenario::SqliteNoMem => owner.sqlite_nomem_for_test(),
+            _ => {}
+        }
+        if scenario == Q2WorkerScenario::StartupRegistrationRefused {
+            let error = owner
+                .prepare("nir1-project-that-does-not-exist")
+                .expect_err("unregistered project must not report READY");
+            let error_text = format!("{error:#}");
+            ensure!(
+                error_text.contains("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY")
+                    && error_text
+                        .contains("NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED"),
+                "Native owner did not capture the fixed registration-refusal diagnostic: {error_text}"
+            );
+            ensure!(
+                owner.cleanup_proved_for_test(),
+                "startup refusal returned before child exit, stdout EOF and reader join"
+            );
+            let claim = authority.claim_c_query_child().ok_or_else(|| {
+                anyhow::anyhow!("proved registration-refusal cleanup did not release the claim")
+            })?;
+            claim.release();
+            drop(owner);
+            assert_eq!(
+                native_state
+                    .switching
+                    .core()
+                    .workspace_participant_count()?,
+                0
+            );
+            eprintln!(
+                "Native Q2 startup refusal: canonical registration refusal captured with no private details; child exit + stdout EOF + reader join proved before claim reloan"
+            );
+            return Ok(());
+        }
+        owner
+            .prepare(&request.project_id)
+            .map_err(|error| anyhow::anyhow!("Native Q2 worker startup diagnostic: {error:#}"))?;
+        if scenario == Q2WorkerScenario::SqliteNoMem {
+            let (error, returned_elapsed) = {
+                let call_started = Instant::now();
+                let error = match owner.query_once(&request) {
+                    Ok(lease) => {
+                        drop(lease);
+                        anyhow::anyhow!("real child SQLite NOMEM returned a result lease")
+                    }
+                    Err(error) => error,
+                };
+                (error, call_started.elapsed())
+            };
+            let error_text = format!("{error:#}");
+            ensure!(
+                [
+                    "NIR1_GRAPH_WORKER_PIPE_TRUNCATED",
+                    "NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME",
+                ]
+                .iter()
+                .any(|reason| error_text.contains(reason))
+                    && !error_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"),
+                "Native did not cleanly refuse the SQLite NOMEM child: {error_text}"
+            );
+            ensure!(
+                owner.abnormal_exit_observed_for_test()
+                    && owner.abnormal_exit_code_for_test() == Some(26),
+                "child did not exit with the SQLite SQLITE_NOMEM proof code: abnormal={}, code={:?}",
+                owner.abnormal_exit_observed_for_test(),
+                owner.abnormal_exit_code_for_test()
+            );
+            ensure!(
+                owner.cleanup_proved_for_test(),
+                "claim release preceded actual child exit, stdout EOF, and reader join"
+            );
+            let claim = authority.claim_c_query_child().ok_or_else(|| {
+                anyhow::anyhow!("proved SQLite NOMEM cleanup did not release the worker claim")
+            })?;
+            claim.release();
+            drop(owner);
+            assert_eq!(
+                native_state
+                    .switching
+                    .core()
+                    .workspace_participant_count()?,
+                0
+            );
+            eprintln!(
+                "Native real-child SQLite NOMEM: no lease; SQLite SQLITE_NOMEM exit code 26 + stdout EOF + reader join proved before claim reloan; call-to-refusal={returned_elapsed:?} (diagnostic only)"
+            );
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        if scenario == Q2WorkerScenario::RustOom {
+            let (error, returned_elapsed) = {
+                let call_started = Instant::now();
+                let error = match owner.query_once(&request) {
+                    Ok(lease) => {
+                        drop(lease);
+                        anyhow::anyhow!("real Rust allocator OOM returned a result lease")
+                    }
+                    Err(error) => error,
+                };
+                (error, call_started.elapsed())
+            };
+            let error_text = format!("{error:#}");
+            ensure!(
+                [
+                    "NIR1_GRAPH_WORKER_PIPE_TRUNCATED",
+                    "NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME",
+                ]
+                .iter()
+                .any(|reason| error_text.contains(reason))
+                    && !error_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"),
+                "real child OOM was not cleanly refused: {error_text}"
+            );
+            let abnormal_exit = owner.abnormal_exit_observed_for_test();
+            let exit_code = owner.abnormal_exit_code_for_test();
+            let exit_signal = owner.abnormal_exit_signal_for_test();
+            ensure!(
+                abnormal_exit
+                    && exit_code.is_none()
+                    && exit_signal == Some(libc::SIGABRT),
+                "worker did not terminate by observed Linux SIGABRT after allocation failure: abnormal={abnormal_exit}, code={exit_code:?}, signal={exit_signal:?}"
+            );
+            ensure!(
+                owner.cleanup_proved_for_test(),
+                "OOM claim release preceded actual child exit, stdout EOF, and reader join"
+            );
+            let claim = authority.claim_c_query_child().ok_or_else(|| {
+                anyhow::anyhow!("proved Rust OOM cleanup did not release the worker claim")
+            })?;
+            claim.release();
+            drop(owner);
+            assert_eq!(
+                native_state
+                    .switching
+                    .core()
+                    .workspace_participant_count()?,
+                0
+            );
+            eprintln!(
+                "Native real child Rust OOM: no lease; observed SIGABRT + stdout EOF + reader join before claim reloan; call-to-refusal={returned_elapsed:?} (diagnostic only)"
+            );
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        if scenario == Q2WorkerScenario::CommittedFrameWithoutEof {
+            let (error, returned_elapsed) = {
+                let call_started = Instant::now();
+                let error = match owner.query_once(&request) {
+                    Ok(lease) => {
+                        drop(lease);
+                        anyhow::anyhow!("committed frame without EOF produced a result lease")
+                    }
+                    Err(error) => error,
+                };
+                (error, call_started.elapsed())
+            };
+            ensure!(
+                owner.frame_commit_observed_within_deadline_for_test(),
+                "Native did not observe FRAME+COMMIT inside the 8ms query loop"
+            );
+            let error_text = format!("{error:#}");
+            ensure!(
+                error_text.contains("NIR1_GRAPH_QUERY_DEADLINE_AFTER_TIMELY_FRAME_RETURN")
+                    && !error_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"),
+                "missing EOF was not refused after timely frame validation: {error_text}"
+            );
+            ensure!(
+                owner.missing_eof_boundary_observed_before_cleanup_for_test(),
+                "before cleanup, Native did not observe a timely request-bound Q2 FRAME+COMMIT without EOF, a timely validation, no lease, and a live child"
+            );
+            ensure!(
+                returned_elapsed > QUERY_DEADLINE,
+                "deadline refusal omitted bounded cleanup time: {returned_elapsed:?}"
+            );
+            ensure!(
+                owner.cleanup_proved_for_test()
+                    && owner.abnormal_exit_observed_for_test()
+                    && owner.abnormal_exit_code_for_test().is_none()
+                    && owner.abnormal_exit_signal_for_test() == Some(libc::SIGKILL),
+                "missing-EOF refusal returned before SIGKILL + EOF + reader join proof"
+            );
+            let claim = authority.claim_c_query_child().ok_or_else(|| {
+                anyhow::anyhow!("proved missing-EOF cleanup did not release the child claim")
+            })?;
+            claim.release();
+            drop(owner);
+            assert_eq!(
+                native_state
+                    .switching
+                    .core()
+                    .workspace_participant_count()?,
+                0
+            );
+            eprintln!(
+                "Native Q2 missing-EOF refusal: timely request-bound Q2 frame + NQGC1 observed without EOF and without a lease; SIGKILL + EOF + reader join proved before claim reloan; call-to-refusal={returned_elapsed:?}"
+            );
+            return Ok(());
+        }
+        if matches!(
+            scenario,
+            Q2WorkerScenario::PartialTerminalMarker
+                | Q2WorkerScenario::PartialFrame
+                | Q2WorkerScenario::TrailingData
+        ) {
+            let (error, returned_elapsed) = {
+                let call_started = Instant::now();
+                let error = match owner.query_once(&request) {
+                    Ok(lease) => {
+                        drop(lease);
+                        anyhow::anyhow!("malformed Q2 response produced a result lease")
+                    }
+                    Err(error) => error,
+                };
+                (error, call_started.elapsed())
+            };
+            let error_text = format!("{error:#}");
+            let (expected_error, observation, failure_label) = match scenario {
+                Q2WorkerScenario::PartialTerminalMarker => (
+                    "NIR1_GRAPH_WORKER_PIPE_TRUNCATED",
+                    owner.available_request_bound_q2_frame_observed_for_test(),
+                    "partial terminal marker",
+                ),
+                Q2WorkerScenario::PartialFrame => (
+                    "NIR1_GRAPH_WORKER_PIPE_TRUNCATED",
+                    owner.partial_frame_failure_kept_claim_for_test(),
+                    "partial declared frame body",
+                ),
+                Q2WorkerScenario::TrailingData => (
+                    "NIR1_GRAPH_WORKER_TRAILING_PIPE_DATA",
+                    owner.committed_request_bound_q2_frame_with_trailing_observed_for_test(),
+                    "trailing data after terminal commit",
+                ),
+                _ => unreachable!("handled only refusal scenarios"),
+            };
+            ensure!(
+                error_text.contains(expected_error)
+                    && !error_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"),
+                "{failure_label} was not cleanly refused: {error_text}"
+            );
+            ensure!(
+                observation,
+                "Native did not observe the expected rejection while retaining the claim for {failure_label}"
+            );
+            ensure!(
+                owner.cleanup_proved_for_test()
+                    && owner.abnormal_exit_observed_for_test()
+                    && owner.abnormal_exit_code_for_test() == Some(23),
+                "refusal returned before actual exit, EOF, and reader join were proved"
+            );
+            let claim = authority.claim_c_query_child().ok_or_else(|| {
+                anyhow::anyhow!("proved malformed-frame cleanup did not release the child claim")
+            })?;
+            claim.release();
+            drop(owner);
+            assert_eq!(
+                native_state
+                    .switching
+                    .core()
+                    .workspace_participant_count()?,
+                0
+            );
+            eprintln!(
+                "Native Q2 {failure_label}: no lease; scenario-specific Native refusal observed; child exit 23 + EOF + reader join proved before claim reloan; call-to-refusal={returned_elapsed:?}"
+            );
+            return Ok(());
+        }
         let call_started = Instant::now();
         let query_result = owner.query_once(&request);
         let returned_elapsed = call_started.elapsed();
@@ -1132,8 +1856,235 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             );
             return Err(error);
         }
-        let lease = query_result?;
+        let mut lease = query_result?;
+        ensure!(
+            lease.retirement_pending_for_test(),
+            "successful result lease waited for child retirement"
+        );
         let admission_elapsed = lease.elapsed();
+        #[cfg(target_os = "linux")]
+        if matches!(
+            scenario,
+            Q2WorkerScenario::ResultHeldChildLive
+                | Q2WorkerScenario::ResultHeldExitProofUnobserved
+                | Q2WorkerScenario::ResultHeldReaderJoinFailure
+        ) {
+            ensure!(
+                returned_elapsed <= Duration::from_millis(8)
+                    && lease.elapsed() <= Duration::from_millis(8),
+                "committed live-child lease missed the fixed deadline: call={returned_elapsed:?}, admission={:?}",
+                lease.elapsed()
+            );
+            ensure!(
+                lease.retirement_pending_for_test()
+                    && lease.committed_eof_with_reader_pending_for_test()
+                    && lease.child_exit_unobserved_for_test()?,
+                "ResultHeld did not retain a committed EOF lease while child exit was unobserved"
+            );
+            {
+                let frame = lease.frame()?;
+                assert_eq!(frame.project, PROJECT);
+                assert_eq!(frame.scene, QUERY_SCENE);
+                assert_eq!(frame.seed, Some(ENTITY));
+                assert_eq!(frame.node_count, 1);
+                assert_eq!(frame.edge_count, 0);
+            }
+            ensure!(
+                authority.claim_c_query_child().is_none(),
+                "child claim was reloaned while ResultHeld child exit was unproved"
+            );
+            #[cfg(target_os = "linux")]
+            if scenario == Q2WorkerScenario::ResultHeldReaderJoinFailure {
+                drop(lease);
+                ensure!(
+                    !owner.cleanup_proved_for_test()
+                        && owner.result_lease_reader_join_quarantined_for_test(),
+                    "ResultHeld lease drop reloaned resources after reader join failure"
+                );
+                ensure!(
+                    authority.claim_c_query_child().is_none(),
+                    "claim was reloaned after failed reader join"
+                );
+                assert_eq!(
+                    native_state
+                        .switching
+                        .core()
+                        .workspace_participant_count()?,
+                    1,
+                    "reader-join quarantine released the workspace snapshot"
+                );
+                drop(owner);
+                ensure!(
+                    authority.claim_c_query_child().is_none(),
+                    "owner Drop reloaned a claim after failed reader join"
+                );
+                assert_eq!(
+                    native_state
+                        .switching
+                        .core()
+                        .workspace_participant_count()?,
+                    1,
+                    "owner Drop released its reader-join-quarantined snapshot"
+                );
+                let mut reloan_owner = super::c_query_worker::CQueryWorkerOwner::new(
+                    active_workspace_snapshot(&native_state)?,
+                    worker_path,
+                );
+                let reloan_error = reloan_owner.prepare(&request.project_id).expect_err(
+                    "same-authority reloan must remain closed after reader-join failure",
+                );
+                ensure!(
+                    reloan_error.to_string().contains("NIR1_GRAPH_WORKER_BUSY"),
+                    "same-authority reloan was not rejected: {reloan_error:#}"
+                );
+                drop(reloan_owner);
+                assert_eq!(
+                    native_state
+                        .switching
+                        .core()
+                        .workspace_participant_count()?,
+                    1
+                );
+                eprintln!(
+                    "Native ResultHeld reader-join failure: committed Q2 lease returned with real EOF/live child; cleanup observed child exit + EOF but the actual reader thread panicked on join; resources quarantined and no claim reloaned"
+                );
+                return Ok(());
+            }
+            #[cfg(target_os = "linux")]
+            if scenario == Q2WorkerScenario::ResultHeldExitProofUnobserved {
+                lease.suppress_exit_proof_for_test();
+                drop(lease);
+                ensure!(
+                    !owner.cleanup_proved_for_test()
+                        && owner.result_lease_exit_proof_quarantined_for_test(),
+                    "ResultHeld lease drop released resources without transferred child exit proof"
+                );
+                ensure!(
+                    authority.claim_c_query_child().is_none(),
+                    "claim was reloaned despite missing exit proof"
+                );
+                assert_eq!(
+                    native_state
+                        .switching
+                        .core()
+                        .workspace_participant_count()?,
+                    1,
+                    "quarantine released the workspace snapshot"
+                );
+                drop(owner);
+                ensure!(
+                    authority.claim_c_query_child().is_none(),
+                    "owner Drop reloaned a claim without exit proof"
+                );
+                assert_eq!(
+                    native_state
+                        .switching
+                        .core()
+                        .workspace_participant_count()?,
+                    1,
+                    "owner Drop released its quarantined workspace snapshot"
+                );
+                let mut reloan_owner = super::c_query_worker::CQueryWorkerOwner::new(
+                    active_workspace_snapshot(&native_state)?,
+                    worker_path,
+                );
+                let reloan_error = reloan_owner
+                    .prepare(&request.project_id)
+                    .expect_err("same-authority reloan must remain closed after quarantine");
+                ensure!(
+                    reloan_error.to_string().contains("NIR1_GRAPH_WORKER_BUSY"),
+                    "same-authority reloan was not rejected: {reloan_error:#}"
+                );
+                drop(reloan_owner);
+                assert_eq!(
+                    native_state
+                        .switching
+                        .core()
+                        .workspace_participant_count()?,
+                    1
+                );
+                eprintln!(
+                    "Native ResultHeld exit-proof failure: committed current-bound Q2 lease returned with real EOF/live child; exit-status transfer suppressed during lease drop; resources quarantined and no claim reloaned"
+                );
+                return Ok(());
+            }
+            drop(lease);
+            ensure!(
+                owner.cleanup_proved_for_test()
+                    && owner.abnormal_exit_observed_for_test()
+                    && owner.abnormal_exit_code_for_test().is_none()
+                    && owner.abnormal_exit_signal_for_test() == Some(libc::SIGKILL),
+                "lease drop released capacity without actual child exit + EOF + reader join"
+            );
+            let claim = authority.claim_c_query_child().ok_or_else(|| {
+                anyhow::anyhow!("proved ResultHeld retirement did not release claim")
+            })?;
+            claim.release();
+            drop(owner);
+            assert_eq!(
+                native_state
+                    .switching
+                    .core()
+                    .workspace_participant_count()?,
+                0
+            );
+            eprintln!(
+                "Native ResultHeld live child: committed Q2 lease returned before exit proof; SIGKILL exit + EOF + reader join observed on lease drop before claim reloan; call_entry_to_lease={returned_elapsed:?}"
+            );
+            return Ok(());
+        }
+        if scenario == Q2WorkerScenario::PostCommitNonzero {
+            ensure!(
+                returned_elapsed <= Duration::from_millis(8)
+                    && admission_elapsed <= Duration::from_millis(8),
+                "terminal-commit lease missed its 8ms deadline: call={returned_elapsed:?}, admission={admission_elapsed:?}"
+            );
+            ensure!(
+                lease.committed_eof_with_reader_pending_for_test(),
+                "lease lacked a complete committed frame, real EOF, or owned reader"
+            );
+            {
+                let frame = lease.frame()?;
+                assert_eq!(frame.project, PROJECT);
+                assert_eq!(frame.scene, QUERY_SCENE);
+                assert_eq!(frame.seed, Some(ENTITY));
+                assert_eq!(frame.node_count, 1);
+                assert_eq!(frame.edge_count, 0);
+            }
+            lease.wait_for_child_exit_code_for_test(23)?;
+            ensure!(
+                lease.retirement_pending_for_test()
+                    && lease.committed_eof_with_reader_pending_for_test(),
+                "child retirement proofs released the held lease or reader early"
+            );
+            ensure!(
+                authority.claim_c_query_child().is_none(),
+                "child claim was reloaned while committed lease remained held"
+            );
+            drop(lease);
+            ensure!(
+                owner.cleanup_proved_for_test()
+                    && owner.abnormal_exit_observed_for_test()
+                    && owner.abnormal_exit_code_for_test() == Some(23),
+                "lease drop released capacity before nonzero exit, EOF, and reader join proof"
+            );
+            let claim = authority
+                .claim_c_query_child()
+                .ok_or_else(|| anyhow::anyhow!("retired result lease did not release capacity"))?;
+            claim.release();
+            drop(owner);
+            assert_eq!(
+                native_state
+                    .switching
+                    .core()
+                    .workspace_participant_count()?,
+                0
+            );
+            eprintln!(
+                "Native postcommit nonzero child: call_entry_to_lease={returned_elapsed:?}; admission_to_lease={admission_elapsed:?}; exit=23; EOF/reader join proved before claim reloan"
+            );
+            return Ok(());
+        }
         let phases = lease.query_phase_diagnostics_for_test();
         eprintln!(
             "Native Q2 worker phase diagnostic (test instrumentation; diagnostic only): call_entry_to_return={returned_elapsed:?}; admission_to_lease={admission_elapsed:?}; outcome=lease; phases={phases:?}"
@@ -1204,7 +2155,55 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             "second actual owner was not rejected by the authority claim: {competing_error:#}"
         );
         drop(competing_owner);
+        let restore_ticket = match native_state
+            .switching
+            .core()
+            .begin_transition(AdmissionKind::Restore)?
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { reason, .. } => {
+                anyhow::bail!(
+                    "Restore was not admitted while the result lease was held: {reason:?}"
+                )
+            }
+        };
+        let exclusivity_error = match native_state
+            .switching
+            .core()
+            .physical_exclusive_for_ticket(&restore_ticket)
+        {
+            Err(error) => error,
+            Ok(exclusive) => {
+                drop(exclusive);
+                anyhow::bail!(
+                    "Restore obtained physical exclusivity while the Native snapshot was leased"
+                )
+            }
+        };
+        ensure!(
+            matches!(
+                exclusivity_error,
+                crate::workspace_lifecycle::LifecycleError::ActiveOperations
+            ),
+            "lease-held Restore failed for an unexpected reason: {exclusivity_error:?}"
+        );
+        assert!(
+            authority.claim_c_query_child().is_none(),
+            "Restore admission released the result lease's worker claim"
+        );
+        {
+            let frame = lease.frame()?;
+            assert_eq!(frame.project, PROJECT);
+            assert_eq!(frame.scene, QUERY_SCENE);
+            assert_eq!(frame.seed, Some(ENTITY));
+            assert_eq!(frame.node_count, 1);
+            assert_eq!(frame.edge_count, 0);
+        }
         drop(lease);
+        ensure!(
+            owner.cleanup_proved_for_test(),
+            "lease drop released claim without exit + EOF + reader join proof"
+        );
         let claim = authority
             .claim_c_query_child()
             .ok_or_else(|| anyhow::anyhow!("result lease drop did not release capacity"))?;
@@ -1217,6 +2216,19 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 .workspace_participant_count()?,
             0
         );
+        native_state
+            .switching
+            .core()
+            .mark_transition_joined(&restore_ticket)?;
+        let exclusive = native_state
+            .switching
+            .core()
+            .physical_exclusive_for_ticket(&restore_ticket)?;
+        drop(exclusive);
+        native_state
+            .switching
+            .core()
+            .complete_unchanged(&restore_ticket, original_binding.clone())?;
 
         let mut crashed_owner = super::c_query_worker::CQueryWorkerOwner::new(
             active_workspace_snapshot(&native_state)?,
@@ -1342,14 +2354,10 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             .expect_err("worker must not report READY for an unregistered project");
         let failed_start_text = failed_start.to_string();
         assert!(
-            [
-                "NIR1_GRAPH_WORKER_EXIT_BEFORE_READY",
-                "NIR1_GRAPH_WORKER_PIPE_ERROR",
-                "NIR1_GRAPH_WORKER_READY_PIPE_CLOSED",
-            ]
-            .iter()
-            .any(|marker| failed_start_text.contains(marker)),
-            "expected a concrete pre-READY child/pipe failure, got: {failed_start:#}"
+            failed_start_text.contains("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY")
+                && failed_start_text
+                    .contains("NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED"),
+            "expected canonical-registration refusal before READY, got: {failed_start:#}"
         );
         assert!(
             !failed_start_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"),
