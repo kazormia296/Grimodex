@@ -30,7 +30,13 @@ function parseArguments(argv) {
       "Usage: local-ci-staging-verifier.mjs <quick|full> [options]",
     );
   }
-  const result = { base: null, head: null, profile, report: null };
+  const result = {
+    base: null,
+    head: null,
+    profile,
+    report: null,
+    maxParallelTasks: null,
+  };
   for (let index = 0; index < options.length; index += 1) {
     const argument = options[index];
     if (argument === "--base") {
@@ -38,6 +44,16 @@ function parseArguments(argv) {
       index += 1;
     } else if (argument === "--head") {
       result.head = readOptionValue(options, argument, index);
+      index += 1;
+    } else if (argument === "--max-parallel-tasks") {
+      const value = readOptionValue(options, argument, index);
+      if (
+        !/^[1-9][0-9]*$/u.test(value) ||
+        !Number.isSafeInteger(Number(value))
+      ) {
+        throw new Error("--max-parallel-tasks requires a positive integer");
+      }
+      result.maxParallelTasks = Number(value);
       index += 1;
     } else if (argument === "--report") {
       result.report = readOptionValue(options, argument, index);
@@ -64,6 +80,7 @@ async function main() {
     head: args.head,
     profile: args.profile,
     from: null,
+    maxParallelTasks: args.maxParallelTasks,
   });
   const reportPath = path.resolve(repoRoot, args.report);
   await verifyLocalCiStagingReport({ plan, reportPath, root: repoRoot });
